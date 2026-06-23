@@ -1113,6 +1113,12 @@ class Bot:
         self._prev_frame = None
         self._last_progress = time.time()
         self._stuck_notified = False
+        # 模板只在啟動時讀一次（避免每幀讀檔）
+        self._templates = {
+            name: vision.load_template(f"assets/{name}.png")
+            for name in ("marker", "boost_expired", "activity_event",
+                         "scan_event", "cave_event")
+        }
 
     def observe(self, frame) -> Observation:
         chill_audio = self.listener.latest_score() >= cfg.audio_match_threshold
@@ -1168,15 +1174,15 @@ class Bot:
         flags = miner.EventFlags(
             boost_expired=vision.template_present(
                 capture.crop(frame, cfg.boost_indicator_region),
-                vision.load_template("assets/boost_expired.png"), threshold=0.7),
+                self._templates["boost_expired"], threshold=0.7),
             activity_event=vision.template_present(
                 capture.crop(frame, cfg.chill_text_region),
-                vision.load_template("assets/activity_event.png"), threshold=0.7),
+                self._templates["activity_event"], threshold=0.7),
             scan_event=vision.template_present(
                 capture.crop(frame, cfg.boost_indicator_region),
-                vision.load_template("assets/scan_event.png"), threshold=0.7),
+                self._templates["scan_event"], threshold=0.7),
             cave_event=vision.template_present(
-                frame, vision.load_template("assets/cave_event.png"), threshold=0.7),
+                frame, self._templates["cave_event"], threshold=0.7),
             window_unfocused=not vision.pixel_matches(
                 frame, cfg.window_focus_pixel, cfg.window_focus_color, tol=12),
         )
@@ -1207,7 +1213,7 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        marker = vision.find_template(frame, self._marker_template(), threshold=0.7)
+        marker = vision.find_template(frame, self._templates["marker"], threshold=0.7)
         step = harvester.next_harvest_step(marker, self.harvest, cfg)
         if step.action == "HUMAN":
             self.state = State.NEEDS_HUMAN; self._on_enter(State.NEEDS_HUMAN); return
@@ -1227,9 +1233,6 @@ class Bot:
         chat = capture.crop(frame, cfg.chat_region)
         text = ocr.read_text(chat, cfg.tesseract_path)
         return ocr.contains_any(text, cfg.found_keywords)
-
-    def _marker_template(self):
-        return vision.load_template("assets/marker.png")
 
     def _toggle_pause(self): self.paused = not self.paused
     def _clear_human(self):
