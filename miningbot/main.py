@@ -1,10 +1,9 @@
 import time
 import winsound
-import numpy as np
 import keyboard
 
 from .config import DEFAULT as cfg
-from .events import EventLog
+from .events import EventLog, make_file_sink
 from .states import State, Observation, decide_transition
 from . import capture, vision, ocr, audio, miner, harvester
 from . import input_control as ic
@@ -23,8 +22,10 @@ class Bot:
         self.paused = False
         self.human_cleared = False
         self.log = EventLog()
+        self.log.add_sink(make_file_sink("miningbot_events.log"))
         ref, sr = audio.load_reference(cfg.chill_audio_path)
-        self.listener = audio.ChillListener(ref, cfg.audio_sample_rate, cfg.audio_window_seconds)
+        # 用音檔實際的取樣率，避免 WAV 非 48kHz 時視窗長度不符
+        self.listener = audio.ChillListener(ref, sr, cfg.audio_window_seconds)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
         self._prev_frame = None
@@ -138,7 +139,9 @@ class Bot:
         elif step.action == "ROTATE_RIGHT":
             ic.rotate_right(); self.harvest.rotations += 1
         elif step.action == "MOUSE_AIM":
-            ic.mouse_move_rel(step.dx, step.dy)
+            # dx/dy 是螢幕像素偏移；用 gain 縮放成滑鼠相對位移（校準時調 mouse_aim_gain）
+            ic.mouse_move_rel(int(step.dx * cfg.mouse_aim_gain),
+                              int(step.dy * cfg.mouse_aim_gain))
         elif step.action == "FIRE_D3":
             harvester.fire_d3()
             if self._verify_success(frame):

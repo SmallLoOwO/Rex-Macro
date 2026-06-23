@@ -22,3 +22,12 @@ class EventLog:
         for sink in self._sinks:
             sink(rec)
         return rec
+
+
+def make_file_sink(path: str) -> Callable[[EventRecord], None]:
+    """回傳一個把事件以單行附加到檔案的 sink（給 EventLog.add_sink 用）。"""
+    def sink(rec: EventRecord) -> None:
+        line = f"{rec.timestamp:.3f}\t{rec.type}\t{rec.meta}\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    return sink
