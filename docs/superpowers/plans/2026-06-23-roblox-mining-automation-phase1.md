@@ -152,6 +152,7 @@ class Config:
 
     # 採集
     aim_center_tolerance_px: int = 25            # 準心對準容差
+    mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
     max_aim_rotations: int = 8                   # 水平轉視角上限
     harvest_verify_timeout_s: float = 6.0
@@ -1222,7 +1223,8 @@ class Bot:
         elif step.action == "ROTATE_RIGHT":
             ic.rotate_right(); self.harvest.rotations += 1
         elif step.action == "MOUSE_AIM":
-            ic.mouse_move_rel(step.dx, step.dy)
+            ic.mouse_move_rel(int(step.dx * cfg.mouse_aim_gain),
+                              int(step.dy * cfg.mouse_aim_gain))
         elif step.action == "FIRE_D3":
             harvester.fire_d3()
             if self._verify_success(frame):
