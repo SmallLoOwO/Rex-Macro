@@ -566,10 +566,13 @@ def test_match_score_low_for_noise():
     assert match_score(buf, ref) < 0.5
 
 def test_detect_uses_threshold():
+    # detect 就是 score >= threshold；用實際分數兩側的門檻驗證，
+    # 不假設確切分數（乾淨嵌入訊號分數本來就接近 1.0）。
     ref = np.sin(np.linspace(0, 50, 4000)).astype(np.float32)
     buf = np.concatenate([np.zeros(500, np.float32), ref])
-    assert detect(buf, ref, threshold=0.9) is True
-    assert detect(buf, ref, threshold=0.99999) is False
+    score = match_score(buf, ref)
+    assert detect(buf, ref, threshold=score - 0.01) is True
+    assert detect(buf, ref, threshold=score + 0.01) is False
 ```
 
 - [ ] **Step 2: 跑測試確認失敗**
