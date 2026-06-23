@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# 執行時產生
+snap.png
+*.log
+
+# 大型/個人資產（音檔、模板截圖另行管理，避免誤入版控）
+assets/*.wav
+assets/*.png
+
+# OS
+Thumbs.db
+desktop.ini
