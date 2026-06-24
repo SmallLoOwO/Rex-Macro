@@ -75,12 +75,12 @@ class Bot:
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
-        keyboard.add_hotkey(cfg.hotkey_pause, self._pause)
-        keyboard.add_hotkey(cfg.hotkey_resume, self._resume)
+        keyboard.add_hotkey(cfg.hotkey_emergency_stop, self._emergency_stop)
+        keyboard.add_hotkey(cfg.hotkey_pause, self._toggle_pause)
         keyboard.add_hotkey(cfg.hotkey_quit, self._quit)
         self._running = True
-        self.logger.info("bot started (pause=%s resume=%s quit=%s, log_level=%s)",
-                         cfg.hotkey_pause, cfg.hotkey_resume, cfg.hotkey_quit, cfg.log_level)
+        self.logger.info("bot started (stop=%s pause=%s quit=%s, log_level=%s)",
+                         cfg.hotkey_emergency_stop, cfg.hotkey_pause, cfg.hotkey_quit, cfg.log_level)
         miner.init_mining_sequence()
         while self._running:
             if self.paused:
@@ -218,31 +218,35 @@ class Bot:
         return ok
 
     # ---- 控制權熱鍵 ---------------------------------------------------------
-    def _pause(self):
-        """Ctrl+Q：中斷，放開所有按鍵，把控制權交還給你。"""
-        if self.paused:
-            return
-        self.paused = True
-        ic.key_up("w"); ic.mouse_up()
-        self.log.log("PAUSED")
-        self.logger.info("PAUSED (Ctrl+Q) — 已放開所有按鍵，按 Q 恢復")
+    def _emergency_stop(self):
+        """Ctrl+Q：緊急停止（不結束程式），放開所有按鍵，停住等待 Q 重新啟動。"""
+        if not self.paused:
+            self.paused = True
+            ic.key_up("w"); ic.mouse_up()
+            self.log.log("EMERGENCY_STOP")
+            self.logger.warning("EMERGENCY STOP (Ctrl+Q) — 已停止並放開按鍵，按 Q 重新啟動")
 
-    def _resume(self):
-        """Q：繼續。同時用於從暫停恢復、以及人工介入後恢復。"""
+    def _toggle_pause(self):
+        """Q：手動切換 暫停 ↔ 繼續（也用於緊急停止/人工介入後重新啟動）。"""
         if keyboard.is_pressed("ctrl"):              # 避免 Ctrl+Q 也觸發到這裡
             return
-        if self.paused:
+        if self.paused:                              # 目前停著 → 繼續
             self.paused = False
             self.log.log("RESUMED")
             self.logger.info("RESUMED (Q)")
             if self.state is State.MINING:
                 miner.init_mining_sequence()
-        elif self.state is State.NEEDS_HUMAN:
+        elif self.state is State.NEEDS_HUMAN:        # 人工介入後 → 繼續
             self.human_cleared = True
             self.logger.info("human cleared (Q) — 恢復挖礦")
+        else:                                        # 正在跑 → 暫停
+            self.paused = True
+            ic.key_up("w"); ic.mouse_up()
+            self.log.log("PAUSED")
+            self.logger.info("PAUSED (Q) — 再按 Q 繼續")
 
     def _quit(self):
-        self.logger.info("QUIT (%s)", cfg.hotkey_quit)
+        self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)
         self._running = False
 
 

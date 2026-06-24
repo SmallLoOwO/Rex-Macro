@@ -65,9 +65,9 @@ class Config:
     heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
 
     # 熱鍵（控制權）
-    hotkey_pause: str = "ctrl+q"                 # 中斷：放開所有按鍵，把控制權交還給你
-    hotkey_resume: str = "q"                     # 繼續：恢復自動執行（人工介入後也用這個恢復）
-    hotkey_quit: str = "f12"                     # 緊急停止並結束
+    hotkey_emergency_stop: str = "ctrl+q"        # 緊急停止（不結束程式）：放開所有按鍵，等 Q 重新啟動
+    hotkey_pause: str = "q"                      # 手動切換 暫停 ↔ 繼續（也用於緊急停止/人工介入後重啟）
+    hotkey_quit: str = "f12"                     # 真正結束程式
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
