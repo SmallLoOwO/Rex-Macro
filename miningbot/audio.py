@@ -5,6 +5,8 @@ def match_score(buffer: np.ndarray, reference: np.ndarray) -> float:
     """參考樣本在緩衝中的最大正規化交叉相關 (0..1)。"""
     b = buffer.astype(np.float64)
     r = reference.astype(np.float64)
+    if len(b) < len(r):                 # 緩衝比參考短 → 無法比對（參考應比偵測窗短）
+        return 0.0
     b -= b.mean()
     r -= r.mean()
     if np.linalg.norm(b) == 0 or np.linalg.norm(r) == 0:

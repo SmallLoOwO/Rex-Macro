@@ -5,7 +5,7 @@
 2. 安裝 Tesseract OCR：下載 UB-Mannheim build，安裝後記下路徑（預設 `C:\Program Files\Tesseract-OCR\tesseract.exe`），填入 `miningbot/config.py` 的 `tesseract_path`
 3. `pip install -r requirements.txt`
 4. 複製 `.env.example` 成 `.env`，填入 Discord token（Phase 2 用，可先留空）
-5. 把 chill 音檔轉成 `assets/chill_reference.wav`（見 assets/README.md）
+5. 把 chill 音檔轉成 wav：`python -m miningbot.convert_audio "你的chill.mp3"` → 產生 `assets/chill_reference.wav`
 6. 下載階級標記模板：`python -m miningbot.fetch_trackers`（高階級；`--all` 含低階級）
 7. 執行校準：`python -m miningbot.calibrate`
 8. 啟動：`python -m miningbot.main`

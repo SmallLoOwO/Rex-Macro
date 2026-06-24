@@ -2,9 +2,9 @@
 
 執行時需要的素材（皆由使用者準備；.wav/.png 已被 .gitignore 排除，不進版控）。
 
-- `chill_reference.wav`：chill boom 參考音。由使用者的 mp3 轉檔：
-  - 用 ffmpeg：`ffmpeg -i "Achillgoesdownyourspine.mp3.mpeg" -ac 1 -ar 48000 chill_reference.wav`
-  - 取最具特徵的 1~2 秒（boom 主體），避免前後靜音過長。
+- `chill_reference.wav`：chill boom 參考音。轉檔最簡單用內建工具：
+  - `python -m miningbot.convert_audio "你的chill.mp3"`（自動轉單聲道 48kHz，並裁出能量最強的 1 秒）
+  - 也可手動：`ffmpeg -i chill.mp3 -ac 1 -ar 48000 chill_reference.wav`（記得裁短到約 1 秒，要比 audio_window_seconds 小）
 - `markers/*.png`：各**階級**的 D2 掃描標記模板（採集時定位用）。每個階級一張圖。
   - **自動下載 wiki 圖**：`python -m miningbot.fetch_trackers`（高階級 Exotic 以上；加 `--all` 連低階級）→ 存到 `assets/markers/`。
   - 比對方式：**多模板 + 形狀/邊緣（忽略顏色）+ 多尺度**。所以填色（Normal/Ionized/Spectral）不影響，不同階級形狀也都能比中，還會回報是哪一級（log 裡看得到）。
