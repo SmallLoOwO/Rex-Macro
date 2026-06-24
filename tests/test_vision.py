@@ -58,3 +58,15 @@ def test_find_template_edges_missing_returns_none():
     template = _framed_box((200, 200, 200))
     scene = np.full((200, 200, 3), 30, np.uint8)  # 一片均勻、沒有任何形狀
     assert find_template_edges(scene, template, threshold=0.4) is None
+
+def test_find_template_edges_matches_when_scaled():
+    # 模板 40x40，場景裡是放大 1.5 倍的同形狀（顏色也不同）→ 提供對應 scale 要找得到
+    template = _framed_box((200, 200, 200))
+    big = cv2.resize(_framed_box((0, 0, 255)), None, fx=1.5, fy=1.5,
+                     interpolation=cv2.INTER_AREA)
+    scene = np.full((220, 220, 3), 30, np.uint8)
+    h, w = big.shape[:2]
+    scene[40:40 + h, 50:50 + w] = big
+    loc = find_template_edges(scene, template, threshold=0.4, scales=(1.5,))
+    assert loc is not None
+    assert abs(loc[0] - (50 + w // 2)) <= 5 and abs(loc[1] - (40 + h // 2)) <= 5

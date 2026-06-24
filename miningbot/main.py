@@ -179,9 +179,10 @@ class Bot:
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
         if cfg.marker_color_invariant:
-            # 標記填色每次都變 → 用形狀/邊緣比對，不看顏色
+            # 標記填色每次都變 → 用形狀/邊緣比對，不看顏色；多尺度容忍模板尺寸不一致
             marker = vision.find_template_edges(
-                frame, self._templates["marker"], cfg.marker_edge_threshold)
+                frame, self._templates["marker"], cfg.marker_edge_threshold,
+                cfg.marker_scales)
         else:
             marker = vision.find_template(frame, self._templates["marker"], threshold=0.7)
         step = harvester.next_harvest_step(marker, self.harvest, cfg)
