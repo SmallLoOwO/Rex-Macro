@@ -13,6 +13,7 @@ env/
 # 執行時產生
 snap.png
 *.log
+logs/
 
 # 大型/個人資產（音檔、模板截圖另行管理，避免誤入版控）
 assets/*.wav

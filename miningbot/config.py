@@ -58,10 +58,16 @@ class Config:
     )
     found_keywords: tuple = ("has found", "found a")
 
-    # 熱鍵
-    hotkey_pause: str = "f8"
-    hotkey_resume_human: str = "f9"
-    hotkey_quit: str = "f12"
+    # 記錄 / 診斷
+    log_dir: str = "logs"
+    log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）
+    save_snapshots: bool = True                  # 關鍵事件（chill/失敗/卡住/成功）自動存畫面截圖以利除錯
+    heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
+
+    # 熱鍵（控制權）
+    hotkey_pause: str = "ctrl+q"                 # 中斷：放開所有按鍵，把控制權交還給你
+    hotkey_resume: str = "q"                     # 繼續：恢復自動執行（人工介入後也用這個恢復）
+    hotkey_quit: str = "f12"                     # 緊急停止並結束
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
