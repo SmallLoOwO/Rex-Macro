@@ -130,14 +130,19 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        marker = vision.find_template(frame, self._templates["marker"], threshold=0.7)
+        if cfg.marker_color_invariant:
+            # 標記填色每次都變 → 用形狀/邊緣比對，不看顏色
+            marker = vision.find_template_edges(
+                frame, self._templates["marker"], cfg.marker_edge_threshold)
+        else:
+            marker = vision.find_template(frame, self._templates["marker"], threshold=0.7)
         step = harvester.next_harvest_step(marker, self.harvest, cfg)
         if step.action == "HUMAN":
             self.state = State.NEEDS_HUMAN; self._on_enter(State.NEEDS_HUMAN); return
         if step.action == "ROTATE_LEFT":
-            ic.rotate_left(); self.harvest.rotations += 1
+            ic.rotate_left(); self.harvest.rotations += 1; self.harvest.net_rotations -= 1
         elif step.action == "ROTATE_RIGHT":
-            ic.rotate_right(); self.harvest.rotations += 1
+            ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
         elif step.action == "MOUSE_AIM":
             # dx/dy 是螢幕像素偏移；用 gain 縮放成滑鼠相對位移（校準時調 mouse_aim_gain）
             ic.mouse_move_rel(int(step.dx * cfg.mouse_aim_gain),
@@ -146,6 +151,7 @@ class Bot:
             harvester.fire_d3()
             if self._verify_success(frame):
                 self.log.log("HARVEST_SUCCESS")
+                harvester.restore_view(self.harvest.net_rotations)  # 轉回採集前的原角度
                 self.state = State.MINING; miner.init_mining_sequence()
 
     def _verify_success(self, frame) -> bool:
@@ -155,6 +161,16 @@ class Bot:
 
     def _toggle_pause(self):
         self.paused = not self.paused
+        if self.paused:
+            # 暫停：放開所有按鍵，把控制權交還給你
+            ic.key_up("w"); ic.mouse_up()
+            self.log.log("PAUSED")
+            print("[暫停] 已放開所有按鍵。再按一次熱鍵恢復。")
+        else:
+            self.log.log("RESUMED")
+            print("[恢復] 繼續執行。")
+            if self.state is State.MINING:
+                miner.init_mining_sequence()  # 重新握住 W + 左鍵
 
     def _clear_human(self):
         self.human_cleared = True

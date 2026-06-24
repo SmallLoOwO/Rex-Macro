@@ -7,6 +7,9 @@ __pycache__/
 venv/
 env/
 
+# 機密（Discord token 等）
+.env
+
 # 執行時產生
 snap.png
 *.log

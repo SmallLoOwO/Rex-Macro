@@ -1,4 +1,11 @@
+import os
 from dataclasses import dataclass, field
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # 從專案根目錄的 .env 載入（放 Discord token 等機密）
+except ImportError:
+    pass
 
 @dataclass
 class Region:
@@ -30,6 +37,8 @@ class Config:
     audio_window_seconds: float = 1.5
 
     # 採集
+    marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
+    marker_edge_threshold: float = 0.45          # 邊緣比對門檻（校準時調）
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
@@ -54,7 +63,9 @@ class Config:
     hotkey_resume_human: str = "f9"
     hotkey_quit: str = "f12"
 
-    # Discord（Phase 2 預留）
+    # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
+    discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
+    discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
 
 DEFAULT = Config()

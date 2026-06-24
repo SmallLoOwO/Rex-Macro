@@ -21,6 +21,21 @@ def find_template(scene_bgr, template_bgr, threshold: float):
 def template_present(scene_bgr, template_bgr, threshold: float) -> bool:
     return find_template(scene_bgr, template_bgr, threshold) is not None
 
+def find_template_edges(scene_bgr, template_bgr, threshold: float):
+    """顏色無關的模板定位：先用 Canny 取邊緣（只看形狀）再比對。
+
+    適用於目標填色每次都不同、但外框/形狀固定的情況（例如掃描後的礦物標記）。
+    回中心座標 (x, y)，找不到回 None。threshold 為邊緣相關度（0..1，越高越嚴）。
+    """
+    scene_e = cv2.Canny(cv2.cvtColor(scene_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
+    tmpl_e = cv2.Canny(cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
+    res = cv2.matchTemplate(scene_e, tmpl_e, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    if not np.isfinite(max_val) or max_val < threshold:
+        return None
+    th, tw = template_bgr.shape[:2]
+    return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+
 def load_template(path: str):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
