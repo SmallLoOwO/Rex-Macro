@@ -21,6 +21,25 @@ def find_template(scene_bgr, template_bgr, threshold: float):
 def template_present(scene_bgr, template_bgr, threshold: float) -> bool:
     return find_template(scene_bgr, template_bgr, threshold) is not None
 
+def _canny(img_bgr):
+    return cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
+
+def _best_edge_match(scene_e, sh, sw, template_bgr, scales):
+    """在多尺度下找模板邊緣的最佳匹配，回 (best_val, best_center) 或 (-1, None)。"""
+    best_val, best_loc = -1.0, None
+    for s in scales:
+        t = template_bgr if s == 1.0 else cv2.resize(
+            template_bgr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        th, tw = t.shape[:2]
+        if th > sh or tw > sw or th < 4 or tw < 4:
+            continue                              # 模板比畫面大、或縮到太小 → 跳過
+        res = cv2.matchTemplate(scene_e, _canny(t), cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if np.isfinite(max_val) and max_val > best_val:
+            best_val = max_val
+            best_loc = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+    return best_val, best_loc
+
 def find_template_edges(scene_bgr, template_bgr, threshold: float, scales=(1.0,)):
     """顏色無關 + 多尺度的模板定位：先用 Canny 取邊緣（只看形狀）再比對。
 
@@ -29,28 +48,27 @@ def find_template_edges(scene_bgr, template_bgr, threshold: float, scales=(1.0,)
     的尺寸跟畫面上不一致也能找到（模板比對本身不具縮放不變性）。
     回中心座標 (x, y)，找不到回 None。threshold 為邊緣相關度（0..1，越高越嚴）。
     """
-    scene_gray = cv2.cvtColor(scene_bgr, cv2.COLOR_BGR2GRAY)
-    scene_e = cv2.Canny(scene_gray, 50, 150)
+    scene_e = _canny(scene_bgr)
     sh, sw = scene_e.shape[:2]
-    best_loc = None
-    best_val = -1.0
-    for s in scales:
-        if s == 1.0:
-            t = template_bgr
-        else:
-            t = cv2.resize(template_bgr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        th, tw = t.shape[:2]
-        if th > sh or tw > sw or th < 4 or tw < 4:
-            continue                              # 模板比畫面大、或縮到太小 → 跳過
-        tmpl_e = cv2.Canny(cv2.cvtColor(t, cv2.COLOR_BGR2GRAY), 50, 150)
-        res = cv2.matchTemplate(scene_e, tmpl_e, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        if np.isfinite(max_val) and max_val > best_val:
-            best_val = max_val
-            best_loc = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+    val, loc = _best_edge_match(scene_e, sh, sw, template_bgr, scales)
+    return loc if (loc is not None and val >= threshold) else None
+
+def find_best_marker(scene_bgr, templates: dict, threshold: float, scales=(1.0,)):
+    """在多個標記模板（不同階級）中找最佳匹配（顏色無關 + 多尺度）。
+
+    templates: {名稱: BGR 模板}。回 (名稱, (x, y)) 或 None。
+    名稱通常是階級（exotic/mythic…），可順便知道掃到哪一級。
+    """
+    scene_e = _canny(scene_bgr)
+    sh, sw = scene_e.shape[:2]
+    best_name, best_val, best_loc = None, -1.0, None
+    for name, tmpl in templates.items():
+        val, loc = _best_edge_match(scene_e, sh, sw, tmpl, scales)
+        if loc is not None and val > best_val:
+            best_name, best_val, best_loc = name, val, loc
     if best_loc is None or best_val < threshold:
         return None
-    return best_loc
+    return (best_name, best_loc)
 
 def load_template(path: str):
     img = cv2.imread(path, cv2.IMREAD_COLOR)

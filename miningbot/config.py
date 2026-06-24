@@ -40,6 +40,7 @@ class Config:
     marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
     marker_edge_threshold: float = 0.45          # 邊緣比對門檻（校準時調）
     marker_scales: tuple = (0.6, 0.8, 1.0, 1.2, 1.5)  # 多尺度比對：模板（含 wiki 圖）尺寸對不準時自動試縮放
+    marker_dir: str = "assets/markers"           # 多階級標記模板資料夾（每個階級一張 png；用 fetch_trackers 下載）
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下

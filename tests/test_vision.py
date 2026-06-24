@@ -70,3 +70,26 @@ def test_find_template_edges_matches_when_scaled():
     loc = find_template_edges(scene, template, threshold=0.4, scales=(1.5,))
     assert loc is not None
     assert abs(loc[0] - (50 + w // 2)) <= 5 and abs(loc[1] - (40 + h // 2)) <= 5
+
+def _ring(color):
+    img = np.full((40, 40, 3), 30, np.uint8)
+    cv2.circle(img, (20, 20), 12, color, 2)
+    return img
+
+def test_find_best_marker_picks_matching_shape_and_reports_name():
+    from miningbot.vision import find_best_marker
+    # 兩個不同形狀模板：方框 vs 圓環。場景裡放的是圓環（顏色不同）→ 要選到 "circle"
+    templates = {"box": _framed_box((200, 200, 200)), "circle": _ring((200, 200, 200))}
+    scene = np.full((200, 200, 3), 30, np.uint8)
+    scene[60:100, 90:130] = _ring((0, 0, 255))
+    result = find_best_marker(scene, templates, threshold=0.3)
+    assert result is not None
+    name, loc = result
+    assert name == "circle"
+    assert abs(loc[0] - 110) <= 5 and abs(loc[1] - 80) <= 5
+
+def test_find_best_marker_none_when_no_shape():
+    from miningbot.vision import find_best_marker
+    templates = {"box": _framed_box((200, 200, 200)), "circle": _ring((200, 200, 200))}
+    scene = np.full((200, 200, 3), 30, np.uint8)  # 沒有任何形狀
+    assert find_best_marker(scene, templates, threshold=0.3) is None

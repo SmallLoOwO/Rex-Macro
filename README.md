@@ -6,8 +6,9 @@
 3. `pip install -r requirements.txt`
 4. 複製 `.env.example` 成 `.env`，填入 Discord token（Phase 2 用，可先留空）
 5. 把 chill 音檔轉成 `assets/chill_reference.wav`（見 assets/README.md）
-6. 執行校準：`python -m miningbot.calibrate`
-7. 啟動：`python -m miningbot.main`
+6. 下載階級標記模板：`python -m miningbot.fetch_trackers`（高階級；`--all` 含低階級）
+7. 執行校準：`python -m miningbot.calibrate`
+8. 啟動：`python -m miningbot.main`
 
 ## 熱鍵
 - **Ctrl+Q**：緊急停止（**不結束程式**）— 放開所有按鍵、停在原地，等你按 Q 重新啟動

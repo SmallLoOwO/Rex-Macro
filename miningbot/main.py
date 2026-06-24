@@ -1,3 +1,4 @@
+import os
 import time
 import winsound
 import keyboard
@@ -27,12 +28,26 @@ class Bot:
         self._last_progress = time.time()
         self._stuck_notified = False
         self._last_heartbeat = time.time()
-        # 模板只在啟動時讀一次（避免每幀讀檔）
+        # 事件模板只在啟動時讀一次（避免每幀讀檔）
         self._templates = {
             name: vision.load_template(f"assets/{name}.png")
-            for name in ("marker", "boost_expired", "activity_event",
+            for name in ("boost_expired", "activity_event",
                          "scan_event", "cave_event")
         }
+        # 多階級標記模板（assets/markers/*.png；用 fetch_trackers 下載）
+        self._marker_templates = self._load_marker_templates()
+
+    def _load_marker_templates(self) -> dict:
+        import glob
+        templates = {}
+        for p in sorted(glob.glob(os.path.join(cfg.marker_dir, "*.png"))):
+            name = os.path.splitext(os.path.basename(p))[0]
+            templates[name] = vision.load_template(p)
+        if not templates:                            # 後備：單一 assets/marker.png
+            templates["marker"] = vision.load_template("assets/marker.png")
+        self.logger.info("loaded %d marker templates: %s",
+                         len(templates), ", ".join(templates))
+        return templates
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -178,13 +193,14 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        if cfg.marker_color_invariant:
-            # 標記填色每次都變 → 用形狀/邊緣比對，不看顏色；多尺度容忍模板尺寸不一致
-            marker = vision.find_template_edges(
-                frame, self._templates["marker"], cfg.marker_edge_threshold,
-                cfg.marker_scales)
+        # 多階級標記：形狀/邊緣比對（忽略顏色）+ 多尺度 + 多模板，順便知道是哪一級
+        result = vision.find_best_marker(
+            frame, self._marker_templates, cfg.marker_edge_threshold, cfg.marker_scales)
+        if result is not None:
+            tier, marker = result
+            self.logger.debug("marker tier=%s at %s", tier, marker)
         else:
-            marker = vision.find_template(frame, self._templates["marker"], threshold=0.7)
+            marker = None
         step = harvester.next_harvest_step(marker, self.harvest, cfg)
         self.logger.debug("harvest marker=%s step=%s rot=%d net=%d t=%.1f",
                           marker, step.action, self.harvest.rotations,
