@@ -28,12 +28,15 @@ class Bot:
         self._last_progress = time.time()
         self._stuck_notified = False
         self._last_heartbeat = time.time()
-        # 事件模板只在啟動時讀一次（避免每幀讀檔）
-        self._templates = {
-            name: vision.load_template(f"assets/{name}.png")
-            for name in ("boost_expired", "activity_event",
-                         "scan_event", "cave_event")
-        }
+        # 事件模板只在啟動時讀一次（避免每幀讀檔）。缺圖 = 該事件偵測停用，不會擋啟動。
+        self._templates = {}
+        for name in ("boost_expired", "activity_event", "scan_event", "cave_event"):
+            p = f"assets/{name}.png"
+            if os.path.exists(p):
+                self._templates[name] = vision.load_template(p)
+            else:
+                self._templates[name] = None
+                self.logger.warning("缺少模板 %s — 該事件偵測停用，之後補圖即可", p)
         # 多階級標記模板（assets/markers/*.png；用 fetch_trackers 下載）
         self._marker_templates = self._load_marker_templates()
 
@@ -43,11 +46,20 @@ class Bot:
         for p in sorted(glob.glob(os.path.join(cfg.marker_dir, "*.png"))):
             name = os.path.splitext(os.path.basename(p))[0]
             templates[name] = vision.load_template(p)
-        if not templates:                            # 後備：單一 assets/marker.png
+        if not templates and os.path.exists("assets/marker.png"):
             templates["marker"] = vision.load_template("assets/marker.png")
-        self.logger.info("loaded %d marker templates: %s",
-                         len(templates), ", ".join(templates))
+        if not templates:                            # 完全沒有標記模板 → 採集會找不到標記（不擋啟動）
+            self.logger.warning("沒有任何標記模板（%s 為空且無 assets/marker.png）— 採集無法定位",
+                                cfg.marker_dir)
+        else:
+            self.logger.info("loaded %d marker templates: %s",
+                             len(templates), ", ".join(templates))
         return templates
+
+    def _event_present(self, region_img, name: str) -> bool:
+        """模板存在才比對；缺圖時該事件視為未發生。"""
+        t = self._templates.get(name)
+        return t is not None and vision.template_present(region_img, t, threshold=0.7)
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -146,17 +158,13 @@ class Bot:
 
     def _tick_mining(self, frame):
         flags = miner.EventFlags(
-            boost_expired=vision.template_present(
-                capture.crop(frame, cfg.boost_indicator_region),
-                self._templates["boost_expired"], threshold=0.7),
-            activity_event=vision.template_present(
-                capture.crop(frame, cfg.chill_text_region),
-                self._templates["activity_event"], threshold=0.7),
-            scan_event=vision.template_present(
-                capture.crop(frame, cfg.boost_indicator_region),
-                self._templates["scan_event"], threshold=0.7),
-            cave_event=vision.template_present(
-                frame, self._templates["cave_event"], threshold=0.7),
+            boost_expired=self._event_present(
+                capture.crop(frame, cfg.boost_indicator_region), "boost_expired"),
+            activity_event=self._event_present(
+                capture.crop(frame, cfg.chill_text_region), "activity_event"),
+            scan_event=self._event_present(
+                capture.crop(frame, cfg.boost_indicator_region), "scan_event"),
+            cave_event=self._event_present(frame, "cave_event"),
             window_unfocused=not vision.pixel_matches(
                 frame, cfg.window_focus_pixel, cfg.window_focus_color, tol=12),
         )

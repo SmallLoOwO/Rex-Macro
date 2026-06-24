@@ -5,6 +5,7 @@
 """
 import logging
 import os
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -28,7 +29,11 @@ def setup_logging(log_dir: str, level: str) -> logging.Logger:
     fh = RotatingFileHandler(os.path.join(log_dir, "miningbot.log"),
                              maxBytes=2_000_000, backupCount=5, encoding="utf-8")
     fh.setFormatter(fmt)
-    ch = logging.StreamHandler()
+    try:                                     # 讓主控台也能正確顯示中文（Windows 預設非 UTF-8）
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(fmt)
     logger.addHandler(fh)
     logger.addHandler(ch)
