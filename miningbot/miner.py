@@ -34,8 +34,9 @@ def use_boost():           # boost 消失時：放開左鍵→D5→點擊→回�
     ic.mouse_up(); ic.key_press("5"); ic.mouse_click()
     ic.key_press("1"); ic.key_down("w"); ic.mouse_down()
 
-def use_activity():        # D4：放開左鍵→D4→點擊→D1→續挖
-    ic.mouse_up(); ic.key_press("4"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()
+def use_activity():        # D4 右鍵刷新事件：放開左鍵→D4→右鍵→回 D1+按住 W+左鍵 續挖
+    ic.mouse_up(); ic.key_press("4"); ic.mouse_click(button="right")
+    ic.key_press("1"); ic.key_down("w"); ic.mouse_down()
 
 def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→續挖（對照 boost+scan .mcr）
     ic.mouse_up(); ic.key_press("2"); ic.mouse_click(); ic.key_press("z")

@@ -28,6 +28,10 @@ class Config:
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
+
+    # D4 活動：定時右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
+    activity_reroll_enabled: bool = True
+    activity_reroll_interval_s: float = 30.0     # 每隔多久刷新一次（抓 D4 冷卻附近）
     window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點
     window_focus_color: int = 0x2B2B2B           # 佔位，校準時量測
     slot_pixel: tuple = (1011, 845)

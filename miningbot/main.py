@@ -29,16 +29,16 @@ class Bot:
         self._stuck_notified = False
         self._last_heartbeat = time.time()
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
-        # 事件模板只在啟動時讀一次（避免每幀讀檔）。缺圖 = 該事件偵測停用，不會擋啟動。
-        # boost_active = boost 生效中的瓶子圖；判斷邏輯是「瓶子消失才重上」（見 _boost_needs_refresh）
+        self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
+        # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
+        # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
-        for name in ("boost_active", "activity_event", "scan_event", "cave_event"):
-            p = f"assets/{name}.png"
-            if os.path.exists(p):
-                self._templates[name] = vision.load_template(p)
-            else:
-                self._templates[name] = None
-                self.logger.warning("缺少模板 %s — 該事件偵測停用，之後補圖即可", p)
+        bp = "assets/boost_active.png"
+        if os.path.exists(bp):
+            self._templates["boost_active"] = vision.load_template(bp)
+        else:
+            self._templates["boost_active"] = None
+            self.logger.warning("缺少模板 %s — boost 自動重上停用，之後補圖即可", bp)
         # 多階級標記模板（assets/markers/*.png；用 fetch_trackers 下載）
         self._marker_templates = self._load_marker_templates()
 
@@ -58,11 +58,6 @@ class Bot:
                              len(templates), ", ".join(templates))
         return templates
 
-    def _event_present(self, region_img, name: str) -> bool:
-        """模板存在才比對；缺圖時該事件視為未發生。"""
-        t = self._templates.get(name)
-        return t is not None and vision.template_present(region_img, t, threshold=0.7)
-
     def _boost_needs_refresh(self, frame) -> bool:
         """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
 
@@ -78,6 +73,15 @@ class Bot:
         if present:
             return False
         return (time.time() - self._last_boost) > cfg.boost_cooldown_s
+
+    def _activity_reroll_due(self) -> bool:
+        """D4 活動：每隔 activity_reroll_interval_s 右鍵刷新一次事件（不斷換事件製造機會）。
+
+        在冷卻內按 D4 不會生效（只是 no-op），所以用定時即可；間隔抓 D4 冷卻附近。
+        """
+        if not cfg.activity_reroll_enabled:
+            return False
+        return (time.time() - self._last_activity) > cfg.activity_reroll_interval_s
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -177,11 +181,9 @@ class Bot:
     def _tick_mining(self, frame):
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
-            activity_event=self._event_present(
-                capture.crop(frame, cfg.chill_text_region), "activity_event"),
-            scan_event=self._event_present(
-                capture.crop(frame, cfg.boost_indicator_region), "scan_event"),
-            cave_event=self._event_present(frame, "cave_event"),
+            activity_event=self._activity_reroll_due(),   # D4：定時右鍵刷新事件
+            scan_event=False,                             # D2 只在採集流程用
+            cave_event=False,                             # Z 雷達擱置
             window_unfocused=not vision.pixel_matches(
                 frame, cfg.window_focus_pixel, cfg.window_focus_color, tol=12),
         )
@@ -189,19 +191,14 @@ class Bot:
         if action == "REFOCUS":
             self.logger.info("mining: window unfocused -> refocus")
             miner.init_mining_sequence()
-        elif action == "CAVE":
-            self.logger.info("mining: cave event -> handle_cave")
-            miner.handle_cave()
-        elif action == "SCAN":
-            self.logger.info("mining: scan event")
-            miner.use_scan()
         elif action == "USE_D5":
             self.logger.info("mining: boost 消失 -> 重上 D5")
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
-            self.logger.info("mining: activity event -> D4")
+            self.logger.info("mining: 定時刷新事件 -> D4 右鍵")
             miner.use_activity()
+            self._last_activity = time.time()
 
         # 卡住偵測：連續無畫面變化超過 stuck_timeout_s
         if self._prev_frame is not None:
