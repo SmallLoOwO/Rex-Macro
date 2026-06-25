@@ -30,6 +30,10 @@ class Bot:
         self._last_heartbeat = time.time()
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
+        # 狀態小窗用的即時資訊
+        self._started = time.time()
+        self.last_action = "—"
+        self.stats = {"boosts": 0, "rerolls": 0, "rares": 0, "stuck": 0}
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -131,20 +135,24 @@ class Bot:
         self.logger.info("bot started (stop=%s pause=%s quit=%s, log_level=%s)",
                          cfg.hotkey_emergency_stop, cfg.hotkey_pause, cfg.hotkey_quit, cfg.log_level)
         miner.init_mining_sequence()
-        while self._running:
-            if self.paused:
-                time.sleep(0.1); continue
-            frame = capture.grab()
-            obs = self.observe(frame)
-            new_state = decide_transition(self.state, obs)
-            if new_state != self.state:
-                self.log.log("STATE_CHANGE", from_=self.state.value, to=new_state.value)
-                self._on_enter(new_state, frame)
-            self.state = new_state
-            self._tick(frame)
-            self._heartbeat()
-            time.sleep(0.05)
-        self.logger.info("bot stopped")
+        try:
+            while self._running:
+                if self.paused:
+                    time.sleep(0.1); continue
+                frame = capture.grab()
+                obs = self.observe(frame)
+                new_state = decide_transition(self.state, obs)
+                if new_state != self.state:
+                    self.log.log("STATE_CHANGE", from_=self.state.value, to=new_state.value)
+                    self._on_enter(new_state, frame)
+                self.state = new_state
+                self._tick(frame)
+                self._heartbeat()
+                time.sleep(0.05)
+        finally:
+            self._running = False
+            ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
+            self.logger.info("bot stopped")
 
     def _heartbeat(self):
         """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。"""
@@ -190,26 +198,35 @@ class Bot:
         action = miner.dispatch_event(flags)
         if action == "REFOCUS":
             self.logger.info("mining: window unfocused -> refocus")
+            self.last_action = "重新聚焦"
             miner.init_mining_sequence()
         elif action == "USE_D5":
             self.logger.info("mining: boost 消失 -> 重上 D5")
+            self.last_action = "boost 重上(D5)"
+            self.stats["boosts"] += 1
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
             self.logger.info("mining: 定時刷新事件 -> D4 右鍵")
+            self.last_action = "刷新事件(D4)"
+            self.stats["rerolls"] += 1
             miner.use_activity()
             self._last_activity = time.time()
+        elif action is None:
+            self.last_action = "挖礦中"
 
-        # 卡住偵測：連續無畫面變化超過 stuck_timeout_s
+        # 卡住偵測：用中央遊戲區判斷（避開左下狀態小窗）
+        cur = capture.crop(frame, cfg.stuck_region)
         if self._prev_frame is not None:
-            diff = vision.frame_mean_diff(frame, self._prev_frame)
+            diff = vision.frame_mean_diff(cur, self._prev_frame)
             if diff >= cfg.stuck_frame_diff_threshold or action is not None:
                 self._last_progress = time.time()
                 self._stuck_notified = False
-        self._prev_frame = frame
+        self._prev_frame = cur
         if (not self._stuck_notified
                 and time.time() - self._last_progress > cfg.stuck_timeout_s):
             self.log.log("STUCK", reason=f"{cfg.stuck_timeout_s}s 無進度")
+            self.stats["stuck"] += 1
             self._snapshot(frame, "stuck")
             self._alert("腳本可能卡住了")
             self._stuck_notified = True
@@ -245,6 +262,8 @@ class Bot:
             harvester.fire_d3()
             if self._verify_success(frame):
                 self.log.log("HARVEST_SUCCESS")
+                self.stats["rares"] += 1
+                self.last_action = "採集成功！"
                 self._snapshot(frame, "harvest_success")
                 harvester.restore_view(self.harvest.net_rotations)  # 轉回採集前的原角度
                 self.state = State.MINING
@@ -292,7 +311,18 @@ class Bot:
 
 
 def main():
-    Bot().run()
+    bot = Bot()
+    if not cfg.hud_enabled:
+        bot.run()
+        return
+    # 機器人跑背景執行緒，狀態小窗在主執行緒（tkinter 需在主執行緒）
+    import threading
+    from .status_hud import StatusHUD
+    threading.Thread(target=bot.run, daemon=True).start()
+    try:
+        StatusHUD(bot, cfg.hud_x, cfg.hud_y).run()
+    finally:
+        bot._running = False
 
 
 if __name__ == "__main__":

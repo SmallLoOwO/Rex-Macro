@@ -56,9 +56,15 @@ class Config:
     harvest_verify_timeout_s: float = 6.0
     max_harvest_attempts: int = 3
 
-    # 卡住
+    # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
     stuck_timeout_s: float = 60.0
     stuck_frame_diff_threshold: float = 2.0      # 平均像素差低於此視為無變化
+    stuck_region: Region = field(default_factory=lambda: Region(560, 200, 800, 520))
+
+    # 狀態小窗（置頂顯示機器人在做什麼；放左下角避開偵測區，採集時自動隱藏）
+    hud_enabled: bool = True
+    hud_x: int = 12
+    hud_y: int = 905
 
     # OCR
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
