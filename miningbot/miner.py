@@ -30,8 +30,9 @@ def init_mining_sequence():
     ic.key_press("shift"); ic.key_press("shift")
     ic.key_down("w"); ic.mouse_down()
 
-def use_boost():           # D5：放開左鍵→D5→點擊→D1→續挖
-    ic.mouse_up(); ic.key_press("5"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()
+def use_boost():           # boost 消失時：放開左鍵→D5→點擊→回到 D1+按住 W+左鍵 續挖
+    ic.mouse_up(); ic.key_press("5"); ic.mouse_click()
+    ic.key_press("1"); ic.key_down("w"); ic.mouse_down()
 
 def use_activity():        # D4：放開左鍵→D4→點擊→D1→續挖
     ic.mouse_up(); ic.key_press("4"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()

@@ -31,7 +31,7 @@ def _click_center():
 
 # event -> (輸出檔名, 觸發函式 or None)
 TRIGGERS = {
-    "boost":    ("boost_expired",   lambda: (ic.key_press("5"), _click_center())),
+    "boost":    ("boost_active",    lambda: (ic.key_press("5"), _click_center())),
     "activity": ("activity_event",  lambda: (ic.key_press("4"), _click_center())),
     "scan":     ("scan_event",      lambda: (ic.key_press("2"), _click_center())),
     "cave":     ("cave_event",      None),   # 洞穴是場景事件，無法用按鍵觸發

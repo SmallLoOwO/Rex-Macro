@@ -25,6 +25,7 @@ class Config:
     chill_text_region: Region = field(default_factory=lambda: Region(660, 20, 600, 60))
     chat_region: Region = field(default_factory=lambda: Region(0, 90, 440, 260))
     boost_indicator_region: Region = field(default_factory=lambda: Region(1380, 940, 430, 90))
+    boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點
     window_focus_color: int = 0x2B2B2B           # 佔位，校準時量測
     slot_pixel: tuple = (1011, 845)

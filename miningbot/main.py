@@ -28,9 +28,11 @@ class Bot:
         self._last_progress = time.time()
         self._stuck_notified = False
         self._last_heartbeat = time.time()
+        self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         # 事件模板只在啟動時讀一次（避免每幀讀檔）。缺圖 = 該事件偵測停用，不會擋啟動。
+        # boost_active = boost 生效中的瓶子圖；判斷邏輯是「瓶子消失才重上」（見 _boost_needs_refresh）
         self._templates = {}
-        for name in ("boost_expired", "activity_event", "scan_event", "cave_event"):
+        for name in ("boost_active", "activity_event", "scan_event", "cave_event"):
             p = f"assets/{name}.png"
             if os.path.exists(p):
                 self._templates[name] = vision.load_template(p)
@@ -60,6 +62,20 @@ class Bot:
         """模板存在才比對；缺圖時該事件視為未發生。"""
         t = self._templates.get(name)
         return t is not None and vision.template_present(region_img, t, threshold=0.7)
+
+    def _boost_needs_refresh(self, frame) -> bool:
+        """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
+
+        無模板時停用；剛按過 D5（冷卻內）不重按，避免瓶子出現前狂按。
+        """
+        t = self._templates.get("boost_active")
+        if t is None:
+            return False
+        present = vision.template_present(
+            capture.crop(frame, cfg.boost_indicator_region), t, threshold=0.7)
+        if present:
+            return False
+        return (time.time() - self._last_boost) > cfg.boost_cooldown_s
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -158,8 +174,7 @@ class Bot:
 
     def _tick_mining(self, frame):
         flags = miner.EventFlags(
-            boost_expired=self._event_present(
-                capture.crop(frame, cfg.boost_indicator_region), "boost_expired"),
+            boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._event_present(
                 capture.crop(frame, cfg.chill_text_region), "activity_event"),
             scan_event=self._event_present(
@@ -179,8 +194,9 @@ class Bot:
             self.logger.info("mining: scan event")
             miner.use_scan()
         elif action == "USE_D5":
-            self.logger.info("mining: boost expired -> D5")
+            self.logger.info("mining: boost 消失 -> 重上 D5")
             miner.use_boost()
+            self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
             self.logger.info("mining: activity event -> D4")
             miner.use_activity()
