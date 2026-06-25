@@ -44,7 +44,9 @@ def restore_actions(net_rotations: int) -> list:
     return []
 
 def start_scan():
-    ic.key_up("w"); ic.mouse_up(); ic.key_press("2")  # 停挖 + D2 掃描
+    ic.key_up("w"); ic.mouse_up()
+    ic.center_crosshair()                  # 瞄準前先把準心置中
+    ic.key_press("2")                      # D2 掃描
 
 def fire_d3():
     ic.key_press("3")

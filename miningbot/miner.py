@@ -27,7 +27,7 @@ def init_mining_sequence():
     """移植原巨集初始化：放開狀態→調視角→雙 Shift→挖礦。"""
     ic.key_up("w"); ic.mouse_up()
     ic.rotate_right(); ic.rotate_left()
-    ic.key_press("shift"); ic.key_press("shift")
+    ic.center_crosshair()                  # 連按兩次 Shift：準心置中
     ic.key_down("w"); ic.mouse_down()
 
 def use_boost():           # boost 消失時：放開左鍵→D5→點擊→回到 D1+按住 W+左鍵 續挖

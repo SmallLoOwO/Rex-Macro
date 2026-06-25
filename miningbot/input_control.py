@@ -25,6 +25,10 @@ def mouse_click(button: str = "left"):
 def mouse_move_rel(dx: int, dy: int):
     pydirectinput.moveRel(dx, dy, relative=True)
 
+# 連按兩次 Shift = 把滑鼠準心對準畫面中心點（瞄準前必做，偏移計算才正確）
+def center_crosshair():
+    key_press("shift"); key_press("shift")
+
 # 視角轉動：'.' 向右 45°、',' 向左 45°（對應原巨集 KeyCode190/188）
 def rotate_right():
     key_press(".")

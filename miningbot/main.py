@@ -237,7 +237,8 @@ class Bot:
         elif step.action == "ROTATE_RIGHT":
             ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
         elif step.action == "MOUSE_AIM":
-            # dx/dy 是螢幕像素偏移；用 gain 縮放成滑鼠相對位移（校準時調 mouse_aim_gain）
+            # 先把準心置中（連按兩次 Shift），偏移才是相對中心；再用 gain 縮放成滑鼠位移
+            ic.center_crosshair()
             ic.mouse_move_rel(int(step.dx * cfg.mouse_aim_gain),
                               int(step.dy * cfg.mouse_aim_gain))
         elif step.action == "FIRE_D3":
