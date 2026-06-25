@@ -24,7 +24,9 @@ class Config:
     # 偵測區域（視窗內相對座標，校準後覆寫）
     chill_text_region: Region = field(default_factory=lambda: Region(660, 20, 600, 60))
     chat_region: Region = field(default_factory=lambda: Region(0, 90, 440, 260))
-    boost_indicator_region: Region = field(default_factory=lambda: Region(1380, 940, 430, 90))
+    # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
+    boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
+    boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點
     window_focus_color: int = 0x2B2B2B           # 佔位，校準時量測

@@ -71,8 +71,10 @@ class Bot:
         t = self._templates.get("boost_active")
         if t is None:
             return False
-        present = vision.template_present(
-            capture.crop(frame, cfg.boost_indicator_region), t, threshold=0.7)
+        # 在整條效果列裡用「形狀/邊緣 + 多尺度」找瓶子（忽略顏色與會變的數字、容忍疊加位移）
+        present = vision.find_template_edges(
+            capture.crop(frame, cfg.boost_indicator_region), t,
+            cfg.boost_edge_threshold, cfg.marker_scales) is not None
         if present:
             return False
         return (time.time() - self._last_boost) > cfg.boost_cooldown_s
