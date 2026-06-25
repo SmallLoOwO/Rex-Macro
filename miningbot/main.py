@@ -22,6 +22,13 @@ class Bot:
         ref, sr = audio.load_reference(cfg.chill_audio_path)
         # 用音檔實際的取樣率，避免 WAV 非 48kHz 時視窗長度不符
         self.listener = audio.ChillListener(ref, sr, cfg.audio_window_seconds)
+        # 啟動喇叭 loopback 擷取，持續餵音訊給 listener（chill 偵測的核心）
+        self._audio_cap = audio.LoopbackCapture(self.listener.feed)
+        try:
+            self._audio_cap.start()
+            self.logger.info("audio loopback capture started (ref sr=%d)", sr)
+        except Exception as e:
+            self.logger.error("音訊擷取啟動失敗，chill 偵測停用: %s", e)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
         self._prev_frame = None
@@ -112,16 +119,19 @@ class Bot:
         chill_audio = score >= cfg.audio_match_threshold
         chill_text = False
         if chill_audio:
-            region = capture.crop(frame, cfg.chill_text_region)
-            text = ocr.read_text(region, cfg.tesseract_path).strip()
-            chill_text = ocr.contains_any(text, cfg.chill_phrases)
-            if chill_text:
-                self.logger.info("chill CONFIRMED (audio=%.2f text=%r)", score, text)
+            if not cfg.chill_require_ocr:
+                chill_text = True                    # 只靠音訊（OCR 不穩/視窗化）
+                self.logger.info("chill 觸發（音訊 %.2f，未要求 OCR 確認）", score)
             else:
-                # 可疑：音訊觸發但 OCR 沒確認 → 最常見的誤判點，記 WARNING + 存圖
-                self.logger.warning("audio triggered (%.2f) but text NOT confirmed: %r",
-                                    score, text)
-                self._snapshot(frame, "audio_no_text")
+                region = capture.crop(frame, cfg.chill_text_region)
+                text = ocr.read_text(region, cfg.tesseract_path).strip()
+                chill_text = ocr.contains_any(text, cfg.chill_phrases)
+                if chill_text:
+                    self.logger.info("chill CONFIRMED (audio=%.2f text=%r)", score, text)
+                else:
+                    self.logger.warning("audio triggered (%.2f) but text NOT confirmed: %r",
+                                        score, text)
+                    self._snapshot(frame, "audio_no_text")
         return Observation(chill_audio=chill_audio, chill_text=chill_text,
                            harvest_done=False, harvest_failed=False,
                            human_cleared=self.human_cleared)
@@ -151,6 +161,7 @@ class Bot:
                 time.sleep(0.05)
         finally:
             self._running = False
+            self._audio_cap.stop()
             ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
             self.logger.info("bot stopped")
 

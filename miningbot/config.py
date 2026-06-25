@@ -41,6 +41,7 @@ class Config:
     # 音訊
     chill_audio_path: str = "assets/chill_reference.wav"
     audio_match_threshold: float = 0.55          # 交叉相關門檻，實測調
+    chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5
 
