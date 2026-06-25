@@ -184,8 +184,8 @@ class Bot:
             activity_event=self._activity_reroll_due(),   # D4：定時右鍵刷新事件
             scan_event=False,                             # D2 只在採集流程用
             cave_event=False,                             # Z 雷達擱置
-            window_unfocused=not vision.pixel_matches(
-                frame, cfg.window_focus_pixel, cfg.window_focus_color, tol=12),
+            window_unfocused=(cfg.window_focus_check_enabled and not vision.pixel_matches(
+                frame, cfg.window_focus_pixel, cfg.window_focus_color, tol=12)),
         )
         action = miner.dispatch_event(flags)
         if action == "REFOCUS":

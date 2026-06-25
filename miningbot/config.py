@@ -21,9 +21,9 @@ class Config:
     screen_w: int = 1920
     screen_h: int = 1080
 
-    # 偵測區域（視窗內相對座標，校準後覆寫）
-    chill_text_region: Region = field(default_factory=lambda: Region(660, 20, 600, 60))
-    chat_region: Region = field(default_factory=lambda: Region(0, 90, 440, 260))
+    # 偵測區域（1920x1080、視窗化最大化實測；切全螢幕需整體上移約 30px 標題列高度）
+    chill_text_region: Region = field(default_factory=lambda: Region(360, 42, 1440, 52))  # 頂部事件列（chill/事件文字）實測
+    chat_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))   # 左上事件/掉落訊息（估計，見到訊息再微調）
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
@@ -32,7 +32,8 @@ class Config:
     # D4 活動：定時右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
     activity_reroll_enabled: bool = True
     activity_reroll_interval_s: float = 30.0     # 每隔多久刷新一次（抓 D4 冷卻附近）
-    window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點
+    window_focus_check_enabled: bool = False     # 失焦復原偵測（未校準前先關，避免誤判狂 refocus）
+    window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點（待校準）
     window_focus_color: int = 0x2B2B2B           # 佔位，校準時量測
     slot_pixel: tuple = (1011, 845)
     slot_color: int = 0x232323
