@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
-from miningbot.vision import find_template, template_present, find_template_edges
+from miningbot.vision import (find_template, template_present, find_template_edges,
+                              find_tracker)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -8,6 +9,41 @@ def _scene_with_patch(patch, at):
     ph, pw = patch.shape[:2]
     scene[y:y+ph, x:x+pw] = patch
     return scene
+
+
+def _draw_tracker(scene, cx, cy, size=30):
+    """畫一個稀有礦追蹤框：綠外框 + 黑色方環 + 彩色中心。"""
+    h = size // 2
+    cv2.rectangle(scene, (cx-h, cy-h), (cx+h, cy+h), (0, 255, 0), -1)         # 綠外框
+    cv2.rectangle(scene, (cx-h+6, cy-h+6), (cx+h-6, cy+h-6), (0, 0, 0), -1)   # 黑方環
+    cv2.rectangle(scene, (cx-4, cy-4), (cx+4, cy+4), (255, 0, 255), -1)       # 彩色中心（隨礦物變）
+
+
+def test_find_tracker_detects_green_black_marker():
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    loc = find_tracker(scene)
+    assert loc is not None
+    assert abs(loc[0] - 955) < 10 and abs(loc[1] - 300) < 10
+
+
+def test_find_tracker_ignores_plain_green_blob():
+    # 場景中其他綠色物件（沒有黑色方環）不該被當成追蹤框
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cv2.rectangle(scene, (900, 280), (930, 310), (0, 255, 0), -1)
+    assert find_tracker(scene) is None
+
+
+def test_find_tracker_inner_color_independent():
+    # 中心顏色不同（不同礦物）仍要偵測到 —— 認綠框+黑環，不認中心色
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    cv2.rectangle(scene, (951, 296), (959, 304), (0, 200, 255), -1)  # 換成橘色中心
+    assert find_tracker(scene) is not None
+
+
+def test_find_tracker_none_when_empty():
+    assert find_tracker(np.zeros((1080, 1920, 3), np.uint8)) is None
 
 def test_find_template_returns_center():
     patch = np.full((20, 20, 3), 200, np.uint8)

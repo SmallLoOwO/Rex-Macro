@@ -384,14 +384,14 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        # 多階級標記：形狀/邊緣比對（忽略顏色）+ 多尺度 + 多模板，順便知道是哪一級
-        result = vision.find_best_marker(
-            frame, self._marker_templates, cfg.marker_edge_threshold, cfg.marker_scales)
-        if result is not None:
-            tier, marker = result
-            self.logger.debug("marker tier=%s at %s", tier, marker)
-        else:
-            marker = None
+        # 追蹤框偵測：綠外框 + 黑色方環（內部色隨礦物變，故不用邊緣模板）
+        marker = vision.find_tracker(frame)
+        # 視野內沒看到追蹤框 → 轉 45° 找一圈（,/. 可數、可回歸；在時間/次數預算內才轉）
+        if (marker is None and self.harvest.elapsed_s <= cfg.harvest_verify_timeout_s
+                and self.harvest.rotations <= cfg.max_aim_rotations):
+            self.last_action = "找追蹤框(轉45°)"
+            ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
+            return
         step = harvester.next_harvest_step(marker, self.harvest, cfg)
         self.logger.debug("harvest marker=%s step=%s rot=%d net=%d t=%.1f",
                           marker, step.action, self.harvest.rotations,

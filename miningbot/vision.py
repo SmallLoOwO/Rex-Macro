@@ -88,3 +88,43 @@ def pixel_matches(scene_bgr, xy, rgb_hex: int, tol: int) -> bool:
 def frame_mean_diff(a_bgr, b_bgr) -> float:
     """兩幀平均絕對像素差，用於卡住偵測。"""
     return float(np.mean(np.abs(a_bgr.astype(np.int16) - b_bgr.astype(np.int16))))
+
+
+# 稀有礦追蹤框的綠色 HSV 範圍（外框恆為亮綠，與紅色礦坑背景對比明顯）
+_TRACKER_GREEN_LO = (38, 70, 70)
+_TRACKER_GREEN_HI = (90, 255, 255)
+
+def find_tracker(frame_bgr, margin_frac: float = 0.10):
+    """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
+
+    為何不用邊緣模板：wiki 模板只有外框、且追蹤框**中心顏色隨礦物變**，記不完所有顏色。
+    追蹤框的恆定特徵是「**亮綠外框 + 內部黑色方環**」——用顏色+結構抓，對中心色不敏感、
+    又能排除場景其他綠色物件（無黑環）與側邊面板（margin 過濾）。
+    """
+    h, w = frame_bgr.shape[:2]
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    green = cv2.inRange(hsv, _TRACKER_GREEN_LO, _TRACKER_GREEN_HI)
+    cnts, _ = cv2.findContours(green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mx0, my0 = w * margin_frac, h * margin_frac
+    mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
+    best = None
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < 100 or area > 5000:                 # 太小=雜訊、太大=面板/大片綠
+            continue
+        x, y, bw, bh = cv2.boundingRect(c)
+        if not (12 <= bw <= 80 and 12 <= bh <= 80):
+            continue
+        if abs(bw - bh) > max(bw, bh) * 0.5:          # 大致方形
+            continue
+        cx, cy = x + bw // 2, y + bh // 2
+        if not (mx0 < cx < mx1 and my0 < cy < my1):   # 排除邊緣面板/HUD
+            continue
+        roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
+                        max(0, cx - bw // 3):cx + bw // 3]
+        if roi.size == 0:
+            continue
+        dark = float(np.mean(np.all(roi < 60, axis=2)))   # 中心黑色方環比例
+        if dark > 0.12 and (best is None or area > best[0]):
+            best = (area, (cx, cy))
+    return best[1] if best else None
