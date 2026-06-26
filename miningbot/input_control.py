@@ -46,6 +46,18 @@ def mouse_move_rel(dx: int, dy: int):
     pydirectinput.moveRel(dx, dy, relative=True)
     time.sleep(_STEP)
 
+def aim_move(dx: int, dy: int):
+    """細部瞄準：**按住右鍵**拖曳滑鼠來轉視角（REX 用右鍵按著調整方位），移完放開。
+
+    單純 moveRel 不會轉視角（實測無效），一定要右鍵按著。
+    """
+    pydirectinput.mouseDown(button="right")
+    time.sleep(0.04)
+    pydirectinput.moveRel(dx, dy, relative=True)
+    time.sleep(0.04)
+    pydirectinput.mouseUp(button="right")
+    time.sleep(_STEP)
+
 # 連按兩次 Shift = 把滑鼠準心對準畫面中心點（瞄準前必做，偏移計算才正確）
 def center_crosshair():
     key_press("shift", delay=0.12); key_press("shift", delay=0.12)

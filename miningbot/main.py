@@ -406,10 +406,9 @@ class Bot:
         elif step.action == "ROTATE_RIGHT":
             ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
         elif step.action == "MOUSE_AIM":
-            # 先把準心置中（連按兩次 Shift），偏移才是相對中心；再用 gain 縮放成滑鼠位移
-            ic.center_crosshair()
-            ic.mouse_move_rel(int(step.dx * cfg.mouse_aim_gain),
-                              int(step.dy * cfg.mouse_aim_gain))
+            # 細部瞄準：右鍵按著拖曳轉視角（,/. 是粗轉 45°，這裡微調）
+            ic.aim_move(int(step.dx * cfg.mouse_aim_gain),
+                        int(step.dy * cfg.mouse_aim_gain))
         elif step.action == "FIRE_D3":
             harvester.fire_d3()
             if self._verify_success(frame):

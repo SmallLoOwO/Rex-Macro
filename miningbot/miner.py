@@ -64,7 +64,7 @@ def use_boost():           # 對照原巨集：放左鍵 → D5 → 點擊 → D
 
 def use_activity():        # 對照原巨集：放左鍵 → D4 → 點擊 → D1 → 按住左鍵
     ic.mouse_up(); ic.settle()
-    ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（原巨集為左鍵=加強，待確認）
+    ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（使用者確認；加強事件之後再做）
     ic.key_press("1"); ic.mouse_down()
 
 def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→續挖（對照 boost+scan .mcr）
