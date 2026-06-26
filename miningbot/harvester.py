@@ -9,6 +9,7 @@ class HarvestState:
     rotations: int          # 總轉動次數（給 max_aim_rotations 上限用）
     elapsed_s: float
     net_rotations: int = 0  # 淨轉動（右+1、左-1），用來挖完後轉回原角度
+    d3_attempts: int = 0    # D3 連續未命中次數（達 3 次自動重掃）
 
 @dataclass
 class HarvestStep:

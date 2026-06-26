@@ -11,15 +11,16 @@ def _scene_with_patch(patch, at):
     return scene
 
 
-def _draw_tracker(scene, cx, cy, size=30):
-    """畫一個稀有礦追蹤框：綠外框 + 黑色方環 + 彩色中心。"""
+def _draw_tracker(scene, cx, cy, size=30, color=(0, 255, 0)):
+    """畫一個稀有礦追蹤框：指定顏色外框 + 黑色方環 + 彩色中心。"""
     h = size // 2
-    cv2.rectangle(scene, (cx-h, cy-h), (cx+h, cy+h), (0, 255, 0), -1)         # 綠外框
+    cv2.rectangle(scene, (cx-h, cy-h), (cx+h, cy+h), color, -1)               # 指定顏色外框
     cv2.rectangle(scene, (cx-h+6, cy-h+6), (cx+h-6, cy+h-6), (0, 0, 0), -1)   # 黑方環
     cv2.rectangle(scene, (cx-4, cy-4), (cx+4, cy+4), (255, 0, 255), -1)       # 彩色中心（隨礦物變）
 
 
 def test_find_tracker_detects_green_black_marker():
+    # Exquisite 階級（亮綠外框）
     scene = np.zeros((1080, 1920, 3), np.uint8)
     _draw_tracker(scene, 955, 300)
     loc = find_tracker(scene)
@@ -27,19 +28,66 @@ def test_find_tracker_detects_green_black_marker():
     assert abs(loc[0] - 955) < 10 and abs(loc[1] - 300) < 10
 
 
+def test_find_tracker_exotic_orange():
+    # Exotic 階級（橘色外框 H22）也要偵測到
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300, color=(0, 187, 255))  # BGR for HSV(22,255,255)
+    loc = find_tracker(scene)
+    assert loc is not None, "Exotic 橘色追蹤框未偵測到"
+    assert abs(loc[0] - 955) < 10
+
+
+def test_find_tracker_transcendent_blue():
+    # Transcendent 階級（亮藍外框 H105）也要偵測到
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300, color=(255, 127, 0))  # BGR for HSV(105,255,255)
+    loc = find_tracker(scene)
+    assert loc is not None, "Transcendent 藍色追蹤框未偵測到"
+    assert abs(loc[0] - 955) < 10
+
+
 def test_find_tracker_ignores_plain_green_blob():
-    # 場景中其他綠色物件（沒有黑色方環）不該被當成追蹤框
+    # 純綠色實心 blob（非空心框）不應被偵測
     scene = np.zeros((1080, 1920, 3), np.uint8)
     cv2.rectangle(scene, (900, 280), (930, 310), (0, 255, 0), -1)
     assert find_tracker(scene) is None
 
 
+def test_find_tracker_ignores_plain_orange_blob():
+    # 純橘色實心 blob 也不應被偵測（空心率過高）
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cv2.rectangle(scene, (900, 280), (930, 310), (0, 187, 255), -1)
+    assert find_tracker(scene) is None
+
+
 def test_find_tracker_inner_color_independent():
-    # 中心顏色不同（不同礦物）仍要偵測到 —— 認綠框+黑環，不認中心色
+    # 中心顏色不同（不同礦物）仍要偵測到 —— 認外框+黑環，不認中心色
     scene = np.zeros((1080, 1920, 3), np.uint8)
     _draw_tracker(scene, 955, 300)
     cv2.rectangle(scene, (951, 296), (959, 304), (0, 200, 255), -1)  # 換成橘色中心
     assert find_tracker(scene) is not None
+
+
+def test_find_tracker_ignores_dark_panel_without_colored_center():
+    # UI 面板誤判候選：彩色外框 + 暗色內部（高 dark）但「沒有彩色中心」(colored≈0)
+    # → accept 必須排除。模擬 logs/rot_3.png 中 (257,933) 的左側 UI 面板誤判。
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cx, cy = 257, 933
+    cv2.rectangle(scene, (cx-25, cy-25), (cx+25, cy+25), (0, 255, 0), 3)  # 綠色細外框
+    cv2.rectangle(scene, (cx-22, cy-22), (cx+22, cy+22), (25, 25, 25), -1)  # 暗色內部、無彩色中心
+    assert find_tracker(scene) is None
+
+
+def test_find_tracker_prefers_higher_colored_over_larger_area():
+    # 兩個都通過 accept 的候選：colored_frac 較高者勝，即使 area 較小。
+    # 對應 HANDOFF「修 2」：真 tracker colored≈1.00 要贏過裝備誤判 colored≈0.75-0.88。
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300, size=30)    # colored_frac 較高、area 較小
+    _draw_tracker(scene, 1200, 300, size=40)   # colored_frac 較低、area 較大
+    loc = find_tracker(scene)
+    assert loc is not None
+    # 新排名（colored_frac 高者勝）應選 955；舊排名（area 大者勝）會選 1200
+    assert abs(loc[0] - 955) < 15
 
 
 def test_find_tracker_none_when_empty():

@@ -25,9 +25,14 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   槽位像素顯示「沒拿鎬子」時才按 D1（見 `miner._ensure_pickaxe`）；D5/D4 用完按 D1 是從別的工具切回，OK。
 - **轉視角＝ `,` / `.`（轉 45°，可數、可回歸）**；`pydirectinput.moveRel` 單獨用**不會**轉視角，
   細部瞄準要 **按住右鍵**拖曳（`input_control.aim_move`）。但右鍵難精準，策略以 `,`/`.` 為主。
-- **稀有礦追蹤框偵測＝顏色+空心率**：`vision.find_tracker`（亮綠外框＋空心率<0.85＋黑環OR彩色中心）。
+- **稀有礦追蹤框偵測＝顏色+空心率**：`vision.find_tracker`（各階級顏色外框＋空心率<0.85＋黑環OR彩色中心）。
   **不要**用 wiki 邊緣模板（wiki 只有外框、且**中心顏色隨礦物變**，記不完）。
-  追蹤框是**空心框**（interior 是礦物填色，非綠），純綠背景是實心（fill≈1.0）→ fill<0.85 排除。
+  追蹤框是**空心框**（interior 是礦物填色），空心率 `frame_fill < 0.85`（tracker ≈ 0.57，純色背景 ≈ 1.0）→ 排除實心背景。
+  **每個顏色範圍獨立計算 frame_fill**（`_TRACKER_COLORS` 各自 findContours，不合併 mask）——
+  否則 range3（H=153-179 暗紅）會把整個紅色礦坑背景（H≈168）納入，造成 frame_fill=1.0 誤拒追蹤框。
+  礦坑背景是大片高飽和粉紅（H≈168，約佔畫面 77%），range3 與礦坑背景完全重疊，
+  目前 range3 偵測 Otherworldly 在此環境效果差，需另想方法（或等看到 Otherworldly 礦時再調）。
+  **排名用 colored_frac（最高優先）**：真實 tracker 中心填色 colored≈1.00，角色裝備/地形誤判約 0.75–0.88。
 - **D2 掃描＝按 2 後還要 click 畫面中央才觸發**（純按 2 只裝備，不掃）；掃描成功 = 左下出現「Local」。
   掃描在有 UI 彈窗開著時點不到（點擊被彈窗吃掉）→ 掃描前要先確保無彈窗。
 - **D3 採集 = 按 3 等 0.6s + hold click 0.4s 在 tracker 螢幕座標**（實測確認 2026-06-27）：

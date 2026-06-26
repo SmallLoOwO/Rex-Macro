@@ -90,52 +90,65 @@ def frame_mean_diff(a_bgr, b_bgr) -> float:
     return float(np.mean(np.abs(a_bgr.astype(np.int16) - b_bgr.astype(np.int16))))
 
 
-# 稀有礦追蹤框的綠色 HSV 範圍（外框恆為亮綠，與紅色礦坑背景對比明顯）
-_TRACKER_GREEN_LO = (38, 70, 70)
-_TRACKER_GREEN_HI = (90, 255, 255)
+# 各階級追蹤框外框 HSV 顏色範圍（wiki 量測 ± 余量）
+# 橘/黃/綠：Exotic(H22), Enigmatic(H34), Exquisite(H64) → H18-78
+# 藍系：Transcendent(H105), Unfathomable(H109) → H88-130
+# 紫系：Exclusive(H142) → H118-165
+# 暗紅：Otherworldly(H167) → H153-179
+_TRACKER_COLORS = [
+    (np.array([ 18,  80,  50], np.uint8), np.array([ 78, 255, 255], np.uint8)),
+    (np.array([ 88, 130,  40], np.uint8), np.array([130, 255, 255], np.uint8)),
+    (np.array([118,  60,  15], np.uint8), np.array([165, 255, 255], np.uint8)),
+    (np.array([153, 100,  50], np.uint8), np.array([179, 255, 255], np.uint8)),
+]
 
 def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
-    為何不用邊緣模板：wiki 模板只有外框、且追蹤框**中心顏色隨礦物變**，記不完所有顏色。
-    追蹤框的恆定特徵是「**亮綠外框 + 內部黑色方環 + 彩色中心**」——用顏色+結構抓，對中心色不敏感、
-    又能排除場景其他綠色物件（無黑環）與綠色數字/面板。
-    `log`：傳一個 callable（如 logger.debug），會印出每個綠色候選的判定指標，方便調參。
+    各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
+    Otherworldly 暗紅、Transcendent 亮藍、Unfathomable 暗藍）——每個顏色範圍獨立偵測：
+    空心率用「當前這個顏色的 mask」計算，避免其他顏色（如紅色礦坑背景 H≈168）干擾。
+    `log`：傳 callable 可印出每個候選的判定指標，方便調參。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    green = cv2.inRange(hsv, _TRACKER_GREEN_LO, _TRACKER_GREEN_HI)
-    cnts, _ = cv2.findContours(green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     mx0, my0 = w * margin_frac, h * margin_frac
     mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
     best = None
-    for c in cnts:
-        area = cv2.contourArea(c)
-        if area < 400 or area > 5000:                 # 追蹤框主輪廓≥400，地形/文字雜訊通常<300
-            continue
-        x, y, bw, bh = cv2.boundingRect(c)
-        if not (18 <= bw <= 80 and 18 <= bh <= 80):
-            continue
-        if abs(bw - bh) > max(bw, bh) * 0.5:          # 大致方形
-            continue
-        cx, cy = x + bw // 2, y + bh // 2
-        in_area = (mx0 < cx < mx1 and my0 < cy < my1)  # 排除邊緣面板/HUD
-        # 空心率：追蹤框的 bounding rect 只有外框是綠色（約 60%），純綠背景接近 100%
-        green_fill = float(np.mean(green[y:y+bh, x:x+bw] > 0))
-        roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
-                        max(0, cx - bw // 3):cx + bw // 3]
-        if roi.size == 0:
-            continue
-        dark = float(np.mean(np.all(roi < 60, axis=2)))
-        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        H, S, V = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
-        colored = (S > 90) & (V > 90) & ((H < 35) | (H > 95))
-        colored_frac = float(colored.mean())
-        # 空心框：green_fill < 0.85；中心有黑環或彩色填心
-        accept = in_area and green_fill < 0.85 and (dark > 0.10 or colored_frac > 0.04)
-        if log is not None:
-            log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
-                % (cx, cy, int(area), green_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
-        if accept and (best is None or area > best[0]):
-            best = (area, (cx, cy))
+    for lo, hi in _TRACKER_COLORS:
+        color_mask = cv2.inRange(hsv, lo, hi)
+        cnts, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < 400 or area > 5000:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            if not (18 <= bw <= 80 and 18 <= bh <= 80):
+                continue
+            if abs(bw - bh) > max(bw, bh) * 0.5:
+                continue
+            cx, cy = x + bw // 2, y + bh // 2
+            in_area = (mx0 < cx < mx1 and my0 < cy < my1)
+            # 空心率：只算「當前這個顏色的 mask」——避免礦坑背景同色系的 H 范圍干擾
+            frame_fill = float(np.mean(color_mask[y:y+bh, x:x+bw] > 0))
+            roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
+                            max(0, cx - bw // 3):cx + bw // 3]
+            if roi.size == 0:
+                continue
+            dark = float(np.mean(np.all(roi < 60, axis=2)))
+            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            H, S, V = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
+            colored = (S > 90) & (V > 90) & ((H < 35) | (H > 95))
+            colored_frac = float(colored.mean())
+            # accept 條件：彩色中心要夠明顯（colored_frac>0.50，真實 tracker≈1.00），
+            # 或同時有黑環+部分彩色（合成 tracker dark≈0.65 colored≈0.16）。
+            # 排除「暗色 UI 面板」：dark 高但 colored≈0（左側面板誤判）。
+            accept = (in_area and frame_fill < 0.85
+                      and ((dark > 0.10 and colored_frac > 0.04) or colored_frac > 0.50))
+            if log is not None:
+                log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
+                    % (cx, cy, int(area), frame_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
+            # 排名用 colored_frac（最高優先）：真 tracker≈1.00 > 角色裝備誤判≈0.75-0.88
+            if accept and (best is None or colored_frac > best[0]):
+                best = (colored_frac, (cx, cy))
     return best[1] if best else None

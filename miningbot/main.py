@@ -405,13 +405,14 @@ class Bot:
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
         cx, cy = marker
         self.last_action = "D3 採集"
-        self.logger.info("採集: 找到追蹤框 (%d,%d) -> 裝 D3 點選", cx, cy)
+        self.logger.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d)",
+                         cx, cy, self.harvest.d3_attempts + 1)
         ic.key_press("3")
         time.sleep(0.6)          # 等 D3 裝備動畫（太快點會被吃掉）
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
         time.sleep(0.5)          # 等伺服器回應追蹤框消失
         after = capture.grab()
-        gone = vision.find_tracker(after) is None    # 追蹤框消失 = 大概採到了
+        gone = vision.find_tracker(after) is None    # 追蹤框立即消失 = D3 命中
         confirmed = self._verify_success(after)      # 聊天框「has found」二次確認
         if gone or confirmed:
             self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone)
@@ -420,11 +421,20 @@ class Bot:
             self._snapshot(after, "harvest_success")
             self.logger.info("採集成功（gone=%s chat=%s）-> 轉回原方位 net=%d",
                              gone, confirmed, self.harvest.net_rotations)
-            harvester.restore_view(self.harvest.net_rotations)  # 轉回採集前的原角度
+            harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
             miner.init_mining_sequence()
         else:
-            self.logger.info("採集: D3 點選後未確認成功（追蹤框還在），續試")
+            self.harvest.d3_attempts += 1
+            if self.harvest.d3_attempts >= 3:
+                # D3 連 3 次未命中（可能角度偏或掃描即將到期）→ 重新 D2 掃描
+                self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描",
+                                 self.harvest.d3_attempts)
+                self.harvest.d3_attempts = 0
+                harvester.start_scan()
+            else:
+                self.logger.info("採集: D3 未立即命中 (attempt %d/3)，繼續等待",
+                                 self.harvest.d3_attempts)
 
     def _verify_success(self, frame) -> bool:
         chat = capture.crop(frame, cfg.chat_region)
