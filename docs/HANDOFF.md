@@ -1,134 +1,140 @@
 # 接手 Handoff — 重點：解決「稀有礦自動採集」
 
 > 先讀 `CLAUDE.md`（含實機踩過的坑）、`docs/game-mechanics.md`。本檔記錄**目前進度**與**下一步**。
-> 程式碼在分支 `feature/window-discord-controls`（多個 commit，`python -m pytest -q` 全綠）。
+> 程式碼在分支 `feature/window-discord-controls`（`python -m pytest -q` 全綠，87 passed）。
 
-## 1. 現況：挖礦主流程穩定，採集已打通，偵測仍有誤判需修
+## 0. 快覽（最近進度）
+
+| 項目 | 狀態 |
+|---|---|
+| find_tracker accept+排名修復（UI 面板/裝備誤判） | ✅ 已 commit `e04bd4d` |
+| 採集成功判定改差分（修掉 stale-chat 偽成功）+ 關鍵截圖 | ✅ 已實作 + 87 測試綠，**尚未 commit** |
+| 採集端到端實機驗證 | ❌ **被 §3 的新問題擋住，未走通** |
+| §3 新問題（聊天框假陽性 / chill 音訊漏抓 / 裸礦無框） | ⚠️ 已診斷 + 已設計解決方案（§4），**未實作** |
+
+## 1. 現況
 
 實機跑得起來、會穩定挖礦/補 boost/刷 D4/聽 chill/重置等人工，Discord 會通知。
-採集端到端已驗證（D2 掃→旋轉找框→D3 hold click → 礦物取得），但 `find_tracker`
-在真實截圖中有誤判需修。
+採集流程的**判定邏輯**已修好（差分確認、find_tracker accept/排名），但**實機採集鏈路尚未走通** —— 本 session 實機測試發現一串新問題（§3），其中最致命的是 **chill 音訊偵測漏抓**（bot 根本沒進 HARVESTING）與 **find_tracker 把聊天框紅字當 tracker**。
 
-### 已完成並驗證
-- **視窗/輸入基礎修復**：`_focus_roblox` 改 SW_MAXIMIZE；啟動先設 DPI-aware。
-- **全域熱鍵**：GetAsyncKeyState 輪詢，Ctrl+Q/Q/F12 焦點在遊戲也有效。
-- **D4 冷卻偵測**：偵測右下角「Used」圖示。
-- **Discord 通知**：RARE_FOUND/HARVEST_SUCCESS/NEEDS_HUMAN/STUCK/MINE_RESET。
-- **音訊門檻 0.30**（真實 chill ≈ 0.4）。
-- **★ D3 採集端到端驗證（2026-06-27）**：`start_scan()` 按 2 + click 觸發 D2 →
-  旋轉找 tracker → 按 3 等 0.6s → hold click 0.4s 在 tracker 螢幕座標 →
-  框立即消失 = 成功，聊天框出現「has found」，礦物數量增加。
-- **★ 多色 tracker 偵測結構（2026-06-27）**：`_TRACKER_COLORS` 涵蓋
-  橘/黃/綠（H18-78）、藍（H88-130）、紫（H118-165）、暗紅（H153-179）四段，
-  每段**獨立** findContours + 獨立計算 frame_fill（關鍵！見下一節）。
-  77 個單元測試全綠（含 Exotic 橘、Transcendent 藍的新測試）。
+## 2. 已完成的修復
 
-## 2. ★ 多色偵測的核心踩坑（必讀）
+### 2.1 find_tracker：accept 條件 + 排名（commit `e04bd4d`）
+- accept 改 `((dark>0.10 and colored>0.04) or colored>0.50)` → 排除暗色 UI 面板（dark 高但 colored=0）
+- 排名改用 `colored_frac`（最高優先）→ 真 tracker≈1.00 贏過裝備誤判 0.75-0.88
+- 79 測試綠；`logs/rot_3.png` 驗證回傳 (1347,254)（不再錯選 UI 面板）
 
-### 背景情況
+### 2.2 採集成功判定：差分聊天確認（已實作未 commit）
+**舊 bug（沉默失敗）**：`_verify_success` 用 `ocr.contains_any`（**存在性**）。聊天框是累積的，
+一旦出現過 "has found"，之後每次 D3（不管有沒有命中）都被判 `HARVEST_SUCCESS`。
+實機 03:06 事件已證實：`confirmed=True tracker_gone=False` 偽成功 → bot 回 MINING → 追蹤框被丟著沒採。
 
-此遊戲礦坑環境是**大片高飽和粉紅背景**（H≈168，S≈251，V≈213），約佔畫面 77%。
+**新邏輯（`miningbot/ocr.py` + `main.py:_tick_harvest`）**：
+- `ocr.count_found(text, phrases)` → 計關鍵字出現次數（正規化）
+- `ocr.has_new_found(before, after, phrases)` → **D3 後數量必須多於 D3 前**才算新事件
+- `_tick_harvest`：D3 前讀 `chat_before` → D3 → 讀 `chat_after` → `confirmed = found_after > found_before`
+- **特殊階標記**：`cfg.special_keywords=("ionized","spectral")`，同樣用差分 → `special=True/False`
+  （ionized/Spectral 進「另一個背包」，左側 normal 面板看不到，只能靠聊天字樣）
+- 連續同一個稀有礦也正確分辨（計數 +1）
+- 已移除 `_verify_success`，改用 `_read_chat` + `_snapshot_crop` 兩個輔助函式
+- **關鍵截圖**（你要的「盤別」功能）：`d3_fire_<x>x<y>.png`、`d3_chat_before.png`、`d3_chat_after.png`、
+  `harvest_success.png`（或 `_special`）、`d3_miss_<n>.png`
+- 87 測試綠（含 8 個新 ocr 差分測試）
 
-```
-rot_3.png 統計：
-  range3 (H=153-179, S>100, V>50): 1,590,338 / 2,073,600 px (77%)
-  range0 (H=18-78, S>80, V>50):       18,150 px (只有 tracker 框的綠)
-```
+## 3. ★ 實機測試發現的新問題（未修，本 session）
 
-### 已修正：per-range hollow check
+用 `logs/_test_harvest.py` 拿一顆 leftover tracker 做獨立採集測試，結果 D3 沒採到，連帶暴露一串問題：
 
-舊寫法：把所有 `_TRACKER_COLORS` 合併成一個 `frame_mask`，用合併 mask 算 frame_fill。  
-→ range3（H=153-179）把礦物填色（H=168）也抓進去 → bounding rect 裡 frame_fill=1.0 → hollow 檢查失敗。
+### 問題 A：find_tracker 把聊天框紅字當 tracker（**最關鍵**）
+- D2 掃描後偵測到 `(434, 385)` `colored=1.00 fill=0.30`，D3 點過去 → 沒採到（Cordis Gemma 4→4、Bandeau 19→19）
+- `(434, 385)` 落在 **`cfg.chat_region=(0,110,460,280)` 內**（聊天框右下邊緣）
+- 聊天框裡紅字「Bandeau」（Otherworldly 階）+ 紅色邊框 → 命中 `range3`（H=153-179 暗紅）→ 通過 hollow/colored 檢查 → **假陽性**
+- 注意：`margin_frac=0.10` 只排除外框 10%（x<192），但聊天框延伸到 x=460，**深入搜尋區**
+- 真正的綠色 Cordis Gemma 礦在 `(~1000, 300)` 但沒被選上（被假陽性蓋過／或當時無框）
 
-**新寫法（現行）**：每個顏色範圍獨立跑 findContours，用**該顏色的 mask** 算 frame_fill：
+### 問題 B：chill 音訊偵測漏抓（**同樣致命**）
+- heartbeat 顯示 `audio=0.01`，但畫面**正顯示 chill**（「fluttering...comfort」文字 + tracker）
+- 門檻 0.30，真實 chill 應 ≈0.4（CLAUDE.md）；0.01 = loopback 根本沒聽到 chill
+- → bot 從不進 HARVESTING → 採集流程根本沒啟動（events.log 自重啟後無 RARE_FOUND）
+- 可能原因：① loopback 綁錯音訊裝置 ② chill 參考 wav 不符此環境（twilight magic 區？）
+  ③ 遊戲音效路由到別的裝置／被靜音
+
+### 問題 C：D3 點到聊天框會清空聊天歷史
+- 問題 A 的連鎖效應：D3 hold-click 落在聊天框邊緣 → 聊天歷史被清空/滾掉 → `chat_after=''`
+- → 差分驗證讀到空白（恰好這次 found 3→0 判「未採到」是對的，但原因是 chat 被清，不是 diff 正常運作）
+- 根本治 = 問題 A（別再點到聊天框）
+
+### 問題 D：裸礦可能沒有 outline 框（**待確認**）
+- agent 觀察到綠色 Cordis Gemma 礦體 `(~1000,300)` **沒有可見的彩色外框**
+- 但那是 D2 掃描**前**的幀；掃描後理論上遊戲會畫框。測試時沒看到 "Local" 標籤 → **D2 掃描可能根本沒成功**
+- 待確認：① 成功的 D2 掃描是否必定畫框？ ② 礦種是否影響有無框？
+
+## 4. 解決方案設計（給下個 session 實作）
+
+### 4.1 問題 A：find_tracker 加 `exclude` 參數排除 UI 區
 ```python
-for lo, hi in _TRACKER_COLORS:
-    color_mask = cv2.inRange(hsv, lo, hi)
-    cnts, _ = cv2.findContours(color_mask, ...)
+def find_tracker(frame_bgr, margin_frac=0.10, exclude=(), log=None):
+    # exclude: 一串 (x0,y0,x1,y1) 矩形，候選中心落在任一矩形內就 reject
     ...
-    frame_fill = float(np.mean(color_mask[y:y+bh, x:x+bw] > 0))
-    # ↑ 只算這個顏色，不含其他顏色範圍的干擾
+    in_area = (mx0 < cx < mx1 and my0 < cy < my1)
+    in_exclude = any(x0 <= cx <= x1 and y0 <= cy <= y1 for (x0,y0,x1,y1) in exclude)
+    accept = in_area and not in_exclude and frame_fill < 0.85 and (...)
 ```
+- Bot 端：`vision.find_tracker(frame, exclude=_ui_zones(), log=...)`，其中 `_ui_zones()` 把
+  `cfg.chat_region`（Region x,y,w,h）轉成 `(x, y, x+w, y+h)`，未來可加庫存面板等其他 UI 區
+- TDD：合成一個 tracker-like blob 放在 chat_region 內 → 應回 None；放在區外 → 應偵測到
+- 純函式、低風險、完全可測
 
-Exquisite 偵測結果：green mask frame_fill≈0.57 ✓（pink fill 在 H=168，不在綠色 mask）
+### 4.2 問題 B：chill 音訊診斷 + 修復路徑
+**先診斷**（決定是哪個原因）：
+- heartbeat 加印**原始音訊 RMS**（`np.sqrt(np.mean(buf**2))`）。RMS≈0 → loopback 死；RMS 高但 score≈0 → 參考 wav 不符
+- 確認 `audio.LoopbackCapture` 綁的 `defaultOutputDevice` = 遊戲實際輸出裝置
+- 錄一段此環境的 chill → `python -m miningbot.convert_audio` 重生 `assets/chill_reference.wav`
 
-### 仍存在的誤判（留給下個 session 修）
+**修復選項**（依診斷結果）：
+- 參考 wav 不符 → 重生（最可能）
+- 裝置不對 → 改 LoopbackCapture 指定裝置
+- **快速止血**：暫時 `cfg.chill_require_ocr=True`，用 OCR 抓「A chill goes down your spine」文字觸發（不靠音訊）
 
-真實截圖 `logs/rot_3.png` 跑 `find_tracker(log=...)` 的輸出：
+### 4.3 問題 C：隨 A 解決 + diff 容錯
+- 主要：問題 A 修好後 D3 不會再點聊天框 → chat 不會被清
+- 次要：差分若讀到 `chat_after` 空白但 `chat_before` 有內容 → 視為可疑，re-grab+re-read 一次再判（chat 不該瞬間全清）
 
-```
-tracker候選 (1347,254) area=624  fill=0.57 dark=0.00 colored=1.00  -> OK  ← 真正的 tracker
-tracker候選 (257,933)  area=2246 fill=0.43 dark=0.69 colored=0.00  -> OK  ← 左側 UI 面板誤判
-tracker候選 (1004,693) area=975  fill=0.48 dark=0.00 colored=0.75  -> OK  ← 角色裝備區誤判
-tracker候選 (955,684)  area=719  fill=0.41 dark=0.00 colored=0.88  -> OK  ← 角色裝備區誤判
-```
+### 4.4 問題 D：先確認遊戲機制
+- **問玩家**：成功的 D2 掃描是否必定在稀有礦上畫 outline 框？不同礦種是否都會畫？
+- 加 D2 掃描成功驗證：`start_scan()` 後檢查左下 "Local" 標籤是否出現（CLAUDE.md 說這是成功訊號）；
+  沒出現 → 掃描失敗 → 重試或 NEEDS_HUMAN（目前完全沒驗證）
+- 若確認裸礦常態無框 → find_tracker 改偵測「高飽和度方塊本體」而非「外框」，是較大改動
 
-目前程式選**最大 area**（2246），所以回傳的是 UI 面板，而非真正的 tracker（624）。
+## 5. 驗證項目（修完 §4 後跑）
 
-### 下個 session 要修的兩件事
+1. `python -m pytest -q` 全綠（目前 87）
+2. `logs/rot_3.png` → find_tracker 應回傳 (1347,254)
+3. `logs/d3test_rot1.png` → 應回傳 None
+4. `logs/rescan_init.png` → 應回傳約 (1352,256)
+5. **新增（問題 A）**：合成 tracker 放在 chat_region 內 → find_tracker(exclude=[chat_rect]) 應回 None
+6. **實機**：跑 `logs/_test_harvest.py`（見 §6），D3 應命中真礦、稀有庫存 +1、聊天出新 "has found"
+7. **實機**：bot 跑到 chill → 進 HARVESTING → 採集成功 → HARVEST_SUCCESS 含 `found N->M (M>N)`
 
-**修 1：accept 條件過濾 UI 面板**  
-左側面板（257,933）特徵：dark=0.69（有暗色文字背景）但 colored=0.00（沒有礦物填色）。
-```python
-# 現行（過寬）
-accept = ... and (dark > 0.10 or colored_frac > 0.04)
+## 6. 排錯工具（logs/ 內，可能未被 git 追蹤）
 
-# 改為（更嚴格）
-accept = ... and ((dark > 0.10 and colored_frac > 0.04) or colored_frac > 0.50)
-# → UI 面板：(0.69 AND 0.00<0.04)=False, 0.00<0.50=False → 排除 ✓
-# → 真正 tracker：1.00>0.50=True → 通過 ✓
-# → 合成測試 tracker：(0.65>0.10 AND 0.16>0.04)=True → 通過 ✓
-```
+- **`logs/_cap.py [name]`**：截圖存 `logs/<name>.png`（設好 DPI-aware + sys.path）
+- **`logs/_test_harvest.py`**：★ 獨立測完整採集流程（不跑 bot）。目前缺：**沒存 post-scan 幀**。
+  → 下個 session 增强：存 pre-scan/post-scan/post-D3 三幀 + 每步完整候選 log，才能診斷問題 A/D
+- **`logs/_diag_tracker.py`**：對指定 PNG 跑 find_tracker 印出所有候選（不只 OK 的）
+- mss 截圖 one-liner、`vision.find_tracker(img, log=print)`：見 CLAUDE.md
+- log：`logs/miningbot.log`（動作/狀態/音訊/視窗）、`logs/events.log`（結構化事件）、`logs/snapshots/`
 
-**修 2：排名改用 colored_frac（最高優先）**
-```python
-# 現行（最大 area 優先）
-if accept and (best is None or area > best[0]):
-    best = (area, (cx, cy))
+### 重要環境提醒（本 session 踩過）
+- **SSH 連線 = Session 0 Isolation**：從 SSH 跑的程式抓不到實體桌面（Session 2）的 Roblox。
+  機器人必須在**本機桌面**啟動（或 RDP console session）。log/snapshot 檔案共享，可從遠端監看。
+- **Windows Store 版 Python** 的 image name 不是 `python.exe`，`tasklist /FI python.exe` 會漏抓 →
+  用視覺證據（HUD 截圖）判斷 bot 是否在跑，別信 process name 過濾。
 
-# 改為（最高 colored_frac 優先）
-if accept and (best is None or colored_frac > best[0]):
-    best = (colored_frac, (cx, cy))
-return best[1] if best else None
-```
-→ 真正 tracker colored=1.00 > 角色裝備誤判 0.75-0.88 → 選對 ✓
-
-**range3（暗紅 H=153-179）注意**：礦坑背景就是 H≈168，range3 在此環境幾乎無法可靠偵測
-Otherworldly 階級。per-range 修完後 range3 的 contour 都被 area/shape 過濾掉，但若
-未來礦坑換場景顏色，Otherworldly 才有機會偵測。目前不用特別處理。
-
-## 3. 修完後要驗證的項目
-
-1. `python -m pytest -q` 77 個測試全綠（修 accept 條件後合成測試要過）
-2. 用 `logs/rot_3.png` 跑偵測，應回傳 (1347, 254)，不是 (257, 933)
-3. 用 `logs/d3test_rot1.png` 跑偵測，應回傳 None（沒有 tracker 在畫面裡）
-4. 用 `logs/rescan_init.png` 跑偵測，應回傳約 (1352, 256)
-
-測試腳本：
-```python
-import cv2
-from miningbot import vision
-for label, path, expected in [
-    ('rot_3', 'logs/rot_3.png', (1347, 254)),
-    ('d3test_rot1', 'logs/d3test_rot1.png', None),
-    ('rescan_init', 'logs/rescan_init.png', (1352, 256)),
-]:
-    img = cv2.imread(path)
-    results = []
-    m = vision.find_tracker(img, log=results.append)
-    ok = (m is None) if expected is None else (m is not None and abs(m[0]-expected[0])<20)
-    print('[' + ('OK' if ok else 'FAIL') + '] ' + label + ': ' + str(m))
-    for r in results:
-        if 'OK' in r: print('   ' + r)
-```
-
-## 4. 排錯工具
-- **mss 截圖**：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → Read `logs/x.png`。
-- **find_tracker 候選印出**：`vision.find_tracker(img, log=print)` 把每個候選的指標全印出來。
-- **log**：採集流程已加 INFO log（`_tick_harvest`），`config.log_level="DEBUG"` 看更細。
-
-## 5. 其他待辦（優先序較低）
-- **掃描 8 幀無 tracker → NEEDS_HUMAN + Discord**：`harvest.rotations > max_aim_rotations` 已觸發 NEEDS_HUMAN，Discord 送通知，但需實機驗證流程。
-- **D2 冷卻偵測**：可參考 D4 冷卻偵測（右下角模板），避免 D2 冷卻中又按 2。
-- **垂直方向追蹤框**：目前只水平旋轉，仰角礦需滑鼠右鍵垂直拖曳（已有 `aim_move`，未整合）。
-- **D4 加強事件（左鍵）**：使用者說之後再做。
+## 7. 其他待辦（優先序較低）
+- 掃描 8 幀無 tracker → NEEDS_HUMAN + Discord（邏輯已有，待實機驗證）
+- D2 冷卻偵測（仿 D4 冷卻模板）
+- 垂直方向追蹤框（仰角礦，目前只水平旋轉；`aim_move` 未整合）
+- D4 加強事件（左鍵）
+- **庫存數量 diff 驗證**（玩家提案，需「礦物→稀有度」對應表）：左側面板是 normal 背包當前狀態，
+  normal 礦可監看這欄計數；ionized/Spectral 進別的背包只能靠聊天字樣。需玩家提供礦物清單。

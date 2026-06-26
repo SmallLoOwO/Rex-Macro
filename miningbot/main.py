@@ -405,44 +405,66 @@ class Bot:
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
         cx, cy = marker
         self.last_action = "D3 採集"
-        self.logger.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d)",
-                         cx, cy, self.harvest.d3_attempts + 1)
+        # D3 前先讀聊天框（差分確認用：只有「新增」的 has found 才算成功，舊訊息不再偽造）
+        chat_before = self._read_chat(frame)
+        found_before = ocr.count_found(chat_before, cfg.found_keywords)
+        self.logger.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d found_before=%d)",
+                         cx, cy, self.harvest.d3_attempts + 1, found_before)
+        self._snapshot(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
+        self._snapshot_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("3")
         time.sleep(0.6)          # 等 D3 裝備動畫（太快點會被吃掉）
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
         time.sleep(0.5)          # 等伺服器回應追蹤框消失
         after = capture.grab()
         gone = vision.find_tracker(after) is None    # 追蹤框立即消失 = D3 命中
-        confirmed = self._verify_success(after)      # 聊天框「has found」二次確認
+        chat_after = self._read_chat(after)
+        found_after = ocr.count_found(chat_after, cfg.found_keywords)
+        # 差分確認：D3 後 found 數量必須「多於」D3 前（舊訊息不算，連續同礦也抓得住）
+        confirmed = found_after > found_before
+        # 特殊階（ionized/Spectral）：同樣用差分——這類礦物進別的背包，只能靠聊天字樣辨識
+        special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
+        self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
+        self.logger.info("verify harvest: gone=%s found %d->%d %s special=%s",
+                         gone, found_before, found_after,
+                         "NEW" if confirmed else "no-new", special)
         if gone or confirmed:
-            self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone)
+            self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone,
+                         special=special, found_before=found_before, found_after=found_after)
             self.stats["rares"] += 1
-            self.last_action = "採集成功！"
-            self._snapshot(after, "harvest_success")
-            self.logger.info("採集成功（gone=%s chat=%s）-> 轉回原方位 net=%d",
-                             gone, confirmed, self.harvest.net_rotations)
+            self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
+            self._snapshot(after, "harvest_success" + ("_special" if special else ""))
+            self.logger.info("採集成功（gone=%s chat=%d->%d special=%s）-> 轉回原方位 net=%d",
+                             gone, found_before, found_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
             miner.init_mining_sequence()
         else:
+            self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
             if self.harvest.d3_attempts >= 3:
                 # D3 連 3 次未命中（可能角度偏或掃描即將到期）→ 重新 D2 掃描
-                self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描",
-                                 self.harvest.d3_attempts)
+                self.logger.info("採集: D3 連 %d 次未命中 (found %d->%d) -> 重新 D2 掃描",
+                                 self.harvest.d3_attempts, found_before, found_after)
                 self.harvest.d3_attempts = 0
                 harvester.start_scan()
             else:
-                self.logger.info("採集: D3 未立即命中 (attempt %d/3)，繼續等待",
-                                 self.harvest.d3_attempts)
+                self.logger.info("採集: D3 未命中 (attempt %d/3 found %d->%d)，繼續等待",
+                                 self.harvest.d3_attempts, found_before, found_after)
 
-    def _verify_success(self, frame) -> bool:
-        chat = capture.crop(frame, cfg.chat_region)
-        text = ocr.read_text(chat, cfg.tesseract_path)
-        ok = ocr.contains_any(text, cfg.found_keywords)
-        self.logger.info("verify harvest: %s (chat=%r)", "SUCCESS" if ok else "not yet",
-                         text.strip()[:80])
-        return ok
+    def _read_chat(self, frame) -> str:
+        """讀聊天框區域 OCR 文字（採集差分確認用）。"""
+        return ocr.read_text(capture.crop(frame, cfg.chat_region), cfg.tesseract_path)
+
+    def _snapshot_crop(self, frame, region, label: str):
+        """存畫面指定區域的截圖（如聊天框 crop），方便事後盤別採集成敗。"""
+        if not cfg.save_snapshots or frame is None:
+            return
+        try:
+            path = diagnostics.save_snapshot(capture.crop(frame, region), cfg.log_dir, label)
+            self.logger.info("SNAPSHOT %s -> %s", label, path)
+        except Exception as e:                       # 存圖失敗不中斷主流程
+            self.logger.error("snapshot failed (%s): %s", label, e)
 
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):

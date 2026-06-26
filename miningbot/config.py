@@ -84,6 +84,9 @@ class Config:
         "your heart skips a beat",
     )
     found_keywords: tuple = ("has found", "found a")
+    # 特殊階（ionized / Spectral）聊天標記——這類礦物進「另一個背包」（左側 normal 面板看不到），
+    # 只能靠聊天字樣辨識。採集成功時用差分判定是否為特殊階，供 Discord 通知/統計強調。
+    special_keywords: tuple = ("ionized", "spectral")
     # 礦坑重置：頂部訊息列出現含這些關鍵字 → 進 RESET_WAIT（停下等你重新定位）
     reset_phrases: tuple = ("reset in", "will reset", "reset")
     reset_check_interval_s: float = 2.0          # 多久 OCR 一次頂部列找重置字樣（OCR 較慢，節流）
