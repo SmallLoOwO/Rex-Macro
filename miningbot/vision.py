@@ -111,30 +111,31 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
     best = None
     for c in cnts:
         area = cv2.contourArea(c)
-        if area < 100 or area > 5000:                 # 太小=雜訊、太大=面板/大片綠
+        if area < 400 or area > 5000:                 # 追蹤框主輪廓≥400，地形/文字雜訊通常<300
             continue
         x, y, bw, bh = cv2.boundingRect(c)
-        if not (12 <= bw <= 80 and 12 <= bh <= 80):
+        if not (18 <= bw <= 80 and 18 <= bh <= 80):
             continue
         if abs(bw - bh) > max(bw, bh) * 0.5:          # 大致方形
             continue
         cx, cy = x + bw // 2, y + bh // 2
         in_area = (mx0 < cx < mx1 and my0 < cy < my1)  # 排除邊緣面板/HUD
+        # 空心率：追蹤框的 bounding rect 只有外框是綠色（約 60%），純綠背景接近 100%
+        green_fill = float(np.mean(green[y:y+bh, x:x+bw] > 0))
         roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
                         max(0, cx - bw // 3):cx + bw // 3]
         if roi.size == 0:
             continue
-        dark = float(np.mean(np.all(roi < 60, axis=2)))   # 中心黑色方環比例
-        # 中心要有「亮且飽和的非綠色」= 礦物色填心。排除綠色數字（如 $金額的 0/9，
-        # 也是綠框+黑洞，但中心只有黑、無彩色填心）。
+        dark = float(np.mean(np.all(roi < 60, axis=2)))
         roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         H, S, V = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
         colored = (S > 90) & (V > 90) & ((H < 35) | (H > 95))
         colored_frac = float(colored.mean())
-        accept = in_area and dark > 0.10 and colored_frac > 0.04
+        # 空心框：green_fill < 0.85；中心有黑環或彩色填心
+        accept = in_area and green_fill < 0.85 and (dark > 0.10 or colored_frac > 0.04)
         if log is not None:
-            log("tracker候選 (%d,%d) area=%d dark=%.2f colored=%.2f in_area=%s -> %s"
-                % (cx, cy, int(area), dark, colored_frac, in_area, "OK" if accept else "rej"))
+            log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
+                % (cx, cy, int(area), green_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
         if accept and (best is None or area > best[0]):
             best = (area, (cx, cy))
     return best[1] if best else None

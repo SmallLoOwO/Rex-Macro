@@ -25,9 +25,14 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   槽位像素顯示「沒拿鎬子」時才按 D1（見 `miner._ensure_pickaxe`）；D5/D4 用完按 D1 是從別的工具切回，OK。
 - **轉視角＝ `,` / `.`（轉 45°，可數、可回歸）**；`pydirectinput.moveRel` 單獨用**不會**轉視角，
   細部瞄準要 **按住右鍵**拖曳（`input_control.aim_move`）。但右鍵難精準，策略以 `,`/`.` 為主。
-- **稀有礦追蹤框偵測＝顏色**：`vision.find_tracker`（亮綠外框＋黑色方環＋彩色中心）。**不要**用 wiki 邊緣模板
-  （wiki 只有外框、且**中心顏色隨礦物變**，記不完）。會排除場景綠色與綠色數字（如 $金額）。
-- **D2 掃描在有 UI 彈窗（如合成視窗）開著時點不到**（點擊被彈窗吃掉）→ 掃描前要先確保無彈窗。
+- **稀有礦追蹤框偵測＝顏色+空心率**：`vision.find_tracker`（亮綠外框＋空心率<0.85＋黑環OR彩色中心）。
+  **不要**用 wiki 邊緣模板（wiki 只有外框、且**中心顏色隨礦物變**，記不完）。
+  追蹤框是**空心框**（interior 是礦物填色，非綠），純綠背景是實心（fill≈1.0）→ fill<0.85 排除。
+- **D2 掃描＝按 2 後還要 click 畫面中央才觸發**（純按 2 只裝備，不掃）；掃描成功 = 左下出現「Local」。
+  掃描在有 UI 彈窗開著時點不到（點擊被彈窗吃掉）→ 掃描前要先確保無彈窗。
+- **D3 採集 = 按 3 等 0.6s + hold click 0.4s 在 tracker 螢幕座標**（實測確認 2026-06-27）：
+  瞬間 click 無效；按 3 後不等也無效。D3 以**滑鼠點選位置**瞄準（非 crosshair 方向），不需旋轉 camera。
+  tracker 立即消失 = 成功；緩慢消失 = D2 掃描到期，需重新掃描。
 - **chill 偵測靠喇叭 loopback**（`audio.LoopbackCapture` 餵 `ChillListener`）；預設只靠音訊
   （`chill_require_ocr=False`）。**真實 chill 約 0.4**（非參考檔的 1.0），門檻設 ~0.30。
 - **所有座標/門檻改 `miningbot/config.py`**；**輸入保留延遲**（太快會被吃掉，放開挖礦左鍵後要 `settle`）。

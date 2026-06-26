@@ -1,6 +1,8 @@
+import time
 from dataclasses import dataclass
 from .geometry import aim_decision
 from . import input_control as ic
+from .config import DEFAULT as cfg
 
 @dataclass
 class HarvestState:
@@ -46,7 +48,10 @@ def restore_actions(net_rotations: int) -> list:
 def start_scan():
     ic.key_up("w"); ic.mouse_up()
     ic.center_crosshair()                  # 瞄準前先把準心置中
-    ic.key_press("2")                      # D2 掃描
+    ic.key_press("2")                      # D2 裝備掃描器
+    time.sleep(0.3)                        # 等裝備動畫
+    ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)  # 左鍵觸發掃描
+    time.sleep(1.5)                        # 等追蹤框出現
 
 def fire_d3():
     ic.key_press("3")

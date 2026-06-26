@@ -406,8 +406,10 @@ class Bot:
         cx, cy = marker
         self.last_action = "D3 採集"
         self.logger.info("採集: 找到追蹤框 (%d,%d) -> 裝 D3 點選", cx, cy)
-        ic.key_press("3"); ic.click_at(cx, cy)
-        time.sleep(0.8)
+        ic.key_press("3")
+        time.sleep(0.6)          # 等 D3 裝備動畫（太快點會被吃掉）
+        ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
+        time.sleep(0.5)          # 等伺服器回應追蹤框消失
         after = capture.grab()
         gone = vision.find_tracker(after) is None    # 追蹤框消失 = 大概採到了
         confirmed = self._verify_success(after)      # 聊天框「has found」二次確認

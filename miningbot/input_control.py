@@ -46,12 +46,11 @@ def mouse_move_rel(dx: int, dy: int):
     pydirectinput.moveRel(dx, dy, relative=True)
     time.sleep(_STEP)
 
-def click_at(x: int, y: int, button: str = "left"):
-    """移到絕對座標再點一下（採集時 D3 點選追蹤框位置用）。"""
+def click_at(x: int, y: int, button: str = "left", hold: float = 0.0):
+    """移到絕對座標再點一下。hold>0 時改成按住再放開（D3 採集需要 hold=0.4 才觸發）。"""
     pydirectinput.moveTo(x, y)
     time.sleep(0.05)
-    pydirectinput.click(button=button)
-    time.sleep(_STEP)
+    mouse_click(button=button, hold=hold)
 
 def aim_move(dx: int, dy: int):
     """細部瞄準：**按住右鍵**拖曳滑鼠來轉視角（REX 用右鍵按著調整方位），移完放開。
