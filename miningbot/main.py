@@ -42,6 +42,9 @@ class Bot:
         self._started = time.time()
         self.last_action = "—"
         self.stats = {"boosts": 0, "rerolls": 0, "rares": 0, "stuck": 0}
+        self._human_reason = "需要人工介入"
+        self._last_reset_check = 0.0
+        self._mine_resetting = False
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -135,7 +138,23 @@ class Bot:
                     self._snapshot(frame, "audio_no_text")
         return Observation(chill_audio=chill_audio, chill_text=chill_text,
                            harvest_done=False, harvest_failed=False,
-                           human_cleared=self.human_cleared)
+                           human_cleared=self.human_cleared,
+                           mine_resetting=self._check_reset(frame))
+
+    def _check_reset(self, frame) -> bool:
+        """節流 OCR 頂部訊息列，偵測「mine will reset in」。只在 MINING 檢查。"""
+        if self.state is not State.MINING:
+            return False
+        now = time.time()
+        if now - self._last_reset_check < cfg.reset_check_interval_s:
+            return self._mine_resetting
+        self._last_reset_check = now
+        text = ocr.read_text(capture.crop(frame, cfg.chill_text_region), cfg.tesseract_path)
+        self._mine_resetting = ocr.contains_any(text, cfg.reset_phrases)
+        if self._mine_resetting:
+            self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
+            self._human_reason = "礦坑重置，請重新定位後按 Q 繼續"
+        return self._mine_resetting
 
     def _focus_roblox(self) -> bool:
         """啟動時：找到 Roblox 視窗、叫到最前面並取得焦點（輸入才會進遊戲）。"""
@@ -216,10 +235,17 @@ class Bot:
             self.harvest = harvester.HarvestState(0, 0.0)
             self._harvest_start = time.time()
         if s is State.NEEDS_HUMAN:
-            self.log.log("NEEDS_HUMAN", reason="harvest aim/verify failed")
+            self.log.log("NEEDS_HUMAN", reason=self._human_reason)
             self._snapshot(frame, "needs_human")
             ic.key_up("w"); ic.mouse_up()
-            self._alert("需要人工介入：稀有礦採集失敗，請手動處理後按 Q 恢復")
+            self._alert("需要人工：" + self._human_reason)
+            self.human_cleared = False
+        if s is State.RESET_WAIT:
+            self.log.log("MINE_RESET")
+            self._snapshot(frame, "mine_reset")
+            ic.key_up("w"); ic.mouse_up()            # 停止挖礦
+            self.last_action = "礦坑重置，等待重新定位"
+            self._alert("礦坑重置，請重新定位後按 Q 繼續")
             self.human_cleared = False
 
     def _tick(self, frame):
@@ -227,7 +253,7 @@ class Bot:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
             self._tick_harvest(frame)
-        # NEEDS_HUMAN: 等待熱鍵，不動作
+        # NEEDS_HUMAN / RESET_WAIT: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
     def _tick_mining(self, frame):
         flags = miner.EventFlags(
@@ -289,6 +315,7 @@ class Bot:
                           marker, step.action, self.harvest.rotations,
                           self.harvest.net_rotations, self.harvest.elapsed_s)
         if step.action == "HUMAN":
+            self._human_reason = "稀有礦採集失敗，請手動處理"
             self.state = State.NEEDS_HUMAN
             self._on_enter(State.NEEDS_HUMAN, frame)
             return
@@ -339,9 +366,9 @@ class Bot:
             self.logger.info("RESUMED (Q)")
             if self.state is State.MINING:
                 miner.init_mining_sequence()
-        elif self.state is State.NEEDS_HUMAN:        # 人工介入後 → 繼續
+        elif self.state in (State.NEEDS_HUMAN, State.RESET_WAIT):   # 人工/重置定位後 → 繼續
             self.human_cleared = True
-            self.logger.info("human cleared (Q) — 恢復挖礦")
+            self.logger.info("human cleared (Q) — 恢復挖礦 (from %s)", self.state.value)
         else:                                        # 正在跑 → 暫停
             self.paused = True
             ic.key_up("w"); ic.mouse_up()
