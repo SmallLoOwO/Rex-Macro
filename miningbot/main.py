@@ -1,5 +1,6 @@
 import os
 import time
+import ctypes
 import winsound
 import keyboard
 
@@ -136,6 +137,28 @@ class Bot:
                            harvest_done=False, harvest_failed=False,
                            human_cleared=self.human_cleared)
 
+    def _focus_roblox(self) -> bool:
+        """啟動時：找到 Roblox 視窗、叫到最前面並取得焦點（輸入才會進遊戲）。"""
+        u = ctypes.windll.user32
+        hwnd = u.FindWindowW(None, cfg.window_title)
+        if not hwnd:
+            self.logger.error("找不到 Roblox 視窗（title=%s）", cfg.window_title)
+            return False
+        u.ShowWindow(hwnd, 9)                        # SW_RESTORE
+        fg = u.GetForegroundWindow()
+        t1 = u.GetWindowThreadProcessId(fg, 0)
+        t2 = u.GetWindowThreadProcessId(hwnd, 0)
+        u.AttachThreadInput(t1, t2, True)
+        u.BringWindowToTop(hwnd); u.SetForegroundWindow(hwnd)
+        u.AttachThreadInput(t1, t2, False)
+        time.sleep(1.0)
+        if u.GetForegroundWindow() != hwnd:          # 視窗 API 沒成功 → 點畫面中央取得焦點
+            import pydirectinput
+            pydirectinput.moveTo(cfg.screen_w // 2, cfg.screen_h // 2)
+            time.sleep(0.2); pydirectinput.click(); time.sleep(0.5)
+        self.logger.info("Roblox 已聚焦 (hwnd=%s, fg=%s)", hwnd, u.GetForegroundWindow())
+        return True
+
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         keyboard.add_hotkey(cfg.hotkey_emergency_stop, self._emergency_stop)
@@ -144,7 +167,16 @@ class Bot:
         self._running = True
         self.logger.info("bot started (stop=%s pause=%s quit=%s, log_level=%s)",
                          cfg.hotkey_emergency_stop, cfg.hotkey_pause, cfg.hotkey_quit, cfg.log_level)
+        # 先確認 Roblox 在、聚焦它，完成初始化定位後才開始
+        if not self._focus_roblox():
+            self._alert("找不到/無法聚焦 Roblox，請先開好遊戲再啟動")
+            self._running = False
+            self._audio_cap.stop()
+            return
+        self.last_action = "初始化定位"
+        time.sleep(0.4)
         miner.init_mining_sequence()
+        self.logger.info("初始化完成，開始挖礦")
         try:
             while self._running:
                 if self.paused:
