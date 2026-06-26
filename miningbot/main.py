@@ -304,6 +304,7 @@ class Bot:
         if s is State.HARVESTING:
             self.log.log("RARE_FOUND")
             self._snapshot(frame, "rare_found")
+            self.logger.info("進入採集 HARVESTING: D2 掃描，準備找追蹤框")
             harvester.start_scan()
             self.harvest = harvester.HarvestState(0, 0.0)
             self._harvest_start = time.time()
@@ -384,41 +385,44 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        # 追蹤框偵測：綠外框 + 黑色方環（內部色隨礦物變，故不用邊緣模板）
-        marker = vision.find_tracker(frame)
-        # 視野內沒看到追蹤框 → 轉 45° 找一圈（,/. 可數、可回歸；在時間/次數預算內才轉）
-        if (marker is None and self.harvest.elapsed_s <= cfg.harvest_verify_timeout_s
-                and self.harvest.rotations <= cfg.max_aim_rotations):
-            self.last_action = "找追蹤框(轉45°)"
-            ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
-            return
-        step = harvester.next_harvest_step(marker, self.harvest, cfg)
-        self.logger.debug("harvest marker=%s step=%s rot=%d net=%d t=%.1f",
-                          marker, step.action, self.harvest.rotations,
-                          self.harvest.net_rotations, self.harvest.elapsed_s)
-        if step.action == "HUMAN":
-            self._human_reason = "稀有礦採集失敗，請手動處理"
+        # 超時或轉太多圈仍沒採到 → 交人工
+        if (self.harvest.elapsed_s > cfg.harvest_verify_timeout_s
+                or self.harvest.rotations > cfg.max_aim_rotations):
+            self._human_reason = "稀有礦採集失敗（找不到或採不到），請手動處理"
+            self.logger.info("採集失敗 -> 人工 (t=%.1f rot=%d)",
+                             self.harvest.elapsed_s, self.harvest.rotations)
             self.state = State.NEEDS_HUMAN
             self._on_enter(State.NEEDS_HUMAN, frame)
             return
-        if step.action == "ROTATE_LEFT":
-            ic.rotate_left(); self.harvest.rotations += 1; self.harvest.net_rotations -= 1
-        elif step.action == "ROTATE_RIGHT":
+        # 追蹤框偵測：綠外框 + 黑色方環（內部色隨礦物變，故不用邊緣模板）；候選明細記 DEBUG
+        marker = vision.find_tracker(frame, log=self.logger.debug)
+        if marker is None:                          # 沒看到 → 轉 45° 找（,/. 可數、可回歸）
+            self.last_action = "找追蹤框(轉45°)"
+            self.logger.info("採集: 沒看到追蹤框 -> 轉45° (rot=%d/%d t=%.1f)",
+                             self.harvest.rotations, cfg.max_aim_rotations, self.harvest.elapsed_s)
             ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
-        elif step.action == "MOUSE_AIM":
-            # 細部瞄準：右鍵按著拖曳轉視角（,/. 是粗轉 45°，這裡微調）
-            ic.aim_move(int(step.dx * cfg.mouse_aim_gain),
-                        int(step.dy * cfg.mouse_aim_gain))
-        elif step.action == "FIRE_D3":
-            harvester.fire_d3()
-            if self._verify_success(frame):
-                self.log.log("HARVEST_SUCCESS")
-                self.stats["rares"] += 1
-                self.last_action = "採集成功！"
-                self._snapshot(frame, "harvest_success")
-                harvester.restore_view(self.harvest.net_rotations)  # 轉回採集前的原角度
-                self.state = State.MINING
-                miner.init_mining_sequence()
+            return
+        # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
+        cx, cy = marker
+        self.last_action = "D3 採集"
+        self.logger.info("採集: 找到追蹤框 (%d,%d) -> 裝 D3 點選", cx, cy)
+        ic.key_press("3"); ic.click_at(cx, cy)
+        time.sleep(0.8)
+        after = capture.grab()
+        gone = vision.find_tracker(after) is None    # 追蹤框消失 = 大概採到了
+        confirmed = self._verify_success(after)      # 聊天框「has found」二次確認
+        if gone or confirmed:
+            self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone)
+            self.stats["rares"] += 1
+            self.last_action = "採集成功！"
+            self._snapshot(after, "harvest_success")
+            self.logger.info("採集成功（gone=%s chat=%s）-> 轉回原方位 net=%d",
+                             gone, confirmed, self.harvest.net_rotations)
+            harvester.restore_view(self.harvest.net_rotations)  # 轉回採集前的原角度
+            self.state = State.MINING
+            miner.init_mining_sequence()
+        else:
+            self.logger.info("採集: D3 點選後未確認成功（追蹤框還在），續試")
 
     def _verify_success(self, frame) -> bool:
         chat = capture.crop(frame, cfg.chat_region)

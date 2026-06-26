@@ -1,41 +1,54 @@
-# 接手微調 Handoff
+# 接手 Handoff — 重點：解決「稀有礦自動採集」
 
-把下面整段貼進新 session 當開場提示詞即可。
+> 先讀 `CLAUDE.md`（含實機踩過的坑）、`docs/game-mechanics.md`。本檔記錄**目前進度**與**下一步**。
+> 程式碼在分支 `feature/window-discord-controls`（多個 commit，`python -m pytest -q` 全綠）。
 
----
+## 1. 現況：挖礦主流程穩定，採集卡在「掃描」
 
-我在接續一個既有專案：Roblox 遊戲「REX」的 Python 自動掛機機器人。**基本功能已完成並驗證，接下來只剩實機微調。** 請先讀 `CLAUDE.md`、`docs/game-mechanics.md`、`docs/superpowers/specs/` 與 `plans/` 了解全貌，再開始。
+實機跑得起來、會穩定挖礦/補 boost/刷 D4/聽 chill/重置等人工，Discord 會通知。**唯一沒打通的是稀有礦採集的「掃描→定位」**。
 
-## 現況（已完成並驗證，51 個 pytest 全綠）
-- 狀態機：MINING / HARVESTING / NEEDS_HUMAN / RESET_WAIT
-- 挖礦循環、boost（D5，偵測右下角瓶子**消失**才重上）、D4 定時右鍵刷新事件
-- **chill 音訊偵測**（喇叭 WASAPI loopback + 交叉相關）— 實測靜音 0.004、播 chill 飆 0.999
-- 稀有礦採集：D2 掃描 → 多階級標記「邊緣+多尺度」比對 → `.`/`,` 轉 45° + 滑鼠瞄準（瞄準前連按兩次 Shift 置中）→ D3 → 聊天框「has found」確認 → 轉回原角度
-- 礦坑重置偵測：OCR 頂部「reset in」→ RESET_WAIT 停下等重新定位（期間 chill 仍可搶先採集）→ Q 繼續
-- 啟動先聚焦 Roblox + 初始化定位才開始；輸入已放慢防漏；置頂不搶焦點的狀態 HUD（左下）
-- 診斷：`logs/miningbot.log`（動作/狀態/音訊分數/心跳）、`logs/snapshots/`（關鍵時刻截圖）、`logs/events.log`
+### 已完成並驗證（本階段）
+- **視窗/輸入基礎修復**：`_focus_roblox` 改 SW_MAXIMIZE（原 SW_RESTORE 把全螢幕縮小）；啟動先設 DPI-aware
+  （否則 mss 截圖中途切 DPI 害視窗基準誤判 resized）；拿不到前景焦點就中止、不空挖瞎挖。
+- **全域熱鍵**：`Bot._check_hotkeys` 用 GetAsyncKeyState 輪詢，Ctrl+Q/Q/F12 焦點在遊戲也有效（`keyboard` 庫已棄用）。
+- **D4 冷卻偵測**：偵測右下角「Used」圖示在不在（`miner.cooldown_ready` + `assets/d4_cooldown.png`），冷卻好就用。
+- **Discord 通知**：`notify.py`（Bot API），RARE_FOUND/HARVEST_SUCCESS/NEEDS_HUMAN/STUCK/MINE_RESET，已實測送達。
+- **挖礦序列對照原巨集**：init 只在槽位像素顯示沒拿鎬子時才按 D1（避免 toggle 收起十字鎬）；boost/D4 用完按 D1 切回。
+- **音訊門檻 0.55→0.30**（真實 chill 實測約 0.4）。
+- **★ 追蹤框偵測已解**：`vision.find_tracker` 用「亮綠外框＋黑色方環＋彩色中心」顏色偵測，
+  實機真畫面準確命中、排除側邊面板與綠色 $金額誤判。4 個單元測試（含換中心色仍偵測到）。
+- **採集瞄準機制已釐清**：粗轉用 `,`/`.`（45°、可數可回歸，`harvester` 已記 net_rotations）；
+  細部瞄準用按住右鍵拖曳（`input_control.aim_move`）；D3 是用滑鼠點選追蹤框位置來遠距挖。
 
-## 重要前提（會影響判斷）
-- **Roblox 要填滿螢幕**：視覺座標全照 1920×1080 全螢幕校準，視窗化會全錯。音訊不受影響。
-- 所有座標/門檻都在 `miningbot/config.py`。
-- 改完跑 `python -m pytest -q`（要綠）。純邏輯都有測試。
-- 熱鍵 Ctrl+Q 緊急停 / Q 暫停繼續 / F12 結束。
+## 2. 主要待解：採集「掃描」打不通（阻塞點）
 
-## 接下來要微調 / 補的（依優先序）
-1. **採集瞄準**（最需要真實 chill 來調）：`mouse_aim_gain`（滑鼠靈敏度縮放）、`marker_edge_threshold`（標記比對門檻）。等真實 chill 出現，看 `logs/snapshots/` 的 `rare_found` / `needs_human` 截圖逐步調。
-2. `audio_match_threshold`（目前 0.55；實測真實 chill 分數再調，避免漏抓或誤觸）。
-3. 各偵測區座標若 UI 有出入：`chill_text_region`、`boost_indicator_region`、`chat_region`（用 `python -m miningbot.calibrate`）。
-4. **已實作（待實機驗證）**：跑到一半畫面跑位偵測 + 自動重新聚焦初始化。改用 Win32 查視窗
-   前景/位置/大小（`miningbot/window.py`，純邏輯有測試），相對啟動基準判斷，DPI 安全。
-   失焦/移動/縮放 → 自動 `_focus_roblox` + 重新初始化；視窗消失/抓不回 → NEEDS_HUMAN。
-   開關 `config.window_check_enabled`（預設開）。**注意**：MINING 中若你手動 alt-tab 離開
-   Roblox（未先按 Q 暫停），它會把焦點搶回去——這是預期行為；要離開先按 Q。
-5. **（可選）** 礦坑「重置完成音」自動偵測：需使用者提供該音效錄音檔，比照 chill 做音訊比對。
-6. OCR 品質偏低（文字會糊）；若要靠 OCR（重置/chill 文字確認），可加影像前處理（放大+二值化）或保持音訊為主。
+實測 D2 掃描**點不出去**：按 2 會選到槽位 2（scanner 確實裝備，hotbar 槽 2 變綠），但左鍵點畫面**沒觸發掃描**
+（右下角沒出現雷達冷卻、左下沒出現「Local」）。**研判主因：畫面有 UI 彈窗（合成視窗「Affement [1/2]」）開著，
+把點擊吃掉了**。沒掃描就沒有綠色追蹤框，`find_tracker` 自然找不到（這部分是對的，不是偵測的問題）。
 
-## 怎麼測
-- 純邏輯：`python -m pytest -q`
-- 實機：Roblox **全螢幕** → `python -m miningbot.main` → 觀察 HUD / `logs/`
-- 想看細節把 `config.log_level` 改 `"DEBUG"`
+次要疑點：D2 掃描本身可能有冷卻（連續掃會點不動）。
 
-請先讀文件，然後我們一項一項微調。
+## 3. 下一步（依優先序）
+
+1. **讓掃描確實觸發**（核心）：
+   - 掃描前先確保無彈窗。需要找出「在遊戲內關掉合成/彈窗」的可靠方法（**不能用 Esc**，會開系統選單）。
+     可能：點彈窗的關閉鈕、或某個遊戲鍵。請使用者確認關閉彈窗的操作，或讓 bot 偵測彈窗存在就先提醒/略過掃描。
+   - 確認 D2 掃描的冷卻時間（量「按下→雷達冷卻消失」的秒數），避免冷卻內狂點。
+   - 驗證成功訊號：掃描成功時**左下出現「Local」**、右下出現雷達冷卻 → 可加偵測當作「掃描成功」確認。
+2. **端到端採集驗證**：`main._tick_harvest` 已改成**簡化流程**（待實機跑通）：
+   `find_tracker` 找綠框 → 沒看到就轉 `,`/`.` 找 → 看到就**裝 D3 + 直接點選綠框位置**（`ic.click_at`，
+   不再精準置中、不用 `next_harvest_step`/`aim_decision`，那些函式留著但未使用）→ 成功判定＝追蹤框消失
+   或聊天框「has found」→ 轉回原方位。**注意這條未實機驗證**（掃描卡住，沒機會跑到）。
+3. **瞄準微調**：以 `,`/`.` 為主（右鍵難控）。確認 D3 是否需精準置中、或點到框附近即可。垂直偏高的礦
+   目前會判 vertical-extreme 轉人工（`vertical_extreme_ratio`），視需要放寬。
+4. **（次要）** D4 加強事件（左鍵）目前未做，使用者說「之後再做」；現在 D4 用右鍵刷新。
+
+## 4. 排錯工具（本階段用到的）
+- **mss 截圖看畫面**：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → Read `logs/x.png`。比 computer-use 截圖乾淨（實體像素、不被遮罩）。
+- **computer-use**：可 `request_access` Roblox 後截圖/驅動；驅動只用遊戲鍵（1–5、`,`/`.`、W、左右鍵），**不要按 Esc**。
+- **顏色/形狀偵測**：找追蹤框用 HSV 綠 + 黑環 + 彩色中心（見 `find_tracker`）；調參時把候選 blob 印出來看。
+- **log**：採集流程已加 INFO log（見 `_tick_harvest`），`config.log_level="DEBUG"` 看更細。
+
+## 5. 怎麼測
+- 純邏輯：`python -m pytest -q`（要綠）。
+- 實機：Roblox 最大化 → `python -m miningbot.main` → 看 HUD / `logs/`；或用上面的截圖一格一格除錯。

@@ -94,12 +94,13 @@ def frame_mean_diff(a_bgr, b_bgr) -> float:
 _TRACKER_GREEN_LO = (38, 70, 70)
 _TRACKER_GREEN_HI = (90, 255, 255)
 
-def find_tracker(frame_bgr, margin_frac: float = 0.10):
+def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     為何不用邊緣模板：wiki 模板只有外框、且追蹤框**中心顏色隨礦物變**，記不完所有顏色。
-    追蹤框的恆定特徵是「**亮綠外框 + 內部黑色方環**」——用顏色+結構抓，對中心色不敏感、
-    又能排除場景其他綠色物件（無黑環）與側邊面板（margin 過濾）。
+    追蹤框的恆定特徵是「**亮綠外框 + 內部黑色方環 + 彩色中心**」——用顏色+結構抓，對中心色不敏感、
+    又能排除場景其他綠色物件（無黑環）與綠色數字/面板。
+    `log`：傳一個 callable（如 logger.debug），會印出每個綠色候選的判定指標，方便調參。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
@@ -118,13 +119,22 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10):
         if abs(bw - bh) > max(bw, bh) * 0.5:          # 大致方形
             continue
         cx, cy = x + bw // 2, y + bh // 2
-        if not (mx0 < cx < mx1 and my0 < cy < my1):   # 排除邊緣面板/HUD
-            continue
+        in_area = (mx0 < cx < mx1 and my0 < cy < my1)  # 排除邊緣面板/HUD
         roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
                         max(0, cx - bw // 3):cx + bw // 3]
         if roi.size == 0:
             continue
         dark = float(np.mean(np.all(roi < 60, axis=2)))   # 中心黑色方環比例
-        if dark > 0.12 and (best is None or area > best[0]):
+        # 中心要有「亮且飽和的非綠色」= 礦物色填心。排除綠色數字（如 $金額的 0/9，
+        # 也是綠框+黑洞，但中心只有黑、無彩色填心）。
+        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        H, S, V = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
+        colored = (S > 90) & (V > 90) & ((H < 35) | (H > 95))
+        colored_frac = float(colored.mean())
+        accept = in_area and dark > 0.10 and colored_frac > 0.04
+        if log is not None:
+            log("tracker候選 (%d,%d) area=%d dark=%.2f colored=%.2f in_area=%s -> %s"
+                % (cx, cy, int(area), dark, colored_frac, in_area, "OK" if accept else "rej"))
+        if accept and (best is None or area > best[0]):
             best = (area, (cx, cy))
     return best[1] if best else None
