@@ -29,18 +29,28 @@ class Config:
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
 
-    # D4 活動：定時右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
+    # D4 活動：右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
+    # 偵測右下角 D4「冷卻圖示」不在 = 冷卻好 → 就用（避免能用卻沒用）。
+    # 缺冷卻圖模板時退回定時模式（activity_reroll_interval_s）當後備。
     activity_reroll_enabled: bool = True
-    activity_reroll_interval_s: float = 30.0     # 每隔多久刷新一次（抓 D4 冷卻附近）
-    window_focus_check_enabled: bool = False     # 失焦復原偵測（未校準前先關，避免誤判狂 refocus）
-    window_focus_pixel: tuple = (10, 940)        # 失焦復原偵測點（待校準）
-    window_focus_color: int = 0x2B2B2B           # 佔位，校準時量測
+    activity_cooldown_template: str = "assets/d4_cooldown.png"  # D4 冷卻圖示模板（用 capture_template 擷取）
+    activity_cooldown_edge_threshold: float = 0.40             # D4 冷卻圖示邊緣比對門檻（校準時調）
+    activity_cooldown_grace_s: float = 3.0                     # 按 D4 後等冷卻圖示出現的寬限（避免重複按）
+    activity_reroll_interval_s: float = 30.0                   # 後備：無冷卻圖模板時每隔多久刷新一次
+    # 視窗跑位偵測（item ④）：用 Win32 查 Roblox 視窗「前景/位置/大小」，相對啟動時量到的
+    # 基準判斷是否跑掉（失焦或被移動/縮放）→ 自動重新聚焦+初始化。用基準相對比較而非寫死
+    # 1920x1080，因 DPI 縮放會讓 GetWindowRect 回報縮放後座標（實測此機 125% → 1536x864）。
+    window_check_enabled: bool = True
+    window_check_interval_s: float = 1.0         # 多久查一次視窗狀態（Win32 很快，節流即可）
+    window_pos_tolerance_px: int = 6             # 位置偏移容差（相對基準）
+    window_size_tolerance_px: int = 8            # 大小偏移容差（相對基準）
     slot_pixel: tuple = (1011, 845)
     slot_color: int = 0x232323
 
     # 音訊
     chill_audio_path: str = "assets/chill_reference.wav"
-    audio_match_threshold: float = 0.55          # 交叉相關門檻，實測調
+    audio_match_threshold: float = 0.30          # 交叉相關門檻。實測真實 chill 約 0.4（不像參考檔 1.0），
+                                                 # 靜音約 0.004，故設 0.30 抓得到、又遠離雜訊（誤觸再往上調）
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5

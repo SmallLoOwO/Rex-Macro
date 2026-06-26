@@ -25,7 +25,11 @@
 1. **採集瞄準**（最需要真實 chill 來調）：`mouse_aim_gain`（滑鼠靈敏度縮放）、`marker_edge_threshold`（標記比對門檻）。等真實 chill 出現，看 `logs/snapshots/` 的 `rare_found` / `needs_human` 截圖逐步調。
 2. `audio_match_threshold`（目前 0.55；實測真實 chill 分數再調，避免漏抓或誤觸）。
 3. 各偵測區座標若 UI 有出入：`chill_text_region`、`boost_indicator_region`、`chat_region`（用 `python -m miningbot.calibrate`）。
-4. **未實作**：跑到一半畫面跑位（Roblox 失焦/視窗位移）的偵測 + 自動重新初始化（第三個觸發）。
+4. **已實作（待實機驗證）**：跑到一半畫面跑位偵測 + 自動重新聚焦初始化。改用 Win32 查視窗
+   前景/位置/大小（`miningbot/window.py`，純邏輯有測試），相對啟動基準判斷，DPI 安全。
+   失焦/移動/縮放 → 自動 `_focus_roblox` + 重新初始化；視窗消失/抓不回 → NEEDS_HUMAN。
+   開關 `config.window_check_enabled`（預設開）。**注意**：MINING 中若你手動 alt-tab 離開
+   Roblox（未先按 Q 暫停），它會把焦點搶回去——這是預期行為；要離開先按 Q。
 5. **（可選）** 礦坑「重置完成音」自動偵測：需使用者提供該音效錄音檔，比照 chill 做音訊比對。
 6. OCR 品質偏低（文字會糊）；若要靠 OCR（重置/chill 文字確認），可加影像前處理（放大+二值化）或保持音訊為主。
 

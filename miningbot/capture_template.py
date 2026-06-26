@@ -5,7 +5,8 @@
 
 用法（請先讓 Roblox 全螢幕、焦點在遊戲）：
     python -m miningbot.capture_template boost      # D5 加成（效果在右下角）
-    python -m miningbot.capture_template activity   # D4 控制活動（頂部）
+    python -m miningbot.capture_template d4cool     # D4 冷卻圖示（右下角；框它，給冷卻偵測用）
+    python -m miningbot.capture_template activity   # D4 控制活動（頂部，舊用途）
     python -m miningbot.capture_template scan        # D2 掃描
     python -m miningbot.capture_template cave        # 洞穴入口（場景事件，不自動觸發，直接截現況）
     python -m miningbot.capture_template boost --manual   # 不自動按鍵，你自己觸發，只負責截圖+框選
@@ -29,9 +30,16 @@ def _click_center():
     pydirectinput.click()
 
 
+def _rightclick_center():
+    pydirectinput.moveTo(*CENTER)
+    pydirectinput.click(button="right")
+
+
 # event -> (輸出檔名, 觸發函式 or None)
 TRIGGERS = {
     "boost":    ("boost_active",    lambda: (ic.key_press("5"), _click_center())),
+    # D4 右鍵刷新會讓右下角出現冷卻圖示；框那個圖示存成 d4_cooldown.png（冷卻偵測用）
+    "d4cool":   ("d4_cooldown",     lambda: (ic.key_press("4"), _rightclick_center())),
     "activity": ("activity_event",  lambda: (ic.key_press("4"), _click_center())),
     "scan":     ("scan_event",      lambda: (ic.key_press("2"), _click_center())),
     "cave":     ("cave_event",      None),   # 洞穴是場景事件，無法用按鍵觸發
