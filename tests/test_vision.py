@@ -1,7 +1,9 @@
+import os
 import cv2
 import numpy as np
 from miningbot.vision import (find_template, template_present, find_template_edges,
-                              find_tracker)
+                              find_tracker, find_marker, best_outline_score,
+                              template_outline_edges)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -243,3 +245,93 @@ def test_find_tracker_reference_accepts_new_tracker_not_in_ref():
     loc = find_tracker(scene, reference_bgr=ref)
     assert loc is not None, "掃描前不存在、掃描後才出現的追蹤框應被偵測到"
     assert abs(loc[0] - 955) < 10 and abs(loc[1] - 300) < 10
+
+
+# --- 色相無關確認（回歸：黃綠中心礦不該漏抓）---
+
+def test_find_tracker_detects_yellowgreen_center_marker():
+    """回歸 very_rare.png 根因：藍框 + 黃綠中心（H≈60，落在舊版 colored 排除的 H35-95 帶）。
+
+    舊版 `colored=(S>90)&(V>90)&((H<35)|(H>95))` 會把黃綠中心算成 colored=0 → 漏抓。
+    修成色相無關後應偵測到（Ionized 那類黃綠中心礦）。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300, color=(255, 127, 0))            # 藍框 H≈105（range1）
+    cv2.rectangle(scene, (951, 296), (959, 304), (0, 255, 0), -1)  # 黃綠中心 H≈60
+    assert find_tracker(scene) is not None, "黃綠中心追蹤框不應被漏抓"
+
+
+# --- 混合偵測：HSV 定位 + 外框形狀確認 ---
+
+def test_find_tracker_no_shape_templates_is_pure_hsv():
+    """不傳 shape_templates → 行為同純 HSV（向後相容）。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    assert find_tracker(scene) is not None
+    assert find_tracker(scene, shape_templates=None) is not None
+    assert find_tracker(scene, shape_templates={}) is not None
+
+
+def test_find_tracker_hybrid_shape_gate_rejects_mismatched_shape():
+    """HSV 接受的候選，但形狀（外框）對不上模板（高門檻）→ 形狀確認應拒（殺假陽性）。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)                                  # HSV 會接受
+    circle = np.full((40, 40, 3), 30, np.uint8)
+    cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環模板（形狀不符方框）
+    loc = find_tracker(scene, shape_templates={"circle": circle}, shape_threshold=0.7)
+    assert loc is None, "形狀對不上時混合偵測應拒絕"
+
+
+def test_find_tracker_hybrid_detects_real_marker():
+    """真實資料：very_rare.png（紅礦坑、黃綠中心的 Transcendent 框）→ 混合偵測應命中 (~1230,643)。"""
+    img_path = "assets/very_rare.png"
+    tmpl_path = "assets/markers/transcendent_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    real = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    # 純 HSV（色相無關修正）也要能找到
+    assert find_tracker(img) is not None, "色相無關修正後純 HSV 應能找到黃綠中心框"
+    loc = find_tracker(img, shape_templates={"t": real},
+                       shape_scales=(0.7, 1.0, 1.4), shape_threshold=0.45)
+    assert loc is not None
+    assert abs(loc[0] - 1230) < 40 and abs(loc[1] - 643) < 40
+
+
+# --- find_marker（全幀形狀偵測，顏色無關）與輔助 ---
+
+def test_template_outline_edges_uses_alpha_channel():
+    """透明模板（BGRA）→ 用 alpha 外框算邊緣，而非被填黑的彩色版。"""
+    t = np.zeros((40, 40, 4), np.uint8)
+    cv2.rectangle(t, (8, 8), (31, 31), (255, 255, 255, 255), 2)    # 不透明方框外框，其餘透明
+    e = template_outline_edges(t)
+    assert e.shape == (40, 40)
+    assert int(e.max()) > 0
+
+
+def test_find_marker_color_independent_via_outline():
+    """形狀相同、顏色不同 → 外框比對仍命中（顏色無關，可跨階通用）。"""
+    tmpl = np.full((40, 40, 3), 30, np.uint8)
+    cv2.rectangle(tmpl, (6, 6), (33, 33), (200, 200, 200), 3)
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cv2.rectangle(scene, (938, 283), (977, 322), (255, 255, 0), 3)  # 青色方框（同形狀、異色）
+    loc = find_marker(scene, {"t": tmpl}, edge_threshold=0.3,
+                      scales=(0.8, 1.0, 1.2), min_colored=0.05)
+    assert loc is not None
+    assert abs(loc[0] - 957) < 25 and abs(loc[1] - 302) < 25
+
+
+def test_find_marker_empty_templates_falls_back_to_hsv():
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    assert find_marker(scene, {}) is not None
+
+
+def test_best_outline_score_high_for_matching_shape_low_for_blank():
+    tmpl = np.full((40, 40, 3), 30, np.uint8)
+    cv2.rectangle(tmpl, (6, 6), (33, 33), (200, 200, 200), 3)
+    scene = np.full((200, 200, 3), 30, np.uint8)
+    cv2.rectangle(scene, (80, 80), (119, 119), (0, 0, 255), 3)      # 同形狀紅框
+    assert best_outline_score(scene, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) >= 0.4
+    blank = np.full((200, 200, 3), 30, np.uint8)
+    assert best_outline_score(blank, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) < 0.4
