@@ -76,6 +76,13 @@ def load_template(path: str):
         raise FileNotFoundError(path)
     return img
 
+def load_template_any(path: str):
+    """保留 alpha 載入（wiki 追蹤框是透明 PNG、只有外框；IMREAD_COLOR 會丟掉透明通道）。"""
+    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(path)
+    return img
+
 def pixel_matches(scene_bgr, xy, rgb_hex: int, tol: int) -> bool:
     """指定點顏色是否接近 rgb_hex（容差 tol，逐通道）。scene 為 BGR。"""
     x, y = xy
@@ -102,8 +109,134 @@ _TRACKER_COLORS = [
     (np.array([153, 100,  50], np.uint8), np.array([179, 255, 255], np.uint8)),
 ]
 
+def template_outline_edges(template):
+    """取模板的「外框輪廓」邊緣圖（給形狀比對用）。
+
+    wiki 追蹤框圖是**透明 PNG、只有外框**（中心會填不同礦色，故只能比外框）：
+    有 alpha 通道 → 用 alpha（不透明=外框）算 Canny，得到純外框輪廓。
+    實機裁圖無 alpha → 退回灰階 Canny。
+
+    注意：`cv2.imread(IMREAD_COLOR)` 會丟掉 alpha，務必用 `IMREAD_UNCHANGED` 載入 wiki 圖。
+    """
+    if template.ndim == 3 and template.shape[2] == 4:
+        return cv2.Canny(template[:, :, 3], 50, 150)
+    return _canny(template)
+
+
+def _best_edge_match_sized(scene_e, sh, sw, tmpl_edges, scales, min_px=12):
+    """多尺度比對「模板輪廓邊緣圖」，連命中尺寸一起回傳：(best_val, best_center, tw, th)。
+
+    縮放的是邊緣圖本身（INTER_NEAREST 保形）。min_px 擋掉縮太小的尺度——
+    10px 以下的輪廓會在雜亂場景產生假高分（實測 scale 0.2 噪點誤判）。
+    """
+    best_val, best_loc, best_tw, best_th = -1.0, None, 0, 0
+    for s in scales:
+        e = tmpl_edges if s == 1.0 else cv2.resize(
+            tmpl_edges, None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
+        th, tw = e.shape[:2]
+        if th > sh or tw > sw or th < min_px or tw < min_px:
+            continue
+        res = cv2.matchTemplate(scene_e, e, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if np.isfinite(max_val) and max_val > best_val:
+            best_val = max_val
+            best_loc = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+            best_tw, best_th = tw, th
+    return best_val, best_loc, best_tw, best_th
+
+
+def _colored_ring_score(frame_bgr, cx, cy, bw, bh, s_min=90, v_min=90):
+    """色相無關地量一個 bbox 的「彩色佔比」與「環形結構」。
+
+    回傳 (colored_frac, ring_score)：
+    - colored_frac：bbox 內高飽和(S>s_min)且夠亮(V>v_min)的像素比例——
+      不分色相，所以任何階級顏色的追蹤框（橘/藍/紫/綠…）都算。灰色岩壁飽和度低 → 接近 0。
+    - ring_score = colored_frac - inner_frac（中心 30%-70% 區）：真追蹤框邊框/箭頭有色、
+      中心是黑環/礦色 → 邊緣彩色多、正值；實心彩色 blob 中心也有色 → 接近 0。
+    """
+    x0 = max(0, cx - bw // 2); y0 = max(0, cy - bh // 2)
+    roi = frame_bgr[y0:y0 + bh, x0:x0 + bw]
+    if roi.size == 0:
+        return 0.0, 0.0
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    colored = (hsv[:, :, 1] > s_min) & (hsv[:, :, 2] > v_min)
+    frac = float(colored.mean())
+    mh, mw = colored.shape
+    inner = colored[int(mh * 0.30):int(mh * 0.70), int(mw * 0.30):int(mw * 0.70)]
+    inner_frac = float(inner.mean()) if inner.size > 0 else frac
+    return frac, frac - inner_frac
+
+
+def find_marker(frame_bgr, templates, edge_threshold: float = 0.50, scales=(1.0,),
+                exclude=(), margin_frac: float = 0.10,
+                min_colored: float = 0.20, log=None):
+    """以「實機追蹤框裁圖」做形狀（邊緣）比對為主的偵測器——顏色無關，可跨階通用。
+
+    為什麼用形狀而非 HSV：追蹤框的「黑邊方框＋四方向箭頭」輪廓跨階級固定，只有
+    邊框/中心顏色隨階級與礦物變。Canny 邊緣比對忽略顏色 → 同一張實機裁圖即可命中
+    不同顏色的階級（實測色相位移後仍命中），不必為每個新色系手刻 HSV 範圍。
+
+    為什麼用「實機裁圖」而非 wiki 圖：wiki 是乾淨向量 icon，邊緣結構與遊戲內實際渲染
+    （抗鋸齒＋彩色中心＋雜亂背景）對不上，實測 wiki 模板完全配不到；實機裁圖 edge≈0.91。
+
+    流程：每個模板多尺度邊緣比對取最佳位置 → 在該位置做色相無關的彩色/環形確認
+    （排除剛好同形狀的灰色岩壁邊緣）→ 取邊緣分數最高者。
+
+    templates: {名稱: BGR 實機裁圖}。空 dict → 退回 HSV find_tracker（尚未建模板的階級的安全網）。
+    """
+    if not templates:
+        return find_tracker(frame_bgr, margin_frac=margin_frac, exclude=exclude,
+                            log=log, reference_bgr=None)
+    h, w = frame_bgr.shape[:2]
+    scene_e = _canny(frame_bgr)
+    sh, sw = scene_e.shape[:2]
+    mx0, my0 = w * margin_frac, h * margin_frac
+    mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
+    best = None  # (edge_val, (cx, cy))
+    for name, tmpl in templates.items():
+        tmpl_edges = template_outline_edges(tmpl)
+        val, loc, tw, th = _best_edge_match_sized(scene_e, sh, sw, tmpl_edges, scales)
+        if loc is None or val < edge_threshold:
+            continue
+        cx, cy = loc
+        in_area = (mx0 < cx < mx1 and my0 < cy < my1)
+        in_exclude = any(x0 <= cx <= x1 and y0 <= cy <= y1 for (x0, y0, x1, y1) in exclude)
+        colored_frac, ring = _colored_ring_score(frame_bgr, cx, cy, tw, th)
+        # 形狀（edge）已把實心 blob/灰岩濾掉大半；色相無關的 colored_frac 再擋「同形狀但灰色」
+        # 的岩壁邊緣。ring 只記錄供調參參考，不當門檻（追蹤框中心常是亮礦色，ring 可能 ≤0）。
+        accept = (in_area and not in_exclude and colored_frac >= min_colored)
+        if log is not None:
+            log("marker候選 %s (%d,%d) edge=%.2f colored=%.2f ring=%.2f in_area=%s -> %s"
+                % (name, cx, cy, val, colored_frac, ring, in_area, "OK" if accept else "rej"))
+        if accept and (best is None or val > best[0]):
+            best = (val, (cx, cy))
+    return best[1] if best else None
+
+
+def best_outline_score(scene_bgr, templates, scales=(1.0,), min_px=12) -> float:
+    """回傳 templates 中任一模板外框在 scene 的最佳邊緣相關度（0..1）。
+
+    給「混合偵測」的形狀確認用：在 HSV 候選周圍的小 ROI 上跑，分數高 = 該處有追蹤框外框。
+    templates 可混用 wiki 透明圖（用 alpha 外框）與實機裁圖（用灰階邊緣）。
+    """
+    if scene_bgr is None or scene_bgr.size == 0 or not templates:
+        return -1.0
+    scene_e = _canny(scene_bgr)
+    sh, sw = scene_e.shape[:2]
+    best = -1.0
+    for tmpl in templates.values():
+        val, loc, _, _ = _best_edge_match_sized(
+            scene_e, sh, sw, template_outline_edges(tmpl), scales, min_px)
+        if loc is not None and val > best:
+            best = val
+    return best
+
+
 def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
-                 reference_bgr=None):
+                 reference_bgr=None, shape_templates=None,
+                 shape_threshold: float = 0.45,
+                 shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
+                 shape_roi_px: int = 160):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
@@ -113,13 +246,18 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     reference_bgr：D2 掃描前截圖。提供後會過濾「掃描前就存在的彩色物件」，
     只接受掃描後才新出現的追蹤框，有效排除礦石本體/角色裝備等假陽性。
     `log`：傳 callable 可印出每個候選的判定指標，方便調參。
+
+    shape_templates：傳入實機裁圖 dict 後啟用「混合偵測」——HSV 負責快速找候選，
+    再在每個候選周圍的小 ROI 跑外框形狀比對確認，拒掉「有顏色但不是追蹤框形狀」的
+    假陽性（如角色裝備）。空/None → 純 HSV（向後相容）。形狀比對只在小 ROI 上跑，
+    比全幀模板比對快上百倍。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV) if reference_bgr is not None else None
     mx0, my0 = w * margin_frac, h * margin_frac
     mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
-    best = None
+    candidates = []   # [(colored_frac, cx, cy)] 通過 HSV 確認的候選
     for lo, hi in _TRACKER_COLORS:
         color_mask = cv2.inRange(hsv, lo, hi)
         ref_mask = cv2.inRange(ref_hsv, lo, hi) if ref_hsv is not None else None
@@ -163,8 +301,10 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                 continue
             dark = float(np.mean(np.all(roi < 60, axis=2)))
             roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            H, S, V = roi_hsv[:, :, 0], roi_hsv[:, :, 1], roi_hsv[:, :, 2]
-            colored = (S > 90) & (V > 90) & ((H < 35) | (H > 95))
+            S, V = roi_hsv[:, :, 1], roi_hsv[:, :, 2]
+            # 色相無關：任何階級的中心礦色都算（修：原本 (H<35)|(H>95) 排除黃綠 H35-95，
+            # 害「黃綠中心礦」如 Ionized 的 colored=0 而漏抓——實機 very_rare.png 踩到的根因）。
+            colored = (S > 90) & (V > 90)
             colored_frac = float(colored.mean())
             # accept 條件：彩色中心要夠明顯（colored_frac>0.50，真實 tracker≈1.00），
             # 或同時有黑環+部分彩色（合成 tracker dark≈0.65 colored≈0.16）。
@@ -174,7 +314,28 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
             if log is not None:
                 log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
                     % (cx, cy, int(area), frame_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
-            # 排名用 colored_frac（最高優先）：真 tracker≈1.00 > 角色裝備誤判≈0.75-0.88
-            if accept and (best is None or colored_frac > best[0]):
-                best = (colored_frac, (cx, cy))
-    return best[1] if best else None
+            if accept:
+                candidates.append((colored_frac, cx, cy))
+
+    # ---- 形狀確認（混合方案）：HSV 候選 → 小 ROI 外框比對，拒假陽性 ----
+    if shape_templates:
+        confirmed = []
+        for cf, cx, cy in candidates:
+            r = shape_roi_px // 2
+            roi = frame_bgr[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
+            score = best_outline_score(roi, shape_templates, shape_scales)
+            if log is not None:
+                log("shape確認 (%d,%d) colored=%.2f edge=%.2f -> %s"
+                    % (cx, cy, cf, score, "OK" if score >= shape_threshold else "rej"))
+            if score >= shape_threshold:
+                confirmed.append((score, cx, cy))
+        if not confirmed:
+            return None
+        confirmed.sort(reverse=True)        # 形狀分數最高者勝
+        return (confirmed[0][1], confirmed[0][2])
+
+    # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return (candidates[0][1], candidates[0][2])

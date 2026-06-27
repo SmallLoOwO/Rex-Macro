@@ -37,6 +37,8 @@ def _make_no_activate_topmost(root):
 class StatusHUD:
     def __init__(self, bot, x: int = 12, y: int = 905):
         self.bot = bot
+        self._countdown_remaining = 0              # >0 = 倒數中（bot 尚未啟動）
+        self._bot_thread_started = False
         self.root = tk.Tk()
         self.root.title("MiningBot")
         self.root.attributes("-topmost", True)         # 置頂（一般視窗比無邊框可靠）
@@ -52,6 +54,37 @@ class StatusHUD:
         self.lbl.pack()
         self._hidden = False
         self._hwnd = _make_no_activate_topmost(self.root)   # 置頂不搶焦點
+
+    def run(self, countdown_s: int = 0):
+        """啟動 mainloop。countdown_s>0 時先在原視窗倒數（bot 在倒數結束後才啟動）。"""
+        if countdown_s > 0:
+            self._countdown_remaining = countdown_s
+            self._countdown_tick()
+        else:
+            self._begin_operation()
+        self.root.mainloop()
+
+    def _countdown_tick(self):
+        """倒數階段：同一個左下角視窗顯示倒數，倒數完啟動 bot 並切換到正常輪詢。"""
+        if self._countdown_remaining <= 0:
+            self._begin_operation()
+            return
+        self.lbl.config(text=(
+            "● MiningBot 啟動中\n"
+            "\n"
+            f"     {self._countdown_remaining}\n"
+            "\n"
+            "請確認 Roblox 已開啟"
+        ))
+        self._countdown_remaining -= 1
+        self.root.after(1000, self._countdown_tick)
+
+    def _begin_operation(self):
+        """倒數結束（或無倒數）：啟動 bot 背景執行緒，開始 HUD 正常輪詢。"""
+        if not self._bot_thread_started:
+            self._bot_thread_started = True
+            import threading
+            threading.Thread(target=self.bot.run, daemon=True).start()
         self.root.after(200, self._poll)
 
     def _poll(self):
@@ -87,6 +120,3 @@ class StatusHUD:
             except Exception:
                 pass
         self.root.after(300, self._poll)
-
-    def run(self):
-        self.root.mainloop()
