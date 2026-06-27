@@ -102,21 +102,27 @@ _TRACKER_COLORS = [
     (np.array([153, 100,  50], np.uint8), np.array([179, 255, 255], np.uint8)),
 ]
 
-def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
+def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
+                 reference_bgr=None):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
     Otherworldly 暗紅、Transcendent 亮藍、Unfathomable 暗藍）——每個顏色範圍獨立偵測：
     空心率用「當前這個顏色的 mask」計算，避免其他顏色（如紅色礦坑背景 H≈168）干擾。
+
+    reference_bgr：D2 掃描前截圖。提供後會過濾「掃描前就存在的彩色物件」，
+    只接受掃描後才新出現的追蹤框，有效排除礦石本體/角色裝備等假陽性。
     `log`：傳 callable 可印出每個候選的判定指標，方便調參。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV) if reference_bgr is not None else None
     mx0, my0 = w * margin_frac, h * margin_frac
     mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
     best = None
     for lo, hi in _TRACKER_COLORS:
         color_mask = cv2.inRange(hsv, lo, hi)
+        ref_mask = cv2.inRange(ref_hsv, lo, hi) if ref_hsv is not None else None
         cnts, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for c in cnts:
             area = cv2.contourArea(c)
@@ -129,8 +135,28 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
                 continue
             cx, cy = x + bw // 2, y + bh // 2
             in_area = (mx0 < cx < mx1 and my0 < cy < my1)
+            in_exclude = any(x0 <= cx <= x1 and y0 <= cy <= y1 for (x0, y0, x1, y1) in exclude)
             # 空心率：只算「當前這個顏色的 mask」——避免礦坑背景同色系的 H 范圍干擾
             frame_fill = float(np.mean(color_mask[y:y+bh, x:x+bw] > 0))
+            # 環形結構：tracker 外框的顏色只分佈在邊緣；cave wall/實心 blob 中心也有顏色
+            # ring_score = frame_fill - inner_fill（縮 30% 取中心區）；tracker ≈ 0.5，blob ≈ 0
+            _mx = max(1, int(bw * 0.30)); _my = max(1, int(bh * 0.30))
+            _inner = color_mask[y+_my:y+bh-_my, x+_mx:x+bw-_mx]
+            _inner_fill = float(np.mean(_inner > 0)) if _inner.size > 0 else frame_fill
+            ring_score = frame_fill - _inner_fill
+            if ring_score < 0.15:
+                if log is not None:
+                    log("tracker候選 (%d,%d) area=%d fill=%.2f ring=%.2f -> rej(not_ring)"
+                        % (cx, cy, int(area), frame_fill, ring_score))
+                continue
+            # 差分過濾：掃描前就已存在的彩色物件（礦石本體/角色裝備）→ 排除
+            if ref_mask is not None:
+                ref_fill = float(np.mean(ref_mask[y:y+bh, x:x+bw] > 0))
+                if ref_fill > 0.15:
+                    if log is not None:
+                        log("tracker候選 (%d,%d) area=%d fill=%.2f ref_fill=%.2f -> rej(preexist)"
+                            % (cx, cy, int(area), frame_fill, ref_fill))
+                    continue
             roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
                             max(0, cx - bw // 3):cx + bw // 3]
             if roi.size == 0:
@@ -143,7 +169,7 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, log=None):
             # accept 條件：彩色中心要夠明顯（colored_frac>0.50，真實 tracker≈1.00），
             # 或同時有黑環+部分彩色（合成 tracker dark≈0.65 colored≈0.16）。
             # 排除「暗色 UI 面板」：dark 高但 colored≈0（左側面板誤判）。
-            accept = (in_area and frame_fill < 0.85
+            accept = (in_area and not in_exclude and frame_fill < 0.85
                       and ((dark > 0.10 and colored_frac > 0.04) or colored_frac > 0.50))
             if log is not None:
                 log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"

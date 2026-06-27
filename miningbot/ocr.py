@@ -27,11 +27,37 @@ def has_new_found(before: str, after: str, phrases) -> bool:
     """
     return count_found(after, phrases) > count_found(before, phrases)
 
-def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None) -> str:
-    """薄封裝：對已裁切的區域影像做 OCR。整合測試覆蓋。"""
+def has_new_found_last_line(before: str, after: str, phrases) -> bool:
+    """chat 最後一行差分：after 底部出現了 before 底部沒有的 found 訊息，算新採集。
+
+    count_found diff 在 chat 捲動（found_before 很高）時計數只減不增（假負）。
+    新訊息永遠出現在 chat 底部 → 只看最後一行即可，捲動只影響頂部。
+    """
+    def last_line(text: str) -> str:
+        stripped = text.strip()
+        return stripped.split("\n")[-1].strip() if stripped else ""
+
+    before_last = _normalize(last_line(before))
+    after_last  = _normalize(last_line(after))
+    if before_last == after_last:
+        return False
+    return any(_normalize(p) in after_last for p in phrases)
+
+
+def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
+              preprocess: str = "gray") -> str:
+    """薄封裝：對已裁切的區域影像做 OCR。
+
+    preprocess='gray'        ：標準灰階（適合白字/灰字）
+    preprocess='min_channel' ：最小通道（適合紅色/彩色文字，如遊戲聊天框）
+                               紅字 min(R,G,B) 低→深色；白底 min=255→亮色，對比好。
+    """
     import pytesseract
     import cv2
     if tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    return pytesseract.image_to_string(gray)
+    if preprocess == "min_channel":
+        processed = np.min(image_bgr, axis=2).astype(np.uint8)
+    else:
+        processed = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    return pytesseract.image_to_string(processed)

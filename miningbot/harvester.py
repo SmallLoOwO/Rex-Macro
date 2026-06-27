@@ -46,13 +46,22 @@ def restore_actions(net_rotations: int) -> list:
         return ["ROTATE_RIGHT"] * (-net_rotations)
     return []
 
-def start_scan():
+def prepare_scan():
+    """停止移動、置中鏡頭——在這之後應立刻截圖當 reference，再呼叫 execute_scan。"""
     ic.key_up("w"); ic.mouse_up()
-    ic.center_crosshair()                  # 瞄準前先把準心置中
+    ic.center_crosshair()                  # 置中後角色裝備位置才穩定
+    time.sleep(0.15)                       # 等畫面更新再截 reference
+
+def execute_scan():
+    """置中後裝備 D2 + 點擊觸發掃描（與 prepare_scan 分開是為了讓呼叫端在中間截 reference）。"""
     ic.key_press("2")                      # D2 裝備掃描器
     time.sleep(0.3)                        # 等裝備動畫
     ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)  # 左鍵觸發掃描
     time.sleep(1.5)                        # 等追蹤框出現
+
+def start_scan():
+    prepare_scan()
+    execute_scan()
 
 def fire_d3():
     ic.key_press("3")

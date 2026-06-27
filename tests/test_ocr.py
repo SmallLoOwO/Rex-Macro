@@ -1,4 +1,5 @@
-from miningbot.ocr import contains_phrase, contains_any, count_found, has_new_found
+from miningbot.ocr import (contains_phrase, contains_any, count_found,
+                           has_new_found, has_new_found_last_line)
 
 def test_contains_phrase_case_insensitive_and_fuzzy():
     text = "A CHILL goes  down your spine..."
@@ -50,3 +51,42 @@ def test_has_new_found_true_when_count_increases_consecutive_same_mineral():
 
 def test_has_new_found_false_when_both_empty():
     assert has_new_found("", "", KW) is False
+
+
+# --- has_new_found_last_line：最後一行差分（解決 chat 捲動問題）---
+# 背景：count_found diff 在 found_before 很高時會因 chat 捲動而回傳假負（5→2）。
+# has_new_found_last_line 只看最後一行：新訊息永遠出現在 chat 底部，
+# 捲動只影響頂部，不影響底部的判定。
+
+def test_last_line_new_found_when_fresh_message_at_bottom():
+    # D3 前 chat 沒有 "has found"，D3 後底部多一行 → True
+    before = "Roblox system message...\nsome event"
+    after  = "Roblox system message...\nsome event\nsmall_lo has found Lilaverine"
+    assert has_new_found_last_line(before, after, KW) is True
+
+
+def test_last_line_no_new_when_last_line_unchanged():
+    # D3 後底部沒變 → False
+    msg = "small_lo has found Lilaverine"
+    assert has_new_found_last_line(msg, msg, KW) is False
+
+
+def test_last_line_no_new_when_no_found_in_after_tail():
+    # D3 後底部出現的是非採集訊息 → False
+    before = "some chat"
+    after  = "some chat\nrerolled the event to Myth"
+    assert has_new_found_last_line(before, after, KW) is False
+
+
+def test_last_line_true_when_scroll_and_new_found_at_bottom():
+    # 03:51 情境：chat 從 before_last="has found Msg3" 捲到 after_last="has found NewOre"（不同礦）
+    before = "has found Msg1\nhas found Msg2\nhas found Msg3"
+    after  = "has found Msg2\nhas found Msg3\nhas found NewOre"
+    assert has_new_found_last_line(before, after, KW) is True
+
+
+def test_last_line_false_when_same_ore_at_bottom_no_new():
+    # chat 內容完全沒變（D3 未命中）→ False
+    before = "has found Msg2\nhas found Msg3\nhas found Msg4"
+    after  = "has found Msg2\nhas found Msg3\nhas found Msg4"
+    assert has_new_found_last_line(before, after, KW) is False

@@ -1,6 +1,7 @@
 import os
 import time
 import ctypes
+import threading
 import winsound
 
 from .config import DEFAULT as cfg
@@ -8,6 +9,38 @@ from .events import EventLog, make_file_sink
 from .states import State, Observation, decide_transition
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window
 from . import input_control as ic
+
+
+class _HotkeyController:
+    """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
+
+    def __init__(self, down_fn, on_stop, on_toggle, on_quit):
+        self._down = down_fn
+        self._on_stop = on_stop
+        self._on_toggle = on_toggle
+        self._on_quit = on_quit
+        self._prev_ctrlq = False
+        self._prev_q = False
+
+    def tick(self):
+        ctrl = self._down(0x11)
+        q    = self._down(0x51)
+        f12  = self._down(0x7B)
+        if ctrl and q:
+            if not self._prev_ctrlq:
+                self._on_stop()
+            self._prev_ctrlq = True
+            self._prev_q = True            # 放開時不再另觸發單獨 Q
+            return
+        self._prev_ctrlq = False
+        if q and not ctrl:
+            if not self._prev_q:
+                self._on_toggle()
+            self._prev_q = True
+        else:
+            self._prev_q = False
+        if f12:
+            self._on_quit()
 
 
 class Bot:
@@ -58,9 +91,14 @@ class Bot:
         self._last_window_check = 0.0
         self._window_bad = False
         self._window_displaced_reason = None
-        # 全域熱鍵邊緣偵測用（GetAsyncKeyState 輪詢，不靠 keyboard 庫，焦點在遊戲也有效）
-        self._hk_ctrlq = False
-        self._hk_q = False
+        # 熱鍵控制器：邊緣觸發邏輯在 _HotkeyController，背景執行緒持續輪詢
+        _u = ctypes.windll.user32
+        self._hk = _HotkeyController(
+            lambda vk: bool(_u.GetAsyncKeyState(vk) & 0x8000),
+            self._emergency_stop,
+            self._toggle_pause,
+            self._quit,
+        )
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -241,10 +279,14 @@ class Bot:
             self.logger.warning("Roblox 未取得前景焦點 — 輸入不會進遊戲；請點一下遊戲視窗再啟動")
         return got
 
+    def _hotkey_loop(self):
+        """背景執行緒：每 50ms 輪詢一次熱鍵，不受主迴圈阻塞影響。"""
+        while self._running:
+            self._hk.tick()
+            time.sleep(0.05)
+
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
-        # 熱鍵改用主迴圈裡 GetAsyncKeyState 全域輪詢（見 _check_hotkeys），
-        # 不再用 keyboard 庫——焦點在 Roblox 時 keyboard 庫常收不到，導致按了停不下來。
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 停 / Q 暫停繼續 / F12 結束, log_level=%s)",
                          cfg.log_level)
@@ -267,10 +309,10 @@ class Bot:
                 self.logger.warning("無法取得視窗基準（found=%s fg=%s）— 跑位偵測停用",
                                     base.found, base.foreground)
         miner.init_mining_sequence()
+        threading.Thread(target=self._hotkey_loop, daemon=True).start()
         self.logger.info("初始化完成，開始挖礦")
         try:
             while self._running:
-                self._check_hotkeys()           # 全域熱鍵（暫停時也要能偵測 Q 恢復）
                 if self.paused:
                     time.sleep(0.05); continue
                 frame = capture.grab()
@@ -304,10 +346,13 @@ class Bot:
         if s is State.HARVESTING:
             self.log.log("RARE_FOUND")
             self._snapshot(frame, "rare_found")
-            self.logger.info("進入採集 HARVESTING: D2 掃描，準備找追蹤框")
-            harvester.start_scan()
+            self.logger.info("進入採集 HARVESTING: D2 掃描，全方位搜尋追蹤框")
+            harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
+            self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
+            harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self.harvest = harvester.HarvestState(0, 0.0)
             self._harvest_start = time.time()
+            self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
         if s is State.NEEDS_HUMAN:
             self.log.log("NEEDS_HUMAN", reason=self._human_reason)
             self._snapshot(frame, "needs_human")
@@ -383,27 +428,86 @@ class Bot:
             self._alert("腳本可能卡住了")
             self._stuck_notified = True
 
+    def _sweep_for_tracker(self, excl, ref):
+        """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
+        回傳最佳追蹤框螢幕座標 (cx, cy)；找不到回 None。
+        """
+        NUM_DIRS = 8
+        candidates = []  # [(dir_idx, position)]
+        for i in range(NUM_DIRS):
+            f = capture.grab()
+            m1 = vision.find_tracker(f, exclude=excl, reference_bgr=ref,
+                                     log=self.logger.debug)
+            if m1:
+                time.sleep(0.08)
+                m2 = vision.find_tracker(capture.grab(), exclude=excl, reference_bgr=ref)
+                if m2 and abs(m1[0] - m2[0]) < 8 and abs(m1[1] - m2[1]) < 8:
+                    self.logger.info("sweep dir=%d: 穩定追蹤框 %s", i, m2)
+                    candidates.append((i, m2))
+                else:
+                    self.logger.info("sweep dir=%d: 不穩定 m1=%s m2=%s", i, m1, m2)
+            else:
+                self.logger.info("sweep dir=%d: 未偵測到追蹤框", i)
+            if i < NUM_DIRS - 1:
+                ic.rotate_right()
+                self.harvest.net_rotations += 1
+                time.sleep(0.35)
+
+        if not candidates:
+            self.logger.info("sweep: 全 8 方位均未找到追蹤框")
+            return None
+
+        best_dir, best_pos = candidates[0]  # 取第一個穩定候選（colored_frac 最高的）
+        # 目前在 dir 7（rotate_right × 7）→ 需往左轉 (7 - best_dir) 次回到 best_dir
+        lefts = (NUM_DIRS - 1) - best_dir
+        self.logger.info("sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", best_dir, best_pos, lefts)
+        for _ in range(lefts):
+            ic.rotate_left()
+            self.harvest.net_rotations -= 1
+            time.sleep(0.35)
+
+        # 對齊後驗證追蹤框仍在
+        time.sleep(0.2)
+        verify_f = capture.grab()
+        vm = vision.find_tracker(verify_f, exclude=excl, reference_bgr=ref)
+        if vm and abs(vm[0] - best_pos[0]) < 30 and abs(vm[1] - best_pos[1]) < 30:
+            self.logger.info("sweep: 驗證成功 %s", vm)
+            self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            return vm
+        elif vm:
+            self.logger.info("sweep: 位置偏移 %s→%s，用新位置", best_pos, vm)
+            self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            return vm
+        else:
+            self.logger.info("sweep: 驗證時追蹤框消失，用掃描時位置 %s", best_pos)
+            return best_pos
+
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        # 超時或轉太多圈仍沒採到 → 交人工
-        if (self.harvest.elapsed_s > cfg.harvest_verify_timeout_s
-                or self.harvest.rotations > cfg.max_aim_rotations):
-            self._human_reason = "稀有礦採集失敗（找不到或採不到），請手動處理"
-            self.logger.info("採集失敗 -> 人工 (t=%.1f rot=%d)",
-                             self.harvest.elapsed_s, self.harvest.rotations)
+        # 超時 → 交人工
+        if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
+            self._human_reason = "稀有礦採集失敗（超時），請手動處理"
+            self.logger.info("採集超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
             self.state = State.NEEDS_HUMAN
             self._on_enter(State.NEEDS_HUMAN, frame)
             return
-        # 追蹤框偵測：綠外框 + 黑色方環（內部色隨礦物變，故不用邊緣模板）；候選明細記 DEBUG
-        marker = vision.find_tracker(frame, log=self.logger.debug)
-        if marker is None:                          # 沒看到 → 轉 45° 找（,/. 可數、可回歸）
-            self.last_action = "找追蹤框(轉45°)"
-            self.logger.info("採集: 沒看到追蹤框 -> 轉45° (rot=%d/%d t=%.1f)",
-                             self.harvest.rotations, cfg.max_aim_rotations, self.harvest.elapsed_s)
-            ic.rotate_right(); self.harvest.rotations += 1; self.harvest.net_rotations += 1
-            return
+
+        _cr = cfg.chat_region
+        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        _ref = getattr(self, '_pre_scan_ref', None)
+
+        # 全方位掃描（還沒有目標時執行）
+        if self._target_marker is None:
+            self.last_action = "全方位掃描（8方位）"
+            self._target_marker = self._sweep_for_tracker(_excl, _ref)
+            if self._target_marker is None:
+                self._human_reason = "全方位掃描未找到追蹤框，請手動處理"
+                self.state = State.NEEDS_HUMAN
+                self._on_enter(State.NEEDS_HUMAN, frame)
+            return  # 不管找沒找到，先 return，讓主迴圈抓新 frame
+
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
-        cx, cy = marker
+        cx, cy = self._target_marker
         self.last_action = "D3 採集"
         # D3 前先讀聊天框（差分確認用：只有「新增」的 has found 才算成功，舊訊息不再偽造）
         chat_before = self._read_chat(frame)
@@ -412,16 +516,21 @@ class Bot:
                          cx, cy, self.harvest.d3_attempts + 1, found_before)
         self._snapshot(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
         self._snapshot_crop(frame, cfg.chat_region, "d3_chat_before")
+        ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
+        time.sleep(0.15)
         ic.key_press("3")
         time.sleep(0.6)          # 等 D3 裝備動畫（太快點會被吃掉）
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
-        time.sleep(0.5)          # 等伺服器回應追蹤框消失
+        time.sleep(1.0)          # 等伺服器回應追蹤框消失（太快截圖可能追蹤框還在）
         after = capture.grab()
-        gone = vision.find_tracker(after) is None    # 追蹤框立即消失 = D3 命中
+        gone = vision.find_tracker(after, exclude=_excl,
+                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)
         found_after = ocr.count_found(chat_after, cfg.found_keywords)
-        # 差分確認：D3 後 found 數量必須「多於」D3 前（舊訊息不算，連續同礦也抓得住）
-        confirmed = found_after > found_before
+        # 差分確認：count diff 或最後一行出現新訊息（chat 捲動時 count 可能下降，
+        # has_new_found_last_line 只看底部最新一行，不受捲動影響）
+        confirmed = (found_after > found_before
+                     or ocr.has_new_found_last_line(chat_before, chat_after, cfg.found_keywords))
         # 特殊階（ionized/Spectral）：同樣用差分——這類礦物進別的背包，只能靠聊天字樣辨識
         special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
         self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
@@ -443,18 +552,26 @@ class Bot:
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
             if self.harvest.d3_attempts >= 3:
-                # D3 連 3 次未命中（可能角度偏或掃描即將到期）→ 重新 D2 掃描
-                self.logger.info("採集: D3 連 %d 次未命中 (found %d->%d) -> 重新 D2 掃描",
-                                 self.harvest.d3_attempts, found_before, found_after)
+                # D3 連 3 次未命中 → 重置目標，重新 D2 掃描 + 全方位重掃
+                self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描＋全方位重掃",
+                                 self.harvest.d3_attempts)
                 self.harvest.d3_attempts = 0
-                harvester.start_scan()
+                self._target_marker = None      # 下次 tick 重掃
+                harvester.prepare_scan()
+                self._pre_scan_ref = capture.grab()
+                harvester.execute_scan()
             else:
-                self.logger.info("採集: D3 未命中 (attempt %d/3 found %d->%d)，繼續等待",
+                self.logger.info("採集: D3 未命中 (attempt %d/3 found %d->%d)，下次繼續",
                                  self.harvest.d3_attempts, found_before, found_after)
 
     def _read_chat(self, frame) -> str:
-        """讀聊天框區域 OCR 文字（採集差分確認用）。"""
-        return ocr.read_text(capture.crop(frame, cfg.chat_region), cfg.tesseract_path)
+        """讀聊天框區域 OCR 文字（採集差分確認用）。
+
+        用 min_channel 預處理：紅色 "has found" 文字在 min(R,G,B) 後對比度佳，
+        標準灰階會把紅字讀成亂碼（實測 "has found" → "ines ounce!"）。
+        """
+        return ocr.read_text(capture.crop(frame, cfg.chat_region),
+                             cfg.tesseract_path, preprocess="min_channel")
 
     def _snapshot_crop(self, frame, region, label: str):
         """存畫面指定區域的截圖（如聊天框 crop），方便事後盤別採集成敗。"""
@@ -468,29 +585,7 @@ class Bot:
 
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):
-        """每幀用 GetAsyncKeyState 全域偵測熱鍵；不管焦點在不在遊戲都有效。
-
-        邊緣觸發（按一下做一次），避免按住時連續觸發。
-        """
-        u = ctypes.windll.user32
-        def down(vk):
-            return bool(u.GetAsyncKeyState(vk) & 0x8000)
-        ctrl = down(0x11); q = down(0x51); f12 = down(0x7B)   # VK_CONTROL / Q / F12
-        if ctrl and q:                               # Ctrl+Q：緊急停止
-            if not self._hk_ctrlq:
-                self._emergency_stop()
-            self._hk_ctrlq = True
-            self._hk_q = True                        # 別讓放開時又觸發單獨 Q
-            return
-        self._hk_ctrlq = False
-        if q and not ctrl:                           # 單獨 Q：暫停/繼續
-            if not self._hk_q:
-                self._toggle_pause()
-            self._hk_q = True
-        else:
-            self._hk_q = False
-        if f12:                                      # F12：結束（觸發乾淨關閉）
-            self._quit()
+        self._hk.tick()
 
     def _emergency_stop(self):
         """Ctrl+Q：緊急停止（不結束程式），放開所有按鍵，停住等待 Q 重新啟動。"""

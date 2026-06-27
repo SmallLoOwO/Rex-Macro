@@ -177,3 +177,69 @@ def test_find_best_marker_none_when_no_shape():
     templates = {"box": _framed_box((200, 200, 200)), "circle": _ring((200, 200, 200))}
     scene = np.full((200, 200, 3), 30, np.uint8)  # 沒有任何形狀
     assert find_best_marker(scene, templates, threshold=0.3) is None
+
+
+# --- exclude 區域測試 (Problem A) ---
+
+def test_find_tracker_exclude_rejects_tracker_inside_chat_region():
+    # 模擬 HANDOFF §3 問題 A：(434,385) 落在聊天框內，加 exclude 後應回 None
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 434, 385)  # 在聊天框邊緣位置
+    chat_rect = (0, 110, 460, 390)  # cfg.chat_region (x,y,w,h)=(0,110,460,280) → (x0,y0,x1,y1)
+    loc = find_tracker(scene, exclude=[chat_rect])
+    assert loc is None, f"聊天框內的假陽性應被 exclude 排除，但回傳了 {loc}"
+
+
+def test_find_tracker_exclude_still_detects_tracker_outside_zone():
+    # exclude 排掉聊天框，但真礦在 (955, 300) 應仍偵測到
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    chat_rect = (0, 110, 460, 390)
+    loc = find_tracker(scene, exclude=[chat_rect])
+    assert loc is not None, "exclude 不應排掉聊天框外的真 tracker"
+    assert abs(loc[0] - 955) < 10 and abs(loc[1] - 300) < 10
+
+
+def test_find_tracker_empty_exclude_behaves_same_as_default():
+    # exclude=() 或不傳 exclude，行為相同
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    loc_default = find_tracker(scene)
+    loc_empty = find_tracker(scene, exclude=())
+    assert loc_default == loc_empty
+
+
+# --- reference_bgr 差分過濾測試 (pre-scan vs post-scan) ---
+
+def test_find_tracker_rejects_solid_purple_blob_cave_wall():
+    """紫色實心 blob（fill≈0.75，中心也是紫色）模擬 cave wall 誤判 → 應排除。
+    ring_score = frame_fill - inner_fill：實心圓 inner_fill≈1.0 → ring_score<0 → 拒。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cx, cy = 955, 300
+    # BGR=(180,50,130) → HSV≈(139,184,180)，落在 Exclusive tracker HSV range(H118-165)
+    purple_bgr = (180, 50, 130)
+    cv2.circle(scene, (cx, cy), 21, purple_bgr, -1)   # 實心圓 fill≈0.75，中心也是紫
+    assert find_tracker(scene) is None, "cave wall 紫色實心 blob 應被環形結構過濾排除"
+
+
+def test_find_tracker_reference_rejects_preexisting_colored_object():
+    """D2 掃描前就存在的彩色礦石（同顏色 range），掃描後仍在同位置 → 應被過濾。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    ref   = np.zeros((1080, 1920, 3), np.uint8)
+    # 在 reference（掃描前）同樣位置畫一個實心綠色塊（模擬礦石本體）
+    cv2.rectangle(ref, (940, 285), (970, 315), (0, 255, 0), -1)  # 綠色實心（tracker 顏色範圍）
+    # scene（掃描後）同位置有追蹤框
+    _draw_tracker(scene, 955, 300)
+    loc = find_tracker(scene, reference_bgr=ref)
+    assert loc is None, f"掃描前已存在的彩色物件應被 reference 過濾，但回傳 {loc}"
+
+
+def test_find_tracker_reference_accepts_new_tracker_not_in_ref():
+    """reference（掃描前）為空，掃描後才新出現的追蹤框應正常偵測。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    ref   = np.zeros((1080, 1920, 3), np.uint8)   # 掃描前畫面全黑（無任何彩色物件）
+    _draw_tracker(scene, 955, 300)
+    loc = find_tracker(scene, reference_bgr=ref)
+    assert loc is not None, "掃描前不存在、掃描後才出現的追蹤框應被偵測到"
+    assert abs(loc[0] - 955) < 10 and abs(loc[1] - 300) < 10
