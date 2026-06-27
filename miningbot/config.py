@@ -54,18 +54,25 @@ class Config:
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5
+    audio_score_interval_s: float = 0.3            # 交叉相關計算間隔（秒）——太大=偵測延遲，太小=音訊執行緒積壓
 
     # 採集
     marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
     marker_edge_threshold: float = 0.45          # 邊緣比對門檻（校準時調）
     marker_scales: tuple = (0.6, 0.8, 1.0, 1.2, 1.5)  # 多尺度比對：模板（含 wiki 圖）尺寸對不準時自動試縮放
     marker_dir: str = "assets/markers"           # 多階級標記模板資料夾（每個階級一張 png；用 fetch_trackers 下載）
+    # 混合偵測：HSV 快速定位 + 實機裁圖在小 ROI 做外框形狀確認（拒「有色但非追蹤框形狀」的假陽性）
+    tracker_shape_confirm: bool = True           # 開啟形狀確認（需 assets/markers 內有實機裁圖；無則自動退回純 HSV）
+    tracker_shape_threshold: float = 0.45        # 外框邊緣相關度門檻（實機裁圖實測 ~0.6-0.9；校準時調）
+    tracker_shape_scales: tuple = (0.7, 1.0, 1.4)  # 形狀確認用尺度（框置中後尺寸穩定，3 尺度即可）
+    tracker_shape_roi_px: int = 160              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
     max_aim_rotations: int = 8                   # 水平轉視角上限
-    harvest_verify_timeout_s: float = 12.0       # 採集總時限（含轉一圈找追蹤框+瞄準），超時轉人工
-    max_harvest_attempts: int = 3
+    sweep_timeout_s: float = 30.0                # 全方位掃描階段時限（實測 8 方位 ~19s，留 1.5x 餘裕）
+    harvest_verify_timeout_s: float = 15.0       # D3 開火+驗證階段時限（sweep 完成後才開始算；舊單一 12s 已拆開）
+    max_harvest_attempts: int = 5
 
     # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
     stuck_timeout_s: float = 60.0
@@ -76,6 +83,7 @@ class Config:
     hud_enabled: bool = True
     hud_x: int = 12
     hud_y: int = 905
+    launch_countdown_s: int = 3           # 啟動倒數秒數（給時間切到 Roblox）；0 = 不倒數直接啟動
 
     # OCR
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -106,5 +114,6 @@ class Config:
     discord_webhook_url: str = ""
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
+    discord_poll_interval_s: float = 10.0       # Discord 命令輪詢間隔（秒）
 
 DEFAULT = Config()

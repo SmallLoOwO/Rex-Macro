@@ -46,16 +46,35 @@ def init_mining_sequence():
     _ensure_pickaxe()                      # 沒拿鎬子才按 D1
     ic.key_down("w"); ic.mouse_down()
 
-def _ensure_pickaxe():
-    """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。"""
+def resume_mining():
+    """採集成功後恢復挖礦：D1 切回鎬子 + 等 + 按 W + 按左鍵。
+
+    比 init_mining_sequence 精簡——不重設視角/置中（restore_view 已處理），
+    也不靠 _ensure_pickaxe pixel check（採集後確定剛用 D3，直接按 1 是安全切換非 toggle）。
+    """
+    ic.key_press("1")        # D3 → D1（採集後確定不是鎬子）
+    ic.settle(0.4)           # 等鎬子裝備動畫（太早按 W 會被吃掉）
+    ic.key_down("w")
+    ic.mouse_down()
+
+def _ensure_pickaxe() -> bool:
+    """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。
+
+    按 D1 後等 0.4s 讓裝備動畫完成——太早接著按 W 會被動畫吃掉，bot 就不會走
+    （對照 D3 fire 的 0.6s 等待；採集成功後切回鎬子才暴露出這問題）。
+    回傳是否按了 D1（ True=有切換裝備）。
+    """
     from . import capture, vision
     from .config import DEFAULT as cfg
     try:
         frame = capture.grab()
         if vision.pixel_matches(frame, cfg.slot_pixel, cfg.slot_color, tol=12):
             ic.key_press("1")
+            ic.settle(0.4)    # 等鎬子裝備動畫（太早按 W 會被吃掉，bot 不會走）
+            return True
     except Exception:
         pass
+    return False
 
 def use_boost():           # 對照原巨集：放左鍵 → D5 → 點擊 → D1(切回鎬子) → 按住左鍵（W 全程不放）
     ic.mouse_up(); ic.settle()
@@ -65,6 +84,11 @@ def use_boost():           # 對照原巨集：放左鍵 → D5 → 點擊 → D
 def use_activity():        # 對照原巨集：放左鍵 → D4 → 點擊 → D1 → 按住左鍵
     ic.mouse_up(); ic.settle()
     ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（使用者確認；加強事件之後再做）
+    ic.key_press("1"); ic.mouse_down()
+
+def use_activity_keep():  # D4 保留當前事件：左鍵確認（對照 use_activity 的右鍵刷新）
+    ic.mouse_up(); ic.settle()
+    ic.key_press("4"); ic.mouse_click(button="left", hold=0.08)   # 左鍵=確認/保留事件
     ic.key_press("1"); ic.mouse_down()
 
 def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→續挖（對照 boost+scan .mcr）
