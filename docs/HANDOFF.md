@@ -72,7 +72,17 @@ _tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
 
 ---
 
-## 2. find_tracker 三層過濾
+## 2. find_tracker（2026-06-28 改混合方案：HSV 定位 + 實機裁圖形狀確認）
+
+`vision.find_tracker(frame_bgr, margin_frac, exclude, log, reference_bgr, shape_templates, shape_threshold, shape_scales, shape_roi_px)`
+
+> **本次大改（修 very_rare.png「有礦卻沒發現」）**
+> - **根因**：舊 colored 確認 `(S>90)&(V>90)&((H<35)|(H>95))` 排除 H35-95 黃綠帶 → 黃綠中心礦（Ionized）colored=0 漏抓。**已修為色相無關** `(S>90)&(V>90)`（純 HSV 即命中 (1231,644)）。
+> - **混合偵測**：HSV 快速找候選（~246ms）後，在候選周圍小 ROI 跑「實機裁圖外框」形狀比對（+~65ms）確認，拒「有色但非追蹤框形狀」假陽性（如裝備誤射 (990,665)）。`cfg.tracker_shape_confirm` 控制；無實機裁圖時自動退回純 HSV。
+> - **模板要用實機裁圖、非 wiki**：wiki 透明圖（alpha 外框）向量邊緣在合理尺度配不到遊戲內渲染框（實測全 miss，只在 scale 0.2 噪點假命中）；實機裁圖 edge≈0.91 且跨階通用（顏色無關，色相位移仍命中）。形狀確認集 = `assets/markers` 內無 alpha 的裁圖（自動篩）。已有 `transcendent_tracker_real.png`、`exotic_tracker_real.png`；其餘階級從 `logs/snapshots` 裁框補上。
+> - 全幀模板比對太慢（2 張 5.7s／9 張 23.5s 每幀）→ 只在小 ROI 跑。
+
+以下「三層過濾」描述 HSV 候選階段（仍有效）：
 
 `vision.find_tracker(frame_bgr, margin_frac, exclude, log, reference_bgr)`
 
