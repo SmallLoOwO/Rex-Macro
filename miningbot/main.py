@@ -1,5 +1,6 @@
 import os
 import time
+import logging
 import ctypes
 import threading
 import winsound
@@ -7,7 +8,7 @@ import winsound
 from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
 from .states import State, Observation, decide_transition
-from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window
+from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import input_control as ic
 
 
@@ -49,6 +50,11 @@ class Bot:
         self.paused = False
         self.human_cleared = False
         self.logger = diagnostics.setup_logging(cfg.log_dir, cfg.log_level)
+        # 子系統 logger（分檔隔離噪音：心跳/重複動作/採集細節各自獨立檔）
+        self.log_hb = diagnostics.get_logger("heartbeat")      # -> heartbeat.log
+        self.log_act = diagnostics.get_logger("mining")        # -> actions.log
+        self.log_harvest = diagnostics.get_logger("harvest")   # -> harvest.log
+        self.log_discord = diagnostics.get_logger("discord")   # -> discord.log
         self.log = EventLog()
         self.log.add_sink(make_file_sink(f"{cfg.log_dir}/events.log"))
         self.log.add_sink(lambda rec: self.logger.info("EVENT %s %s", rec.type, rec.meta))
@@ -57,13 +63,15 @@ class Bot:
             from . import notify
             self.log.add_sink(notify.make_discord_sink(
                 cfg.discord_bot_token, cfg.discord_channel_id,
-                on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d)))
+                on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d),
+                log=self.log_discord))
             self.logger.info("Discord 通知已啟用 (channel=%s)", cfg.discord_channel_id)
         else:
             self.logger.info("Discord 通知未啟用（.env 未設 token/channel）")
         ref, sr = audio.load_reference(cfg.chill_audio_path)
         # 用音檔實際的取樣率，避免 WAV 非 48kHz 時視窗長度不符
-        self.listener = audio.ChillListener(ref, sr, cfg.audio_window_seconds)
+        self.listener = audio.ChillListener(ref, sr, cfg.audio_window_seconds,
+                                            cfg.audio_score_interval_s)
         # 啟動喇叭 loopback 擷取，持續餵音訊給 listener（chill 偵測的核心）
         self._audio_cap = audio.LoopbackCapture(self.listener.feed)
         try:
@@ -79,6 +87,8 @@ class Bot:
         self._last_heartbeat = time.time()
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
+        self._keep_ores: set[str] = set()            # D4 保留清單（Discord 指定；空=全部刷新）
+        self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
         # 狀態小窗用的即時資訊
         self._started = time.time()
         self.last_action = "—"
@@ -119,15 +129,28 @@ class Bot:
                                 cp, cfg.activity_reroll_interval_s)
         # 多階級標記模板（assets/markers/*.png；用 fetch_trackers 下載）
         self._marker_templates = self._load_marker_templates()
+        # 形狀確認集（混合偵測用）：只取「實機裁圖」（3 通道、無 alpha）——
+        # wiki 透明圖實測在合理尺度配不到遊戲內渲染框，留著當參考但不進確認集。
+        self._shape_templates = {
+            n: t for n, t in self._marker_templates.items()
+            if t is not None and t.ndim == 3 and t.shape[2] == 3
+        } if cfg.tracker_shape_confirm else {}
+        if cfg.tracker_shape_confirm:
+            if self._shape_templates:
+                self.logger.info("形狀確認啟用，實機裁圖 %d 張: %s",
+                                 len(self._shape_templates), ", ".join(self._shape_templates))
+            else:
+                self.logger.warning("形狀確認已開但無實機裁圖（assets/markers 內需有無 alpha 的裁圖）"
+                                    "— 暫退回純 HSV，之後從 log 收集各階實機框補上")
 
     def _load_marker_templates(self) -> dict:
         import glob
         templates = {}
         for p in sorted(glob.glob(os.path.join(cfg.marker_dir, "*.png"))):
             name = os.path.splitext(os.path.basename(p))[0]
-            templates[name] = vision.load_template(p)
+            templates[name] = vision.load_template_any(p)   # 保留 alpha（wiki 透明外框）
         if not templates and os.path.exists("assets/marker.png"):
-            templates["marker"] = vision.load_template("assets/marker.png")
+            templates["marker"] = vision.load_template_any("assets/marker.png")
         if not templates:                            # 完全沒有標記模板 → 採集會找不到標記（不擋啟動）
             self.logger.warning("沒有任何標記模板（%s 為空且無 assets/marker.png）— 採集無法定位",
                                 cfg.marker_dir)
@@ -178,15 +201,17 @@ class Bot:
         except RuntimeError:
             pass
 
-    def _snapshot(self, frame, label: str):
-        """關鍵事件存畫面，方便事後查機器人「當下看到什麼」。"""
+    def _snapshot(self, frame, label: str) -> str | None:
+        """關鍵事件存畫面，方便事後查機器人「當下看到什麼」。回傳存檔路徑（或 None）。"""
         if not cfg.save_snapshots or frame is None:
-            return
+            return None
         try:
             path = diagnostics.save_snapshot(frame, cfg.log_dir, label)
             self.logger.info("SNAPSHOT %s -> %s", label, path)
+            return path
         except Exception as e:                       # 存圖失敗不該中斷主流程
             self.logger.error("snapshot failed (%s): %s", label, e)
+            return None
 
     # ---- 觀察 ---------------------------------------------------------------
     def observe(self, frame) -> Observation:
@@ -285,6 +310,96 @@ class Bot:
             self._hk.tick()
             time.sleep(0.05)
 
+    # ---- Discord 命令輪詢 ----------------------------------------------------
+    def _discord_poll_loop(self):
+        """背景執行緒：定期輪詢 Discord 頻道新訊息，處理 ! 命令。"""
+        while self._running:
+            try:
+                time.sleep(cfg.discord_poll_interval_s)
+                if self._running:
+                    self._poll_discord()
+            except Exception:
+                pass                                     # 輪詢失敗不中斷主迴圈
+
+    def _poll_discord(self):
+        """讀 Discord 新訊息，處理 ! 開頭的命令。"""
+        from . import notify
+        msgs = notify.fetch_messages(
+            cfg.discord_bot_token, cfg.discord_channel_id,
+            after=self._last_discord_msg_id, limit=10)
+        if not msgs:
+            return
+        newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
+        if self._last_discord_msg_id is None:
+            # 首次輪詢：只記基準 ID，不處理歷史命令（避免重跑舊指令）
+            self._last_discord_msg_id = newest_id
+            self.log_discord.info("首次輪詢：基準 msg_id=%s（跳過歷史命令）", newest_id)
+            return
+        for msg in reversed(msgs):                       # oldest-first，確保命令順序
+            self._last_discord_msg_id = msg["id"]
+            if msg.get("author", {}).get("bot"):
+                continue                                 # 跳過 bot 自己發的訊息
+            content = msg.get("content", "").strip()
+            if content.startswith("!"):
+                self._handle_discord_command(content)
+
+    def _handle_discord_command(self, content: str):
+        """解析並執行 Discord ! 命令，更新 _keep_ores 並回覆結果。"""
+        from . import notify
+        token = cfg.discord_bot_token
+        ch = cfg.discord_channel_id
+        parts = content.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
+
+        if cmd == "!list":
+            embed = game_data.format_event_list_embed(self._keep_ores)
+            notify.send_embed(token, ch, embed)
+            self.log_discord.info("CMD !list -> embed (%d events)", len(game_data.EVENTS))
+
+        elif cmd == "!keep":
+            added, not_found = [], []
+            for a in args:
+                ore = game_data.fuzzy_match_ore(a)
+                if ore:
+                    self._keep_ores.add(ore)
+                    added.append(ore)
+                else:
+                    not_found.append(a)
+            kept = ", ".join(sorted(self._keep_ores)) or "（空）"
+            msg = f"✅ 新增保留：{', '.join(added) or '（無）'}\n目前保留：{kept}"
+            if not_found:
+                msg += f"\n⚠️ 找不到：{', '.join(not_found)}（用 `!list` 看 礦物名）"
+            notify.send_message(token, ch, msg)
+            self.log_discord.info("CMD !keep %s -> added=%s keep=%s", args, added, self._keep_ores)
+
+        elif cmd == "!unkeep":
+            removed = []
+            for a in args:
+                ore = game_data.fuzzy_match_ore(a)
+                if ore and ore in self._keep_ores:
+                    self._keep_ores.discard(ore)
+                    removed.append(ore)
+            kept = ", ".join(sorted(self._keep_ores)) or "（空）"
+            notify.send_message(token, ch,
+                f"❌ 取消保留：{', '.join(removed) or '（無）'}\n目前保留：{kept}")
+            self.log_discord.info("CMD !unkeep %s -> removed=%s keep=%s", args, removed, self._keep_ores)
+
+        elif cmd == "!clear":
+            self._keep_ores.clear()
+            notify.send_message(token, ch, "🗑️ 保留清單已清空（所有事件都會刷新）")
+            self.log_discord.info("CMD !clear -> keep set cleared")
+
+        elif cmd == "!help":
+            notify.send_message(token, ch,
+                "**MiningBot 指令**\n"
+                "`!list` — 列出所有事件 + keep 狀態\n"
+                "`!keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
+                "`!unkeep <礦物名>` — 取消保留\n"
+                "`!clear` — 清空保留清單\n"
+                "`!help` — 顯示此說明")
+            self.log_discord.info("CMD !help -> sent")
+
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         self._running = True
@@ -310,6 +425,9 @@ class Bot:
                                     base.found, base.foreground)
         miner.init_mining_sequence()
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        if cfg.discord_bot_token and cfg.discord_channel_id:
+            threading.Thread(target=self._discord_poll_loop, daemon=True).start()
+            self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
         self.logger.info("初始化完成，開始挖礦")
         try:
             while self._running:
@@ -335,8 +453,9 @@ class Bot:
         """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。"""
         now = time.time()
         if now - self._last_heartbeat >= cfg.heartbeat_interval_s:
-            self.logger.info("heartbeat state=%s audio=%.2f",
-                             self.state.value, self.listener.latest_score())
+            self.log_hb.info("heartbeat state=%s audio=%.2f rms=%.0f",
+                             self.state.value, self.listener.latest_score(),
+                             self.listener.latest_rms())
             self._last_heartbeat = now
 
     def _on_enter(self, s, frame):
@@ -344,8 +463,16 @@ class Bot:
             self.human_cleared = False
             miner.init_mining_sequence()             # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
-            self.log.log("RARE_FOUND")
+            chill_path = self._snapshot_crop(frame, cfg.chill_text_region, "chill_closeup")
             self._snapshot(frame, "rare_found")
+            # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）
+            try:
+                audio_path = f"{cfg.log_dir}/snapshots/chill_audio_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+                self.listener.save_buffer_wav(audio_path)
+                self.logger.info("chill 音訊已存: %s", audio_path)
+            except Exception as e:
+                self.logger.error("chill 音訊存檔失敗: %s", e)
+            self.log.log("RARE_FOUND", image_path=chill_path)
             self.logger.info("進入採集 HARVESTING: D2 掃描，全方位搜尋追蹤框")
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
@@ -398,16 +525,26 @@ class Bot:
             self._window_bad = False
             self._last_window_check = time.time()
         elif action == "USE_D5":
-            self.logger.info("mining: boost 消失 -> 重上 D5")
+            self.log_act.info("mining: boost 消失 -> 重上 D5")
             self.last_action = "boost 重上(D5)"
             self.stats["boosts"] += 1
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
-            self.logger.info("mining: 定時刷新事件 -> D4 右鍵")
-            self.last_action = "刷新事件(D4)"
+            # D4 前先讀事件文字，判斷該保留（左鍵）還是刷新（右鍵）
+            event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
+                                       cfg.tesseract_path).strip()
+            ev = game_data.match_event(event_text)
+            if ev and game_data.is_kept(event_text, self._keep_ores):
+                self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])
+                self.last_action = f"保留事件: {ev['ore']}"
+                miner.use_activity_keep()
+            else:
+                self.log_act.info("mining: 刷新事件 -> D4 右鍵 (%s)",
+                                  ev["ore"] if ev else "未知/無事件")
+                self.last_action = "刷新事件(D4)"
+                miner.use_activity()
             self.stats["rerolls"] += 1
-            miner.use_activity()
             self._last_activity = time.time()
         elif action is None:
             self.last_action = "挖礦中"
@@ -428,6 +565,18 @@ class Bot:
             self._alert("腳本可能卡住了")
             self._stuck_notified = True
 
+    def _find_tracker(self, frame, exclude, reference_bgr=None, log=None):
+        """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
+
+        shape_templates 為空（無實機裁圖）時 find_tracker 自動退回純 HSV。
+        """
+        return vision.find_tracker(
+            frame, exclude=exclude, reference_bgr=reference_bgr, log=log,
+            shape_templates=self._shape_templates,
+            shape_threshold=cfg.tracker_shape_threshold,
+            shape_scales=cfg.tracker_shape_scales,
+            shape_roi_px=cfg.tracker_shape_roi_px)
+
     def _sweep_for_tracker(self, excl, ref):
         """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
         回傳最佳追蹤框螢幕座標 (cx, cy)；找不到回 None。
@@ -436,31 +585,30 @@ class Bot:
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
             f = capture.grab()
-            m1 = vision.find_tracker(f, exclude=excl, reference_bgr=ref,
-                                     log=self.logger.debug)
+            m1 = self._find_tracker(f, excl, ref, log=self.log_harvest.debug)
             if m1:
                 time.sleep(0.08)
-                m2 = vision.find_tracker(capture.grab(), exclude=excl, reference_bgr=ref)
+                m2 = self._find_tracker(capture.grab(), excl, ref)
                 if m2 and abs(m1[0] - m2[0]) < 8 and abs(m1[1] - m2[1]) < 8:
-                    self.logger.info("sweep dir=%d: 穩定追蹤框 %s", i, m2)
+                    self.log_harvest.info("sweep dir=%d: 穩定追蹤框 %s", i, m2)
                     candidates.append((i, m2))
                 else:
-                    self.logger.info("sweep dir=%d: 不穩定 m1=%s m2=%s", i, m1, m2)
+                    self.log_harvest.info("sweep dir=%d: 不穩定 m1=%s m2=%s", i, m1, m2)
             else:
-                self.logger.info("sweep dir=%d: 未偵測到追蹤框", i)
+                self.log_harvest.info("sweep dir=%d: 未偵測到追蹤框", i)
             if i < NUM_DIRS - 1:
                 ic.rotate_right()
                 self.harvest.net_rotations += 1
                 time.sleep(0.35)
 
         if not candidates:
-            self.logger.info("sweep: 全 8 方位均未找到追蹤框")
+            self.log_harvest.info("sweep: 全 8 方位均未找到追蹤框")
             return None
 
         best_dir, best_pos = candidates[0]  # 取第一個穩定候選（colored_frac 最高的）
         # 目前在 dir 7（rotate_right × 7）→ 需往左轉 (7 - best_dir) 次回到 best_dir
         lefts = (NUM_DIRS - 1) - best_dir
-        self.logger.info("sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", best_dir, best_pos, lefts)
+        self.log_harvest.info("sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", best_dir, best_pos, lefts)
         for _ in range(lefts):
             ic.rotate_left()
             self.harvest.net_rotations -= 1
@@ -469,42 +617,68 @@ class Bot:
         # 對齊後驗證追蹤框仍在
         time.sleep(0.2)
         verify_f = capture.grab()
-        vm = vision.find_tracker(verify_f, exclude=excl, reference_bgr=ref)
+        vm = self._find_tracker(verify_f, excl, ref)
         if vm and abs(vm[0] - best_pos[0]) < 30 and abs(vm[1] - best_pos[1]) < 30:
-            self.logger.info("sweep: 驗證成功 %s", vm)
-            self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log_harvest.info("sweep: 驗證成功 %s", vm)
+            path = self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log.log("TRACKER_FOUND", pos=str(vm), image_path=path)
             return vm
         elif vm:
-            self.logger.info("sweep: 位置偏移 %s→%s，用新位置", best_pos, vm)
-            self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log_harvest.info("sweep: 位置偏移 %s→%s，用新位置", best_pos, vm)
+            path = self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log.log("TRACKER_FOUND", pos=str(vm), image_path=path)
             return vm
         else:
-            self.logger.info("sweep: 驗證時追蹤框消失，用掃描時位置 %s", best_pos)
+            self.log_harvest.info("sweep: 驗證時追蹤框消失，用掃描時位置 %s", best_pos)
             return best_pos
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
-        # 超時 → 交人工
-        if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
-            self._human_reason = "稀有礦採集失敗（超時），請手動處理"
-            self.logger.info("採集超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
-            self.state = State.NEEDS_HUMAN
-            self._on_enter(State.NEEDS_HUMAN, frame)
-            return
 
         _cr = cfg.chat_region
         _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
         _ref = getattr(self, '_pre_scan_ref', None)
 
-        # 全方位掃描（還沒有目標時執行）
+        # ---- 階段一：全方位掃描（找追蹤框；_target_marker 尚未設定時執行）----
         if self._target_marker is None:
+            # sweep 階段超時（sweep 固定 8 方位約 19s，30s 已是 1.5x 餘裕）
+            if self.harvest.elapsed_s > cfg.sweep_timeout_s:
+                self._human_reason = "全方位掃描超時，請手動處理"
+                self.logger.info("sweep 超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
+                self.state = State.NEEDS_HUMAN
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return
             self.last_action = "全方位掃描（8方位）"
             self._target_marker = self._sweep_for_tracker(_excl, _ref)
             if self._target_marker is None:
-                self._human_reason = "全方位掃描未找到追蹤框，請手動處理"
-                self.state = State.NEEDS_HUMAN
-                self._on_enter(State.NEEDS_HUMAN, frame)
-            return  # 不管找沒找到，先 return，讓主迴圈抓新 frame
+                self.harvest.sweep_attempts += 1
+                if self.harvest.sweep_attempts >= 2:
+                    self._human_reason = "全方位掃描兩次未找到追蹤框，請手動處理"
+                    self.state = State.NEEDS_HUMAN
+                    self._on_enter(State.NEEDS_HUMAN, frame)
+                    return
+                # 重試一次：重新 D2 掃描 + 下次 tick 重掃
+                self.logger.info("sweep 未找到追蹤框，重試 (%d/2)", self.harvest.sweep_attempts)
+                harvester.prepare_scan()
+                self._pre_scan_ref = capture.grab()
+                harvester.execute_scan()
+                self._harvest_start = time.time()
+                self.harvest.elapsed_s = 0.0
+                return    # 下次 tick 重新 sweep
+            # ★ sweep 完成：重置計時器，D3 階段從 0 開始算
+            # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
+            self._harvest_start = time.time()
+            self.harvest.elapsed_s = 0.0
+            self.logger.info("sweep 完成 -> 進入 D3 階段 (target=%s)", self._target_marker)
+            return  # 讓主迴圈抓新 frame 再進 D3
+
+        # ---- 階段二：D3 開火 + 驗證（sweep 完成後才計時）----
+        if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
+            self._human_reason = "稀有礦採集失敗（D3 階段超時），請手動處理"
+            self.logger.info("D3 階段超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
+            self.state = State.NEEDS_HUMAN
+            self._on_enter(State.NEEDS_HUMAN, frame)
+            return
 
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
         cx, cy = self._target_marker
@@ -512,19 +686,19 @@ class Bot:
         # D3 前先讀聊天框（差分確認用：只有「新增」的 has found 才算成功，舊訊息不再偽造）
         chat_before = self._read_chat(frame)
         found_before = ocr.count_found(chat_before, cfg.found_keywords)
-        self.logger.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d found_before=%d)",
+        self.log_harvest.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d found_before=%d)",
                          cx, cy, self.harvest.d3_attempts + 1, found_before)
         self._snapshot(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
         self._snapshot_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
         time.sleep(0.15)
         ic.key_press("3")
-        time.sleep(0.6)          # 等 D3 裝備動畫（太快點會被吃掉）
+        time.sleep(0.3)          # 等 D3 裝備動畫（實測 0.3s 即足夠，原 0.6s 過長）
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
-        time.sleep(1.0)          # 等伺服器回應追蹤框消失（太快截圖可能追蹤框還在）
+        time.sleep(0.5)          # 等伺服器回應追蹤框消失（實測 0.5s 即足夠，原 1.0s 過長）
         after = capture.grab()
-        gone = vision.find_tracker(after, exclude=_excl,
-                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
+        gone = self._find_tracker(after, _excl,
+                                  reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)
         found_after = ocr.count_found(chat_after, cfg.found_keywords)
         # 差分確認：count diff 或最後一行出現新訊息（chat 捲動時 count 可能下降，
@@ -533,13 +707,14 @@ class Bot:
                      or ocr.has_new_found_last_line(chat_before, chat_after, cfg.found_keywords))
         # 特殊階（ionized/Spectral）：同樣用差分——這類礦物進別的背包，只能靠聊天字樣辨識
         special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
-        self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
-        self.logger.info("verify harvest: gone=%s found %d->%d %s special=%s",
+        chat_after_path = self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
+        self.log_harvest.info("verify harvest: gone=%s found %d->%d %s special=%s",
                          gone, found_before, found_after,
                          "NEW" if confirmed else "no-new", special)
         if gone or confirmed:
             self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone,
-                         special=special, found_before=found_before, found_after=found_after)
+                         special=special, found_before=found_before, found_after=found_after,
+                         image_path=chat_after_path)
             self.stats["rares"] += 1
             self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
             self._snapshot(after, "harvest_success" + ("_special" if special else ""))
@@ -547,12 +722,12 @@ class Bot:
                              gone, found_before, found_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
-            miner.init_mining_sequence()
+            miner.resume_mining()       # 採集後恢復挖礦（直接按 1+W，不靠 pixel check）
         else:
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
-            if self.harvest.d3_attempts >= 3:
-                # D3 連 3 次未命中 → 重置目標，重新 D2 掃描 + 全方位重掃
+            if self.harvest.d3_attempts >= cfg.max_harvest_attempts:
+                # D3 連續未命中達上限 → 重置目標，重新 D2 掃描 + 全方位重掃
                 self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描＋全方位重掃",
                                  self.harvest.d3_attempts)
                 self.harvest.d3_attempts = 0
@@ -560,9 +735,13 @@ class Bot:
                 harvester.prepare_scan()
                 self._pre_scan_ref = capture.grab()
                 harvester.execute_scan()
+                # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
+                self._harvest_start = time.time()
+                self.harvest.elapsed_s = 0.0
             else:
-                self.logger.info("採集: D3 未命中 (attempt %d/3 found %d->%d)，下次繼續",
-                                 self.harvest.d3_attempts, found_before, found_after)
+                self.log_harvest.info("採集: D3 未命中 (attempt %d/%d found %d->%d)，下次繼續",
+                                 self.harvest.d3_attempts, cfg.max_harvest_attempts,
+                                 found_before, found_after)
 
     def _read_chat(self, frame) -> str:
         """讀聊天框區域 OCR 文字（採集差分確認用）。
@@ -573,15 +752,17 @@ class Bot:
         return ocr.read_text(capture.crop(frame, cfg.chat_region),
                              cfg.tesseract_path, preprocess="min_channel")
 
-    def _snapshot_crop(self, frame, region, label: str):
-        """存畫面指定區域的截圖（如聊天框 crop），方便事後盤別採集成敗。"""
+    def _snapshot_crop(self, frame, region, label: str) -> str | None:
+        """存畫面指定區域的截圖（如聊天框 crop），方便事後盤別採集成敗。回傳路徑（或 None）。"""
         if not cfg.save_snapshots or frame is None:
-            return
+            return None
         try:
             path = diagnostics.save_snapshot(capture.crop(frame, region), cfg.log_dir, label)
             self.logger.info("SNAPSHOT %s -> %s", label, path)
-        except Exception as e:                       # 存圖失敗不中斷主流程
+            return path
+        except Exception as e:                       # 存圖失敗不該中斷主流程
             self.logger.error("snapshot failed (%s): %s", label, e)
+            return None
 
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):
@@ -639,16 +820,31 @@ def _set_dpi_aware():
 
 def main():
     _set_dpi_aware()
+    # pythonw 無 console，crash 時使用者完全看不到 → 補錯誤對話框 + 寫進 log
+    try:
+        _run_bot()
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        logging.getLogger(diagnostics.LOGGER_NAME).fatal("bot crashed:\n%s", tb)
+        try:
+            import tkinter.messagebox as mb
+            mb.showerror("MiningBot 啟動失敗", tb)
+        except Exception:
+            pass
+
+
+def _run_bot():
     bot = Bot()
     if not cfg.hud_enabled:
         bot.run()
         return
     # 機器人跑背景執行緒，狀態小窗在主執行緒（tkinter 需在主執行緒）
-    import threading
+    # HUD 先倒數（同一個左下角視窗），倒數結束才啟動 bot.run —— 給使用者時間切到 Roblox
     from .status_hud import StatusHUD
-    threading.Thread(target=bot.run, daemon=True).start()
+    hud = StatusHUD(bot, cfg.hud_x, cfg.hud_y)
     try:
-        StatusHUD(bot, cfg.hud_x, cfg.hud_y).run()
+        hud.run(countdown_s=cfg.launch_countdown_s)
     finally:
         # HUD 關閉（使用者關視窗）或主迴圈結束 → 停止 bot；明確標示是使用者關閉，避免誤會成當機
         if bot._running:
