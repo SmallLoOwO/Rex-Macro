@@ -1,10 +1,10 @@
 # tests/ — pure-logic TDD suite
 
-Conventions for the 87-test pytest suite. Read `../AGENTS.md` for project commands, `../miningbot/AGENTS.md` for what each module does. This file is the test-writing guide.
+Conventions for the 131-test pytest suite. Read `../AGENTS.md` for project commands, `../miningbot/AGENTS.md` for what each module does. This file is the test-writing guide.
 
 ## OVERVIEW
 
-87 pytest tests covering **pure logic only** — no Roblox, no audio device, no screen. All green at `bc7a622`. Runs in ~8s.
+123 pytest tests covering **pure logic only** — no Roblox, no audio device, no screen. All green (2026-06-28). Runs in ~15s.
 
 ## STRUCTURE
 
@@ -16,11 +16,13 @@ tests/
 ├── test_miner.py      (8) # dispatch_event priority + cooldown_ready
 ├── test_harvester.py  (8) # next_harvest_step + restore_actions
 ├── test_events.py     (2) # EventLog sink fan-out
-├── test_ocr.py       (11) # contains/count/has_new_found (diff semantics)
-├── test_vision.py    (19) # find_tracker ranking + template helpers (synthetic numpy)
+├── test_ocr.py       (16) # contains/count/has_new_found (diff semantics)
+├── test_vision.py    (33) # find_tracker hybrid (HSV+shape), find_marker, outline/alpha, real-frame
 ├── test_window.py     (9) # displacement_reason priority + WindowState
 ├── test_audio.py      (6) # match_score + loudest_window (synthetic signals)
 ├── test_notify.py     (7) # format_message (Chinese templates)
+├── test_game_data.py (18) # event/ore tables + fuzzy_match_ore + keep-list
+├── test_hotkeys.py    (7) # _HotkeyController edge-trigger (Ctrl+Q / Q / F12)
 └── test_diagnostics.py(3) # setup_logging + save_snapshot (tmp_path)
 ```
 

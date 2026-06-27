@@ -30,28 +30,37 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   2. 置中後截 `_pre_scan_ref`（reference）— 排除「掃描前就存在的裝備/礦石假陽性」
   3. `harvester.execute_scan()` — 裝備 D2 + 點擊觸發掃描（等 1.5s）
   4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位
-  5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.6s → hold click 0.4s 在追蹤框座標
+  5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在追蹤框座標
   6. 確認：tracker 消失（gone=True）**或** 聊天差分出現新 "has found"（confirmed=True）= 成功
-  7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角
+  7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.resume_mining()`（直接按 1+W，**不靠** `_ensure_pickaxe` pixel check）
+  - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器，D3 階段 `harvest_verify_timeout_s=15s`。
+  - **重試**：D3 連 `max_harvest_attempts=5` 次未命中 → 重掃；sweep 兩次都找不到 → NEEDS_HUMAN（最後保障）。
 
-- **追蹤框偵測 `vision.find_tracker`** 三層過濾（依序）：
-  1. **reference_bgr 差分**：提供掃描前截圖，candidate bbox 在 reference 裡的同色 fill > 0.15 → 排除（掃描前就存在的裝備/礦石）。`prepare_scan` 後、`execute_scan` 前截圖才有效（置中後裝備位置穩定）。
-  2. **ring_score 環形結構**：`frame_fill - inner_fill`（縮 30% 取中心區）< 0.15 → 排除（cave wall 均勻色塊、實心 blob）。真實追蹤框外框環狀 ring_score ≈ 0.5；cave wall blob ring_score ≈ 0。
-  3. **雙幀穩定**（在 `_tick_harvest` 和 sweep 內）：連續兩幀誤差 < 8px 才採用；動畫/特效位置飄 → 過濾。
-  **不要**用 wiki 邊緣模板（中心顏色隨礦物變，記不完）。各色系範圍獨立計算（不合併 mask）。
+- **追蹤框偵測 `vision.find_tracker`（2026-06-28 改混合方案）**：HSV 快速定位 + 實機裁圖外框形狀確認。
+  1. **HSV 候選**：各色系範圍獨立 mask（不合併）→ ring_score 環形結構（`frame_fill-inner_fill`<0.15 排除實心 blob）→ reference_bgr 差分（同色 fill>0.15 排除掃描前就有的）→ **色相無關** colored 確認（`(S>90)&(V>90)`，**不可再加 `(H<35)|(H>95)`**——那會漏抓黃綠中心礦如 Ionized，是 very_rare.png 踩過的根因）。
+  2. **形狀確認（`shape_templates`）**：在每個 HSV 候選周圍小 ROI 跑「實機裁圖外框」邊緣比對（`best_outline_score`≥`cfg.tracker_shape_threshold`），拒「有色但非追蹤框形狀」的假陽性（如角色裝備誤射）。只在小 ROI 跑（全幀模板比對 5~23s/幀太慢）。
+  3. **雙幀穩定**（`_tick_harvest`/sweep 內）：連續兩幀誤差 < 8px 才採用。
+  - **模板必須用「實機裁圖」不是 wiki 圖**：wiki 是透明 PNG 只有外框（alpha），但向量 icon 邊緣在合理尺度配不到遊戲內渲染框（實測全 miss）；實機裁圖 edge≈0.91 且**一張可跨階通用**（顏色無關，色相位移仍命中）。形狀確認集 = `assets/markers` 內無 alpha 的裁圖（自動篩，wiki 排除）。新階礦從 log snapshots 裁實機框補進去即可。
 
 - **`harvester.prepare_scan()` / `execute_scan()` 分開的原因**：
   中間截 reference 才能排除「D2 裝備後才出現的光效」假陽性。`start_scan()` 是 convenience wrapper（兩步連做），測試用。
 
 - **D2 掃描＝按 2 後還要 click 畫面中央才觸發**（純按 2 只裝備，不掃）；掃描成功 = 左下出現「Local」。
   掃描在有 UI 彈窗開著時點不到（點擊被彈窗吃掉）→ 掃描前要先確保無彈窗。
-- **D3 採集 = 先按 2（確保 D3 未裝備）→ 等 0.15s → 按 3 → 等 0.6s → hold click 0.4s 在 tracker 螢幕座標**：
+- **D3 採集 = 先按 2（確保 D3 未裝備）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在 tracker 螢幕座標**：
   **數字鍵會 toggle**：若 D3 已裝備再按 3 = 卸下 D3（踩坑 2026-06-27，retry 時第二次必定 miss 的根因）。
   故每次發射前必須先按 2 切離 D3，再按 3 裝備——這樣無論現在拿著什麼都安全。
-  瞬間 click 無效；按 3 後不等也無效。D3 以**滑鼠點選位置**瞄準（非 crosshair 方向），不需旋轉 camera。
+  瞬間 click 無效；按 3 後不等也無效（0.3s 裝備 + 0.5s 伺服器回應，2026-06-28 實測減半仍可靠）。
+  D3 以**滑鼠點選位置**瞄準（非 crosshair 方向），不需旋轉 camera。
   tracker 立即消失 = 成功；緩慢消失 = D2 掃描到期，需重新掃描。
+  **採集成功後恢復挖 礦用 `miner.resume_mining()`**（直接按 1+W，不靠 pixel check）——`init_mining_sequence()` 太重（重設視角+置中+pixel check），採集後確定剛用 D3，直接按 1 是安全切換。
 - **chill 偵測靠喇叭 loopback**（`audio.LoopbackCapture` 餵 `ChillListener`）；預設只靠音訊
   （`chill_require_ocr=False`）。**真實 chill 約 0.4**（非參考檔的 1.0），門檻設 ~0.30。
+  **match_score 很重（~110ms）**，每 chunk（85ms）都算會讓音訊執行緒積壓→6s 延遲。
+  解法：score 每 `audio_score_interval_s`（0.3s）算一次，緩衝每 chunk 照常更新。延遲 ~1s。
+- **D4 事件保留**：USE_D4 前讀頂部事件列 OCR → `game_data.match_event` → `is_kept` →
+  在 keep 清單 → `use_activity_keep()`（左鍵確認）；否則 `use_activity()`（右鍵刷新）。
+  keep 清單透過 Discord 命令控制（`!keep`/`!list`/`!clear`），背景執行緒每 10s 輪詢。
 - **所有座標/門檻改 `miningbot/config.py`**；**輸入保留延遲**（太快會被吃掉，放開挖礦左鍵後要 `settle`）。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
   **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
@@ -59,7 +68,10 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 ## 實機排錯（怎麼看到畫面）
 - 截圖：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → 再 Read `logs/x.png`。
 - 也可用 computer-use（先 `request_access` Roblox）截圖/觀察；驅動遊戲時**只用遊戲按鍵**（1–5、`,`/`.`、W、左右鍵），**絕不要按 Esc**（會開選單）。
-- log：`logs/miningbot.log`（動作/狀態/音訊/視窗）、`logs/events.log`、`logs/snapshots/`；`config.log_level="DEBUG"` 看每幀細節。
+- log 分檔（`diagnostics.setup_logging` 子 logger，propagate=False 隔離）：
+  `miningbot.log`（主敘事：啟動/狀態/里程碑/alert）、`heartbeat.log`（心跳+audio+RMS）、
+  `actions.log`（boost/D4 重複動作）、`harvest.log`（sweep/D3 細節）、`discord.log`（通知送出+命令執行）；
+  另有 `events.log`（結構化 TSV）、`snapshots/`（截圖+chill WAV）；`config.log_level="DEBUG"` 看每幀細節。
 
 ## 工作慣例
 - 純邏輯改動走 TDD（先寫失敗測試）。

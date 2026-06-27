@@ -4,7 +4,7 @@ Per-module map for the importable bot package. Read `../AGENTS.md` for project o
 
 ## OVERVIEW
 
-21 Python modules. One orchestrator (`main.py`), 5 pure-logic modules with full TDD coverage, 6 thin I/O wrappers (untested by design), 4 CLI utilities, 5 supporting modules (config/events/diagnostics/notify/status_hud).
+22 Python modules. One orchestrator (`main.py`), 6 pure-logic modules with full TDD coverage, 6 thin I/O wrappers (untested by design), 4 CLI utilities, 5 supporting modules (config/events/diagnostics/notify/status_hud).
 
 ## STRUCTURE (by role)
 
@@ -16,10 +16,11 @@ miningbot/
 ├── ── pure logic (full TDD coverage) ──
 ├── states.py          # State enum + decide_transition (sole FSM decision fn)
 ├── geometry.py        # aim_decision (FIRE/ROTATE/MOUSE_AIM/HUMAN picker)
-├── miner.py           # dispatch_event + cooldown_ready + D1-D5 I/O macros
+├── miner.py           # dispatch_event + cooldown_ready + D1-D5 I/O macros + resume_mining + use_activity_keep
 ├── harvester.py       # next_harvest_step + HarvestState + D2/D3 I/O macros
 ├── ocr.py             # contains_phrase/count_found/has_new_found (pure matchers)
 ├── events.py          # EventLog + EventRecord + make_file_sink (observer)
+├── game_data.py       # REX 事件資料庫（16 事件）+ match_event/is_kept/fuzzy_match_ore (pure)
 │
 ├── ── thin I/O wrappers (no tests; hold all hardware calls) ──
 ├── capture.py         # mss grab() + crop()
@@ -29,8 +30,8 @@ miningbot/
 ├── window.py          # Win32 query_window + displacement_reason (pure)
 │
 ├── ── supporting ──
-├── diagnostics.py     # setup_logging (RotatingFileHandler) + save_snapshot
-├── notify.py          # Discord webhook via urllib + format_message
+├── diagnostics.py     # setup_logging（子 logger 分檔：heartbeat/actions/harvest/discord）+ save_snapshot
+├── notify.py          # Discord Bot API：send_message/send_image_message(multipart)/fetch_messages/send_embed
 ├── status_hud.py      # tkinter always-on-top status window
 │
 └── ── CLI utilities (python -m miningbot.<name>) ──
