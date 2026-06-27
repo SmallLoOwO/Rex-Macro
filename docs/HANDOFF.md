@@ -1,7 +1,7 @@
 # 接手 Handoff — REX 挖礦自動化
 
-> 先讀 `CLAUDE.md`（含實機踩過的坑），再看本檔。  
-> 分支：`feature/window-discord-controls`（`python -m pytest -q` → 105 passed）
+> 先讀 `CLAUDE.md`（含實機踩過的坑），再看本檔。
+> 分支：`feature/window-discord-controls`（`python -m pytest -q` → 123 passed）
 
 ---
 
@@ -9,50 +9,66 @@
 
 | 項目 | 狀態 |
 |---|---|
-| 穩定挖礦 / 補 boost / D4 / Discord 通知 / 重置等人工 | ✅ 正常 |
-| 全 8 方位掃描採集 稀有礦（HARVESTING 流程） | ✅ 實機驗證成功（2026-06-27） |
-| find_tracker 三層過濾（ring_score + reference_bgr + 雙幀穩定） | ✅ 105 測試綠 |
-| chill 音訊偵測（bot 進入 HARVESTING 的觸發） | ⚠️ 尚未重新驗證（見 §3） |
-| D2 掃描成功驗證（"Local" 標籤出現） | ⚠️ 尚未實作 |
+| 穩定挖礦 / 補 boost / D4 事件保留 / Discord 通知 / 重置等人工 | ✅ 正常 |
+| 全 8 方位掃描採集 稀有 礦（HARVESTING 流程） | ✅ 實機驗證成功 |
+| find_tracker 三層過濾（ring_score + reference_bgr + 雙幀穩定） | ✅ 123 測試綠 |
+| chill 音訊偵測（節流 + FFT 加速，延遲 ~1s） | ✅ 修復（原 6s 延遲） |
+| D3 採集驗證（聊天差分 has_new_found） | ✅ 正常 |
+| Discord 圖片通知（chill 特寫 / 追蹤框 / 成功證據） | ✅ 正常 |
+| Discord 命令控制（!keep/!list/!clear 事件保留） | ✅ 正常 |
+| D4 事件保留邏輯（OCR 讀事件 → keep/reroll） | ✅ 正常 |
+| pythonw 無 console 啟動 + HUD 倒數合併 | ✅ 正常 |
+| Log 分檔分流（heartbeat/actions/harvest/discord） | ✅ 正常 |
+| chill 觸發自動錄音（累積訓練樣本） | ✅ 正常 |
 
 ---
 
 ## 1. 採集架構（完整流程）
 
 ```
-chill 觸發 HARVESTING
+chill 觸發 HARVESTING（音訊 score ≥ 0.30）
     │
     ▼
-prepare_scan()         ← 停止移動、置中鏡頭
+_on_enter(HARVESTING)：
+    ├─ 截 chill 特寫 crop + rare_found 全圖
+    ├─ 錄 chill 音訊 WAV（logs/snapshots/chill_audio_*.wav）
+    ├─ Discord 通知 RARE_FOUND（附 chill 特寫圖）
+    ├─ prepare_scan()（停移動、置中鏡頭）
+    ├─ 截 pre_scan_ref（裝備位置穩定後）
+    └─ execute_scan()（裝備 D2、click 中央、wait 1.5s）
     │
     ▼
-截 pre_scan_ref        ← reference！置中後才截（裝備位置穩定）
-    │                    在 execute_scan 前截——排除「D2 光效假陽性」
-    ▼
-execute_scan()         ← 裝備 D2、click 中央觸發掃描、wait 1.5s
+_tick_harvest — 階段一：sweep（sweep_timeout_s=30s）
+    ├─ _sweep_for_tracker()：全 8 方位旋轉掃描
+    │   ├─ 每方位：find_tracker（三層過濾）→ 雙幀穩定確認
+    │   └─ 旋回最佳方位 → 驗證仍在 → Discord TRACKER_FOUND（附圖）
+    ├─ 找不到 → sweep_attempts++，重試一次（重新 D2 掃描）
+    └─ 兩次都找不到 → NEEDS_HUMAN（最後保障）
     │
-    ▼
-_sweep_for_tracker()   ← 全 8 方位旋轉掃描
-    ├─ rotate_right × 7（0→7，共 315°）
-    ├─ 每方位：find_tracker（含三層過濾）→ 雙幀穩定確認（0.08s，誤差<8px）
-    ├─ 記錄所有穩定候選 → 選最佳（第一個）
-    └─ rotate_left 旋回該方位 → 驗證仍在 → 回傳座標
+    ▼ （sweep 完成，重置 _harvest_start 計時器）
     │
-    ▼
-D3 射擊
-    ├─ key_press("2")   ← toggle 防呆（避免 D3 已裝備再按 3 = 卸下）
-    ├─ sleep(0.15)
-    ├─ key_press("3")   ← 裝備 D3
-    ├─ sleep(0.6)       ← 等裝備動畫（不等 = 被吃掉）
-    ├─ click_at(cx, cy, hold=0.4)  ← D3 以點選位置瞄準（非 crosshair）
-    └─ sleep(1.0)       ← 等伺服器回應（< 1.0s 截圖 = 框還在消失動畫中）
-    │
-    ▼
-確認
-    ├─ gone:      find_tracker(after) is None
-    ├─ confirmed: 聊天差分（has_new_found / has_new_found_last_line）
-    └─ 成功 → restore_view(net_rotations) 轉回原視角
+_tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
+    ├─ key_press("2") → sleep(0.15) → key_press("3") → sleep(0.3)
+    ├─ click_at(cx, cy, hold=0.4) → sleep(0.5)
+    ├─ 驗證：find_tracker(after) is None + 聊天差分
+    ├─ 成功 → Discord HARVEST_SUCCESS（附聊天截圖）→ resume_mining()
+    ├─ 未命中 → d3_attempts++（max_harvest_attempts=5 次後重掃）
+    └─ 超時 → NEEDS_HUMAN
 ```
+
+### D3 timing（2026-06-28 實測調整）
+
+| 動作 | 舊值 | 新值 | 理由 |
+|---|---|---|---|
+| D3 裝備動畫等待 | 0.6s | **0.3s** | 實測 0.3s 即足夠 |
+| 伺服器回應等待 | 1.0s | **0.5s** | 實測 0.5s 即足夠 |
+| D3 重試上限 | 3 | **5** | 更多機會命中 |
+| sweep 重試 | 無 | **1 次** | 第一次找不到重試一次才交人工 |
+
+### resume_mining()（採集成功後恢復挖 礦）
+
+不呼叫 `init_mining_sequence()`（太重且靠 pixel check），改用精簡的 `resume_mining()`：
+直接按 "1"（D3→D1 安全切換）→ settle(0.4s) → key_down("w") → mouse_down()。
 
 ---
 
@@ -65,20 +81,15 @@ D3 射擊
 ring_score = frame_fill - inner_fill  # inner = 縮 30% 中心區
 if ring_score < 0.15: reject          # cave wall blob ≈ 0；真 tracker ≈ 0.5
 ```
-**Why:** cave wall（紫色/暗色均勻色塊）`inner_fill ≈ frame_fill → ring_score ≈ 0`。  
-真實追蹤框的中心是黑色或礦物填色（不在當前顏色 range），`inner_fill ≈ 0 → ring_score ≈ 0.5`。
 
 ### 層二：reference_bgr 差分
 ```python
 ref_fill = mean(ref_mask[bbox])
 if ref_fill > 0.15: reject  # 掃描前就已存在 → 非追蹤框
 ```
-**Why:** 礦石本體在 D2 掃描前就可見，裝備（D2 裝備後才出現光效）要靠 prepare/execute 分離排除。  
-**reference 截取時機**：`prepare_scan()` 置中後、`execute_scan()` 裝備 D2 前。
 
 ### 層三：雙幀穩定（調用端實作）
 ```python
-# 在 _sweep_for_tracker 和 _tick_harvest 內
 m1 = find_tracker(grab())
 sleep(0.08)
 m2 = find_tracker(grab())
@@ -91,42 +102,112 @@ if abs(m1-m2) < 8: accept  # 動畫/特效位置飄 → 拒；tracker 固定 →
 | range0 | H 18–78 | Exotic（H≈23）、Enigmatic（H≈34）、Exquisite（H≈64） |
 | range1 | H 88–130 | Transcendent（H≈105）、Unfathomable（H≈109） |
 | range2 | H 118–165 | Exclusive（H≈142） |
-| range3 | H 153–179 | Otherworldly（H≈167）；**紅色礦坑環境效果差** |
-
-**Exotic 實測（外框是唯一絕對依據）**：H=23, S=189, V=230（wiki 與實機完全一致）。  
-中心色隨礦物種類而變，礦坑背景色也會變——兩者均不可作為偵測依據。
+| range3 | H 153–179 | Otherworldly（H≈167）；**紅色 礦坑環境效果差** |
 
 ---
 
-## 3. ⚠️ 尚未解決的問題
+## 3. Log 分檔結構
 
-### 3.1 chill 音訊偵測（最高優先）
-- **症狀**：heartbeat 顯示 `audio=0.01`，但畫面正顯示 chill 提示 → bot 不進 HARVESTING
-- **診斷方法**：heartbeat 加印原始 RMS（`np.sqrt(np.mean(buf**2))`）
-  - RMS≈0 → loopback 死（裝置問題）
-  - RMS 高但 score≈0 → 參考 wav 不符此環境
-- **快速止血**：`cfg.chill_require_ocr=True` → 改用 OCR 抓「A chill goes down your spine」觸發
-- **根本修法**：重錄此環境的 chill 音效 → `python -m miningbot.convert_audio "chill.mp3"`
+```
+logs/
+├── miningbot.log     ← 主敘事：啟動/狀態切換/里程碑/alert/error
+├── heartbeat.log     ← 純心跳（含 audio score + RMS 診斷）
+├── actions.log       ← boost/D4 重複動作 + D4 事件保留/刷新
+├── harvest.log       ← sweep 逐步 + D3 verify 細節（採集除錯重點）
+├── discord.log       ← Discord 送出記錄（哪些事件送了、成敗、命令執行）
+├── events.log        ← 結構化 TSV（機器可解析）
+└── snapshots/        ← 關鍵時刻截圖 + chill 音訊 WAV
+```
 
-> **注意**：本 session 採集測試是手動執行掃描腳本，**不是 bot 正常從 chill 觸發的路徑**。
-> bot 主流程的 chill→HARVESTING 尚未端到端驗證。
-
-### 3.2 D2 掃描成功驗證
-- `execute_scan()` 之後目前沒有確認「Local」標籤是否出現
-- 若掃描失敗（無彈窗時點到 UI，或 D2 冷卻中），bot 會傻乎乎地繼續掃 8 方位卻掃不到任何框
-- **建議**：掃描後 OCR 確認左下 "Local" 文字；若沒出現 → 重試或 NEEDS_HUMAN
+子 logger 用 `propagate=False` 隔離——心跳/動作/採集細節不會污染主 log。
 
 ---
 
-## 4. 驗證項目
+## 4. Discord 整合
 
-1. `python -m pytest -q` → 105 passed（全部要綠）
-2. **實機完整流程**：bot 正常跑 → 聽到 chill → 進 HARVESTING → 全方位掃 → 找到框 → D3 命中 → 採集成功
-3. **chill 音訊**：heartbeat 的 `audio` score 在 chill 播放時應 ≥ 0.30
+### 圖片通知（3 個里程碑）
+
+| 里程碑 | 事件 | 附圖 |
+|---|---|---|
+| 🔔 chill 偵測 | RARE_FOUND | chill_text_region 特寫 crop |
+| 📍 sweep 確認追蹤框 | TRACKER_FOUND | 追蹤框可見的全畫面 |
+| ✅ 採集成功 | HARVEST_SUCCESS | 聊天框 crop（has found 證據） |
+
+使用 multipart/form-data 上傳（stdlib urllib，無 requests 依賴）。
+
+### 命令控制（背景執行緒，每 10s 輪詢）
+
+| 指令 | 功能 |
+|---|---|
+| `!list` | embed 列出 16 個事件 + ✅/❌ keep 狀態 |
+| `!keep < 礦名>` | 加入保留清單（fuzzy match，支援部分名稱） |
+| `!unkeep < 礦名>` | 取消保留 |
+| `!clear` | 清空保留清單 |
+| `!help` | 顯示指令說明 |
+
+### D4 事件保留邏輯
+
+```
+D4 ready → 讀頂部事件列 OCR → match_event(text)
+    ├─ 在 keep 清單 → use_activity_keep()（左鍵確認）
+    └─ 不在 / 未知 → use_activity()（右鍵刷新）
+```
+
+事件資料庫在 `miningbot/game_data.py`（16 個事件，含 match phrase / 礦名 / 稀有度 / 效果）。
 
 ---
 
-## 5. 排錯工具
+## 5. Chill 音訊偵測
+
+### 延遲修復（2026-06-28）
+
+**根因**：`match_score`（cross-correlation）每 chunk（85ms）算一次，但計算本身要 150ms → 音訊執行緒永遠跟不上 → WASAPI 緩衝持續積壓 → 6s 延遲。
+
+**修復**：
+1. **節流**：score 每 0.3s 算一次（`audio_score_interval_s`），緩衝每 chunk 照常更新（~1ms）
+2. **加速**：normalization 用 cumsum O(N) 取代 correlate；主相關指定 `method="fft"`
+3. **RMS 診斷**：heartbeat 加印 `rms=` 值（RMS≈0 → loopback 死；RMS 高但 score≈0 → 參考 wav 不符）
+
+效果：6s 延遲 → ~1s（cross-correlation 本質限制：需 ~1s 的 chill 音訊填入緩衝才能跨門檻）。
+
+### 自動錄音
+
+每次 chill 觸發時，自動存 1.5s 音訊緩衝到 `logs/snapshots/chill_audio_*.wav`。
+用途：累積樣本 → 比較環境差異 → 重錄更準的 reference WAV。
+
+---
+
+## 6. 啟動方式
+
+### pythonw 無 console 啟動
+
+`啟動挖礦bot.bat`（純 ASCII，避免 cmd codepage 問題）：
+```bat
+@echo off
+cd /d "%~dp0"
+start "" pythonw -m miningbot.main
+```
+
+- `pythonw` = 無 console 視窗（log 全寫進檔案）
+- `diagnostics.setup_logging` 在 `sys.stdout is None` 時跳過 stdout handler
+- crash 時 `main()` 有 try/except → 彈 tkinter錯誤框 + 寫 log
+
+### HUD 倒數合併
+
+StatusHUD 在左下角原地倒數（不另開視窗），倒數完啟動 bot 背景執行緒 + 切換到正常輪詢。
+`config.launch_countdown_s`（預設 3 秒）控制倒數時長。
+
+---
+
+## 7. 已知限制
+
+- **「 礦已被自動挖走」無法自動偵測**：聊天只顯示 礦物名（不帶 tier），背包數字持續變動。sweep 兩次失敗仍走 NEEDS_HUMAN（最後保障），reason 無法自動判斷是否已被挖走。
+- **chill OCR 模式 (`chill_require_ocr=True`) 會觸發不想要的階級**：若遊戲設定不播音效但畫面有 chill 文字，OCR 會偵測到並進入採集。目前維持 `False`（純音訊），靠遊戲端音效開關做天然階級過濾。
+- **D3 階段超時檢查有 blocking 問題**：D3 fire 序列（sleep 多次）阻塞主迴圈，超時檢查只在下個 tick 生效。實測可能延遲數秒才觸發超時。
+
+---
+
+## 8. 排錯工具
 
 ```bash
 # 截圖（設 DPI-aware）
@@ -139,7 +220,6 @@ import time, cv2
 from miningbot.capture import grab
 from miningbot import vision, input_control as ic, harvester
 from miningbot.config import DEFAULT as cfg
-
 _cr = cfg.chat_region
 excl = [(_cr.x, _cr.y, _cr.x+_cr.w, _cr.y+_cr.h)]
 harvester.prepare_scan()
@@ -148,25 +228,13 @@ harvester.execute_scan()
 # 之後用 vision.find_tracker(grab(), exclude=excl, reference_bgr=ref, log=print) 確認
 "
 
-# find_tracker 候選除錯（對已有截圖）
-python -c "
-import cv2
-from miningbot.vision import find_tracker
-img = cv2.imread('logs/x.png')
-loc = find_tracker(img, log=print)
-print('result:', loc)
-"
+# 讀 log（避免 codepage 亂碼）
+Get-Content logs\miningbot.log -Encoding UTF8 -Tail 50
+
+# Discord 連線測試
+python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify import send_message; print(send_message(cfg.discord_bot_token, cfg.discord_channel_id, 'test'))"
 ```
 
-- log：`logs/miningbot.log`（動作/狀態）、`logs/events.log`（結構化事件）、`logs/snapshots/`
+- log 檔：`miningbot.log`（主敘事）、`events.log`（結構化）、`discord.log`（通知記錄）
 - `config.log_level="DEBUG"` 看每幀細節
-- Exotic 追蹤框實機截圖（25×26px）：`assets/markers/exotic_tracker_real.png`（本機，不進版控）
-
----
-
-## 6. 其他待辦（低優先）
-
-- D2 冷卻偵測（仿 D4 冷卻模板）
-- 垂直追蹤框（仰角礦，目前只水平旋轉）
-- 庫存數量 diff 驗證（需玩家提供礦物清單）
-- D4 加強事件（左鍵）
+- Exotic 追蹤框實機截圖：`assets/markers/exotic_tracker_real.png`（本機，不進版控）
