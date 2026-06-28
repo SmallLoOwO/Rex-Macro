@@ -26,6 +26,37 @@ def detect(buffer: np.ndarray, reference: np.ndarray, threshold: float) -> bool:
     return match_score(buffer, reference) >= threshold
 
 
+class RisingEdgeDetector:
+    """分數上升緣去抖動偵測：value 由低於門檻升到 ≥ 門檻時 update() 回 True 一次，
+    維持高檔不重複觸發，回落到 release（預設 threshold/2）以下才 re-arm。
+
+    用於「音訊明顯變動就記錄」：避免每幀都存檔，只在 score 一次次「升起」時記一筆。
+    初始 armed=True——啟動即在門檻上方視為一次變動（會觸發）。純邏輯，有單元測試。
+    """
+    def __init__(self, threshold: float, release: float | None = None):
+        self.threshold = threshold
+        self.release = release if release is not None else threshold * 0.5
+        self._armed = True
+
+    def update(self, value: float) -> bool:
+        if self._armed and value >= self.threshold:
+            self._armed = False
+            return True
+        if not self._armed and value <= self.release:
+            self._armed = True
+        return False
+
+
+def save_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
+    """把樣本忠實存成 16-bit WAV。samples 已是 int16 值域的 float（loopback int16→float32），
+    故**直接轉 int16，不可再乘 32767**（乘了會溢位繞回成雜訊——舊 save_buffer_wav 的 bug）。
+    超出範圍先 clip 防環繞。
+    """
+    from scipy.io import wavfile
+    data = np.clip(samples, -32768, 32767).astype(np.int16)
+    wavfile.write(path, sample_rate, data)
+
+
 class ChillListener:
     """滾動緩衝 + 即時比對分數。由 LoopbackCapture 持續 feed 喇叭樣本。
 
@@ -37,7 +68,8 @@ class ChillListener:
     解法：緩衝每 chunk 照常更新（只需 ~1ms），但 score 每 score_interval_s 才算一次。
     """
     def __init__(self, reference: np.ndarray, sample_rate: int, window_seconds: float,
-                 score_interval_s: float = 0.3):
+                 score_interval_s: float = 0.3, event_threshold: float | None = None,
+                 on_event=None):
         self.reference = reference
         self.sample_rate = sample_rate
         self.window = int(sample_rate * window_seconds)
@@ -46,6 +78,10 @@ class ChillListener:
         self._rms = 0.0
         self._score_interval = score_interval_s
         self._last_score_time = 0.0
+        # 音訊變動記錄：score 升過 event_threshold（去抖動）就回呼 on_event(score, rms, buf_copy)。
+        # 在音訊執行緒、score 算好的當下擷取 buffer，與分數同調——比 _on_enter 晚 3s 存準得多。
+        self._edge = RisingEdgeDetector(event_threshold) if event_threshold else None
+        self._on_event = on_event
 
     def feed(self, chunk: np.ndarray) -> None:
         chunk = chunk.astype(np.float32)
@@ -55,6 +91,8 @@ class ChillListener:
             self._score = match_score(self._buf, self.reference)
             self._rms = float(np.sqrt(np.mean(self._buf**2)))
             self._last_score_time = now
+            if self._edge is not None and self._edge.update(self._score) and self._on_event:
+                self._on_event(self._score, self._rms, self._buf.copy())
 
     def latest_score(self) -> float:
         return self._score
@@ -65,9 +103,7 @@ class ChillListener:
 
     def save_buffer_wav(self, path: str) -> None:
         """把目前緩衝存成 WAV 檔（chill 觸發時呼叫，取樣供分析/重錄參考 wav 用）。"""
-        from scipy.io import wavfile
-        data = (self._buf * 32767).astype(np.int16)   # float32 → int16
-        wavfile.write(path, self.sample_rate, data)
+        save_wav(path, self._buf, self.sample_rate)
 
 
 class LoopbackCapture:

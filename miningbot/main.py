@@ -74,8 +74,10 @@ class Bot:
             self.logger.info("Discord 通知未啟用（.env 未設 token/channel）")
         ref, sr = audio.load_reference(cfg.chill_audio_path)
         # 用音檔實際的取樣率，避免 WAV 非 48kHz 時視窗長度不符
-        self.listener = audio.ChillListener(ref, sr, cfg.audio_window_seconds,
-                                            cfg.audio_score_interval_s)
+        self.listener = audio.ChillListener(
+            ref, sr, cfg.audio_window_seconds, cfg.audio_score_interval_s,
+            event_threshold=(cfg.audio_event_threshold if cfg.audio_event_record else None),
+            on_event=self._on_audio_event)
         # 啟動喇叭 loopback 擷取，持續餵音訊給 listener（chill 偵測的核心）
         self._audio_cap = audio.LoopbackCapture(self.listener.feed)
         try:
@@ -471,6 +473,24 @@ class Bot:
                              self._peak_audio_since_hb, self.listener.latest_rms())
             self._peak_audio_since_hb = 0.0
             self._last_heartbeat = now
+
+    def _on_audio_event(self, score, rms, buf):
+        """音訊明顯變動（score 升過 audio_event_threshold）時由音訊執行緒回呼：存音訊 + 記一筆。
+
+        目的：chill 沒到觸發門檻（如 0.29 的小聲 chill）也留下證據可診斷，並累積乾淨樣本
+        （buffer 在 score 算好的當下擷取，與分數同調，不像 _on_enter 晚 3s 已滾出 chill）。
+        檔名帶 score/rms 一眼看出近觸發程度。在背景執行緒跑，存檔 ~5ms、失敗只記 log。
+        """
+        try:
+            crossed = score >= cfg.audio_match_threshold
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            tag = "TRIG" if crossed else "miss"
+            path = f"{cfg.log_dir}/snapshots/audiochg_{ts}_s{int(round(score*100)):02d}_{tag}.wav"
+            audio.save_wav(path, buf, self.listener.sample_rate)
+            self.log_hb.info("AUDIO_EVENT score=%.2f rms=%.1f crossed=%s -> %s",
+                             score, rms, crossed, path)
+        except Exception as e:
+            self.log_hb.error("音訊變動記錄失敗: %s", e)
 
     def _save_needs_human_screenshot(self, frame) -> str | None:
         """NEEDS_HUMAN 時跑 find_tracker 找最佳追蹤框候選，裁出該區域存檔。

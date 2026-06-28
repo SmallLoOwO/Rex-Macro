@@ -1,5 +1,5 @@
 import numpy as np
-from miningbot.audio import match_score, detect
+from miningbot.audio import match_score, detect, RisingEdgeDetector
 
 def test_match_score_high_for_same_signal():
     ref = np.sin(np.linspace(0, 50, 4000)).astype(np.float32)
@@ -40,3 +40,38 @@ def test_loudest_window_short_input_returned_asis():
     data = np.ones(100, np.float32)
     out = loudest_window(data, 1000, 1.0)         # 視窗 1000 > 100
     assert len(out) == 100
+
+
+# --- RisingEdgeDetector：音訊明顯變動就記錄（上升緣去抖動）---------------------
+# 用於「只要音訊變動就記錄」：score 由低升到 ≥ 門檻時觸發一次，維持高檔不重複，
+# 回落到 release 以下才 re-arm。避免每幀都存檔洗版。
+
+def test_rising_edge_fires_once_on_crossing():
+    d = RisingEdgeDetector(threshold=0.15)
+    assert d.update(0.01) is False                # 雜訊
+    assert d.update(0.20) is True                 # 升過門檻 → 觸發一次
+    assert d.update(0.30) is False                # 維持高檔 → 不重複觸發
+    assert d.update(0.25) is False
+
+
+def test_rising_edge_rearms_after_release():
+    d = RisingEdgeDetector(threshold=0.20, release=0.10)
+    assert d.update(0.25) is True                 # 觸發
+    assert d.update(0.12) is False                # 還沒回到 release 以下
+    assert d.update(0.05) is False                # 回落 ≤ release → re-arm（這幀不觸發）
+    assert d.update(0.25) is True                 # 再次升過門檻 → 又觸發
+
+
+def test_rising_edge_default_release_is_half_threshold():
+    d = RisingEdgeDetector(threshold=0.20)        # 未指定 release → 預設 threshold/2 = 0.10
+    assert d.update(0.25) is True
+    assert d.update(0.11) is False                # > 0.10，仍 armed=False
+    assert d.update(0.09) is False                # ≤ 0.10 → re-arm
+    assert d.update(0.25) is True
+
+
+def test_rising_edge_starts_armed_below_threshold():
+    # 一開始就在門檻上方不應觸發（沒有「上升」緣）——需先看到低於 release 才 arm...
+    # 設計選擇：初始 armed=True，故第一次就 ≥ 門檻會觸發（視為一次變動）。
+    d = RisingEdgeDetector(threshold=0.15)
+    assert d.update(0.50) is True                 # 啟動即高 → 當作一次變動觸發

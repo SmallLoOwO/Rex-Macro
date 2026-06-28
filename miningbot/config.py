@@ -49,12 +49,15 @@ class Config:
 
     # 音訊
     chill_audio_path: str = "assets/chill_reference.wav"
-    audio_match_threshold: float = 0.30          # 交叉相關門檻。實測真實 chill 約 0.4（不像參考檔 1.0），
-                                                 # 靜音約 0.004，故設 0.30 抓得到、又遠離雜訊（誤觸再往上調）
+    audio_match_threshold: float = 0.25          # 交叉相關門檻。實測真實 chill 0.29-0.87、靜音約 0.01，
+                                                 # 中間是空鴻溝；0.30 曾漏抓 0.29 的小聲 chill，降到 0.25 仍遠離雜訊（誤觸再往上調）
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5
     audio_score_interval_s: float = 0.3            # 交叉相關計算間隔（秒）——太大=偵測延遲，太小=音訊執行緒積壓
+    # 音訊變動記錄器：score 越過此觀察門檻（低於觸發門檻）就存音訊+記一筆，供診斷沒觸發的 chill / 累積樣本
+    audio_event_record: bool = True              # 是否啟用「音訊明顯變動就記錄」
+    audio_event_threshold: float = 0.15          # 觀察門檻（> 雜訊 0.01、< 觸發 0.25）；上升緣才記，不重複洗檔
 
     # 採集
     marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）

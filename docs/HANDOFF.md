@@ -195,10 +195,29 @@ D4 ready → 讀頂部事件列 OCR → match_event(text)
 
 效果：6s 延遲 → ~1s（cross-correlation 本質限制：需 ~1s 的 chill 音訊填入緩衝才能跨門檻）。
 
-### 自動錄音
+### 偵測機制（cross-correlation，scale-invariant）
 
-每次 chill 觸發時，自動存 1.5s 音訊緩衝到 `logs/snapshots/chill_audio_*.wav`。
-用途：累積樣本 → 比較環境差異 → 重錄更準的 reference WAV。
+`assets/chill_reference.wav`（1.0s）是「chill 長怎樣」的模板。`LoopbackCapture` 背景擷取喇叭輸出
+（WASAPI loopback，4096-frame≈85ms/chunk，int16→float32 單聲道）餵 `ChillListener`；listener
+滾動 1.5s 緩衝，每 0.3s 算一次 `match_score`（正規化 FFT 交叉相關，滑動參考過緩衝取最大值 0..1）。
+**正規化＝scale-invariant**：分數比的是波形「形狀」相符度、非絕對音量，故小聲也偵測得到，但 chill
+相對背景挖礦聲的 SNR 低時分數會掉。主迴圈讀快取 score ≥ `audio_match_threshold` → HARVESTING。
+
+### 門檻 0.30 → 0.25（2026-06-28）
+
+實測同一場 chill 越來越小聲：`0.39→0.87→0.41→0.36→0.33→0.29(漏抓)`。0.29 差 0.01 沒過 0.30。
+真 chill 0.29-0.87、靜音 0.01，中間是空鴻溝 → 降到 0.25 抓得到又不誤觸。
+
+### 音訊變動記錄器（2026-06-28，取代壞掉的觸發錄音）
+
+`ChillListener(event_threshold=0.15, on_event=...)`：score 升過 0.15（去抖動 `RisingEdgeDetector`，
+回落到一半才 re-arm）就在**音訊執行緒、分數算好的當下**回呼，存
+`logs/snapshots/audiochg_<time>_s<score>_<TRIG|miss>.wav`。
+- **比舊的觸發錄音準**：舊 `save_buffer_wav` 在 `_on_enter` 晚 ~3s 存（chill 已滾出 1.5s 窗）→ 存到
+  chill 之後的音；新的在 rising-edge 當下擷取，與分數同調，含 chill 本體。
+- **連沒觸發的 chill 也留證**（檔名 `miss`），可診斷「為何沒觸發」+ 累積乾淨樣本重錄 reference。
+- **修 `*32767` 溢位**：buffer 已是 int16 值域，舊版再乘 32767 → 溢位繞回成雜訊（實測 RMS≈18900
+  均勻 garbage）。改 `audio.save_wav`（直接 `clip→astype(int16)`），存出忠實波形。
 
 ---
 
