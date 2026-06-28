@@ -23,3 +23,8 @@ assets/**/*.png
 # OS
 Thumbs.db
 desktop.ini
+
+# AI 工具設定（本地狀態，不進版控）
+.omo/
+.opencode/
+.codegraph/
