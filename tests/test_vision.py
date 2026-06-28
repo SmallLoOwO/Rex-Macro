@@ -339,6 +339,44 @@ def test_find_tracker_hybrid_rejects_equipment_false_positive():
     assert loc is None, "裝備誤射（edge≈0.16 < hard_floor 0.25）應被硬拒，不 soft-filter"
 
 
+def test_find_tracker_hybrid_detects_exquisite_green_marker():
+    """真實資料：exquisite（綠）追蹤框 = 方框 + 四角綠芒（非純方框）。
+
+    2026-06-29 補 exquisite_tracker_real.png 後，綠階真框應被命中 (918,305)。
+    補模板前此框 best_outline_score≈0.42-0.53（部分卡 survivor）；補後綠階群均 ≥0.45 confirmed。
+    """
+    img_path = "assets/exquisite_scene.png"
+    tmpl_path = "assets/markers/exquisite_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exq": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None and abs(loc[0] - 918) < 40 and abs(loc[1] - 305) < 40
+
+
+def test_hard_floor_separates_equipment_band_from_real_trackers():
+    """回歸 2026-06-28 夜間兩次裝備誤射（borderline edge 翻盤）。
+
+    實機證據（harvest.log）：
+      - 真追蹤框 edge≥0.44（19:38=0.44 colored=1.00、20:21=0.57-0.63）
+      - 裝備誤射 edge≤0.26（20:50=0.25、22:42=0.26，均射在角色自身橘紅裝備上）
+    兩次誤射都落在舊 hard_floor 0.25 的正上方 → 判 survivor → soft filter 救回 → 開火。
+    hard_floor 必須 > 0.26（擋下裝備帶）且 ≤ 0.358（保留未見階級外框代理
+    square_outline_30=0.358，見上面 soft_filter 測試），落在 0.26 與 0.44 的大空隙中。
+    """
+    from miningbot.config import DEFAULT as cfg
+    assert cfg.tracker_shape_hard_floor > 0.26, "須擋下 22:42 裝備誤射的 edge=0.26"
+    assert cfg.tracker_shape_hard_floor <= 0.358, "不可誤殺未見階級外框代理(edge≈0.358)"
+
+
 # --- find_marker（全幀形狀偵測，顏色無關）與輔助 ---
 
 def test_template_outline_edges_uses_alpha_channel():

@@ -72,12 +72,14 @@ class Bot:
             self.logger.info("Discord 通知已啟用 (channel=%s)", cfg.discord_channel_id)
         else:
             self.logger.info("Discord 通知未啟用（.env 未設 token/channel）")
-        ref, sr = audio.load_reference(cfg.chill_audio_path)
+        # 多參考集（各種 chill 實錄裁片，取最高分）；空則退回單一參考檔
+        refs, sr = audio.load_references(cfg.chill_refs_dir, cfg.chill_audio_path)
+        self.logger.info("chill 參考集載入 %d 個（decimate=%d）", len(refs), cfg.audio_match_decimate)
         # 用音檔實際的取樣率，避免 WAV 非 48kHz 時視窗長度不符
         self.listener = audio.ChillListener(
-            ref, sr, cfg.audio_window_seconds, cfg.audio_score_interval_s,
+            refs, sr, cfg.audio_window_seconds, cfg.audio_score_interval_s,
             event_threshold=(cfg.audio_event_threshold if cfg.audio_event_record else None),
-            on_event=self._on_audio_event)
+            on_event=self._on_audio_event, decimate=cfg.audio_match_decimate)
         # 啟動喇叭 loopback 擷取，持續餵音訊給 listener（chill 偵測的核心）
         self._audio_cap = audio.LoopbackCapture(self.listener.feed)
         try:
@@ -92,9 +94,10 @@ class Bot:
         self._stuck_notified = False
         self._last_heartbeat = time.time()
         self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
+        self._antiafk_last = 0.0                   # 防掛機：上次按 Space 的時間（0=未在計時；暫停中才啟用）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
-        self._keep_ores: set[str] = set()            # D4 保留清單（Discord 指定；空=全部刷新）
+        self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
         # 狀態小窗用的即時資訊
         self._started = time.time()
@@ -386,6 +389,7 @@ class Bot:
             if not_found:
                 msg += f"\n⚠️ 找不到：{', '.join(not_found)}（用 `!list` 看 礦物名）"
             notify.send_message(token, ch, msg)
+            self._save_keep_ores()
             self.log_discord.info("CMD !keep %s -> added=%s keep=%s", args, added, self._keep_ores)
 
         elif cmd == "!unkeep":
@@ -398,10 +402,12 @@ class Bot:
             kept = ", ".join(sorted(self._keep_ores)) or "（空）"
             notify.send_message(token, ch,
                 f"❌ 取消保留：{', '.join(removed) or '（無）'}\n目前保留：{kept}")
+            self._save_keep_ores()
             self.log_discord.info("CMD !unkeep %s -> removed=%s keep=%s", args, removed, self._keep_ores)
 
         elif cmd == "!clear":
             self._keep_ores.clear()
+            self._save_keep_ores()
             notify.send_message(token, ch, "🗑️ 保留清單已清空（所有事件都會刷新）")
             self.log_discord.info("CMD !clear -> keep set cleared")
 
@@ -444,9 +450,21 @@ class Bot:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
         self.logger.info("初始化完成，開始挖礦")
+        # 啟動時 Discord 通知目前保留的事件清單（讓使用者一目了然不用 !list）
+        if cfg.discord_bot_token and cfg.discord_channel_id:
+            from . import notify
+            kept = ", ".join(sorted(self._keep_ores)) or "（空＝全部刷新）"
+            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                                f"🤖 Bot 已啟動\n保留事件：{kept}")
         try:
             while self._running:
                 if self.paused:
+                    # 防掛機踢除：暫停中每 antiafk_interval_s 按一次 Space
+                    if self._antiafk_last and time.time() - self._antiafk_last >= cfg.antiafk_interval_s:
+                        ic.key_press("space")
+                        self._antiafk_last = time.time()
+                        self.logger.info("防掛機：按 Space（暫停中超過 %.0f 分鐘）",
+                                         cfg.antiafk_interval_s / 60)
                     time.sleep(0.05); continue
                 frame = capture.grab()
                 obs = self.observe(frame)
@@ -485,7 +503,8 @@ class Bot:
             crossed = score >= cfg.audio_match_threshold
             ts = time.strftime("%Y%m%d_%H%M%S")
             tag = "TRIG" if crossed else "miss"
-            path = f"{cfg.log_dir}/snapshots/audiochg_{ts}_s{int(round(score*100)):02d}_{tag}.wav"
+            adir = f"{cfg.log_dir}/snapshots/audio"; os.makedirs(adir, exist_ok=True)
+            path = f"{adir}/audiochg_{ts}_s{int(round(score*100)):02d}_{tag}.wav"
             audio.save_wav(path, buf, self.listener.sample_rate)
             self.log_hb.info("AUDIO_EVENT score=%.2f rms=%.1f crossed=%s -> %s",
                              score, rms, crossed, path)
@@ -534,6 +553,43 @@ class Bot:
         self.logger.info("NEEDS_HUMAN 裁圖：最佳候選 (%d,%d) %s", cx, cy, label)
         return self._snapshot(crop, "needs_human_%d_%d" % (cx, cy))
 
+    def _log_w_state(self, label):
+        """診斷：記錄 W 鍵 + 左鍵 + 前景視窗（採集後 W 不按住 root cause 追蹤）。"""
+        u = ctypes.windll.user32
+        w = bool(u.GetAsyncKeyState(0x57) & 0x8000)       # virtual key W
+        lmb = bool(u.GetAsyncKeyState(0x01) & 0x8000)      # left mouse button
+        fg = u.GetForegroundWindow()
+        buf = ctypes.create_unicode_buffer(256)
+        u.GetWindowTextW(fg, buf, 256)
+        self.logger.info("[W診斷 %s] W=%s LMB=%s fg=%r", label, w, lmb, buf.value)
+
+    # ---- D4 保留清單持久化 -------------------------------------------------
+    def _keep_ores_path(self) -> str:
+        import os
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "keep_ores.json")
+
+    def _load_keep_ores(self) -> set:
+        """啟動時從 keep_ores.json 載入 D4 保留清單（跨 session 持久化）。"""
+        import json
+        try:
+            with open(self._keep_ores_path(), "r", encoding="utf-8") as f:
+                ores = set(json.load(f))
+            if ores:
+                self.logger.info("keep_ores 載入：%s", sorted(ores))
+            return ores
+        except (FileNotFoundError, json.JSONDecodeError):
+            return set()
+
+    def _save_keep_ores(self):
+        """將 D4 保留清單存到 keep_ores.json（Discord !keep/!unkeep/!clear 後呼叫）。"""
+        import json
+        try:
+            with open(self._keep_ores_path(), "w", encoding="utf-8") as f:
+                json.dump(sorted(self._keep_ores), f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error("keep_ores 存檔失敗: %s", e)
+
     def _on_enter(self, s, frame):
         if s is State.MINING:
             self.human_cleared = False
@@ -543,7 +599,8 @@ class Bot:
             self._snapshot(frame, "rare_found")
             # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）
             try:
-                audio_path = f"{cfg.log_dir}/snapshots/chill_audio_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+                adir = f"{cfg.log_dir}/snapshots/audio"; os.makedirs(adir, exist_ok=True)
+                audio_path = f"{adir}/chill_audio_{time.strftime('%Y%m%d_%H%M%S')}.wav"
                 self.listener.save_buffer_wav(audio_path)
                 self.logger.info("chill 音訊已存: %s", audio_path)
             except Exception as e:
@@ -578,6 +635,9 @@ class Bot:
         # NEEDS_HUMAN / RESET_WAIT: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
     def _tick_mining(self, frame):
+        if getattr(self, '_post_harvest_watch', 0) > 0:
+            self._log_w_state("MINING post-harvest tick")
+            self._post_harvest_watch -= 1
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._activity_ready(frame),   # D4：冷卻好就右鍵刷新事件
@@ -717,8 +777,9 @@ class Bot:
             self.log.log("TRACKER_FOUND", pos=str(vm), image_path=path)
             return vm
         else:
-            self.log_harvest.info("sweep: 驗證時追蹤框消失，用掃描時位置 %s", best_pos)
-            return best_pos
+            self.log_harvest.info("sweep: 驗證時追蹤框消失（掃描位置 %s 未通過 verify），重試",
+                                 best_pos)
+            return None
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
@@ -810,9 +871,21 @@ class Bot:
                              gone, found_before, found_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
-            # 採集後用與 Q 恢復/啟動完全相同的完整序列（清鍵→視角→置中→確認鎬子→W+左鍵）。
-            # 舊的精簡 resume_mining 常漏按住 W（採集後鍵盤殘留狀態讓 key_down("w") 失效）。
-            miner.init_mining_sequence()
+            self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
+            # 採集後遊戲有 pickup 動畫（1-2s），期間 keyDown 被吃掉；動畫結束後遊戲
+            # 認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。Q-恢復能用是
+            # 因為暫停期間有自然 gap。這裡模擬：init 後等動畫結束 → release+re-press W。
+            self._log_w_state("採集成功→init 前")
+            miner.init_mining_sequence(log=self.logger.info)
+            self._log_w_state("採集成功→init 後（等動畫）")
+            time.sleep(1.0)                  # 等 pickup 動畫結束
+            # 動畫結束後重新置中 + re-press W（init 裡的 center_crosshair / keyDown 都被動畫吃掉）
+            ic.key_up("w"); ic.mouse_up()
+            time.sleep(0.15)
+            ic.center_crosshair()            # 重新雙擊 Shift 置中（遊戲已 settle）
+            time.sleep(0.2)
+            ic.key_down("w"); ic.mouse_down()
+            self._log_w_state("採集成功→置中+W重按後")
         else:
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
@@ -867,12 +940,14 @@ class Bot:
         if not self.paused:
             self.paused = True
             ic.key_up("w"); ic.mouse_up()
+            self._antiafk_last = time.time()       # 開始防掛機計時
             self.log.log("PAUSED")
             self.logger.info("PAUSED — 按 Q 繼續")
 
     def _resume(self):
         """繼續：清除暫停並重新握住 W + 左鍵（與啟動/_on_enter(MINING) 相同的完整序列）。"""
         self.paused = False
+        self._antiafk_last = 0.0                   # 重置防掛機計時（下次暫停重新從 0 開始）
         self.log.log("RESUMED")
         self.logger.info("RESUMED")
         if self.state is State.MINING:

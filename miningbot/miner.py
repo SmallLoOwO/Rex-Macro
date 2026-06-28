@@ -34,17 +34,24 @@ def cooldown_ready(icon_present: bool, since_last_press: float, grace_s: float) 
         return False
     return since_last_press > grace_s
 
-def init_mining_sequence():
+def init_mining_sequence(log=None):
     """初始化（只在啟動/失焦復原做一次）：放開→. , 視角→雙 Shift→（沒拿鎬子才按 D1）→挖礦。
 
     視角(., )與置中只做一次（之後視角不變）。D1 **只在槽位像素顯示沒拿鎬子時才按**，
     對照原巨集 IF PIXEL FOUND 2302755；已拿著又按一下反而會把十字鎬收起來。
+    log：傳 callable 時每步驟記錄（採集後 W 不按住的 root cause 追蹤用）。
     """
+    if log: log("init_mining_sequence: 開始")
     ic.key_up("w"); ic.mouse_up()
+    if log: log("init_mining_sequence: key_up('w')+mouse_up() done")
     ic.rotate_right(); ic.rotate_left()    # ., 設定視角（一次即可）
+    if log: log("init_mining_sequence: rotate(.,) done")
     ic.center_crosshair()                  # 連按兩次 Shift：準心置中
-    _ensure_pickaxe()                      # 沒拿鎬子才按 D1
+    if log: log("init_mining_sequence: center_crosshair done")
+    pressed = _ensure_pickaxe()            # 沒拿鎬子才按 D1
+    if log: log("init_mining_sequence: _ensure_pickaxe pressed=%s" % pressed)
     ic.key_down("w"); ic.mouse_down()
+    if log: log("init_mining_sequence: key_down('w')+mouse_down() done — complete")
 
 def _ensure_pickaxe() -> bool:
     """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。

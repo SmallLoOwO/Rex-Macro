@@ -74,9 +74,29 @@ def get_logger(subsystem: str) -> logging.Logger:
     return logging.getLogger(f"{LOGGER_NAME}.{subsystem}")
 
 
+def snapshot_subdir(label: str) -> str:
+    """依 label 決定快照分類子資料夾，讓事後篩選只需讀相關資料夾（不必全部載入）。
+
+    trackers — sweep_confirmed 真追蹤框（建模板的金礦）；
+    review   — needs_human/d3_fire/d3_miss/stuck（誤射/漏抓/卡住，要人眼看）；
+    events   — chill/rare_found/audio_no_text（chill 與稀有偵測）；
+    trace    — 其餘暫態敘事（d3_chat、harvest_success、mine_reset…）。
+    """
+    if "sweep_confirmed" in label:
+        return "trackers"
+    if any(k in label for k in ("needs_human", "d3_fire", "d3_miss", "stuck")):
+        return "review"
+    if any(k in label for k in ("chill", "rare_found", "audio")):
+        return "events"
+    return "trace"
+
+
 def save_snapshot(frame, log_dir: str, label: str) -> str:
-    """把當下畫面存成 log_dir/snapshots/<時間>_<label>.png，回傳路徑。"""
-    snap_dir = os.path.join(log_dir, "snapshots")
+    """把當下畫面存成 log_dir/snapshots/<分類>/<時間>_<label>.png，回傳路徑。
+
+    依 label 自動分流到分類子資料夾（見 snapshot_subdir）——事後只需讀相關資料夾。
+    """
+    snap_dir = os.path.join(log_dir, "snapshots", snapshot_subdir(label))
     os.makedirs(snap_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     path = os.path.join(snap_dir, f"{ts}_{label}.png")

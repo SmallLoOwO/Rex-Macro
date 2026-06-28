@@ -73,7 +73,7 @@ class Config:
     tracker_shape_threshold: float = 0.45        # 外框邊緣相關度門檻（實機裁圖實測 ~0.6-0.9；校準時調）
     tracker_shape_scales: tuple = (0.7, 1.0, 1.4)  # 形狀確認用尺度（框置中後尺寸穩定，3 尺度即可）
     tracker_shape_roi_px: int = 160              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
-    tracker_shape_hard_floor: float = 0.25       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16、真追蹤框≈0.81
+    tracker_shape_hard_floor: float = 0.30       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16/0.25/0.26、真追蹤框≥0.44（2026-06-28 由 0.25→0.30 擋下夜間兩次 borderline 裝備誤射）
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
