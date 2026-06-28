@@ -61,9 +61,13 @@ class Bot:
         # Discord 事件通知（有設 token+channel 才啟用；失敗只記 log，不影響挖礦）
         if cfg.discord_bot_token and cfg.discord_channel_id:
             from . import notify
-            self.log.add_sink(notify.make_discord_sink(
-                cfg.discord_bot_token, cfg.discord_channel_id,
-                on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d),
+            # 包成非同步 sink：圖片上傳（multipart，timeout 最長 15s）移到背景 worker，
+            # 不阻塞主迴圈——否則 chill 偵測後遲遲不採集、HARVESTING 期間卡頓。
+            self.log.add_sink(notify.make_async_sink(
+                notify.make_discord_sink(
+                    cfg.discord_bot_token, cfg.discord_channel_id,
+                    on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d),
+                    log=self.log_discord),
                 log=self.log_discord))
             self.logger.info("Discord 通知已啟用 (channel=%s)", cfg.discord_channel_id)
         else:
@@ -85,6 +89,7 @@ class Bot:
         self._last_progress = time.time()
         self._stuck_notified = False
         self._last_heartbeat = time.time()
+        self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
         self._keep_ores: set[str] = set()            # D4 保留清單（Discord 指定；空=全部刷新）
@@ -105,8 +110,8 @@ class Bot:
         _u = ctypes.windll.user32
         self._hk = _HotkeyController(
             lambda vk: bool(_u.GetAsyncKeyState(vk) & 0x8000),
-            self._emergency_stop,
-            self._toggle_pause,
+            self._pause,            # Ctrl+Q：只暫停（不繼續）
+            self._toggle_pause,     # Q：開關 暫停↔繼續
             self._quit,
         )
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
@@ -216,6 +221,8 @@ class Bot:
     # ---- 觀察 ---------------------------------------------------------------
     def observe(self, frame) -> Observation:
         score = self.listener.latest_score()
+        if score > self._peak_audio_since_hb:
+            self._peak_audio_since_hb = score       # 捕捉 30s heartbeat 取樣漏掉的 chill 尖峰
         chill_audio = score >= cfg.audio_match_threshold
         chill_text = False
         if chill_audio:
@@ -232,10 +239,16 @@ class Bot:
                     self.logger.warning("audio triggered (%.2f) but text NOT confirmed: %r",
                                         score, text)
                     self._snapshot(frame, "audio_no_text")
+        # chill 確認時跳過 reset 的同步 Tesseract OCR（~3s）：chill 優先序高於 reset
+        # （states.decide_transition MINING/RESET_WAIT 皆 chill 先判），這幀必轉 HARVESTING，
+        # reset 結果用不到。讓採集盡快開始——reset 途中遇 chill 要搶在礦物被重置前挖掉。
+        # chill 未確認（require_ocr 下 OCR 沒過）才照常檢查 reset，不漏判礦坑重置。
+        chill_confirmed = chill_audio and chill_text
+        mine_resetting = False if chill_confirmed else self._check_reset(frame)
         return Observation(chill_audio=chill_audio, chill_text=chill_text,
                            harvest_done=False, harvest_failed=False,
                            human_cleared=self.human_cleared,
-                           mine_resetting=self._check_reset(frame))
+                           mine_resetting=mine_resetting)
 
     def _check_reset(self, frame) -> bool:
         """節流 OCR 頂部訊息列，偵測「mine will reset in」。只在 MINING 檢查。"""
@@ -403,7 +416,7 @@ class Bot:
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         self._running = True
-        self.logger.info("bot started (全域熱鍵 Ctrl+Q 停 / Q 暫停繼續 / F12 結束, log_level=%s)",
+        self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束, log_level=%s)",
                          cfg.log_level)
         # 先確認 Roblox 在、聚焦它，完成初始化定位後才開始
         if not self._focus_roblox():
@@ -453,10 +466,53 @@ class Bot:
         """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。"""
         now = time.time()
         if now - self._last_heartbeat >= cfg.heartbeat_interval_s:
-            self.log_hb.info("heartbeat state=%s audio=%.2f rms=%.0f",
+            self.log_hb.info("heartbeat state=%s audio=%.2f peak=%.2f rms=%.6f",
                              self.state.value, self.listener.latest_score(),
-                             self.listener.latest_rms())
+                             self._peak_audio_since_hb, self.listener.latest_rms())
+            self._peak_audio_since_hb = 0.0
             self._last_heartbeat = now
+
+    def _save_needs_human_screenshot(self, frame) -> str | None:
+        """NEEDS_HUMAN 時跑 find_tracker 找最佳追蹤框候選，裁出該區域存檔。
+
+        比存全螢幕更能當參考：直接看到「bot 認為最像外框的東西在哪、shape score 多少」。
+        無候選時退回存全螢幕。回傳存檔路徑（或 None）。
+        """
+        import re, cv2
+        _cr = cfg.chat_region
+        excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        logs = []
+        self._find_tracker(frame, excl, reference_bgr=None, log=logs.append)
+        # 找最高 edge score 的 shape 候選（OK/soft/hard_rej 都算——rejected 的也要看）
+        best = None       # (cx, cy, edge_score)
+        for line in logs:
+            m = re.search(r"\((\d+),(\d+)\).*edge=([\d.]+)", line)
+            if m:
+                edge = float(m.group(3))
+                if best is None or edge > best[2]:
+                    best = (int(m.group(1)), int(m.group(2)), edge)
+        # fallback：無 shape 分析（無實機裁圖）時，取第一個 HSV 通過的候選
+        if best is None:
+            for line in logs:
+                m = re.search(r"\((\d+),(\d+)\).*-> OK", line)
+                if m:
+                    best = (int(m.group(1)), int(m.group(2)), -1.0)
+                    break
+        if best is None:
+            self.logger.info("NEEDS_HUMAN：無追蹤框候選，存全螢幕")
+            return self._snapshot(frame, "needs_human")
+        cx, cy, edge = best
+        r = 120                                        # 裁圖半徑（240×240，含追蹤框+周圍）
+        h, w = frame.shape[:2]
+        y0, y1 = max(0, cy - r), min(h, cy + r)
+        x0, x1 = max(0, cx - r), min(w, cx + r)
+        crop = frame[y0:y1, x0:x1].copy()
+        label = ("edge=%.2f" % edge) if edge >= 0 else "HSV only"
+        cv2.rectangle(crop, (cx - x0 - 35, cy - y0 - 35), (cx - x0 + 35, cy - y0 + 35),
+                      (0, 255, 255), 2)
+        cv2.putText(crop, label, (5, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        self.logger.info("NEEDS_HUMAN 裁圖：最佳候選 (%d,%d) %s", cx, cy, label)
+        return self._snapshot(crop, "needs_human_%d_%d" % (cx, cy))
 
     def _on_enter(self, s, frame):
         if s is State.MINING:
@@ -481,8 +537,8 @@ class Bot:
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
         if s is State.NEEDS_HUMAN:
-            self.log.log("NEEDS_HUMAN", reason=self._human_reason)
-            self._snapshot(frame, "needs_human")
+            path = self._save_needs_human_screenshot(frame)
+            self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path)
             ic.key_up("w"); ic.mouse_up()
             self._alert("需要人工：" + self._human_reason)
             self.human_cleared = False
@@ -565,6 +621,17 @@ class Bot:
             self._alert("腳本可能卡住了")
             self._stuck_notified = True
 
+    def _tracker_log(self, msg):
+        """find_tracker 候選 log 路由：per-candidate 細節→DEBUG，決策摘要→INFO。
+
+        摘要（soft-filter 退回 HSV / 全數硬拒）是事後診斷誤判的關鍵，降到 INFO
+        確保預設 level 就能從 harvest.log 看出「為何這幀被判有/無追蹤框」。
+        """
+        if msg.startswith("shape確認"):
+            self.log_harvest.debug(msg)
+        else:
+            self.log_harvest.info(msg)
+
     def _find_tracker(self, frame, exclude, reference_bgr=None, log=None):
         """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
 
@@ -574,6 +641,7 @@ class Bot:
             frame, exclude=exclude, reference_bgr=reference_bgr, log=log,
             shape_templates=self._shape_templates,
             shape_threshold=cfg.tracker_shape_threshold,
+            shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px)
 
@@ -585,10 +653,10 @@ class Bot:
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
             f = capture.grab()
-            m1 = self._find_tracker(f, excl, ref, log=self.log_harvest.debug)
+            m1 = self._find_tracker(f, excl, ref, log=self._tracker_log)
             if m1:
                 time.sleep(0.08)
-                m2 = self._find_tracker(capture.grab(), excl, ref)
+                m2 = self._find_tracker(capture.grab(), excl, ref, log=self._tracker_log)
                 if m2 and abs(m1[0] - m2[0]) < 8 and abs(m1[1] - m2[1]) < 8:
                     self.log_harvest.info("sweep dir=%d: 穩定追蹤框 %s", i, m2)
                     candidates.append((i, m2))
@@ -617,7 +685,7 @@ class Bot:
         # 對齊後驗證追蹤框仍在
         time.sleep(0.2)
         verify_f = capture.grab()
-        vm = self._find_tracker(verify_f, excl, ref)
+        vm = self._find_tracker(verify_f, excl, ref, log=self._tracker_log)
         if vm and abs(vm[0] - best_pos[0]) < 30 and abs(vm[1] - best_pos[1]) < 30:
             self.log_harvest.info("sweep: 驗證成功 %s", vm)
             path = self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
@@ -722,7 +790,9 @@ class Bot:
                              gone, found_before, found_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
-            miner.resume_mining()       # 採集後恢復挖礦（直接按 1+W，不靠 pixel check）
+            # 採集後用與 Q 恢復/啟動完全相同的完整序列（清鍵→視角→置中→確認鎬子→W+左鍵）。
+            # 舊的精簡 resume_mining 常漏按住 W（採集後鍵盤殘留狀態讓 key_down("w") 失效）。
+            miner.init_mining_sequence()
         else:
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
@@ -768,33 +838,38 @@ class Bot:
     def _check_hotkeys(self):
         self._hk.tick()
 
-    def _emergency_stop(self):
-        """Ctrl+Q：緊急停止（不結束程式），放開所有按鍵，停住等待 Q 重新啟動。"""
+    def _pause(self):
+        """暫停：放開所有按鍵、停住。idempotent（已暫停再呼叫無副作用）。
+
+        Ctrl+Q 與 Q 的暫停走同一條路徑——兩者暫停行為完全一致，差別只在 Q 能再按一次
+        繼續、Ctrl+Q 只暫停（見 _toggle_pause / on_stop 接線）。不再有獨立的「強制停止」。
+        """
         if not self.paused:
             self.paused = True
             ic.key_up("w"); ic.mouse_up()
-            self.log.log("EMERGENCY_STOP")
-            self.logger.warning("EMERGENCY STOP (Ctrl+Q) — 已停止並放開按鍵，按 Q 重新啟動")
+            self.log.log("PAUSED")
+            self.logger.info("PAUSED — 按 Q 繼續")
+
+    def _resume(self):
+        """繼續：清除暫停並重新握住 W + 左鍵（與啟動/_on_enter(MINING) 相同的完整序列）。"""
+        self.paused = False
+        self.log.log("RESUMED")
+        self.logger.info("RESUMED")
+        if self.state is State.MINING:
+            miner.init_mining_sequence()
 
     def _toggle_pause(self):
-        """Q：手動切換 暫停 ↔ 繼續（也用於緊急停止/人工介入後重新啟動）。
+        """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動）。
 
-        Ctrl+Q 已在 _check_hotkeys 分開處理，這裡進來的一定是單獨 Q。
+        Ctrl+Q 已在 _check_hotkeys 分開處理（只會呼叫 _pause），這裡進來的一定是單獨 Q。
         """
         if self.paused:                              # 目前停著 → 繼續
-            self.paused = False
-            self.log.log("RESUMED")
-            self.logger.info("RESUMED (Q)")
-            if self.state is State.MINING:
-                miner.init_mining_sequence()
+            self._resume()
         elif self.state in (State.NEEDS_HUMAN, State.RESET_WAIT):   # 人工/重置定位後 → 繼續
             self.human_cleared = True
             self.logger.info("human cleared (Q) — 恢復挖礦 (from %s)", self.state.value)
         else:                                        # 正在跑 → 暫停
-            self.paused = True
-            ic.key_up("w"); ic.mouse_up()
-            self.log.log("PAUSED")
-            self.logger.info("PAUSED (Q) — 再按 Q 繼續")
+            self._pause()
 
     def _quit(self):
         self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)

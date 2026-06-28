@@ -1,7 +1,7 @@
 # 接手 Handoff — REX 挖礦自動化
 
 > 先讀 `CLAUDE.md`（含實機踩過的坑），再看本檔。
-> 分支：`feature/window-discord-controls`（`python -m pytest -q` → 123 passed）
+> 分支：`main`（`python -m pytest -q` → 133 passed）
 
 ---
 
@@ -11,9 +11,11 @@
 |---|---|
 | 穩定挖礦 / 補 boost / D4 事件保留 / Discord 通知 / 重置等人工 | ✅ 正常 |
 | 全 8 方位掃描採集 稀有 礦（HARVESTING 流程） | ✅ 實機驗證成功 |
-| find_tracker 三層過濾（ring_score + reference_bgr + 雙幀穩定） | ✅ 123 測試綠 |
+| find_tracker 混合偵測（HSV 定位 + 實機裁圖形狀確認 + hard_floor 三區判定） | ✅ 133 測試綠 |
 | chill 音訊偵測（節流 + FFT 加速，延遲 ~1s） | ✅ 修復（原 6s 延遲） |
-| D3 採集驗證（聊天差分 has_new_found） | ✅ 正常 |
+| heartbeat log（rms=%.6f + peak 追蹤，不再漏 chill 尖峰） | ✅ 修復（原 rms=%.0f 把所有音量殺成 0） |
+| 採集後恢復挖礦統一走 init_mining_sequence（修漏按住 W） | ✅ 修復 |
+| NEEDS_HUMAN 裁圖（跑 find_tracker 找最佳候選 → 240×240 標註裁圖） | ✅ 正常 |
 | Discord 圖片通知（chill 特寫 / 追蹤框 / 成功證據） | ✅ 正常 |
 | Discord 命令控制（!keep/!list/!clear 事件保留） | ✅ 正常 |
 | D4 事件保留邏輯（OCR 讀事件 → keep/reroll） | ✅ 正常 |
@@ -51,7 +53,7 @@ _tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
     ├─ key_press("2") → sleep(0.15) → key_press("3") → sleep(0.3)
     ├─ click_at(cx, cy, hold=0.4) → sleep(0.5)
     ├─ 驗證：find_tracker(after) is None + 聊天差分
-    ├─ 成功 → Discord HARVEST_SUCCESS（附聊天截圖）→ resume_mining()
+    ├─ 成功 → Discord HARVEST_SUCCESS（附聊天截圖）→ init_mining_sequence()
     ├─ 未命中 → d3_attempts++（max_harvest_attempts=5 次後重掃）
     └─ 超時 → NEEDS_HUMAN
 ```
@@ -65,22 +67,35 @@ _tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
 | D3 重試上限 | 3 | **5** | 更多機會命中 |
 | sweep 重試 | 無 | **1 次** | 第一次找不到重試一次才交人工 |
 
-### resume_mining()（採集成功後恢復挖 礦）
+### 採集成功後恢復挖礦（2026-06-28 統一走 init_mining_sequence）
 
-不呼叫 `init_mining_sequence()`（太重且靠 pixel check），改用精簡的 `resume_mining()`：
-直接按 "1"（D3→D1 安全切換）→ settle(0.4s) → key_down("w") → mouse_down()。
+採集成功後呼叫 `miner.init_mining_sequence()`——與 Q 暫停恢復、啟動**完全相同**的完整序列
+（清鍵→視角→置中→確認鎬子→W+左鍵）。舊的精簡 `resume_mining()` 常**漏按住 W**
+（採集後鍵盤殘留狀態讓 `key_down("w")` 失效，角色不走），已移除統一走 init，避免兩條恢復路徑行為分歧。
 
 ---
 
 ## 2. find_tracker（2026-06-28 改混合方案：HSV 定位 + 實機裁圖形狀確認）
 
-`vision.find_tracker(frame_bgr, margin_frac, exclude, log, reference_bgr, shape_templates, shape_threshold, shape_scales, shape_roi_px)`
+`vision.find_tracker(frame_bgr, margin_frac, exclude, log, reference_bgr, shape_templates, shape_threshold, shape_hard_floor, shape_scales, shape_roi_px)`
 
 > **本次大改（修 very_rare.png「有礦卻沒發現」）**
 > - **根因**：舊 colored 確認 `(S>90)&(V>90)&((H<35)|(H>95))` 排除 H35-95 黃綠帶 → 黃綠中心礦（Ionized）colored=0 漏抓。**已修為色相無關** `(S>90)&(V>90)`（純 HSV 即命中 (1231,644)）。
 > - **混合偵測**：HSV 快速找候選（~246ms）後，在候選周圍小 ROI 跑「實機裁圖外框」形狀比對（+~65ms）確認，拒「有色但非追蹤框形狀」假陽性（如裝備誤射 (990,665)）。`cfg.tracker_shape_confirm` 控制；無實機裁圖時自動退回純 HSV。
 > - **模板要用實機裁圖、非 wiki**：wiki 透明圖（alpha 外框）向量邊緣在合理尺度配不到遊戲內渲染框（實測全 miss，只在 scale 0.2 噪點假命中）；實機裁圖 edge≈0.91 且跨階通用（顏色無關，色相位移仍命中）。形狀確認集 = `assets/markers` 內無 alpha 的裁圖（自動篩）。已有 `transcendent_tracker_real.png`、`exotic_tracker_real.png`；其餘階級從 `logs/snapshots` 裁框補上。
 > - 全幀模板比對太慢（2 張 5.7s／9 張 23.5s 每幀）→ 只在小 ROI 跑。
+
+### 形狀確認三區判定（shape_hard_floor，2026-06-28 加）
+
+舊版 soft filter 兩區（edge≥threshold=確認，否則全退回 HSV）會把「HSV 強但形狀全錯」的裝備誤判救回來（015044 實測 edge=0.16 被 soft filter 翻盤）。改成三區：
+
+```
+edge ≥ threshold (0.45)         → confirmed（返回此候選）
+hard_floor (0.25) ≤ edge < thr  → survivor → 退回純 HSV（容忍未見階級外框配不到模板）
+edge < hard_floor (0.25)        → hard_rej（完全移除，soft filter 不救）
+```
+
+實測分離：裝備誤判 edge≈0.16（擋下）、真追蹤框 edge≈0.81（不受影響）、borderline（square outline vs synth tracker ≈0.36 → survivor 仍退回 HSV）。`cfg.tracker_shape_hard_floor` 控制。
 
 以下「三層過濾」描述 HSV 候選階段（仍有效）：
 
@@ -253,12 +268,23 @@ python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify im
 
 ## 9. 待改進與未來方向
 
+### ✅ 已解決（2026-06-28）
+
+- **Soft filter hard floor**：015044 裝備誤射根因——shape-confirm 正確拒絕（edge=0.16）但舊版 soft filter 翻盤退回 HSV。加 `tracker_shape_hard_floor=0.25` 三區判定後擋下。
+- **模板修復**：`exotic_tracker_real.png` 原為合成佔位圖（342b）→ 換成真實裁圖（18035b）；`transcendent_tracker_real.png` 原為錯誤 32×32 L 角框 → 換成正確 61×57 四向星。
+- **採集後角色不走（漏按住 W）**：精簡的 `resume_mining()` 即使先 `key_up("w")` 清空仍常漏按住 W → 直接移除，採集後統一改呼叫 `init_mining_sequence()`（與 Q 恢復、啟動同一條完整序列），杜絕兩條恢復路徑分歧。
+- **熱鍵語意統一**：移除獨立的「強制停止」（EMERGENCY_STOP）——Ctrl+Q 與 Q 暫停走同一條 `_pause()`，Ctrl+Q 只暫停（idempotent）、Q 開關。避免暫停時誤按 Ctrl+Q 觸發更重動作。
+- **heartbeat rms 格式**：`rms=%.0f` 把所有正常音訊 RMS（0.001-0.6）四捨五入成 0 → 誤判 loopback 死了。改 `%.6f` + 加 `peak=%.2f`（追蹤 30s 取樣漏掉的 chill 尖峰）。
+- **NEEDS_HUMAN 裁圖**：原存全螢幕看不到重點 → 改跑 find_tracker 找最佳 edge score 候選 → 裁 240×240 + 黃框標註 + 分數 → 存檔 + Discord。
+- **_tracker_log 路由**：sweep 的 3 個 find_tracker call 全接 log=（per-candidate→DEBUG、soft-filter/全數硬拒摘要→INFO），預設 level 可診斷。
+- **logs/ 清理**：刪 175 張開發測試圖；`_diag_tracker.py` 升級為可帶路徑參數 + 自動載模板的事後診斷工具。
+
 ### 🔴 偵測可靠性（直接影響採集成功率）
 
-**A. 缺少其他階級的實機裁圖**
-- 目前只有 Exotic (26×25) + Transcendent (32×32) 兩張模板
+**A. 缺少其他階級的實機裁圖**（部分緩解）
+- Exotic (120×120) + Transcendent (61×57) 兩張模板已修正為真實裁圖
 - 缺：Enigmatic / Exquisite / Exclusive / Unfathomable / Otherworldly
-- Soft filter 已確保不漏抓（shape 不過退回 HSV），但精度降低
+- Hard floor 確保裝備誤判被擋（不再靠 soft filter 放行）；無實機裁圖時仍退回 HSV
 - **解法**：每次採集時從 `sweep_confirmed_*.png` 截圖手動裁新模板 → 放入 `assets/markers/<tier>_tracker_real.png`
 
 **B. Shape ROI 過大（160px）**
@@ -268,7 +294,7 @@ python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify im
 
 **C. 採集時追蹤框被部分遮擋**
 - 角色 / 礦塊可能擋住追蹤框的箭頭尖端 → shape score 下降
-- 目前靠 soft filter 緩解（遮擋嚴重時退回 HSV）
+- 目前靠 survivor 區（hard_floor ≤ edge < threshold）緩解（退回 HSV）
 - **解法**：部分輪廓匹配（≥60% 邊緣命中即接受），或採集前先微調鏡頭避開遮擋
 
 **D. 跨階級形狀通用性未驗證**

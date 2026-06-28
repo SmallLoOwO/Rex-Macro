@@ -32,7 +32,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位
   5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在追蹤框座標
   6. 確認：tracker 消失（gone=True）**或** 聊天差分出現新 "has found"（confirmed=True）= 成功
-  7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.resume_mining()`（直接按 1+W，**不靠** `_ensure_pickaxe` pixel check）
+  7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.init_mining_sequence()`（與 Q 恢復/啟動相同的完整序列：清鍵→視角→置中→確認鎬子→W+左鍵）
   - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器，D3 階段 `harvest_verify_timeout_s=15s`。
   - **重試**：D3 連 `max_harvest_attempts=5` 次未命中 → 重掃；sweep 兩次都找不到 → NEEDS_HUMAN（最後保障）。
 
@@ -53,7 +53,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   瞬間 click 無效；按 3 後不等也無效（0.3s 裝備 + 0.5s 伺服器回應，2026-06-28 實測減半仍可靠）。
   D3 以**滑鼠點選位置**瞄準（非 crosshair 方向），不需旋轉 camera。
   tracker 立即消失 = 成功；緩慢消失 = D2 掃描到期，需重新掃描。
-  **採集成功後恢復挖 礦用 `miner.resume_mining()`**（直接按 1+W，不靠 pixel check）——`init_mining_sequence()` 太重（重設視角+置中+pixel check），採集後確定剛用 D3，直接按 1 是安全切換。
+  **採集成功後恢復挖 礦用 `miner.init_mining_sequence()`**（與 Q 暫停恢復、啟動完全相同的完整序列）——舊的精簡 `resume_mining()` 常漏按住 W（採集後鍵盤殘留狀態讓 `key_down("w")` 失效），已移除統一走 init。
 - **chill 偵測靠喇叭 loopback**（`audio.LoopbackCapture` 餵 `ChillListener`）；預設只靠音訊
   （`chill_require_ocr=False`）。**真實 chill 約 0.4**（非參考檔的 1.0），門檻設 ~0.30。
   **match_score 很重（~110ms）**，每 chunk（85ms）都算會讓音訊執行緒積壓→6s 延遲。

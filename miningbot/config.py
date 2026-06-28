@@ -66,6 +66,7 @@ class Config:
     tracker_shape_threshold: float = 0.45        # 外框邊緣相關度門檻（實機裁圖實測 ~0.6-0.9；校準時調）
     tracker_shape_scales: tuple = (0.7, 1.0, 1.4)  # 形狀確認用尺度（框置中後尺寸穩定，3 尺度即可）
     tracker_shape_roi_px: int = 160              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
+    tracker_shape_hard_floor: float = 0.25       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16、真追蹤框≈0.81
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
@@ -106,8 +107,8 @@ class Config:
     heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
 
     # 熱鍵（控制權）
-    hotkey_emergency_stop: str = "ctrl+q"        # 緊急停止（不結束程式）：放開所有按鍵，等 Q 重新啟動
-    hotkey_pause: str = "q"                      # 手動切換 暫停 ↔ 繼續（也用於緊急停止/人工介入後重啟）
+    hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
+    hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟）
     hotkey_quit: str = "f12"                     # 真正結束程式
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼

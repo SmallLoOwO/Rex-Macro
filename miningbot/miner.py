@@ -46,17 +46,6 @@ def init_mining_sequence():
     _ensure_pickaxe()                      # 沒拿鎬子才按 D1
     ic.key_down("w"); ic.mouse_down()
 
-def resume_mining():
-    """採集成功後恢復挖礦：D1 切回鎬子 + 等 + 按 W + 按左鍵。
-
-    比 init_mining_sequence 精簡——不重設視角/置中（restore_view 已處理），
-    也不靠 _ensure_pickaxe pixel check（採集後確定剛用 D3，直接按 1 是安全切換非 toggle）。
-    """
-    ic.key_press("1")        # D3 → D1（採集後確定不是鎬子）
-    ic.settle(0.4)           # 等鎬子裝備動畫（太早按 W 會被吃掉）
-    ic.key_down("w")
-    ic.mouse_down()
-
 def _ensure_pickaxe() -> bool:
     """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。
 

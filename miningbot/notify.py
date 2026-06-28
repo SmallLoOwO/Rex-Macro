@@ -11,14 +11,16 @@
 import io
 import json
 import os
+import queue
+import threading
 import uuid
 import urllib.request
 import urllib.error
 
 API = "https://discord.com/api/v10/channels/{channel_id}/messages"
 
-# 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停、心跳…）不送，避免洗版。
-# EMERGENCY_STOP 不送——會按緊急停止的人一定在畫面前，不需要 Discord 提醒。
+# 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停/繼續、心跳…）不送，避免洗版。
+# PAUSED/RESUMED 不送——會手動暫停的人一定在畫面前，不需要 Discord 提醒。
 _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",
@@ -173,6 +175,35 @@ def send_embed(token: str, channel_id: str, embed: dict,
         return False, f"HTTP {e.code}: {body}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+def make_async_sink(inner, log=None):
+    """把同步 sink 包成非同步：record 入佇列，背景 worker 執行緒處理，呼叫端立即返回。
+
+    根因：Discord 圖片通知走 send_image_message（multipart 上傳，timeout 最長 15s），
+    若在 EventLog.log → _on_enter 同步跑，會阻塞主迴圈數秒——chill 偵測後遲遲不開始
+    採集、HARVESTING 期間 sweep/D3 之間卡頓。包成非同步後主迴圈丟進佇列即返回（~µs），
+    上傳在背景進行。單一 worker（保序）、inner 拋例外只記 log 不殺執行緒、daemon 隨主程式結束。
+    """
+    q: "queue.Queue" = queue.Queue()
+
+    def _worker():
+        while True:
+            rec = q.get()
+            try:
+                inner(rec)
+            except Exception as e:                       # 某次上傳失敗不該讓 worker 死掉
+                if log:
+                    log.error("async sink 處理事件失敗: %s", e)
+            finally:
+                q.task_done()
+
+    threading.Thread(target=_worker, daemon=True, name="discord-sink").start()
+
+    def sink(rec) -> None:
+        q.put(rec)
+
+    return sink
 
 
 def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
