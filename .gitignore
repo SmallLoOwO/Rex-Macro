@@ -17,6 +17,8 @@ logs/
 
 # 大型/個人資產（音檔、模板截圖另行管理，避免誤入版控）
 assets/*.wav
+# chill_refs/ 多參考裁片（各機 loopback 實錄，機器相依；空夾自動退回單一參考）
+assets/**/*.wav
 assets/*.png
 assets/**/*.png
 

@@ -208,6 +208,20 @@ D4 ready → 讀頂部事件列 OCR → match_event(text)
 實測同一場 chill 越來越小聲：`0.39→0.87→0.41→0.36→0.33→0.29(漏抓)`。0.29 差 0.01 沒過 0.30。
 真 chill 0.29-0.87、靜音 0.01，中間是空鴻溝 → 降到 0.25 抓得到又不誤觸。
 
+### 多參考集 + decimate（2026-06-28，根治「清楚 chill 卻漏抓」）
+
+**根因（用錄音器實證）**：錄到 5 個都是**清楚**的 chill，對單一 `chill_reference.wav` 卻分到
+`0.87/0.43/0.15/0.22/0.20`——交叉比對發現至少 **3 種不同的 chill 音效**（s87、s43、s15 群彼此
+只 0.2x）。單一參考檔本質代表性不足，必漏其他種。
+
+**解法**：`match_score_multi(buf, references)` 對多個參考取最高分——命中任一已知 chill 即可。
+- `assets/chill_refs/*.wav`：各種 chill 的實錄裁片（`loudest_window` 抽 1.0s）。實測 3 個 distinct
+  參考讓全部 5 個 chill 都 →1.000。**新 chill 漏抓時**：把 `logs/snapshots/audiochg_*.wav` 裁片丟進此夾即可擴充。
+- 夾為空 → 退回單一 `chill_audio_path`（向後相容）。機器相依，不進版控（同 chill_reference.wav）。
+- **decimate 加速**：`match_score` 對 buf+ref 同步 stride 抽樣（k=4）→ 分數不變、單次 118→22ms。
+  多參考才不會重新引發音訊積壓（103ms×3 會爆 0.3s 預算；22ms×3=66ms 安全）。`audio_match_decimate`。
+- 多參考取 max 後門檻意義變成「對自己的參考 ~1.0 vs 靜音 0.01」，0.25 門檻更穩。
+
 ### 音訊變動記錄器（2026-06-28，取代壞掉的觸發錄音）
 
 `ChillListener(event_threshold=0.15, on_event=...)`：score 升過 0.15（去抖動 `RisingEdgeDetector`，

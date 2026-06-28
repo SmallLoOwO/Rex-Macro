@@ -48,9 +48,13 @@ class Config:
     slot_color: int = 0x232323
 
     # 音訊
-    chill_audio_path: str = "assets/chill_reference.wav"
-    audio_match_threshold: float = 0.25          # 交叉相關門檻。實測真實 chill 0.29-0.87、靜音約 0.01，
-                                                 # 中間是空鴻溝；0.30 曾漏抓 0.29 的小聲 chill，降到 0.25 仍遠離雜訊（誤觸再往上調）
+    chill_audio_path: str = "assets/chill_reference.wav"  # 單一參考（後備；chill_refs 夾為空時用）
+    chill_refs_dir: str = "assets/chill_refs"    # 多參考集資料夾：放各種 chill 實錄裁片（取最高分）。
+                                                 # 實測同樣是清楚 chill 對單一參考飄 0.15-0.87、至少 3 種不同音效→單參考必漏。
+                                                 # 新 chill 漏抓時：把 logs/snapshots 的 audiochg_*.wav 裁片丟進來即可擴充。
+    audio_match_decimate: int = 4                # 比對前抽樣加速倍率（k=4：分數不變、單次 118→22ms，多參考才不積壓）
+    audio_match_threshold: float = 0.25          # 交叉相關門檻。多參考取 max：命中任一已知 chill 即觸發。
+                                                 # 真 chill 對自己的參考 ~1.0、靜音約 0.01；0.25 遠離雜訊（誤觸再往上調）
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5
@@ -113,6 +117,7 @@ class Config:
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
     hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟）
     hotkey_quit: str = "f12"                     # 真正結束程式
+    antiafk_interval_s: float = 900.0            # 防掛機踢除：暫停中每 N 秒按一次 Space（預設 15 分鐘）
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
