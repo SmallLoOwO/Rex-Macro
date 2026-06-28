@@ -273,17 +273,33 @@ def test_find_tracker_no_shape_templates_is_pure_hsv():
 
 
 def test_find_tracker_hybrid_shape_soft_filter_falls_back_to_hsv():
-    """HSV 接受的候選，但形狀對不上模板 → soft filter 退回純 HSV（不硬拒）。
+    """HSV 接受 + 形狀落在 [hard_floor, threshold) → survivor → soft filter 退回純 HSV。
 
-    對應 2026-06-28 改動：shape 確認從硬門檻改為軟篩——全部不過時退回 HSV，
-    確保未見過的階級外框（模板配不到）不會被漏抓。
+    對應三區判定：edge≥threshold 確認、hard_floor≤edge<threshold 保留為 survivor
+    （容忍未見階級外框配不到模板）、edge<hard_floor 硬拒。square_outline_30 對
+    _draw_tracker 實測 ≈0.36，落在 survivor 區（舊版 circle≈0.18 現會被硬拒）。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)                                  # HSV 會接受
+    square_tmpl = np.full((40, 40, 3), 30, np.uint8)
+    cv2.rectangle(square_tmpl, (5, 5), (35, 35), (220, 220, 220), 2)  # 方框（實測 edge≈0.36）
+    loc = find_tracker(scene, shape_templates={"sq": square_tmpl}, shape_threshold=0.7)
+    assert loc is not None, "borderline edge（survivor）應退回純 HSV，不應 return None"
+
+
+def test_find_tracker_hybrid_hard_floor_rejects_wrong_shape():
+    """HSV 接受 + 形狀全錯（edge < hard_floor）→ 硬拒，不 soft-filter。
+
+    回歸 015044 裝備誤射根因：裝備 colored=0.84（HSV 強）但 edge≈0.16（形狀全錯），
+    舊版 soft filter 救回來 → 誤判。加 hard_floor 後直接 return None。
+    circle 對 _draw_tracker 實測 ≈0.18，低於預設 hard_floor 0.25。
     """
     scene = np.zeros((1080, 1920, 3), np.uint8)
     _draw_tracker(scene, 955, 300)                                  # HSV 會接受
     circle = np.full((40, 40, 3), 30, np.uint8)
-    cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環模板（形狀不符方框）
+    cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環（實測 edge≈0.18 < 0.25）
     loc = find_tracker(scene, shape_templates={"circle": circle}, shape_threshold=0.7)
-    assert loc is not None, "形狀對不上時應退回純 HSV（soft filter），不應 return None"
+    assert loc is None, "edge < hard_floor 的候選應被硬拒，不應 soft-filter 救回"
 
 
 def test_find_tracker_hybrid_detects_real_marker():
@@ -300,6 +316,27 @@ def test_find_tracker_hybrid_detects_real_marker():
                        shape_scales=(0.7, 1.0, 1.4), shape_threshold=0.45)
     assert loc is not None
     assert abs(loc[0] - 1230) < 40 and abs(loc[1] - 643) < 40
+
+
+def test_find_tracker_hybrid_rejects_equipment_false_positive():
+    """真實資料：015044 sweep_confirmed（裝備誤射 @(990,665)）→ hard_floor 應擋下。
+
+    回歸 2026-06-28 根因：shape-confirm 正確判 edge=0.16→rej，但舊版 soft filter
+    翻盤退回 HSV → 誤判裝備為追蹤框。加 hard_floor=0.25 後應 return None。
+    """
+    img_path = "assets/false_positive_equipment.png"
+    tmpl_path = "assets/markers/exotic_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exotic": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is None, "裝備誤射（edge≈0.16 < hard_floor 0.25）應被硬拒，不 soft-filter"
 
 
 # --- find_marker（全幀形狀偵測，顏色無關）與輔助 ---

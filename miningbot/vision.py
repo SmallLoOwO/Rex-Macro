@@ -235,6 +235,7 @@ def best_outline_score(scene_bgr, templates, scales=(1.0,), min_px=12) -> float:
 def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  reference_bgr=None, shape_templates=None,
                  shape_threshold: float = 0.45,
+                 shape_hard_floor: float = 0.25,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
                  shape_roi_px: int = 160):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
@@ -251,6 +252,10 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     再在每個候選周圍的小 ROI 跑外框形狀比對確認，拒掉「有顏色但不是追蹤框形狀」的
     假陽性（如角色裝備）。空/None → 純 HSV（向後相容）。形狀比對只在小 ROI 上跑，
     比全幀模板比對快上百倍。
+
+    shape_hard_floor：edge 低於此值的候選直接拒（連 soft filter 也不救）——擋「HSV
+    很強但形狀完全錯」的裝備誤判（實測 edge≈0.16）。只有 survivor（floor≤edge<
+    threshold）才退回 HSV，保留「未見階級外框配不到模板」的安全網。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
@@ -318,24 +323,40 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                 candidates.append((colored_frac, cx, cy))
 
     # ---- 形狀確認（混合方案）：HSV 候選 → 小 ROI 外框比對，拒假陽性 ----
+    # 三區判定：edge ≥ threshold → confirmed；hard_floor ≤ edge < threshold → survivor
+    # （退回 HSV，容忍未見階級）；edge < hard_floor → 硬拒（有色但形狀全錯，如裝備誤判）
     if shape_templates:
         confirmed = []
+        survivors = []      # borderline：保留給 HSV fallback（未見階級安全網）
         for cf, cx, cy in candidates:
             r = shape_roi_px // 2
             roi = frame_bgr[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
             score = best_outline_score(roi, shape_templates, shape_scales)
+            verdict = ("OK" if score >= shape_threshold
+                       else "soft" if score >= shape_hard_floor
+                       else "hard_rej")
             if log is not None:
-                log("shape確認 (%d,%d) colored=%.2f edge=%.2f -> %s"
-                    % (cx, cy, cf, score, "OK" if score >= shape_threshold else "rej"))
+                log("shape確認 (%d,%d) colored=%.2f edge=%.2f floor=%.2f thr=%.2f -> %s"
+                    % (cx, cy, cf, score, shape_hard_floor, shape_threshold, verdict))
             if score >= shape_threshold:
                 confirmed.append((score, cx, cy))
+            elif score >= shape_hard_floor:
+                survivors.append((cf, cx, cy))
+            # else hard_rej：完全移除（不進 confirmed 也不進 survivors）
         if confirmed:
             confirmed.sort(reverse=True)        # 形狀分數最高者勝
             return (confirmed[0][1], confirmed[0][2])
-        # Soft filter：shape 全部不過但 HSV 有強候選 → 退回純 HSV
-        # （可能是未見過的階級外框，現有模板配不到）
-        if log is not None:
-            log("shape全部不過，退回純 HSV（可能是未見階級，candidates=%d）" % len(candidates))
+        if survivors:
+            # Soft filter：borderline 候選（可能是未見階級外框）→ 退回純 HSV
+            if log is not None:
+                log("shape未確認但 edge≥%.2f，退回純 HSV（survivors=%d）"
+                    % (shape_hard_floor, len(survivors)))
+            candidates = survivors
+        else:
+            # 所有候選 edge < hard_floor → 形狀全錯，判定無追蹤框（拒裝備誤判）
+            if log is not None:
+                log("shape全數 < 硬下限 %.2f，判定無追蹤框" % shape_hard_floor)
+            return None
 
     # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）
     if not candidates:
