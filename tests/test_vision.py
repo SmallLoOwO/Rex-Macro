@@ -21,6 +21,23 @@ def _draw_tracker(scene, cx, cy, size=30, color=(0, 255, 0)):
     cv2.rectangle(scene, (cx-4, cy-4), (cx+4, cy+4), (255, 0, 255), -1)       # 彩色中心（隨礦物變）
 
 
+def test_find_tracker_with_score_returns_triple():
+    """with_score=True 回傳 (x, y, score)，供 sweep 早停判斷高吻合度。
+
+    純 HSV（無模板）時 score=colored_frac；有模板且 confirmed 時 score=edge。
+    乾淨的合成 tracker 純 HSV 應有高 colored_frac。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    r = find_tracker(scene, with_score=True)
+    assert r is not None and len(r) == 3
+    x, y, score = r
+    assert abs(x - 955) < 40 and abs(y - 300) < 40
+    assert 0.0 <= score <= 1.0 and score > 0.25         # 回傳有意義的分數（此合成圖 colored_frac≈0.3）
+    # 找不到時 with_score 仍回 None（非 tuple）
+    assert find_tracker(np.zeros((1080, 1920, 3), np.uint8), with_score=True) is None
+
+
 def test_find_tracker_detects_green_black_marker():
     # Exquisite 階級（亮綠外框）
     scene = np.zeros((1080, 1920, 3), np.uint8)

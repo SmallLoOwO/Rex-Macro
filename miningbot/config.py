@@ -22,7 +22,7 @@ class Config:
     screen_h: int = 1080
 
     # 偵測區域（1920x1080、視窗化最大化實測；切全螢幕需整體上移約 30px 標題列高度）
-    chill_text_region: Region = field(default_factory=lambda: Region(360, 42, 1440, 52))  # 頂部事件列（chill/事件文字）實測
+    chill_text_region: Region = field(default_factory=lambda: Region(360, 44, 1220, 37))  # 頂部事件列深色橫幅（實測裁緊：置中 960、只留深色框 y43-82；減 ~40% 像素加速 OCR）
     chat_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))   # 左上事件/掉落訊息（估計，見到訊息再微調）
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
@@ -74,6 +74,7 @@ class Config:
     tracker_shape_scales: tuple = (0.7, 1.0, 1.4)  # 形狀確認用尺度（框置中後尺寸穩定，3 尺度即可）
     tracker_shape_roi_px: int = 160              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
     tracker_shape_hard_floor: float = 0.30       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16/0.25/0.26、真追蹤框≥0.44（2026-06-28 由 0.25→0.30 擋下夜間兩次 borderline 裝備誤射）
+    tracker_shape_early_exit: float = 0.60       # sweep 早停：某方位雙幀穩定且 edge≥此值（遠高於裝備上限 0.26）→ 直接確定、免掃完剩餘方位/免轉回 verify（實測真框 0.54-1.00）
     aim_center_tolerance_px: int = 25            # 準心對準容差
     mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下

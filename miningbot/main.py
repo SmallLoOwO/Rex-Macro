@@ -3,6 +3,7 @@ import time
 import logging
 import ctypes
 import threading
+import queue
 import winsound
 
 from .config import DEFAULT as cfg
@@ -89,6 +90,9 @@ class Bot:
             self.logger.error("音訊擷取啟動失敗，chill 偵測停用: %s", e)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
+        # 非同步快照：主線只丟佇列（即時拿路徑），背景執行緒做 PNG 編碼+寫檔（不卡 aim→D3）
+        self._snap_q: queue.Queue = queue.Queue(maxsize=64)
+        threading.Thread(target=self._snapshot_worker, daemon=True).start()
         self._prev_frame = None
         self._last_progress = time.time()
         self._stuck_notified = False
@@ -212,16 +216,39 @@ class Bot:
             pass
 
     def _snapshot(self, frame, label: str) -> str | None:
-        """關鍵事件存畫面，方便事後查機器人「當下看到什麼」。回傳存檔路徑（或 None）。"""
+        """關鍵事件存畫面（非同步寫檔）。即時回傳路徑，imwrite 丟背景執行緒不卡主線。
+
+        採集 aim→D3 銜接時 d3_fire/chat 全幀 PNG imwrite ~50-200ms 會卡住發射時序，
+        故與 chill 發送同理移到背景執行緒（見 `_snapshot_worker`）。
+        """
         if not cfg.save_snapshots or frame is None:
             return None
+        return self._enqueue_snapshot(frame, label)
+
+    def _enqueue_snapshot(self, frame, label: str) -> str | None:
+        """算好路徑（即時回傳）後把 (frame 複本, 路徑) 丟佇列給背景執行緒寫檔。"""
+        snap_dir, path = diagnostics.snapshot_path(cfg.log_dir, label)
         try:
-            path = diagnostics.save_snapshot(frame, cfg.log_dir, label)
-            self.logger.info("SNAPSHOT %s -> %s", label, path)
-            return path
-        except Exception as e:                       # 存圖失敗不該中斷主流程
-            self.logger.error("snapshot failed (%s): %s", label, e)
-            return None
+            # frame.copy()：主迴圈會覆寫 buffer，背景寫檔前須複製避免讀到髒資料
+            self._snap_q.put_nowait((frame.copy(), snap_dir, path, label))
+            self.logger.info("SNAPSHOT %s -> %s (async)", label, path)
+        except queue.Full:
+            self.logger.warning("snapshot 佇列滿，丟棄 %s", label)
+        return path
+
+    def _snapshot_worker(self):
+        """背景執行緒：從佇列取出畫面寫檔（PNG 編碼+磁碟 I/O 不卡主線）。"""
+        import cv2                                  # lazy（同 _save_needs_human_screenshot）
+        while True:
+            item = self._snap_q.get()
+            if item is None:                         # 收到哨兵 → 結束
+                break
+            frame, snap_dir, path, label = item
+            try:
+                os.makedirs(snap_dir, exist_ok=True)
+                cv2.imwrite(path, frame)
+            except Exception as e:
+                self.logger.error("async snapshot failed (%s): %s", label, e)
 
     # ---- 觀察 ---------------------------------------------------------------
     def observe(self, frame) -> Observation:
@@ -712,10 +739,11 @@ class Bot:
         else:
             self.log_harvest.info(msg)
 
-    def _find_tracker(self, frame, exclude, reference_bgr=None, log=None):
+    def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False):
         """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
 
         shape_templates 為空（無實機裁圖）時 find_tracker 自動退回純 HSV。
+        with_score=True 時回傳 (x, y, edge)，供 sweep 早停判斷高吻合度。
         """
         return vision.find_tracker(
             frame, exclude=exclude, reference_bgr=reference_bgr, log=log,
@@ -723,22 +751,39 @@ class Bot:
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
-            shape_roi_px=cfg.tracker_shape_roi_px)
+            shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score)
 
     def _sweep_for_tracker(self, excl, ref):
         """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
         回傳最佳追蹤框螢幕座標 (cx, cy)；找不到回 None。
+
+        早停：某方位雙幀穩定且 edge ≥ tracker_shape_early_exit（遠高於裝備上限）→ 人已在
+        該方位，直接確定、免掃完剩餘方位也免轉回 verify。分數不夠高者仍收集，掃完走
+        candidates[0] + verify（保留「不確定就繼續掃」的行為）。
         """
         NUM_DIRS = 8
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
             f = capture.grab()
-            m1 = self._find_tracker(f, excl, ref, log=self._tracker_log)
-            if m1:
+            r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
+            if r1:
+                m1 = (r1[0], r1[1])
                 time.sleep(0.08)
-                m2 = self._find_tracker(capture.grab(), excl, ref, log=self._tracker_log)
+                gf = capture.grab()
+                r2 = self._find_tracker(gf, excl, ref, log=self._tracker_log, with_score=True)
+                m2 = (r2[0], r2[1]) if r2 else None
                 if m2 and abs(m1[0] - m2[0]) < 8 and abs(m1[1] - m2[1]) < 8:
-                    self.log_harvest.info("sweep dir=%d: 穩定追蹤框 %s", i, m2)
+                    # ★ 高吻合度早停：雙幀穩定 + edge 很高 → 直接確定（人已在 dir i，net=i）
+                    # 僅在有實機模板時早停（此時 r2[2] 是 edge 分數）；純 HSV 的 colored_frac
+                    # 尺度不同（裝備可達 0.75-0.88），不可用同門檻，故 gate 在 shape_templates。
+                    if self._shape_templates and r2[2] >= cfg.tracker_shape_early_exit:
+                        self.log_harvest.info(
+                            "sweep dir=%d: 高吻合 edge=%.2f ≥%.2f，早停確定 %s（免掃完/免轉回）",
+                            i, r2[2], cfg.tracker_shape_early_exit, m2)
+                        path = self._snapshot(gf, "sweep_confirmed_%d_%d" % m2)
+                        self.log.log("TRACKER_FOUND", pos=str(m2), image_path=path)
+                        return m2
+                    self.log_harvest.info("sweep dir=%d: 穩定追蹤框 %s (edge=%.2f)", i, m2, r2[2])
                     candidates.append((i, m2))
                 else:
                     self.log_harvest.info("sweep dir=%d: 不穩定 m1=%s m2=%s", i, m1, m2)
@@ -781,6 +826,21 @@ class Bot:
                                  best_pos)
             return None
 
+    def _harvest_giveup(self, reason: str):
+        """採集放棄（找不到追蹤框／超時）→ 先轉回原視角再交人工。
+
+        轉回原角度讓畫面回正，便於人工一眼判斷「礦已被挖走」的好假警報；
+        也修掉舊版放棄路徑漏呼叫 restore_view（畫面歪掉、像少按角度）的問題。
+        """
+        if self.harvest.net_rotations:
+            self.logger.info("採集放棄 -> 轉回原方位 net=%d", self.harvest.net_rotations)
+            harvester.restore_view(self.harvest.net_rotations)
+            self.harvest.net_rotations = 0
+        self._human_reason = reason
+        frame = capture.grab()              # 轉回後重抓，NEEDS_HUMAN 裁圖呈現回正視角
+        self.state = State.NEEDS_HUMAN
+        self._on_enter(State.NEEDS_HUMAN, frame)
+
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
 
@@ -792,28 +852,17 @@ class Bot:
         if self._target_marker is None:
             # sweep 階段超時（sweep 固定 8 方位約 19s，30s 已是 1.5x 餘裕）
             if self.harvest.elapsed_s > cfg.sweep_timeout_s:
-                self._human_reason = "全方位掃描超時，請手動處理"
                 self.logger.info("sweep 超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
-                self.state = State.NEEDS_HUMAN
-                self._on_enter(State.NEEDS_HUMAN, frame)
+                self._harvest_giveup("全方位掃描超時，請手動處理")
                 return
             self.last_action = "全方位掃描（8方位）"
             self._target_marker = self._sweep_for_tracker(_excl, _ref)
             if self._target_marker is None:
-                self.harvest.sweep_attempts += 1
-                if self.harvest.sweep_attempts >= 2:
-                    self._human_reason = "全方位掃描兩次未找到追蹤框，請手動處理"
-                    self.state = State.NEEDS_HUMAN
-                    self._on_enter(State.NEEDS_HUMAN, frame)
-                    return
-                # 重試一次：重新 D2 掃描 + 下次 tick 重掃
-                self.logger.info("sweep 未找到追蹤框，重試 (%d/2)", self.harvest.sweep_attempts)
-                harvester.prepare_scan()
-                self._pre_scan_ref = capture.grab()
-                harvester.execute_scan()
-                self._harvest_start = time.time()
-                self.harvest.elapsed_s = 0.0
-                return    # 下次 tick 重新 sweep
+                # 環繞一次找不到就交人工（偵測已準；再掃一次也是偵測問題，不會更好）。
+                # 先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
+                self.logger.info("sweep 未找到追蹤框（環繞一次）-> 人工")
+                self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
+                return
             # ★ sweep 完成：重置計時器，D3 階段從 0 開始算
             # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
             self._harvest_start = time.time()
@@ -823,10 +872,8 @@ class Bot:
 
         # ---- 階段二：D3 開火 + 驗證（sweep 完成後才計時）----
         if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
-            self._human_reason = "稀有礦採集失敗（D3 階段超時），請手動處理"
             self.logger.info("D3 階段超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
-            self.state = State.NEEDS_HUMAN
-            self._on_enter(State.NEEDS_HUMAN, frame)
+            self._harvest_giveup("稀有礦採集失敗（D3 階段超時），請手動處理")
             return
 
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
@@ -884,8 +931,12 @@ class Bot:
             time.sleep(0.15)
             ic.center_crosshair()            # 重新雙擊 Shift 置中（遊戲已 settle）
             time.sleep(0.2)
+            # 動畫結束後再確認鎬子：init 期的切換常被 pickup 動畫吃掉，導致 D3 沒切回 D1
+            # → 按住 W 卻拿著 D3 無法前進（使用者實機回報）。settle 後條件式補按 D1。
+            if miner.ensure_pickaxe():
+                self.logger.info("採集後動畫結束：補按 D1 切回鎬子（init 期被 pickup 動畫吃掉）")
             ic.key_down("w"); ic.mouse_down()
-            self._log_w_state("採集成功→置中+W重按後")
+            self._log_w_state("採集成功→置中+鎬子+W重按後")
         else:
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
@@ -916,16 +967,10 @@ class Bot:
                              cfg.tesseract_path, preprocess="min_channel")
 
     def _snapshot_crop(self, frame, region, label: str) -> str | None:
-        """存畫面指定區域的截圖（如聊天框 crop），方便事後盤別採集成敗。回傳路徑（或 None）。"""
+        """存畫面指定區域截圖（非同步）。crop 很便宜，在主線裁好後把小圖丟背景寫檔。"""
         if not cfg.save_snapshots or frame is None:
             return None
-        try:
-            path = diagnostics.save_snapshot(capture.crop(frame, region), cfg.log_dir, label)
-            self.logger.info("SNAPSHOT %s -> %s", label, path)
-            return path
-        except Exception as e:                       # 存圖失敗不該中斷主流程
-            self.logger.error("snapshot failed (%s): %s", label, e)
-            return None
+        return self._enqueue_snapshot(capture.crop(frame, region), label)
 
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):

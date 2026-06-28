@@ -29,12 +29,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   1. `harvester.prepare_scan()` — 停止移動、置中鏡頭（裝備位置穩定）
   2. 置中後截 `_pre_scan_ref`（reference）— 排除「掃描前就存在的裝備/礦石假陽性」
   3. `harvester.execute_scan()` — 裝備 D2 + 點擊觸發掃描（等 1.5s）
-  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位
+  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位。
+     **早停（2026-06-29）**：某方位雙幀穩定且 `edge ≥ tracker_shape_early_exit=0.60`（遠高於裝備上限 0.26，實測真框 0.54-1.00）→ 人已在該方位，直接確定、免掃完剩餘方位也免轉回 verify（`find_tracker(with_score=True)` 外露 edge 分數）。分數不夠高者仍收集 → 掃完走 candidates[0]+verify（保留「不確定就繼續掃」）。
   5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在追蹤框座標
   6. 確認：tracker 消失（gone=True）**或** 聊天差分出現新 "has found"（confirmed=True）= 成功
   7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.init_mining_sequence()`（與 Q 恢復/啟動相同的完整序列：清鍵→視角→置中→確認鎬子→W+左鍵）
   - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器，D3 階段 `harvest_verify_timeout_s=15s`。
-  - **重試**：D3 連 `max_harvest_attempts=5` 次未命中 → 重掃；sweep 兩次都找不到 → NEEDS_HUMAN（最後保障）。
+  - **重試**：D3 連 `max_harvest_attempts=5` 次未命中 → 重掃；sweep **環繞一次**找不到 → **先 `restore_view` 轉回原視角** → NEEDS_HUMAN（2026-06-29：偵測已準，移除二次重掃；放棄路徑統一走 `_harvest_giveup` 先轉回視角，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
 
 - **追蹤框偵測 `vision.find_tracker`（2026-06-28 改混合方案）**：HSV 快速定位 + 實機裁圖外框形狀確認。
   1. **HSV 候選**：各色系範圍獨立 mask（不合併）→ ring_score 環形結構（`frame_fill-inner_fill`<0.15 排除實心 blob）→ reference_bgr 差分（同色 fill>0.15 排除掃描前就有的）→ **色相無關** colored 確認（`(S>90)&(V>90)`，**不可再加 `(H<35)|(H>95)`**——那會漏抓黃綠中心礦如 Ionized，是 very_rare.png 踩過的根因）。
@@ -72,6 +73,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   `miningbot.log`（主敘事：啟動/狀態/里程碑/alert）、`heartbeat.log`（心跳+audio+RMS）、
   `actions.log`（boost/D4 重複動作）、`harvest.log`（sweep/D3 細節）、`discord.log`（通知送出+命令執行）；
   另有 `events.log`（結構化 TSV）、`snapshots/`（截圖+chill WAV）；`config.log_level="DEBUG"` 看每幀細節。
+  **快照非同步（2026-06-29）**：`_snapshot`/`_snapshot_crop` 只算路徑+丟佇列即時回傳，PNG 編碼+寫檔在背景執行緒（`_snapshot_worker`），避免 aim→D3 銜接被全幀 imwrite（~50-200ms）卡住。`snapshots/` 依 label 自動分流子夾（`diagnostics.snapshot_subdir`：trackers/review/events/trace/audio）。
 
 ## 工作慣例
 - 純邏輯改動走 TDD（先寫失敗測試）。

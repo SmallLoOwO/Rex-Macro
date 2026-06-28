@@ -53,6 +53,15 @@ def init_mining_sequence(log=None):
     ic.key_down("w"); ic.mouse_down()
     if log: log("init_mining_sequence: key_down('w')+mouse_down() done — complete")
 
+def ensure_pickaxe() -> bool:
+    """公開入口：條件式切回鎬子（槽位顯示沒拿鎬子才按 D1，安全不會 toggle 掉已裝備的）。
+
+    採集成功後 pickup 動畫（1-2s）會吃掉 init 期的 D1，導致 D3 沒切回 → 按住 W 卻拿 D3
+    無法前進。故動畫結束 settle 後需再呼叫本函式補確認一次（見 main 採集成功路徑）。
+    """
+    return _ensure_pickaxe()
+
+
 def _ensure_pickaxe() -> bool:
     """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。
 

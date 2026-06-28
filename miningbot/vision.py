@@ -237,7 +237,7 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  shape_threshold: float = 0.45,
                  shape_hard_floor: float = 0.25,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
-                 shape_roi_px: int = 160):
+                 shape_roi_px: int = 160, with_score: bool = False):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
@@ -341,25 +341,28 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
             if score >= shape_threshold:
                 confirmed.append((score, cx, cy))
             elif score >= shape_hard_floor:
-                survivors.append((cf, cx, cy))
+                survivors.append((score, cx, cy))   # 存 edge 分數（供 with_score / 早停）
             # else hard_rej：完全移除（不進 confirmed 也不進 survivors）
         if confirmed:
             confirmed.sort(reverse=True)        # 形狀分數最高者勝
-            return (confirmed[0][1], confirmed[0][2])
+            s, cx, cy = confirmed[0]
+            return (cx, cy, s) if with_score else (cx, cy)
         if survivors:
             # Soft filter：borderline 候選（可能是未見階級外框）→ 退回純 HSV
             if log is not None:
                 log("shape未確認但 edge≥%.2f，退回純 HSV（survivors=%d）"
                     % (shape_hard_floor, len(survivors)))
-            candidates = survivors
+            candidates = survivors               # (edge, cx, cy)
         else:
             # 所有候選 edge < hard_floor → 形狀全錯，判定無追蹤框（拒裝備誤判）
             if log is not None:
                 log("shape全數 < 硬下限 %.2f，判定無追蹤框" % shape_hard_floor)
             return None
 
-    # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）
+    # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）；
+    # （走 survivor fallback 時 candidates 為 (edge, cx, cy)，排名語意一致：分數高者勝）
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return (candidates[0][1], candidates[0][2])
+    s, cx, cy = candidates[0]
+    return (cx, cy, s) if with_score else (cx, cy)

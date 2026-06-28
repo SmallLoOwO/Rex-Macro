@@ -10,7 +10,7 @@ class HarvestState:
     elapsed_s: float
     net_rotations: int = 0  # 淨轉動（右+1、左-1），用來挖完後轉回原角度
     d3_attempts: int = 0    # D3 連續未命中次數（達 max_harvest_attempts 自動重掃）
-    sweep_attempts: int = 0 # 全方位掃描連續失敗次數（達 2 次交人工）
+    # 註：環繞一次找不到即交人工（2026-06-29 偵測已準，移除二次重掃），故不再記 sweep_attempts
 
 @dataclass
 class HarvestStep:

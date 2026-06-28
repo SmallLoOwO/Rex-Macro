@@ -91,14 +91,22 @@ def snapshot_subdir(label: str) -> str:
     return "trace"
 
 
+def snapshot_path(log_dir: str, label: str, ts: str = None):
+    """算快照分流路徑（不寫檔），回傳 (資料夾, 完整路徑)。
+
+    給非同步存圖用：主線即時拿到路徑（事件 log 用），實際 imwrite 丟背景執行緒。
+    """
+    snap_dir = os.path.join(log_dir, "snapshots", snapshot_subdir(label))
+    ts = ts or time.strftime("%Y%m%d_%H%M%S")
+    return snap_dir, os.path.join(snap_dir, f"{ts}_{label}.png")
+
+
 def save_snapshot(frame, log_dir: str, label: str) -> str:
     """把當下畫面存成 log_dir/snapshots/<分類>/<時間>_<label>.png，回傳路徑。
 
     依 label 自動分流到分類子資料夾（見 snapshot_subdir）——事後只需讀相關資料夾。
     """
-    snap_dir = os.path.join(log_dir, "snapshots", snapshot_subdir(label))
+    snap_dir, path = snapshot_path(log_dir, label)
     os.makedirs(snap_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(snap_dir, f"{ts}_{label}.png")
     cv2.imwrite(path, frame)
     return path
