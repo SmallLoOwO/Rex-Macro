@@ -329,10 +329,13 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                     % (cx, cy, cf, score, "OK" if score >= shape_threshold else "rej"))
             if score >= shape_threshold:
                 confirmed.append((score, cx, cy))
-        if not confirmed:
-            return None
-        confirmed.sort(reverse=True)        # 形狀分數最高者勝
-        return (confirmed[0][1], confirmed[0][2])
+        if confirmed:
+            confirmed.sort(reverse=True)        # 形狀分數最高者勝
+            return (confirmed[0][1], confirmed[0][2])
+        # Soft filter：shape 全部不過但 HSV 有強候選 → 退回純 HSV
+        # （可能是未見過的階級外框，現有模板配不到）
+        if log is not None:
+            log("shape全部不過，退回純 HSV（可能是未見階級，candidates=%d）" % len(candidates))
 
     # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）
     if not candidates:

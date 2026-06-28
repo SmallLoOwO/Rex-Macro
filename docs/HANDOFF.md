@@ -248,3 +248,87 @@ python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify im
 - log 檔：`miningbot.log`（主敘事）、`events.log`（結構化）、`discord.log`（通知記錄）
 - `config.log_level="DEBUG"` 看每幀細節
 - Exotic 追蹤框實機截圖：`assets/markers/exotic_tracker_real.png`（本機，不進版控）
+
+---
+
+## 9. 待改進與未來方向
+
+### 🔴 偵測可靠性（直接影響採集成功率）
+
+**A. 缺少其他階級的實機裁圖**
+- 目前只有 Exotic (26×25) + Transcendent (32×32) 兩張模板
+- 缺：Enigmatic / Exquisite / Exclusive / Unfathomable / Otherworldly
+- Soft filter 已確保不漏抓（shape 不過退回 HSV），但精度降低
+- **解法**：每次採集時從 `sweep_confirmed_*.png` 截圖手動裁新模板 → 放入 `assets/markers/<tier>_tracker_real.png`
+
+**B. Shape ROI 過大（160px）**
+- D3 採集瞬間 ROI 內充滿角色身體 / 礦塊稜線 / 動畫特效 → Canny 產生數十條雜訊邊緣
+- signal-to-noise 比低，shape score 被稀釋
+- **解法**：縮小 `shape_roi_px` 到 80px，或在 ROI 內先做 HSV mask 隔離追蹤框區域再跑 Canny
+
+**C. 採集時追蹤框被部分遮擋**
+- 角色 / 礦塊可能擋住追蹤框的箭頭尖端 → shape score 下降
+- 目前靠 soft filter 緩解（遮擋嚴重時退回 HSV）
+- **解法**：部分輪廓匹配（≥60% 邊緣命中即接受），或採集前先微調鏡頭避開遮擋
+
+**D. 跨階級形狀通用性未驗證**
+- 兩張模板結構相同（4 向箭頭 + lime 中心），但不同階級在不同尺度下的 anti-aliasing 程度不同
+- **解法**：實測 Exotic 模板能否偵測 Transcendent 礦（反之亦然），確認一張能否通配
+
+### 🟡 功能缺口（不影響現有流程，但限制能力）
+
+**E. 垂直追蹤框（仰角 礦）**
+- 目前只水平旋轉掃描（8 方位 × 45°），仰角出現的 礦追蹤框會漏抓
+- **解法**：加入垂直旋轉（右鍵拖曳 `aim_move`），或增加仰角掃描步驟
+
+**F. D2 冷卻偵測**
+- 目前 D2 掃描後直接等 1.5s，不知道掃描是否真的成功（左下 "Local" 標籤）
+- 若 D2 冷卻中或被 UI 吃掉點擊 → sweep 全空 → 浪費時間
+- **解法**：掃描後 OCR 確認 "Local" 文字；仿 D4 冷卻模板做 D2 冷卻圖示偵測
+
+**G. 背包滿了無法自動處理**
+- 礦物採集持續累積，背包滿後新 礦無法收入
+- **解法**：監控背包容量（`Capacity: X%`），到閾值時自動走到 NPC 賣 礦
+- 參考：Repo 2 (Machina) 用 `Remotes.SellOre` + tierNum 門檻實作自動賣
+
+**H. 只支援 World 1**
+- REX 有 5 個世界：natura / lucernia / luna_refuge / aesteria / caverna
+- 目前座標 / 礦層設定只適用 World 1
+- **解法**：加世界選擇 + 各世界座標 profile
+
+### 🟢 優化項（現有功能可改進）
+
+**I. tier-specific 模式（可選切換）**
+- REX 預設各階級有獨立文字 + 音效（如 Transcendent = "You hear a ringing in your ears..."）
+- 目前用 unified chill 簡化（一段文字 + 一個音效通吃）
+- 若切換回 tier-specific：OCR 抓 tier 文字 → 得知階級 → 選對的 HSV range + 模板 → 更精準
+- **代價**：需為 7 個階級各收集文字片段 + 音效參考 wav + HSV 範圍（28 項資料），任一缺失即漏抓
+- **評估**：目前 unified chill + soft filter 已足夠，除非 false positive 嚴重才值得切換
+
+**J. chill 音訊樣本分析**
+- 每次觸發自動存 WAV 到 `logs/snapshots/chill_audio_*.wav`
+- 可分析：不同環境的音效差異、onset detection（比 cross-correlation 更快偵測）、頻譜特徵
+- **目標**：將偵測延遲從 ~1s 降到 <0.5s
+
+**K. anti-detection 隨機化**
+- 目前採集流程固定（8 方位旋轉 → D3 點擊）
+- Repo 1 (cryolator) 在採集時加入隨機 WASD 移動模式池
+- **解法**：在 sweep 之間加入隨機延遲 + 偶發跳躍，讓行為更「像人」
+
+**L. 自動賣 礦 + 自動裝備**
+- 長時間掛機需要定期清背包 + 更換裝備
+- 目前完全手動
+- 參考：Repo 2 的 `mainHandOrder` / `offHandOrder` 裝備系統
+
+### 📊 兩個參考 repo 的借鑑
+
+| 來源 | 功能 | 我們能用？ | 備註 |
+|---|---|---|---|
+| Repo 1 (cryolator) | 音量峰值 `> 0.0005` 偵測 | ❌ 太粗暴 | 我們的 cross-correlation 更精確 |
+| Repo 1 | FindText OCR 偵測 礦坑重置 | ✅ 已有 | 我們的做法相同 |
+| Repo 1 | `EquipAll()` 按 2-9 → 1 循環 | 🔜 可參考 | 若加自動裝備切換 |
+| Repo 1 | 隨機移動模式池（anti-detect） | 🔜 可參考 | 採集時加入隨機性 |
+| Repo 2 (Machina) | `Mine.ChildAdded` 記憶體偵測 | ❌ 需 exploit | 外部 bot 無法使用 |
+| Repo 2 | tier 優先序 supernatural→common | ✅ 可參考 | 若加 礦物優先級排序 |
+| Repo 2 | 自動賣 礦（tierNum 門檻） | 🔜 可參考 | 需 game UI 互動 |
+| Repo 2 | 5 世界支援 | 🔜 可參考 | 各世界座標 profile |

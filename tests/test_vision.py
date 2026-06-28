@@ -272,14 +272,18 @@ def test_find_tracker_no_shape_templates_is_pure_hsv():
     assert find_tracker(scene, shape_templates={}) is not None
 
 
-def test_find_tracker_hybrid_shape_gate_rejects_mismatched_shape():
-    """HSV 接受的候選，但形狀（外框）對不上模板（高門檻）→ 形狀確認應拒（殺假陽性）。"""
+def test_find_tracker_hybrid_shape_soft_filter_falls_back_to_hsv():
+    """HSV 接受的候選，但形狀對不上模板 → soft filter 退回純 HSV（不硬拒）。
+
+    對應 2026-06-28 改動：shape 確認從硬門檻改為軟篩——全部不過時退回 HSV，
+    確保未見過的階級外框（模板配不到）不會被漏抓。
+    """
     scene = np.zeros((1080, 1920, 3), np.uint8)
     _draw_tracker(scene, 955, 300)                                  # HSV 會接受
     circle = np.full((40, 40, 3), 30, np.uint8)
     cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環模板（形狀不符方框）
     loc = find_tracker(scene, shape_templates={"circle": circle}, shape_threshold=0.7)
-    assert loc is None, "形狀對不上時混合偵測應拒絕"
+    assert loc is not None, "形狀對不上時應退回純 HSV（soft filter），不應 return None"
 
 
 def test_find_tracker_hybrid_detects_real_marker():
