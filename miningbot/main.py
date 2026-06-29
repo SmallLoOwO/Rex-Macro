@@ -237,18 +237,32 @@ class Bot:
         return path
 
     def _snapshot_worker(self):
-        """背景執行緒：從佇列取出畫面寫檔（PNG 編碼+磁碟 I/O 不卡主線）。"""
+        """背景執列緒：從佇列取出畫面寫檔（PNG 編碼+磁碟 I/O 不卡主線）。"""
         import cv2                                  # lazy（同 _save_needs_human_screenshot）
         while True:
             item = self._snap_q.get()
             if item is None:                         # 收到哨兵 → 結束
                 break
             frame, snap_dir, path, label = item
+            tmp = path + ".part"                     # 原子寫入暫存檔
             try:
                 os.makedirs(snap_dir, exist_ok=True)
-                cv2.imwrite(path, frame)
+                # ★ 原子寫入：先寫 .part 再 os.replace 改名。改名前 path 不存在 →
+                # Discord 上傳執行緒（notify.py 的 os.path.exists 檢查）讀不到半成品，
+                # 退回純文字通知（安全）；改名後即完整檔。修「Discord 收到半張截圖」race：
+                # cv2.imwrite 寫 1080p PNG 需 50-200ms，期間檔案已存在但不完整，與 Discord
+                # sink 並行時 read() 會拿到被截斷的 PNG（解碼只秀上半部 = 「只有一半」）。
+                if not cv2.imwrite(tmp, frame):
+                    raise RuntimeError("cv2.imwrite returned False")
+                os.replace(tmp, path)                # atomic（同磁碟區；Windows 亦保證）
             except Exception as e:
                 self.logger.error("async snapshot failed (%s): %s", label, e)
+                # 清掉可能殘留的 .part（imwrite 失敗或例外中斷時避免堆積）
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
 
     # ---- 觀察 ---------------------------------------------------------------
     def observe(self, frame) -> Observation:
@@ -879,11 +893,13 @@ class Bot:
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
         cx, cy = self._target_marker
         self.last_action = "D3 採集"
-        # D3 前先讀聊天框（差分確認用：只有「新增」的 has found 才算成功，舊訊息不再偽造）
+        # D3 前先讀聊天框（差分確認用：只有「新增」的稀有礦才算成功，舊訊息不再偽造）
+        # 反轉策略：比對聊天「has found X」，X 不在「低稀有度排除清單」(common_ore_names) → 稀有礦。
+        common = game_data.common_ore_names()
         chat_before = self._read_chat(frame)
-        found_before = ocr.count_found(chat_before, cfg.found_keywords)
-        self.log_harvest.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d found_before=%d)",
-                         cx, cy, self.harvest.d3_attempts + 1, found_before)
+        rare_before = ocr.count_rare_found(chat_before, common, cfg.found_keywords)
+        self.log_harvest.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
+                         cx, cy, self.harvest.d3_attempts + 1, rare_before)
         self._snapshot(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
         self._snapshot_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
@@ -896,26 +912,33 @@ class Bot:
         gone = self._find_tracker(after, _excl,
                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)
-        found_after = ocr.count_found(chat_after, cfg.found_keywords)
-        # 差分確認：count diff 或最後一行出現新訊息（chat 捲動時 count 可能下降，
-        # has_new_found_last_line 只看底部最新一行，不受捲動影響）
-        confirmed = (found_after > found_before
-                     or ocr.has_new_found_last_line(chat_before, chat_after, cfg.found_keywords))
-        # 特殊階（ionized/Spectral）：同樣用差分——這類礦物進別的背包，只能靠聊天字樣辨識
+        rare_after = ocr.count_rare_found(chat_after, common, cfg.found_keywords)
+        # 確認：稀有礦 has-found 數量增加，或「底部新出現稀有礦行」。
+        # 底部新行是對抗捲動的主信號——舊訊息從頂部刷掉會讓 count 只減不增（2→1 假負），
+        # 但新訊息永遠在底部，只看最後一行不受頂部捲動影響（使用者點名的遞減問題）。
+        confirmed = (rare_after > rare_before
+                     or ocr.has_new_rare_found_last_line(chat_before, chat_after,
+                                                         common, cfg.found_keywords))
+        # 特殊階（ionized/Spectral）：進別的背包、不在稀有礦名表，只能靠 keyword 字樣辨識 → 也算成功
         special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
+        confirmed = confirmed or special
         chat_after_path = self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
-        self.log_harvest.info("verify harvest: gone=%s found %d->%d %s special=%s",
-                         gone, found_before, found_after,
-                         "NEW" if confirmed else "no-new", special)
-        if gone or confirmed:
+        # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
+        # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
+        #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
+        verdict = harvester.decide_harvest_result(gone, confirmed)
+        self.log_harvest.info("verify harvest: gone=%s rare %d->%d %s special=%s -> %s",
+                         gone, rare_before, rare_after,
+                         "NEW" if confirmed else "no-new", special, verdict)
+        if verdict == "SUCCESS":
             self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone,
-                         special=special, found_before=found_before, found_after=found_after,
+                         special=special, rare_before=rare_before, rare_after=rare_after,
                          image_path=chat_after_path)
             self.stats["rares"] += 1
             self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
             self._snapshot(after, "harvest_success" + ("_special" if special else ""))
-            self.logger.info("採集成功（gone=%s chat=%d->%d special=%s）-> 轉回原方位 net=%d",
-                             gone, found_before, found_after, special, self.harvest.net_rotations)
+            self.logger.info("採集成功（gone=%s rare=%d->%d special=%s）-> 轉回原方位 net=%d",
+                             gone, rare_before, rare_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
             self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
@@ -937,25 +960,33 @@ class Bot:
                 self.logger.info("採集後動畫結束：補按 D1 切回鎬子（init 期被 pickup 動畫吃掉）")
             ic.key_down("w"); ic.mouse_down()
             self._log_w_state("採集成功→置中+鎬子+W重按後")
-        else:
+        elif verdict == "RESWEEP":
+            # 框消失但聊天無 has found → 多半是 D2 掃描到期框自己淡掉（或雷達搶採），原地再射也射不到 → 立即重掃。
+            self._snapshot(after, "d3_gone_unconfirmed")  # 關鍵截圖：框沒了卻沒採到（掃描到期/被搶）
+            self.logger.info("採集: 追蹤框消失但聊天未確認（掃描到期/被雷達搶採）-> 重新 D2 掃描＋全方位重掃")
+            self._reharvest_sweep()
+        else:  # RETRY：框還在、D3 沒打中 → 原地重試，連續未命中達上限才重掃
             self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
             if self.harvest.d3_attempts >= cfg.max_harvest_attempts:
-                # D3 連續未命中達上限 → 重置目標，重新 D2 掃描 + 全方位重掃
                 self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描＋全方位重掃",
                                  self.harvest.d3_attempts)
-                self.harvest.d3_attempts = 0
-                self._target_marker = None      # 下次 tick 重掃
-                harvester.prepare_scan()
-                self._pre_scan_ref = capture.grab()
-                harvester.execute_scan()
-                # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
-                self._harvest_start = time.time()
-                self.harvest.elapsed_s = 0.0
+                self._reharvest_sweep()
             else:
-                self.log_harvest.info("採集: D3 未命中 (attempt %d/%d found %d->%d)，下次繼續",
+                self.log_harvest.info("採集: D3 未命中 (attempt %d/%d rare %d->%d)，下次繼續",
                                  self.harvest.d3_attempts, cfg.max_harvest_attempts,
-                                 found_before, found_after)
+                                 rare_before, rare_after)
+
+    def _reharvest_sweep(self):
+        """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""
+        self.harvest.d3_attempts = 0
+        self._target_marker = None              # 下次 tick 重掃
+        harvester.prepare_scan()
+        self._pre_scan_ref = capture.grab()
+        harvester.execute_scan()
+        # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
+        self._harvest_start = time.time()
+        self.harvest.elapsed_s = 0.0
 
     def _read_chat(self, frame) -> str:
         """讀聊天框區域 OCR 文字（採集差分確認用）。

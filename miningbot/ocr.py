@@ -44,6 +44,67 @@ def has_new_found_last_line(before: str, after: str, phrases) -> bool:
     return any(_normalize(p) in after_last for p in phrases)
 
 
+def _found_ore(line: str, found_keywords) -> str | None:
+    """從一行聊天抽出「has found / found a」後面的礦名（正規化）；非 found 行回 None。
+
+    例：「small_lo has found Lilaverine」→ "lilaverine"。
+    """
+    n = _normalize(line)
+    for kw in found_keywords:
+        k = _normalize(kw)
+        i = n.find(k)
+        if i >= 0:
+            return n[i + len(k):].strip()
+    return None
+
+def _is_rare_ore(ore: str | None, common_norm) -> bool:
+    """礦名非空、且不屬於任何「低稀有度礦」（排除清單）→ 視為稀有礦。
+
+    用 startswith 容忍 OCR 在一般礦名尾端多出的雜訊（如 "bandeau!"）→ 仍判為 common，
+    偏保守（寧可把可疑的當 common 漏掉，也不要把一般礦誤當稀有礦造成假成功）。
+    """
+    if not ore:
+        return False
+    return not any(ore.startswith(c) for c in common_norm)
+
+def count_rare_found(text: str, common_names, found_keywords) -> int:
+    """計聊天中「稀有礦」的 has-found 行數（反轉策略：排除低稀有度礦 common_names）。
+
+    給 D3 採集確認用：聊天「<小名> has found X」混了普通鎬子挖的一般礦與 D3 稀有礦；
+    X 屬於 common_names（低稀有度）→ 普通挖礦、忽略；不在 → 稀有礦 → 計一筆。
+    上一輪留下的稀有礦會同名計多次，故回傳「次數」供差分（呼叫端比 before/after 是否增加）。
+    """
+    common = [_normalize(c) for c in common_names]
+    total = 0
+    for line in text.splitlines():
+        if _is_rare_ore(_found_ore(line, found_keywords), common):
+            total += 1
+    return total
+
+def has_new_rare_found(before: str, after: str, common_names, found_keywords) -> bool:
+    """D3 後稀有礦 has-found 行數「多於」D3 前 → 採到新的稀有礦（排除低稀有度礦）。"""
+    return (count_rare_found(after, common_names, found_keywords)
+            > count_rare_found(before, common_names, found_keywords))
+
+def has_new_rare_found_last_line(before: str, after: str, common_names, found_keywords) -> bool:
+    """chat 最後一行差分：after 底部出現了 before 底部沒有的「稀有礦」行。
+
+    **這是對抗捲動的主信號**：舊訊息從頂部刷掉會讓 count 只減不增（假負），但新訊息
+    永遠出現在底部 → 只看最後一行，捲動只影響頂部。底部變動且該行是稀有礦才算
+    （底部是一般礦則不算）。
+    """
+    def last_line(text: str) -> str:
+        stripped = text.strip()
+        return stripped.split("\n")[-1].strip() if stripped else ""
+
+    before_last = last_line(before)
+    after_last  = last_line(after)
+    if _normalize(before_last) == _normalize(after_last):
+        return False
+    common = [_normalize(c) for c in common_names]
+    return _is_rare_ore(_found_ore(after_last, found_keywords), common)
+
+
 def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
               preprocess: str = "gray") -> str:
     """薄封裝：對已裁切的區域影像做 OCR。

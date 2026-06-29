@@ -32,10 +32,21 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位。
      **早停（2026-06-29）**：某方位雙幀穩定且 `edge ≥ tracker_shape_early_exit=0.60`（遠高於裝備上限 0.26，實測真框 0.54-1.00）→ 人已在該方位，直接確定、免掃完剩餘方位也免轉回 verify（`find_tracker(with_score=True)` 外露 edge 分數）。分數不夠高者仍收集 → 掃完走 candidates[0]+verify（保留「不確定就繼續掃」）。
   5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在追蹤框座標
-  6. 確認：tracker 消失（gone=True）**或** 聊天差分出現新 "has found"（confirmed=True）= 成功
+  6. **確認（`harvester.decide_harvest_result(gone, confirmed)`，2026-06-29 改用「排除低稀有度」反轉策略）**：成功**只認聊天新增的稀有礦**（confirmed），不再用 `gone`。
+     - `confirmed=True` → **SUCCESS**（不論框在不在）。`confirmed` = 聊天「`has found X`」裡 **X 不在低稀有度排除清單** (`game_data.common_ore_names()`) 的筆數**增加**，或**底部新出現一行稀有礦**（`ocr.count_rare_found` / `has_new_rare_found_last_line`）。特殊階（ionized/spectral）另由 `special_keywords` 字樣確認、也算 confirmed。
+     - 框消失但無新稀有礦（gone & ~confirmed）→ **RESWEEP**：礦被**掃描到期**拿走，原地再射也射不到 → 立即重掃（不浪費 attempts）。
+     - 框還在且未命中（~gone & ~confirmed）→ **RETRY**：原地重試 D3。
+     - **為何不再用 `gone` 當成功（踩坑根因）**：「框消失 ≠ 我們採到」。真追蹤框會因 **D2 掃描到期（框自己淡掉）**而消失，舊邏輯 `gone or confirmed` 把這誤報成功（2026-06-29 trace 20260629_022126：真框疊在角色額頭 D3 打不到、掃描到期框自己淡掉 → gone=True 假成功，稀有礦 5→5 根本沒變）。
+     - **階級/聊天/聲音機制（使用者確認 2026-06-29，關鍵前提）**：**只有 Surreal + Mythic 兩階會被動出現在聊天框**；Exotic 以上不被動進聊天，改用 **chill 聲音**觸發採集。但**用 D3 親手採到高階礦時，那一筆會進聊天** → 不在排除清單（清單只含 Surreal/Mythic）→ 被算成稀有 → confirmed。故排除清單天生完整（會進聊天的就這兩階），是它有效的關鍵。清單的角色＝**排除器**：擋掉低階誤觸發，剩下不在清單的 has found ＝真正採到的高階。
+     - **為何「排除低稀有度」而非「列舉高稀有度」**：聊天「`<小名> has found X`」混了低階礦（Surreal/Mythic）和 D3 採到的高階；單人作業 `小名` 就是自己、污染源同名 → 名字過濾無解。高階礦太多列不完，**低階反而有限且封閉**（只有兩階會進聊天）→ 列舉低階當排除清單（`World.common_ores`）。代價：漏列會進聊天的低階礦、或 OCR 把礦名讀錯 → 偶發假成功（用 `startswith` 容忍尾端雜訊、偏保守降低誤判）。
+     - **為何比「數量」不是「存不存在」+ 對抗捲動**：上一輪留下的稀有礦會同名出現 2-3 次；且**舊訊息會從頂部刷掉 → count 可能 2→1 假負**。故主信號是 `has_new_rare_found_last_line`（只看底部最新行，捲動只影響頂部），count 增加為輔。
+     - **Z 雷達不產生 has found、且未實作 → 與採集確認無關**。
+     - **未來方向（使用者提到）**：可能關閉「部分高階礦的聲音」，讓「只有出聲的高階」才觸發採集＝天然過濾想採的礦；屆時觸發判斷會更依賴 chill 音訊的**前後對比**（`ChillListener`）。
   7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.init_mining_sequence()`（與 Q 恢復/啟動相同的完整序列：清鍵→視角→置中→確認鎬子→W+左鍵）
   - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器，D3 階段 `harvest_verify_timeout_s=15s`。
-  - **重試**：D3 連 `max_harvest_attempts=5` 次未命中 → 重掃；sweep **環繞一次**找不到 → **先 `restore_view` 轉回原視角** → NEEDS_HUMAN（2026-06-29：偵測已準，移除二次重掃；放棄路徑統一走 `_harvest_giveup` 先轉回視角，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
+  - **重試**：RETRY 連 `max_harvest_attempts=5` 次未命中 → 重掃（`_reharvest_sweep`）；RESWEEP 立即重掃；sweep **環繞一次**找不到 → **先 `restore_view` 轉回原視角** → NEEDS_HUMAN（2026-06-29：偵測已準，移除二次重掃；放棄路徑統一走 `_harvest_giveup` 先轉回視角，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
+  - **聊天裡的 `小名 has found` 全是自己**（單人作業、無其他玩家）：混了**普通鎬子挖的一般礦**（Lovelocket/Bandeau 等在左側 NORMAL 面板）和 D3 稀有礦——故不能用「出現 has found」判斷成功，要**排除低稀有度礦後看是否有新稀有礦**（見步驟 6）。
+  - **遊戲資料分世界（`game_data.World`）**：REX 分 world，每世界各有 `events`（D4 事件）與 `common_ores`（低稀有度排除清單）。目前只有 **Aesteria**（`game_data.AESTERIA`，`current_world()` 預設它）；新增世界＝建一個 `World` 加進 `WORLDS`，再 `set_world()` 切換。`EVENTS` 是模組層相容別名＝目前世界事件。
 
 - **追蹤框偵測 `vision.find_tracker`（2026-06-28 改混合方案）**：HSV 快速定位 + 實機裁圖外框形狀確認。
   1. **HSV 候選**：各色系範圍獨立 mask（不合併）→ ring_score 環形結構（`frame_fill-inner_fill`<0.15 排除實心 blob）→ reference_bgr 差分（同色 fill>0.15 排除掃描前就有的）→ **色相無關** colored 確認（`(S>90)&(V>90)`，**不可再加 `(H<35)|(H>95)`**——那會漏抓黃綠中心礦如 Ionized，是 very_rare.png 踩過的根因）。

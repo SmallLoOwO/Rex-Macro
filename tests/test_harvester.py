@@ -1,4 +1,5 @@
-from miningbot.harvester import next_harvest_step, HarvestState, restore_actions
+from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
+                                 decide_harvest_result)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -35,3 +36,22 @@ def test_restore_actions_undoes_net_left_rotation():
 
 def test_restore_actions_noop_when_balanced():
     assert restore_actions(0) == []
+
+
+# --- decide_harvest_result：成功判定（修「框消失≠我們採到」假成功）---
+# 背景bug（2026-06-29 trace 20260629_022126）：真追蹤框疊在角色身上，D3 兩次都打不到，
+# 但框被別人(small_lo)/掃描到期弄消失 → gone=True 被當成功。實際我方聊天無 "has found"。
+# 修法：成功必須有我方 has found（confirmed）；gone 而未確認 = 礦被別人/到期拿走 → 重掃。
+
+def test_decide_success_requires_confirmed_chat():
+    # 我方 has found 出現 → 成功（不論框在不在）
+    assert decide_harvest_result(gone=False, confirmed=True) == "SUCCESS"
+    assert decide_harvest_result(gone=True, confirmed=True) == "SUCCESS"
+
+def test_decide_gone_without_confirm_is_resweep_not_success():
+    # ★ 核心bug：框消失但我方聊天無確認 → 礦被別人/掃描到期拿走，不是我們採到 → 重掃
+    assert decide_harvest_result(gone=True, confirmed=False) == "RESWEEP"
+
+def test_decide_still_there_and_unconfirmed_is_retry():
+    # 框還在、未確認 → D3 沒打中，原地重試
+    assert decide_harvest_result(gone=False, confirmed=False) == "RETRY"

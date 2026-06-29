@@ -1,5 +1,7 @@
 from miningbot.ocr import (contains_phrase, contains_any, count_found,
-                           has_new_found, has_new_found_last_line)
+                           has_new_found, has_new_found_last_line,
+                           count_rare_found, has_new_rare_found,
+                           has_new_rare_found_last_line)
 
 def test_contains_phrase_case_insensitive_and_fuzzy():
     text = "A CHILL goes  down your spine..."
@@ -90,3 +92,68 @@ def test_last_line_false_when_same_ore_at_bottom_no_new():
     before = "has found Msg2\nhas found Msg3\nhas found Msg4"
     after  = "has found Msg2\nhas found Msg3\nhas found Msg4"
     assert has_new_found_last_line(before, after, KW) is False
+
+
+# --- 稀有礦判定：排除低稀有度（反轉策略，D3 採集確認）---
+# 背景：聊天「小名 has found X」混了普通鎬子挖的一般礦與 D3 稀有礦；名字過濾無解（同名）。
+# 高稀有度礦太多列不完 → 改列舉「低稀有度礦」(COMMON)當排除清單：has found X 的 X 不在
+# COMMON → 視為稀有礦。COMMON = 低稀有度（普通鎬子會挖到）。
+COMMON = ("Lovelocket", "Bandeau", "Peppermint Core", "Sub-Zero", "Compact Snow")
+# KW（"has found"/"found a"）已於檔案上方定義
+
+def test_count_rare_found_excludes_common_counts_rare():
+    text = ("small_lo has found Bandeau\n"          # common → 排除
+            "small_lo has found Lilaverine\n"        # 不在 common → 稀有
+            "small_lo has found Lovelocket")         # common → 排除
+    assert count_rare_found(text, COMMON, KW) == 1
+
+def test_count_rare_found_counts_duplicates():
+    # 上一輪留下的稀有礦也會出現 → 同名計多次（使用者點名的 2-3 個情境）
+    text = "small_lo has found Rosarium\nsmall_lo has found Rosarium"
+    assert count_rare_found(text, COMMON, KW) == 2
+
+def test_count_rare_found_ignores_non_found_lines():
+    # 沒有 "has found / found a" 的行不算（避免亂數雜訊誤計）
+    text = "the console absolutely solidified\nmanzana rerolled the event"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+def test_count_rare_found_multiword_common_excluded():
+    # 多字一般礦（Compact Snow）整串比對才排除
+    text = "small_lo has found Compact Snow"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+def test_count_rare_found_tolerates_trailing_ocr_noise_on_common():
+    # OCR 在一般礦名尾端多了雜訊（startswith 容忍）→ 仍判為 common、不誤當稀有
+    text = "small_lo has found Bandeau!"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+def test_has_new_rare_found_true_when_rare_count_increases():
+    before = "small_lo has found Rosarium"
+    after  = "small_lo has found Rosarium\nsmall_lo has found Lilaverine"
+    assert has_new_rare_found(before, after, COMMON, KW) is True
+
+def test_has_new_rare_found_false_when_only_common_mined():
+    # 視窗內只多了一般礦（低稀有度）→ 不算採集成功（防普通挖礦偽造）
+    before = "small_lo has found Rosarium"
+    after  = "small_lo has found Rosarium\nsmall_lo has found Bandeau"
+    assert has_new_rare_found(before, after, COMMON, KW) is False
+
+def test_has_new_rare_found_false_when_no_change():
+    msg = "small_lo has found Rosarium"
+    assert has_new_rare_found(msg, msg, COMMON, KW) is False
+
+# --- 捲動造成計數遞減（2→1）的假負：靠底部新行為主信號 ---
+def test_has_new_rare_found_last_line_true_when_rare_at_bottom_despite_scroll():
+    # 舊稀有礦從頂部刷掉 → 稀有計數 2→可能不增（甚至減），但底部新出現稀有礦 → 仍確認
+    before = "has found Rosarium\nhas found Bandeau\nhas found Abyssium"
+    after  = "has found Bandeau\nhas found Abyssium\nhas found Lilaverine"
+    assert has_new_rare_found_last_line(before, after, COMMON, KW) is True
+
+def test_has_new_rare_found_last_line_false_when_common_at_bottom():
+    before = "has found Rosarium"
+    after  = "has found Rosarium\nhas found Bandeau"   # 底部是一般礦
+    assert has_new_rare_found_last_line(before, after, COMMON, KW) is False
+
+def test_has_new_rare_found_last_line_false_when_bottom_unchanged():
+    msg = "has found Rosarium\nhas found Lilaverine"
+    assert has_new_rare_found_last_line(msg, msg, COMMON, KW) is False

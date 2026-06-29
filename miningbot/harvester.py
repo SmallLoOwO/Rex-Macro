@@ -36,6 +36,28 @@ def next_harvest_step(marker, state: HarvestState, cfg) -> HarvestStep:
     }
     return HarvestStep(mapping[d.action], dx=d.dx, dy=d.dy)
 
+def decide_harvest_result(gone: bool, confirmed: bool) -> str:
+    """D3 開火後的成功判定（純函式）。
+
+    回傳 "SUCCESS" / "RESWEEP" / "RETRY"。
+
+    核心原則：**「追蹤框消失」不等於「我們採到」**。框會因 D2 掃描到期（框自己淡掉）、
+    雷達(Z)自動開採等與我方 D3 無關的原因消失。唯一能歸因到我方這一發的證據是聊天框
+    出現新的 has found（confirmed；採集期間鎬子已停，視窗內不會有普通挖礦的 has found）。
+
+    - confirmed=True              → SUCCESS（確實採到，不論框在不在）
+    - 框消失但未確認 (gone, ~conf) → RESWEEP（掃描到期/被雷達搶採，原地再射也射不到 → 重掃）
+    - 框還在且未確認 (~gone,~conf) → RETRY（D3 沒打中、礦還在，原地重試）
+
+    背景bug：2026-06-29 trace 20260629_022126——真追蹤框疊在角色身上 D3 打不到，
+    D2 掃描到期框自己淡掉 → 舊邏輯 `gone or confirmed` 把 gone 當成功、聊天 5→5 沒變仍誤報。
+    """
+    if confirmed:
+        return "SUCCESS"
+    if gone:
+        return "RESWEEP"
+    return "RETRY"
+
 def restore_actions(net_rotations: int) -> list:
     """挖完後要轉回原角度的動作序列（純函式）。
 
