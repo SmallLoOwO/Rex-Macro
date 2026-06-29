@@ -46,7 +46,8 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器，D3 階段 `harvest_verify_timeout_s=15s`。
   - **重試**：RETRY 連 `max_harvest_attempts=5` 次未命中 → 重掃（`_reharvest_sweep`）；RESWEEP 立即重掃；sweep **環繞一次**找不到 → **先 `restore_view` 轉回原視角** → NEEDS_HUMAN（2026-06-29：偵測已準，移除二次重掃；放棄路徑統一走 `_harvest_giveup` 先轉回視角，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
   - **聊天裡的 `小名 has found` 全是自己**（單人作業、無其他玩家）：混了**普通鎬子挖的一般礦**（Lovelocket/Bandeau 等在左側 NORMAL 面板）和 D3 稀有礦——故不能用「出現 has found」判斷成功，要**排除低稀有度礦後看是否有新稀有礦**（見步驟 6）。
-  - **遊戲資料分世界（`game_data.World`）**：REX 分 world，每世界各有 `events`（D4 事件）與 `common_ores`（低稀有度排除清單）。目前只有 **Aesteria**（`game_data.AESTERIA`，`current_world()` 預設它）；新增世界＝建一個 `World` 加進 `WORLDS`，再 `set_world()` 切換。`EVENTS` 是模組層相容別名＝目前世界事件。
+  - **遊戲資料分世界（`game_data.World`）**：REX 分 world，每世界各有 `events`（D4 事件）與 `common_ores`（低稀有度排除清單）。目前只有 **Aesteria**；新增世界＝建一個 `World` 加進 `WORLDS`。`EVENTS` 是模組層相容別名＝Aesteria 事件。
+  - **世界偵測（`game_data.detect_world`/`update_world_from_event`，2026-06-29）**：遊戲不直接顯示在哪個世界，靠**「看到的事件屬於哪個世界」**推斷（事件分世界）。`main._maybe_detect_world` 搭既有事件 OCR 便車（`_check_reset` 每 2s + D4 路徑）呼叫；某事件唯一命中一個世界 → `set_world` 鎖定（跨世界共用事件＝無法區分→不鎖）。**世界未確定時 `common_ore_names()` 用「所有世界聯集」當保守排除清單**；鎖定後收斂成該世界的，更準（同名礦在不同世界階級可能不同，用錯世界會把高階採集目標誤排除→漏判成功）。`match_event`/`fuzzy_match_ore` 一律搜全世界聯集（讀到事件時可能還沒鎖世界）。
 
 - **追蹤框偵測 `vision.find_tracker`（2026-06-28 改混合方案）**：HSV 快速定位 + 實機裁圖外框形狀確認。
   1. **HSV 候選**：各色系範圍獨立 mask（不合併）→ ring_score 環形結構（`frame_fill-inner_fill`<0.15 排除實心 blob）→ reference_bgr 差分（同色 fill>0.15 排除掃描前就有的）→ **色相無關** colored 確認（`(S>90)&(V>90)`，**不可再加 `(H<35)|(H>95)`**——那會漏抓黃綠中心礦如 Ionized，是 very_rare.png 踩過的根因）。

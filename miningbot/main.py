@@ -296,6 +296,14 @@ class Bot:
                            human_cleared=self.human_cleared,
                            mine_resetting=mine_resetting)
 
+    def _maybe_detect_world(self, event_text: str):
+        """用 OCR 到的事件文字推斷目前世界（事件分世界）；鎖定後採集確認的低階排除清單
+        會收斂成該世界的，更準。世界改變時記一筆 log。無法判斷時保持現況（不洗 log）。"""
+        prev = game_data.current_world_name()
+        world = game_data.update_world_from_event(event_text)
+        if world and world != prev:
+            self.logger.info("偵測到世界: %s（依事件 %r）", world, event_text.strip()[:40])
+
     def _check_reset(self, frame) -> bool:
         """節流 OCR 頂部訊息列，偵測「mine will reset in」。只在 MINING 檢查。"""
         if self.state is not State.MINING:
@@ -305,6 +313,7 @@ class Bot:
             return self._mine_resetting
         self._last_reset_check = now
         text = ocr.read_text(capture.crop(frame, cfg.chill_text_region), cfg.tesseract_path)
+        self._maybe_detect_world(text)          # 搭便車：頂部事件列也用來推斷目前世界
         self._mine_resetting = ocr.contains_any(text, cfg.reset_phrases)
         if self._mine_resetting:
             self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
@@ -711,6 +720,7 @@ class Bot:
             # D4 前先讀事件文字，判斷該保留（左鍵）還是刷新（右鍵）
             event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
                                        cfg.tesseract_path).strip()
+            self._maybe_detect_world(event_text)
             ev = game_data.match_event(event_text)
             if ev and game_data.is_kept(event_text, self._keep_ores):
                 self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])

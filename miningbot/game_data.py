@@ -244,43 +244,94 @@ _AESTERIA_COMMON_ORES: list[dict] = [
 ]
 
 
-# ── 世界登記 + 目前世界選擇 ─────────────────────────────────────────────
+# ── 世界登記 + 目前世界偵測 ─────────────────────────────────────────────
 AESTERIA = World("Aesteria", _AESTERIA_EVENTS, _AESTERIA_COMMON_ORES)
 WORLDS: dict[str, World] = {"Aesteria": AESTERIA}
 
-_current_world_name = "Aesteria"
+# 目前世界：**預設未確定（None）**。遊戲沒有直接顯示在哪個世界，要靠「看到的事件屬於哪個世界」
+# 來推斷（事件是分世界的）。未確定前，採集確認的排除清單用「所有世界的聯集」當保守後備；
+# 一旦事件唯一鎖定某世界，就收斂成該世界的清單——更準、也省去把各世界清單都比一次。
+_current_world_name: str | None = None
 
 
 def set_world(name: str) -> None:
-    """切換目前世界（之後新增世界後用）；未知名稱拋 KeyError。"""
+    """鎖定目前世界；未知名稱拋 KeyError。"""
     global _current_world_name
     if name not in WORLDS:
         raise KeyError(f"unknown world: {name!r} (have {list(WORLDS)})")
     _current_world_name = name
 
 
-def current_world() -> World:
-    return WORLDS[_current_world_name]
+def clear_world() -> None:
+    """清掉目前世界判定（回到未確定）。礦坑重置/換場後若想重新偵測可呼叫。"""
+    global _current_world_name
+    _current_world_name = None
+
+
+def current_world_name() -> str | None:
+    return _current_world_name
+
+
+def current_world() -> World | None:
+    """目前世界（未確定回 None）。"""
+    return WORLDS.get(_current_world_name) if _current_world_name else None
+
+
+def all_events() -> list[dict]:
+    """所有世界的事件聯集（事件比對/世界偵測用——讀到事件時還不知在哪個世界）。"""
+    return [ev for w in WORLDS.values() for ev in w.events]
+
+
+def all_common_ores() -> list[dict]:
+    """所有世界的低稀有度礦聯集（世界未確定時的保守排除清單）。"""
+    return [o for w in WORLDS.values() for o in w.common_ores]
+
+
+def detect_world(event_text: str) -> str | None:
+    """從事件文字推斷世界：哪個世界的事件清單命中此文字。
+
+    唯一一個世界命中 → 回該世界名；零個或多個世界都命中（事件跨世界共用、無法區分）→ None。
+    """
+    text_lower = event_text.lower()
+    hit = {w.name for w in WORLDS.values()
+           if any(ev["match"].lower() in text_lower for ev in w.events)}
+    return next(iter(hit)) if len(hit) == 1 else None
+
+
+def update_world_from_event(event_text: str) -> str | None:
+    """偵測並（若唯一命中且與現況不同）鎖定世界；回傳目前世界名（或 None）。
+
+    呼叫端在每次 OCR 到事件列時呼叫即可（搭既有事件 OCR 的便車）。
+    """
+    w = detect_world(event_text)
+    if w and w != _current_world_name:
+        set_world(w)
+    return _current_world_name
 
 
 def common_ore_names() -> tuple[str, ...]:
-    """目前世界的低稀有度礦名稱（D3 採集確認的排除清單，去重保序）。"""
-    return tuple(dict.fromkeys(o["ore"] for o in current_world().common_ores))
+    """D3 採集確認的低稀有度排除清單名稱（去重保序）。
+
+    世界已確定 → 該世界的清單；未確定 → 所有世界聯集（保守，避免漏排除而假成功）。
+    """
+    w = current_world()
+    ores = w.common_ores if w is not None else all_common_ores()
+    return tuple(dict.fromkeys(o["ore"] for o in ores))
 
 
 # 向後相容：模組層 EVENTS 指向 Aesteria 事件（測試與既有呼叫端引用）。
-# 注意：函式內一律走 current_world().events，故 set_world 後行為會跟著切。
 EVENTS: list[dict] = _AESTERIA_EVENTS
 
 
 def match_event(text: str) -> dict | None:
-    """把 OCR 讀到的事件文字比對目前世界的事件，回傳命中的事件（或 None）。
+    """把 OCR 讀到的事件文字比對「所有世界」的事件，回傳命中的事件（或 None）。
 
-    不分大小寫；只要 text「包含」任一 match 片段就算命中。
+    不分大小寫；只要 text「包含」任一 match 片段就算命中。搜全世界（非目前世界）——
+    讀到事件時世界可能還沒鎖定，且這也是 detect_world 推斷世界的依據。
     若多個片段同時命中，回傳稀有度最高的（優先保留高價值事件）。
     """
     text_lower = text.lower()
-    hits = [ev for ev in current_world().events if ev["match"].lower() in text_lower]
+    hits = [ev for ev in all_events() if ev["match"].lower() in text_lower]
     if not hits:
         return None
     return max(hits, key=lambda e: e["rarity"])
@@ -320,7 +371,7 @@ def fuzzy_match_ore(query: str) -> str | None:
     q = _norm(query)
     if not q:
         return None
-    events = current_world().events
+    events = all_events()
     # 1. 完全相符
     for ev in events:
         if _norm(ev["ore"]) == q:
@@ -340,7 +391,7 @@ def format_event_list_embed(keep_ores: set[str] | None = None) -> dict:
     """產生 Discord embed JSON，列出所有事件 + keep 狀態（✅/❌）。"""
     keep_ores = keep_ores or set()
     fields = []
-    for ev in current_world().events:
+    for ev in all_events():
         status = "✅" if ev["ore"] in keep_ores else "❌"
         fields.append({
             "name": f"{status} {ev['ore']}",

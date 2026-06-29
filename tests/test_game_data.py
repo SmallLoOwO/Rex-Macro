@@ -1,7 +1,30 @@
+import pytest
 from miningbot.game_data import (match_event, is_kept, EVENTS, duration_str,
                                  fuzzy_match_ore, format_event_list_embed,
                                  World, WORLDS, AESTERIA, current_world,
-                                 set_world, common_ore_names)
+                                 current_world_name, set_world, clear_world,
+                                 common_ore_names, detect_world, update_world_from_event)
+import miningbot.game_data as gd
+
+
+@pytest.fixture
+def restore_world_state():
+    """快照/還原模組全域世界狀態（測試會注入假世界 / 改 current world）。"""
+    saved_worlds = dict(gd.WORLDS)
+    saved_current = gd._current_world_name
+    yield
+    gd.WORLDS.clear(); gd.WORLDS.update(saved_worlds)
+    gd._current_world_name = saved_current
+
+
+def _fake_world(name="Testworld", event_match="unique testworld beacon",
+                common_ore="Faketownite"):
+    return World(
+        name,
+        [{"match": event_match, "ore": "FakeRare", "rarity": 1, "duration_s": 60,
+          "chance_per_s": 1, "effect": "-", "tier": "X"}],
+        [{"ore": common_ore, "rarity": 1, "layer": "L", "tier": "Surreal"}],
+    )
 
 
 def test_match_event_exact_phrase():
@@ -120,18 +143,61 @@ def test_world_aesteria_registered():
     assert WORLDS["Aesteria"] is AESTERIA
     assert AESTERIA.name == "Aesteria"
 
-def test_current_world_defaults_to_aesteria():
-    assert current_world().name == "Aesteria"
+def test_world_undetermined_by_default(restore_world_state):
+    # 遊戲沒直接顯示世界 → 預設未確定（None），要靠事件偵測
+    clear_world()
+    assert current_world() is None
+    assert current_world_name() is None
 
-def test_events_alias_is_current_world_events():
-    # 向後相容：模組層 EVENTS == 目前世界事件
+def test_events_alias_points_to_aesteria_events():
     assert EVENTS is AESTERIA.events
 
-def test_set_world_unknown_raises():
-    import pytest
+def test_set_world_unknown_raises(restore_world_state):
+    set_world("Aesteria")
     with pytest.raises(KeyError):
         set_world("Nonexistent")
-    assert current_world().name == "Aesteria"   # 失敗不改變現況
+    assert current_world_name() == "Aesteria"   # 失敗不改變現況
+
+
+# ---- 世界偵測（透過事件推斷）----
+
+def test_detect_world_identifies_aesteria_from_event():
+    # "twisted sarcophagus" 是 Aesteria 的事件（Umbrasnare）
+    assert detect_world("Ruinous lies from a twisted sarcophagus tether the mine") == "Aesteria"
+
+def test_detect_world_none_for_unknown_text():
+    assert detect_world("some random text with no known event") is None
+
+def test_detect_world_ambiguous_returns_none(restore_world_state):
+    # 兩個世界共用同一事件片段 → 無法區分 → None
+    WORLDS["Testworld"] = _fake_world(event_match="twisted sarcophagus")
+    assert detect_world("a twisted sarcophagus appears") is None
+
+def test_update_world_from_event_locks_world(restore_world_state):
+    clear_world()
+    update_world_from_event("Ruinous lies from a twisted sarcophagus tether the mine")
+    assert current_world_name() == "Aesteria"
+
+def test_update_world_from_event_keeps_none_on_unknown(restore_world_state):
+    clear_world()
+    update_world_from_event("nothing matches here")
+    assert current_world_name() is None
+
+def test_common_ores_union_when_world_undetermined(restore_world_state):
+    # 未確定 → 用所有世界聯集當排除清單（保守）
+    clear_world()
+    WORLDS["Testworld"] = _fake_world(common_ore="Faketownite")
+    names = set(n.lower() for n in common_ore_names())
+    assert "lovelocket" in names      # Aesteria
+    assert "faketownite" in names     # 假世界（聯集）
+
+def test_common_ores_narrow_after_world_locked(restore_world_state):
+    # 鎖定 Aesteria 後 → 只用 Aesteria 的清單，不含假世界的礦
+    WORLDS["Testworld"] = _fake_world(common_ore="Faketownite")
+    set_world("Aesteria")
+    names = set(n.lower() for n in common_ore_names())
+    assert "lovelocket" in names
+    assert "faketownite" not in names
 
 
 # ---- common_ore_names（D3 採集確認的低稀有度排除清單）----
