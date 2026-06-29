@@ -105,6 +105,27 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
     return _is_rare_ore(_found_ore(after_last, found_keywords), common)
 
 
+def extract_new_found_lines(before: str, after: str, found_keywords) -> list:
+    """D3 前後比對，回傳 after 多出來的「has found / found a」行（原文，未正規化）。
+
+    給 Discord 通知「實際採到什麼」用：rare_before/after 只給數字，使用者看不出是哪顆；
+    這裡直接抓出新增的整行聊天（含 礦名），方便人工確認採集結果。
+
+    處理 chat 捲動：用集合差集（after 有、before 沒有的行）而非計數差——
+    舊訊息從頂部刷掉不影響這裡（只看「after 才出現」的行）。
+    只回 found 行（避免夾帶無關新聊天訊息），按 after 出現順序排列。
+    """
+    before_set = {_normalize(l) for l in before.splitlines() if l.strip()}
+    new_lines = []
+    for line in after.splitlines():
+        s = line.strip()
+        if not s or _normalize(s) in before_set:
+            continue
+        if any(_normalize(kw) in _normalize(s) for kw in found_keywords):
+            new_lines.append(s)
+    return new_lines
+
+
 def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
               preprocess: str = "gray") -> str:
     """薄封裝：對已裁切的區域影像做 OCR。

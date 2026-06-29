@@ -1,7 +1,8 @@
 from miningbot.ocr import (contains_phrase, contains_any, count_found,
                            has_new_found, has_new_found_last_line,
                            count_rare_found, has_new_rare_found,
-                           has_new_rare_found_last_line)
+                           has_new_rare_found_last_line,
+                           extract_new_found_lines)
 
 def test_contains_phrase_case_insensitive_and_fuzzy():
     text = "A CHILL goes  down your spine..."
@@ -157,3 +158,28 @@ def test_has_new_rare_found_last_line_false_when_common_at_bottom():
 def test_has_new_rare_found_last_line_false_when_bottom_unchanged():
     msg = "has found Rosarium\nhas found Lilaverine"
     assert has_new_rare_found_last_line(msg, msg, COMMON, KW) is False
+
+
+# --- extract_new_found_lines：抽 after 才出現的 found 行（原文，給 Discord 通知）---
+def test_extract_new_found_lines_returns_new_found_lines_only():
+    before = "small_lo has found Rosarium"
+    after  = "small_lo has found Rosarium\nImGoc52 has found Lilaverine"
+    lines = extract_new_found_lines(before, after, KW)
+    assert lines == ["ImGoc52 has found Lilaverine"]
+
+def test_extract_new_found_lines_handles_chat_scroll_loss():
+    # 舊訊息從頂部刷掉（before 有但 after 沒有）→ 不影響抽 after 的新行
+    before = "has found Abyssium\nhas found Rosarium"
+    after  = "has found Rosarium\nhas found Lilaverine"   # Abyssium 被捲掉、Lilaverine 新增
+    lines = extract_new_found_lines(before, after, KW)
+    assert lines == ["has found Lilaverine"]
+
+def test_extract_new_found_lines_ignores_non_found_chat_lines():
+    # 新聊天是閒聊/系統訊息（非 found keyword）→ 不抽取
+    before = "has found Rosarium"
+    after  = "has found Rosarium\nsomeone: hello world"
+    assert extract_new_found_lines(before, after, KW) == []
+
+def test_extract_new_found_lines_empty_when_no_change():
+    msg = "small_lo has found Rosarium"
+    assert extract_new_found_lines(msg, msg, KW) == []
