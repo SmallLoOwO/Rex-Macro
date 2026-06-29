@@ -12,7 +12,8 @@ logs/snapshots/ 留下 audiochg_*.wav，挑漏抓（_miss）且清楚的丟進�
     # 加單一片段（通常是 logs/snapshots 裡漏抓的 audiochg_*_miss.wav）
     python -m miningbot.add_chill_ref logs/snapshots/audiochg_20260628_205006_s22_miss.wav
 
-    # 掃 logs/snapshots 所有 audiochg_*.wav，自動挑 distinct 的加入
+    # 遞迴掃 logs/snapshots（含 audio/ 子夾）的 chill_audio_*（confirmed，安全種子）與
+    # audiochg_*（含 _miss），自動挑 distinct 的加入
     python -m miningbot.add_chill_ref --scan
 """
 import argparse
@@ -69,6 +70,23 @@ def _existing_refs(refs_dir: str) -> list:
     return refs
 
 
+def scan_sources(snapshots_dir: str) -> list:
+    """收集 snapshots 夾下所有 chill 取樣（**遞迴**，含 2026-06-29 分類後的 audio/ 子夾）。
+
+    舊版只 glob 扁平的 logs/snapshots/audiochg_*.wav，分類後檔案改放 audio/ 子夾 → 掃不到。
+    這裡用 recursive glob 同時涵蓋舊扁平位置與新子夾。
+
+    順序＝**confirmed chill（chill_audio_*）在前、audiochg_*（含可能是雜訊的 _miss）在後**：
+    confirmed 是「確定有觸發過」的安全來源，先當去重種子；audiochg 的 _miss 只有與所有
+    confirmed 都不同才會被加入，降低把非 chill 雜訊誤升級成參考的風險。
+    """
+    confirmed = sorted(glob.glob(os.path.join(snapshots_dir, "**", "chill_audio_*.wav"),
+                                 recursive=True))
+    changes = sorted(glob.glob(os.path.join(snapshots_dir, "**", "audiochg_*.wav"),
+                               recursive=True))
+    return confirmed + changes
+
+
 def add_ref(src_wav: str, refs_dir: str = None, dup_threshold: float = 0.6,
             decimate: int = None) -> str | None:
     """從 src_wav 抽 loudest 1.0s，去重後存入 refs_dir。回傳新檔路徑（跳過則 None）。"""
@@ -100,7 +118,7 @@ def main():
 
     srcs = list(args.src)
     if args.scan:
-        srcs += sorted(glob.glob(os.path.join(cfg.log_dir, "snapshots", "audiochg_*.wav")))
+        srcs += scan_sources(os.path.join(cfg.log_dir, "snapshots"))
     if not srcs:
         ap.error("請給來源 WAV 或用 --scan")
 
