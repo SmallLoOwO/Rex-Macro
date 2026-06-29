@@ -13,6 +13,7 @@ import json
 import os
 import queue
 import threading
+import time
 import uuid
 import urllib.request
 import urllib.error
@@ -25,8 +26,10 @@ _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",
     "HARVEST_SUCCESS": lambda m: "✅ 稀有礦採集成功"
-                                 + (f"：{m['mineral']}" if m.get("mineral") else ""),
-    "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}",
+                                 + (f"：{m['mineral']}" if m.get("mineral") else "")
+                                 + (f"\n🆕 新增：\n" + "\n".join(m["new_found_lines"])
+                                    if m.get("new_found_lines") else ""),
+    "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "STUCK":           lambda m: f"⚠️ 腳本可能卡住：{m.get('reason', '無進度')}",
     "MINE_RESET":      lambda m: "🔄 礦坑重置，已停下等待重新定位（按 Q 繼續）",
 }
@@ -206,6 +209,22 @@ def make_async_sink(inner, log=None):
     return sink
 
 
+def _wait_for_file(path: str, timeout: float = 2.0, interval: float = 0.05) -> bool:
+    """輪詢等檔案就緒。修 async snapshot race：
+
+    `_snapshot` 把 frame 丟進 snapshot worker 佇列後立即回傳路徑（檔案還沒寫），
+    主線接著 `self.log.log(...)` → Discord sink 很快 pull，`os.path.exists(path)`
+    经常 False（cv2.imwrite 寫 1080p PNG 需 50-200ms）→ 退回純文字通知，沒圖片。
+    snapshot worker 通常 200ms 內寫完；2s 是 10x 餘裕，超過就放棄（算異常）。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(interval)
+    return False
+
+
 def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
     """回傳 EventLog sink：把值得通知的事件送 Discord；有 image_path 時附加圖片。
 
@@ -216,15 +235,17 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
         if content is None:
             return
         image_path = rec.meta.get("image_path")
-        if image_path and os.path.exists(image_path):
+        # 等 snapshot worker 寫完（race 修復）；超時退回純文字（保留通知，至少有原因）
+        if image_path and _wait_for_file(image_path):
             ok, detail = send_image_message(token, channel_id, content, image_path)
             if log:
                 log.info("IMG %s image=%s -> %s (%s)", rec.type,
                          os.path.basename(image_path), "OK" if ok else "FAIL", detail)
         else:
+            tag = "TXT" if not image_path else "NOIMG(wait-timeout)"
             ok, detail = send_message(token, channel_id, content)
             if log:
-                log.info("TXT %s -> %s (%s)", rec.type, "OK" if ok else "FAIL", detail)
+                log.info("%s %s -> %s (%s)", tag, rec.type, "OK" if ok else "FAIL", detail)
         if not ok and on_error is not None:
             on_error(detail)
     return sink

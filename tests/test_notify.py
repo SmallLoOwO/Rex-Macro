@@ -28,6 +28,18 @@ def test_needs_human_includes_reason():
     assert m is not None and "稀有礦採集失敗" in m
 
 
+def test_needs_human_appends_rotation_hint_when_present():
+    """rotation_hint 出現時要接在 reason 後面（方便人工從 Discord 直接看出轉幾次）。"""
+    m = format_message(rec("NEEDS_HUMAN", reason="D3 失敗",
+                           rotation_hint="（面對追蹤框：按 . 3 次 ≈ 135°）"))
+    assert m is not None
+    assert "D3 失敗" in m
+    assert "按 . 3 次" in m
+    # 沒給 rotation_hint 時不能多出雜訊（既有 case 保持相容）
+    m2 = format_message(rec("NEEDS_HUMAN", reason="X"))
+    assert m2 is not None and m2.endswith("X")
+
+
 def test_stuck_includes_reason():
     m = format_message(rec("STUCK", reason="60s 無進度"))
     assert m is not None and "60s 無進度" in m
