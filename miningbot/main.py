@@ -8,7 +8,8 @@ import winsound
 
 from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
-from .states import State, Observation, decide_transition
+from .states import (State, Observation, decide_transition, resolve_state_transition,
+                     toggle_pause_action, is_blocked_from_mining)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import input_control as ic
 
@@ -108,6 +109,11 @@ class Bot:
         self.last_action = "—"
         self.stats = {"boosts": 0, "rerolls": 0, "rares": 0, "stuck": 0}
         self._human_reason = "需要人工介入"
+        # 採集放棄（D3 階段失敗）時預先截好的圖 + 額外 event 欄位（如 rotation_hint）。
+        # _on_enter(NEEDS_HUMAN) 會優先用 extra_image，否則跑 _save_needs_human_screenshot。
+        # 用完即清空（一次性），避免跨事件殘留。
+        self._needs_human_extra_image = None
+        self._needs_human_extra_meta: dict = {}
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # 視窗跑位偵測（item ④）：啟動聚焦後記基準，之後相對基準判斷
@@ -461,9 +467,52 @@ class Bot:
             notify.send_message(token, ch, "🗑️ 保留清單已清空（所有事件都會刷新）")
             self.log_discord.info("CMD !clear -> keep set cleared")
 
+        elif cmd == "!resume":
+            # 遠距恢復採礦：等同在電腦前按 Q。設 human_cleared=True，主迴圈下個 tick
+            # decide_transition 就會從 NEEDS_HUMAN/RESET_WAIT 跳 MINING（_on_enter(MINING)
+            # 會 _focus_roblox；失敗自動降級回 NEEDS_HUMAN，使用者再 !resume 一次）。
+            # 在 MINING 暫停中（paused=True）也能用——同時 un pause 讓它能動。
+            # 注意：執行緒安全——simple boolean assignment 在 Python GIL 下為原子，
+            # 與既有 _toggle_pause 從熱鍵執行緒寫 human_cleared 同模式。
+            # 阻塞判斷走純函式 is_blocked_from_mining（states.py；有測試覆蓋），
+            # 避免 inline條件漏掉 RESET_WAIT 或暫停的 case。
+            was_blocked = is_blocked_from_mining(self.state, self.paused)
+            self.human_cleared = True
+            if self.paused:
+                self.paused = False
+                self._antiafk_last = 0.0
+            if was_blocked:
+                notify.send_message(token, ch,
+                    f"✅ 收到繼續指令（狀態: {self.state.value}{'，暫停中' if self.paused else ''}）\n"
+                    f"→ 下個 tick 嘗試恢復挖礦（會先重新聚焦 Roblox；失敗會再回報）")
+            else:
+                notify.send_message(token, ch,
+                    f"ℹ️ 目前狀態 {self.state.value}（非 NEEDS_HUMAN/RESET_WAIT/暫停），"
+                    f"不需要恢復；last_action={self.last_action}")
+            self.log_discord.info("CMD !resume -> state=%s paused=False human_cleared=True",
+                                  self.state.value)
+
+        elif cmd == "!status":
+            s = self.stats
+            up = int(time.time() - self._started)
+            kept = ", ".join(sorted(self._keep_ores)) or "（空）"
+            try:
+                audio_score = self.listener.latest_score()
+            except Exception:
+                audio_score = 0.0
+            notify.send_message(token, ch,
+                f"📊 **狀態**：{self.state.value}（{self.last_action}）"
+                + ("（暫停）" if self.paused else "") + "\n"
+                f"⏱ 運行 {up // 60}m{up % 60:02d}s    🔊 音訊 {audio_score:.2f}\n"
+                f"📈 boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}\n"
+                f"📝 保留：{kept}")
+            self.log_discord.info("CMD !status -> state=%s", self.state.value)
+
         elif cmd == "!help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**\n"
+                "`!resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
+                "`!status` — 查詢目前狀態、統計、保留清單\n"
                 "`!list` — 列出所有事件 + keep 狀態\n"
                 "`!keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
                 "`!unkeep <礦物名>` — 取消保留\n"
@@ -518,10 +567,21 @@ class Bot:
                     time.sleep(0.05); continue
                 frame = capture.grab()
                 obs = self.observe(frame)
-                new_state = decide_transition(self.state, obs)
-                if new_state != self.state:
-                    self.log.log("STATE_CHANGE", from_=self.state.value, to=new_state.value)
-                    self._on_enter(new_state, frame)
+                decided = decide_transition(self.state, obs)
+                if decided != self.state:
+                    self.log.log("STATE_CHANGE", from_=self.state.value, to=decided.value)
+                    # _on_enter 回傳降級目標（例：MINING 入口重新聚焦失敗 → NEEDS_HUMAN），
+                    # None = 接受 decided。commit 邏輯走純函式 resolve_state_transition
+                    # （states.py；有測試覆蓋）——避免 inline 代碼再寫錯變數把 chill 觸發
+                    # 的 HARVESTING 蓋回 MINING（曾經的修壞點，當時 decide_transition
+                    # 正確但這層沒測到）。
+                    entered = self._on_enter(decided, frame)
+                    new_state = resolve_state_transition(self.state, decided, entered)
+                    if entered is not None and entered != decided:   # 真的降級了 → 補一筆 log
+                        self.log.log("STATE_CHANGE", from_=decided.value, to=entered.value,
+                                     note="downgrade")
+                else:
+                    new_state = decided
                 self.state = new_state
                 self._tick(frame)
                 self._heartbeat()
@@ -603,6 +663,39 @@ class Bot:
         self.logger.info("NEEDS_HUMAN 裁圖：最佳候選 (%d,%d) %s", cx, cy, label)
         return self._snapshot(crop, "needs_human_%d_%d" % (cx, cy))
 
+    def _save_tracker_screenshot(self, frame, marker, net_rotations) -> str | None:
+        """以已知 marker 為中心裁圖、標示追蹤框、寫入旋轉提示——給人工接手看。
+
+        在採集放棄（D3 階段失敗、_target_marker 已設）時呼叫：此時追蹤框仍在畫面上
+        （在 restore_view 之前截），比 _save_needs_human_screenshot 重新 find_tracker
+        更可靠——restore 後追蹤框可能已被轉出畫面，find_tracker 找不到會退回全螢幕。
+
+        旋轉語意：net_rotations 為採集期間的淨轉動（., 各 45°；正=右轉 .、負=左轅 ,）。
+        restore_view 會反向轉回；截圖是「轉回前面對追蹤框」的視角，附上 rotation 提示
+        讓人工知道「從目前的回正視角，按 . 或 , 幾次可以面對此追蹤框」。
+        """
+        import cv2
+        cx, cy = marker
+        r = 180                                       # 裁圖半徑（比 needs_human 大，含更多上下文）
+        h, w = frame.shape[:2]
+        y0, y1 = max(0, cy - r), min(h, cy + r)
+        x0, x1 = max(0, cx - r), min(w, cx + r)
+        crop = frame[y0:y1, x0:x1].copy()
+        cv2.rectangle(crop, (cx - x0 - 35, cy - y0 - 35), (cx - x0 + 35, cy - y0 + 35),
+                      (0, 255, 255), 2)
+        abs_rot = abs(net_rotations)
+        if abs_rot == 0:
+            rot_txt = "facing original view"
+        else:
+            key = "." if net_rotations > 0 else ","
+            rot_txt = f"face: {key} x{abs_rot} (~{abs_rot*45}deg)"
+        cv2.putText(crop, f"tracker ({cx},{cy})  {rot_txt}",
+                    (5, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        self.logger.info("NEEDS_HUMAN tracker 截圖: (%d,%d) net_rot=%d %s",
+                         cx, cy, net_rotations, rot_txt)
+        return self._snapshot(crop, "needs_human_tracker_%d_%d" % (cx, cy))
+
+
     def _log_w_state(self, label):
         """診斷：記錄 W 鍵 + 左鍵 + 前景視窗（採集後 W 不按住 root cause 追蹤）。"""
         u = ctypes.windll.user32
@@ -640,8 +733,24 @@ class Bot:
         except Exception as e:
             self.logger.error("keep_ores 存檔失敗: %s", e)
 
-    def _on_enter(self, s, frame):
+    def _on_enter(self, s, frame) -> State | None:
+        """進入狀態 s 的副作用（screenshot / log / 按鍵）。
+
+        回傳 None = 接受 s（外層正常提交）；回傳其他 State = 降級（外層改用回傳值）。
+        降級用於「MINING 入口重新聚焦 Roblox 失敗」——避免 init_mining_sequence 的
+        按鍵送到錯誤視窗，改交人工處理。
+        """
         if s is State.MINING:
+            # 從 NEEDS_HUMAN/RESET_WAIT/HARVESTING 回 MINING：等待期間焦點幾乎必失
+            # （使用者點過別的視窗、或 HUD 從隱藏重顯時搶焦）。後續 init_mining_sequence
+            # 會送 W / D1 / Shift / ., 視角鍵，必須先確認焦點在 Roblox，否則全被 GUI
+            # 視窗（HUD/terminal/其他）吃掉——「偶爾挖到稀有礦回正不會動」的根因。
+            # 聚焦失敗 → 跑 NEEDS_HUMAN 副作用 + 回傳降級信號（不寫 self.state）。
+            if not self._focus_roblox():
+                self.logger.warning("進入 MINING 但無法聚焦 Roblox -> 降級 NEEDS_HUMAN")
+                self._human_reason = "無法重新聚焦 Roblox，請確認遊戲視窗後按 Q"
+                self._on_enter(State.NEEDS_HUMAN, frame)  # screenshot + log + alert 副作用
+                return State.NEEDS_HUMAN                  # 信號外層降級（不直接寫 self.state）
             self.human_cleared = False
             miner.init_mining_sequence()             # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
@@ -664,8 +773,17 @@ class Bot:
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
         if s is State.NEEDS_HUMAN:
-            path = self._save_needs_human_screenshot(frame)
-            self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path)
+            # 採集放棄時可能已預先截好「看到追蹤框」的圖（_needs_human_extra_image，
+            # 在 _harvest_giveup 內 restore_view 前截，附 rotation_hint）；否則跑 find_tracker
+            # 找最佳候選。用完即清空，避免跨事件殘留。
+            if self._needs_human_extra_image is not None:
+                path = self._needs_human_extra_image
+                self._needs_human_extra_image = None
+            else:
+                path = self._save_needs_human_screenshot(frame)
+            extra = self._needs_human_extra_meta
+            self._needs_human_extra_meta = {}
+            self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path, **extra)
             ic.key_up("w"); ic.mouse_up()
             self._alert("需要人工：" + self._human_reason)
             self.human_cleared = False
@@ -855,7 +973,23 @@ class Bot:
 
         轉回原角度讓畫面回正，便於人工一眼判斷「礦已被挖走」的好假警報；
         也修掉舊版放棄路徑漏呼叫 restore_view（畫面歪掉、像少按角度）的問題。
+
+        D3 階段超時（_target_marker 已設、追蹤框找到過但採不到）時，會在 restore_view
+        **之前**先截「看到追蹤框」的圖——此時追蹤框仍在畫面上，附旋轉提示讓人工接手
+        時知道從回正視角要按 . 或 , 幾次才能面對該追蹤框（sweep timeout / 未找到追蹤框
+        的 case 沒有 _target_marker，走原本即時 find_tracker 截圖流程）。
         """
+        # D3 失敗：restore_view 前截圖（追蹤框仍在畫面上）；rotation_hint 一併準備好
+        if self._target_marker is not None:
+            pre_frame = capture.grab()
+            rot = self.harvest.net_rotations
+            img_path = self._save_tracker_screenshot(pre_frame, self._target_marker, rot)
+            hint = harvester.format_rotation_hint(rot)
+            if img_path is not None and hint:
+                # 只有截圖成功 + 有提示時才覆寫；否則讓 _on_enter 跑預設 find_tracker 流程
+                self._needs_human_extra_image = img_path
+                self._needs_human_extra_meta = {"rotation_hint": hint}
+
         if self.harvest.net_rotations:
             self.logger.info("採集放棄 -> 轉回原方位 net=%d", self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
@@ -941,12 +1075,26 @@ class Bot:
                          gone, rare_before, rare_after,
                          "NEW" if confirmed else "no-new", special, verdict)
         if verdict == "SUCCESS":
+            # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
+            # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
+            new_lines = ocr.extract_new_found_lines(chat_before, chat_after, cfg.found_keywords)
+            if new_lines:
+                self.log_harvest.info("採集新增聊天行: %s", new_lines)
             self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone,
                          special=special, rare_before=rare_before, rare_after=rare_after,
-                         image_path=chat_after_path)
+                         new_found_lines=new_lines, image_path=chat_after_path)
             self.stats["rares"] += 1
             self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
             self._snapshot(after, "harvest_success" + ("_special" if special else ""))
+            # 採集全程數十秒（sweep ~19s + 多次 D3 嘗試），期間焦點可能被搶走
+            # （HUD 從隱藏重顯、系統通知、使用者點別視窗）。後續 restore_view +
+            # init_mining_sequence 會送視角鍵 / W / D1 / Shift，必須先確認焦點在
+            # Roblox，否則全被 GUI 視窗吃掉——「偶爾挖到稀有礦回正不會動」的根因。
+            # 聚焦失敗 → 走 _harvest_giveup（會先轉回視角再交人工，使用者可一眼判斷）。
+            if not self._focus_roblox():
+                self.logger.warning("採集成功但無法重新聚焦 Roblox -> 交人工（已採到，僅回正+續挖失敗）")
+                self._harvest_giveup("採集成功但無法重新聚焦 Roblox，請處理後按 Q")
+                return
             self.logger.info("採集成功（gone=%s rare=%d->%d special=%s）-> 轉回原方位 net=%d",
                              gone, rare_before, rare_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
@@ -1037,19 +1185,26 @@ class Bot:
         self.log.log("RESUMED")
         self.logger.info("RESUMED")
         if self.state is State.MINING:
+            # 暫停期間焦點可能飄走（使用者切去別視窗看 Discord/瀏覽器）；恢復挖礦前
+            # 先重新聚焦 Roblox。失敗不交人工——使用者正在按 Q 注視著，下次 mining
+            # tick 的視窗跑位偵測會接手（REFOCUS action；那條路徑失敗才交人工）。
+            self._focus_roblox()
             miner.init_mining_sequence()
 
     def _toggle_pause(self):
         """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動）。
 
         Ctrl+Q 已在 _check_hotkeys 分開處理（只會呼叫 _pause），這裡進來的一定是單獨 Q。
+        行為分派走純函式 toggle_pause_action（states.py；有測試覆蓋），避免 inline
+        if/elif 條件寫錯（例如漏掉 RESET_WAIT）。
         """
-        if self.paused:                              # 目前停著 → 繼續
+        action = toggle_pause_action(self.paused, self.state)
+        if action == "resume":
             self._resume()
-        elif self.state in (State.NEEDS_HUMAN, State.RESET_WAIT):   # 人工/重置定位後 → 繼續
+        elif action == "clear_human":
             self.human_cleared = True
             self.logger.info("human cleared (Q) — 恢復挖礦 (from %s)", self.state.value)
-        else:                                        # 正在跑 → 暫停
+        else:  # "pause"
             self._pause()
 
     def _quit(self):
