@@ -69,6 +69,20 @@ def restore_actions(net_rotations: int) -> list:
         return ["ROTATE_RIGHT"] * (-net_rotations)
     return []
 
+
+def format_rotation_hint(net_rotations: int) -> str:
+    """把淨轉動轉成給人工看的 Discord 提示文字（純函式）。
+
+    `.,` 各 45°；正=右轉（.）、負=左轉（,）。restore_view 後視角回到原點，
+    使用者若想面對剛剛採集放棄時的追蹤框角度，需要按對應鍵 |net| 次。
+    回傳空字串代表 net=0（不需提示；視角已在原點）。
+    """
+    abs_rot = abs(net_rotations)
+    if abs_rot == 0:
+        return ""
+    key = "." if net_rotations > 0 else ","
+    return f"（面對追蹤框：按 {key} {abs_rot} 次 ≈ {abs_rot*45}°）"
+
 def prepare_scan():
     """停止移動、置中鏡頭——在這之後應立刻截圖當 reference，再呼叫 execute_scan。"""
     ic.key_up("w"); ic.mouse_up()

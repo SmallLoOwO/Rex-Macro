@@ -1,5 +1,5 @@
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
-                                 decide_harvest_result)
+                                 decide_harvest_result, format_rotation_hint)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -55,3 +55,20 @@ def test_decide_gone_without_confirm_is_resweep_not_success():
 def test_decide_still_there_and_unconfirmed_is_retry():
     # 框還在、未確認 → D3 沒打中，原地重試
     assert decide_harvest_result(gone=False, confirmed=False) == "RETRY"
+
+
+# --- format_rotation_hint：採集放棄時給 Discord 看的旋轉提示（純函式）---
+def test_rotation_hint_positive_means_dot_key():
+    # 淨右轉 3 → 從原視角按 . 三次面對該角度
+    h = format_rotation_hint(3)
+    assert h != ""
+    assert ". 3" in h and "135°" in h
+
+def test_rotation_hint_negative_means_comma_key():
+    h = format_rotation_hint(-2)
+    assert h != ""
+    assert ", 2" in h and "90°" in h
+
+def test_rotation_hint_zero_is_empty_string():
+    # 在原視角就不必提示（避免 Discord 訊息多出雜訊）
+    assert format_rotation_hint(0) == ""
