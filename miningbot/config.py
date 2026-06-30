@@ -86,6 +86,7 @@ class Config:
     sweep_strafe_enabled: bool = True            # 關閉則沿用原地掃描（不挪位、弱候選仍走回舊行為）
     sweep_strafe_key: str = "d"                  # 往右挪（與鏡頭 rotate_right 順時針掃描同向）
     sweep_strafe_hold_s: float = 0.3             # 短按秒數；整圈 3 次累積位移大，預設保守降到 0.3（首跑安全），實機校準後再視效果加大
+    sweep_strafe_settle_s: float = 0.35          # 按完 D 後等角色停下/鏡頭穩定再擷幀+轉動；原 0.1 太短，角色還在滑時就轉鏡頭→畫面糊/偵測不準（H005@23:10 根因之一）
     sweep_strafe_dirs: tuple = (2, 4, 6)         # 在這些方位（右/後/左）轉動前挪位；前(dir 0)與斜角(1/3/5/7)不挪
 
     # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
