@@ -85,7 +85,7 @@ class Config:
     # 採集掃描 strafe 挪位：短按 D 把角色挪離牆邊、身體靠側，清出中央視野（露出被身體/牆擋住的追蹤框）
     sweep_strafe_enabled: bool = True            # 關閉則沿用原地掃描（不挪位、弱候選仍走回舊行為）
     sweep_strafe_key: str = "d"                  # 往右挪（與鏡頭 rotate_right 順時針掃描同向）
-    sweep_strafe_hold_s: float = 0.6             # 短按秒數；使用者意圖「按幾秒」，但整圈 3 次累積位移大，預設保守，實機校準
+    sweep_strafe_hold_s: float = 0.3             # 短按秒數；整圈 3 次累積位移大，預設保守降到 0.3（首跑安全），實機校準後再視效果加大
     sweep_strafe_dirs: tuple = (2, 4, 6)         # 在這些方位（右/後/左）轉動前挪位；前(dir 0)與斜角(1/3/5/7)不挪
 
     # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
