@@ -91,7 +91,7 @@ class Bot:
             self.logger.error("音訊擷取啟動失敗，chill 偵測停用: %s", e)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
-        self._harvest_seq = 0          # 採集流水號（每進一次 HARVESTING +1）；格式化成 H001 貫穿 log/快照/Discord
+        self._harvest_seq = self._load_harvest_seq()  # 採集流水號（持久化跨 session；每進一次 HARVESTING +1）；格式化成 H001 貫穿 log/快照/Discord
         # 非同步快照：主線只丟佇列（即時拿路徑），背景執行緒做 PNG 編碼+寫檔（不卡 aim→D3）
         self._snap_q: queue.Queue = queue.Queue(maxsize=64)
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
@@ -105,6 +105,10 @@ class Bot:
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
+        # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
+        self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
+        self._list_current_world: str | None = None     # 該訊息目前顯示的世界（None=全世界聯集）
+        self._list_reactions_seen: dict[str, set[str]] = {}  # 每表情已見使用者 ID（偵測「新點擊」）
         # 狀態小窗用的即時資訊
         self._started = time.time()
         self.last_action = "—"
@@ -115,6 +119,10 @@ class Bot:
         # 用完即清空（一次性），避免跨事件殘留。
         self._needs_human_extra_image = None
         self._needs_human_extra_meta: dict = {}
+        # D3 採集「執行前/後」截圖路徑（verify 階段存）：採集放棄時附到 Discord 供人工
+        # 對比判定 礦是否被挖走。每輪採集開始時重置（_on_enter HARVESTING）。
+        self._d3_before_path: str | None = None
+        self._d3_after_path: str | None = None
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # 視窗跑位偵測（item ④）：啟動聚焦後記基準，之後相對基準判斷
@@ -397,8 +405,12 @@ class Bot:
                 pass                                     # 輪詢失敗不中斷主迴圈
 
     def _poll_discord(self):
-        """讀 Discord 新訊息，處理 ! 開頭的命令。"""
+        """讀 Discord 新訊息，處理 ! 命令；並輪詢 !list 表情分頁點擊。"""
         from . import notify
+        # 1. 表情分頁輪詢（獨立於新訊息；沒新訊息時也要檢查表情點擊 → 切換分頁）
+        if self._list_message_id:
+            self._poll_list_reactions()
+        # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
             after=self._last_discord_msg_id, limit=10)
@@ -418,6 +430,34 @@ class Bot:
             if content.startswith("!"):
                 self._handle_discord_command(content)
 
+    def _poll_list_reactions(self):
+        """輪詢 !list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
+
+        每個表情維護「已見使用者 ID」集合；本次輪詢出現、但不在集合內 = 新點擊 → 切換。
+        機器人自己貼表情時已在 !list 基線記錄（含自己 ID），故首輪不會誤觸發。
+        一次輪詢最多切一頁（避免連續 PATCH）；點到「目前頁」的同行表情為 no-op。
+        """
+        from . import notify
+        token = cfg.discord_bot_token
+        ch = cfg.discord_channel_id
+        mid = self._list_message_id
+        for emoji, world in game_data.WORLD_EMOJI.items():
+            users = notify.get_reactions(token, ch, mid, emoji)
+            if not users:
+                continue
+            user_ids = {u.get("id") for u in users if u.get("id")}
+            seen = self._list_reactions_seen.setdefault(emoji, set())
+            new_clickers = user_ids - seen
+            if not new_clickers:
+                continue
+            seen.update(user_ids)                  # 標記本次所有按過者為已見
+            if world != self._list_current_world:
+                embed = game_data.format_event_list_embed(self._keep_ores, world=world)
+                notify.edit_message(token, ch, mid, embed=embed)
+                self._list_current_world = world
+                self.log_discord.info("list 分頁切換 -> %s（%d 個新點擊）", world, len(new_clickers))
+                return                              # 一次輪詢只切一頁
+
     def _handle_discord_command(self, content: str):
         """解析並執行 Discord ! 命令，更新 _keep_ores 並回覆結果。"""
         from . import notify
@@ -428,9 +468,30 @@ class Bot:
         args = parts[1:]
 
         if cmd == "!list":
-            embed = game_data.format_event_list_embed(self._keep_ores)
-            notify.send_embed(token, ch, embed)
-            self.log_discord.info("CMD !list -> embed (%d events)", len(game_data.EVENTS))
+            # !list [世界]：指定分頁；無指定 → 預設 = 偵測到的世界（未偵測 = 全世界聯集）。
+            # 送出後貼表情按鈕，之後使用者點表情即可切換分頁（編輯同一則訊息）。
+            world: str | None = None
+            if args:
+                arg = args[0].lower()
+                world = next((w for w in game_data.WORLDS if w.lower() == arg), None)
+                if world is None:
+                    notify.send_message(token, ch,
+                        f"⚠️ 找不到世界 '{args[0]}'（已有：{', '.join(game_data.WORLDS)}）。顯示預設分頁。")
+            if world is None:
+                world = game_data.current_world_name()
+            embed = game_data.format_event_list_embed(self._keep_ores, world=world)
+            ok, detail, mid = notify.send_embed(token, ch, embed)
+            if ok and mid:
+                self._list_message_id = mid
+                self._list_current_world = world
+                self._list_reactions_seen = {}
+                for em in game_data.WORLD_EMOJI.values():
+                    notify.add_reaction(token, ch, mid, em)
+                # 基線：把自己貼的表情記成「已見」，避免首輪把自己的反應當成新點擊
+                for em in game_data.WORLD_EMOJI.values():
+                    users = notify.get_reactions(token, ch, mid, em)
+                    self._list_reactions_seen[em] = {u.get("id") for u in users if u.get("id")}
+            self.log_discord.info("CMD !list -> world=%s mid=%s (%s)", world, mid, detail)
 
         elif cmd == "!keep":
             added, not_found = [], []
@@ -441,8 +502,8 @@ class Bot:
                     added.append(ore)
                 else:
                     not_found.append(a)
-            kept = ", ".join(sorted(self._keep_ores)) or "（空）"
-            msg = f"✅ 新增保留：{', '.join(added) or '（無）'}\n目前保留：{kept}"
+            kept = game_data.format_keep_by_world(self._keep_ores)
+            msg = f"✅ 新增保留：{', '.join(added) or '（無）'}\n目前保留：\n{kept}"
             if not_found:
                 msg += f"\n⚠️ 找不到：{', '.join(not_found)}（用 `!list` 看 礦物名）"
             notify.send_message(token, ch, msg)
@@ -456,9 +517,9 @@ class Bot:
                 if ore and ore in self._keep_ores:
                     self._keep_ores.discard(ore)
                     removed.append(ore)
-            kept = ", ".join(sorted(self._keep_ores)) or "（空）"
+            kept = game_data.format_keep_by_world(self._keep_ores)
             notify.send_message(token, ch,
-                f"❌ 取消保留：{', '.join(removed) or '（無）'}\n目前保留：{kept}")
+                f"❌ 取消保留：{', '.join(removed) or '（無）'}\n目前保留：\n{kept}")
             self._save_keep_ores()
             self.log_discord.info("CMD !unkeep %s -> removed=%s keep=%s", args, removed, self._keep_ores)
 
@@ -514,7 +575,8 @@ class Bot:
                 "**MiningBot 指令**\n"
                 "`!resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
                 "`!status` — 查詢目前狀態、統計、保留清單\n"
-                "`!list` — 列出所有事件 + keep 狀態\n"
+                "`!list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
+                "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
                 "`!keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
                 "`!unkeep <礦物名>` — 取消保留\n"
                 "`!clear` — 清空保留清單\n"
@@ -560,11 +622,7 @@ class Bot:
             while self._running:
                 if self.paused:
                     # 防掛機踢除：暫停中每 antiafk_interval_s 按一次 Space
-                    if self._antiafk_last and time.time() - self._antiafk_last >= cfg.antiafk_interval_s:
-                        ic.key_press("space")
-                        self._antiafk_last = time.time()
-                        self.logger.info("防掛機：按 Space（暫停中超過 %.0f 分鐘）",
-                                         cfg.antiafk_interval_s / 60)
+                    self._antiafk_tick("暫停")
                     time.sleep(0.05); continue
                 frame = capture.grab()
                 obs = self.observe(frame)
@@ -586,6 +644,12 @@ class Bot:
                 self.state = new_state
                 self._tick(frame)
                 self._heartbeat()
+                # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工
+                # 期間閒置過久會被 Roblox 踢出）。恢復挖礦/採集時歸 0，下次等待重新計時。
+                if self.state in (State.NEEDS_HUMAN, State.RESET_WAIT):
+                    self._antiafk_tick("需人工/重置等待")
+                elif self._antiafk_last and not self.paused:
+                    self._antiafk_last = 0.0
                 time.sleep(0.05)
         finally:
             self._running = False
@@ -738,6 +802,43 @@ class Bot:
         except Exception as e:
             self.logger.error("keep_ores 存檔失敗: %s", e)
 
+    def _harvest_seq_path(self) -> str:
+        """harvest_seq.json 路徑（與 keep_ores.json 同目錄：專案根）。"""
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "harvest_seq.json")
+
+    def _load_harvest_seq(self) -> int:
+        """啟動時載入上次最後用的採集編號（跨 session 不重複）。
+
+        檔案不存在/損壞/非正整數 → 回 0（首輪 H001）。比照 _load_keep_ores 容錯。
+        修 2026-06-30：原 _harvest_seq 每次啟動歸 0，重啟後 H001 重複，無法用編號
+        一鍵搜出「該輪」證據（橫跨多次執行的截圖/log/Discord 會撞號）。
+        """
+        import json
+        try:
+            with open(self._harvest_seq_path(), "r", encoding="utf-8") as f:
+                v = json.load(f)
+            if isinstance(v, int) and v >= 0:
+                if v > 0:
+                    self.logger.info("harvest_seq 載入：上次到 %s，下次 %s",
+                                     harvester.format_harvest_id(v),
+                                     harvester.format_harvest_id(v + 1))
+                return v
+            self.logger.warning("harvest_seq.json 非正整數 (%r)，從 %s 重新起算",
+                                v, harvester.format_harvest_id(1))
+            return 0
+        except (FileNotFoundError, json.JSONDecodeError):
+            return 0
+
+    def _save_harvest_seq(self):
+        """把目前採集編號存到 harvest_seq.json（每次進 HARVESTING +1 後呼叫）。"""
+        import json
+        try:
+            with open(self._harvest_seq_path(), "w", encoding="utf-8") as f:
+                json.dump(self._harvest_seq, f)
+        except Exception as e:
+            self.logger.error("harvest_seq 存檔失敗: %s", e)
+
     def _on_enter(self, s, frame) -> State | None:
         """進入狀態 s 的副作用（screenshot / log / 按鍵）。
 
@@ -762,6 +863,7 @@ class Bot:
             # 本輪採集配一個編號（H001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
             # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
             self._harvest_seq += 1
+            self._save_harvest_seq()              # 持久化：重啟後從這號繼續，不重複
             hid = harvester.format_harvest_id(self._harvest_seq)
             self.harvest = harvester.HarvestState(0, 0.0, harvest_id=hid)
             chill_path = self._hsnap_crop(frame, cfg.chill_text_region, "chill_closeup")
@@ -781,20 +883,26 @@ class Bot:
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
+            self._d3_before_path = None         # 前/後截圖每輪重置（避免沿用上一輪殘留）
+            self._d3_after_path = None
         if s is State.NEEDS_HUMAN:
-            # 採集放棄時可能已預先截好「看到追蹤框」的圖（_needs_human_extra_image，
-            # 在 _harvest_giveup 內 restore_view 前截，附 rotation_hint）；否則跑 find_tracker
-            # 找最佳候選。用完即清空，避免跨事件殘留。
-            # extra 先取出：採集放棄會帶 harvest_id，傳給 fallback 截圖當檔名前綴（與該輪串連）；
+            # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
             extra = self._needs_human_extra_meta
             self._needs_human_extra_meta = {}
-            if self._needs_human_extra_image is not None:
-                path = self._needs_human_extra_image
-                self._needs_human_extra_image = None
+            image_paths = extra.pop("image_paths", None)
+            if image_paths:
+                # 採集放棄（D3 有開火）：附前後兩張（d3_fire 前 / d3_after 後）供人工及時判定
+                self.log.log("NEEDS_HUMAN", reason=self._human_reason,
+                             image_paths=image_paths, **extra)
             else:
-                path = self._save_needs_human_screenshot(frame, tag=extra.get("harvest_id", ""))
-            self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path, **extra)
+                # 非採集 / 採集沒走到 D3：單張截圖（原行為）
+                if self._needs_human_extra_image is not None:
+                    path = self._needs_human_extra_image
+                    self._needs_human_extra_image = None
+                else:
+                    path = self._save_needs_human_screenshot(frame, tag=extra.get("harvest_id", ""))
+                self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path, **extra)
             ic.key_up("w"); ic.mouse_up()
             self._alert("需要人工：" + self._human_reason)
             self.human_cleared = False
@@ -922,7 +1030,7 @@ class Bot:
                 self.log_harvest.info("[%s] sweep dir=%d: 短按 %s %.2fs 挪位清視野",
                                       hid, i, cfg.sweep_strafe_key, cfg.sweep_strafe_hold_s)
                 ic.hold_key(cfg.sweep_strafe_key, cfg.sweep_strafe_hold_s)
-                time.sleep(0.1)                 # 挪位後沉澱，等畫面/鏡頭穩定再擷幀
+                time.sleep(cfg.sweep_strafe_settle_s)   # 挪位後沉澱，等角色停住/鏡頭穩定再擷幀（太短會在角色還滑時就轉鏡頭）
             f = capture.grab()
             r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
             if r1:
@@ -1004,15 +1112,18 @@ class Bot:
         """
         # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
         self._needs_human_extra_meta = {"harvest_id": self.harvest.harvest_id}
-        # D3 失敗：restore_view 前截圖（追蹤框仍在畫面上）；rotation_hint 一併準備好
+        # 前/後截圖：D3 有開火過才會有（verify 階段存的 d3_fire 前 / d3_after 後）。
+        # 附到 Discord 讓人工對比「執行前/後」及時判定 礦是否被挖走（不再只附一張）。
+        img_paths = [p for p in (self._d3_before_path, self._d3_after_path) if p]
+        self._d3_before_path = None
+        self._d3_after_path = None
+        if img_paths:
+            self._needs_human_extra_meta["image_paths"] = img_paths
+        # rotation_hint：D3 有開火過（_target_marker 已設）+ 有淨轉動才给，人工接手時知道
+        # 從回正視角要按 . 或 , 幾次才能面對該追蹤框。
         if self._target_marker is not None:
-            pre_frame = capture.grab()
-            rot = self.harvest.net_rotations
-            img_path = self._save_tracker_screenshot(pre_frame, self._target_marker, rot)
-            hint = harvester.format_rotation_hint(rot)
-            if img_path is not None and hint:
-                # 只有截圖成功 + 有提示時才覆寫 image；hint 併入 extra_meta（保留 harvest_id）
-                self._needs_human_extra_image = img_path
+            hint = harvester.format_rotation_hint(self.harvest.net_rotations)
+            if hint:
                 self._needs_human_extra_meta["rotation_hint"] = hint
 
         if self.harvest.net_rotations:
@@ -1072,7 +1183,8 @@ class Bot:
         rare_before = ocr.count_rare_found(chat_before, common, cfg.found_keywords)
         self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
                          hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
-        self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
+        self._d3_before_path = self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）=「執行前」
+        self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
         self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
         time.sleep(0.15)
@@ -1081,6 +1193,7 @@ class Bot:
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
         time.sleep(0.5)          # 等伺服器回應追蹤框消失（實測 0.5s 即足夠，原 1.0s 過長）
         after = capture.grab()
+        self._d3_after_path = self._hsnap(after, "d3_after")   # D3 後全幀 =「執行後」（與 d3_fire 對比，人工判定 礦是否被挖走）
         gone = self._find_tracker(after, _excl,
                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)
@@ -1210,6 +1323,22 @@ class Bot:
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):
         self._hk.tick()
+
+    def _antiafk_tick(self, context: str):
+        """等待狀態（暫停/需人工/重置等待）防踢除：每 antiafk_interval_s 按一次 Space。
+
+        _antiafk_last=0 代表剛進入等待 → 設成 now 開始計時；累積逾時則按 Space 並重置計時。
+        Roblox 閒置過久會被踢；按 Space（原地跳）是最不打擾畫面的保活。恢復活動時呼叫端
+        應把 _antiafk_last 歸 0（見主迴圈 elif 分支），下次等待才重新從 0 計時。
+        """
+        now = time.time()
+        if self._antiafk_last == 0:
+            self._antiafk_last = now
+        elif now - self._antiafk_last >= cfg.antiafk_interval_s:
+            ic.key_press("space")
+            self.logger.info("防掛機：按 Space（%s中等超過 %.0f 分鐘）",
+                             context, cfg.antiafk_interval_s / 60)
+            self._antiafk_last = now
 
     def _pause(self):
         """暫停：放開所有按鍵、停住。idempotent（已暫停再呼叫無副作用）。

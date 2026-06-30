@@ -1,7 +1,8 @@
 """REX 礦坑遊戲資料庫（**分世界 / world**）。
 
-REX 分世界（world），每個世界有各自的事件清單與礦物表。目前實作 **Aesteria**；
-之後新增世界只要再建一個 `World` 並加進 `WORLDS` 即可（事件、礦物都各自獨立）。
+REX 分世界（world），每個世界有各自的事件清單與礦物表。目前實作 **Aesteria** 與
+**Lucernia**（兩者事件 + 低稀有度礦皆齊備）。之後新增世界只要再建一個 `World` 並加進
+`WORLDS` 即可（事件、礦物都各自獨立）。
 
 每個世界含：
 - `events`：D4 事件清單。D4 右鍵刷新時判斷目前事件是否值得保留（左鍵確認）還是刷新。
@@ -244,9 +245,235 @@ _AESTERIA_COMMON_ORES: list[dict] = [
 ]
 
 
+# ── Lucernia：事件清單（按稀有度升序）───────────────────────────────────
+# match = OCR 比對片段（事件訊息子字串，小寫）；effect 保留英文（使用者原資料為英文），
+# 已清除 wiki 圖示 artifact（LuckIconNew/RateIconNew/SpeedIconNew → 純倍率/百分比）。
+# tier 為粗分（對照 Aesteria 稀有度區間賦值），僅供排序參考。
+# ⚠️ 使用者 2026-06-30 另附一列 "Yellow pointlight shines bright above your head."
+#    無 礦名/稀有度/時長/生成率/效果 欄位 → 視為不完整，暫不列入；補齊後再加。
+_LUCERNIA_EVENTS: list[dict] = [
+    {
+        "match": "serene ballad",
+        "ore": "Essentium",
+        "rarity": 3_000_000,
+        "duration_s": 10 * 60,
+        "chance_per_s": 300,
+        "effect": "None",
+        "tier": "C",
+    },
+    {
+        "match": "reindeer gallops",
+        "ore": "Antlerice",
+        "rarity": 14_100_200,
+        "duration_s": 8 * 60,
+        "chance_per_s": 555,
+        "effect": "The Inktorb luck ×1.8",
+        "tier": "C",
+    },
+    {
+        "match": "encapsulated wonderland",
+        "ore": "Snowglobe III",
+        "rarity": 18_000_073,
+        "duration_s": 10 * 60,
+        "chance_per_s": 650,
+        "effect": "Layer luck +2.5% per friended player in server",
+        "tier": "C",
+    },
+    {
+        "match": "specter cyclone",
+        "ore": "Soulswirl",
+        "rarity": 19_314_790,
+        "duration_s": 32 * 60,
+        "chance_per_s": 400,
+        "effect": "None",
+        "tier": "C",
+    },
+    {
+        "match": "bouncing baubles",
+        "ore": "Ornaswirl",
+        "rarity": 20_888_888,
+        "duration_s": 12 * 60,
+        "chance_per_s": 700,
+        "effect": "None",
+        "tier": "C",
+    },
+    {
+        "match": "brave eggs",
+        "ore": "Miles/egg",
+        "rarity": 21_174_717,
+        "duration_s": 20 * 60,
+        "chance_per_s": 500,
+        "effect": "Walkspeed per Uncommon+ found (higher tier → more speed)",
+        "tier": "C",
+    },
+    {
+        "match": "reflective crystal",
+        "ore": "Crystalia",
+        "rarity": 38_201_298,
+        "duration_s": 15 * 60,
+        "chance_per_s": 777,
+        "effect": "Special caves +15% spawn chance",
+        "tier": "B",
+    },
+    {
+        "match": "solemn star",
+        "ore": "Polaris",
+        "rarity": 40_020_011,
+        "duration_s": 17 * 60,
+        "chance_per_s": 800,
+        "effect": "Cicallite layer ores +25% more common",
+        "tier": "B",
+    },
+    {
+        "match": "viridescent ice crystals",
+        "ore": "Verdafrost",
+        "rarity": 50_200_630,
+        "duration_s": 20 * 60,
+        "chance_per_s": 930,
+        "effect": "All abilities ×1.1 proc rate; Confectent layer +15%",
+        "tier": "A",
+    },
+    {
+        "match": "rushing water",
+        "ore": "Evergreen",
+        "rarity": 53_000_654,
+        "duration_s": 40 * 60,
+        "chance_per_s": 710,
+        "effect": "Ores below Exotic +15%; walkspeed +7",
+        "tier": "A",
+    },
+    {
+        "match": "heartbeat comes in sync",
+        "ore": "Heart.bit",
+        "rarity": 62_000_178,
+        "duration_s": 30 * 60,
+        "chance_per_s": 820,
+        "effect": "Ores with loud audios +15% more common",
+        "tier": "A",
+    },
+    {
+        "match": "resonant caws",
+        "ore": "Cobbore",
+        "rarity": 62_400_150,
+        "duration_s": 35 * 60,
+        "chance_per_s": 720,
+        "effect": "Manual-ability gears: +10% proc to non-manual abilities",
+        "tier": "A",
+    },
+    {
+        "match": "premonitions of terror",
+        "ore": "Keres",
+        "rarity": 72_380_000,
+        "duration_s": 48.13 * 60,
+        "chance_per_s": 850,
+        "effect": "The Inktorb luck ×1.9; manual-ability gears +10% proc to non-manual",
+        "tier": "A",
+    },
+    {
+        "match": "choir of fairies",
+        "ore": "Celinity",
+        "rarity": 135_000_000,
+        "duration_s": 60 * 60,
+        "chance_per_s": 1000,
+        "effect": "All ores (layer + cave) +20% more common",
+        "tier": "A",
+    },
+    {
+        "match": "memories of idyllic fall",
+        "ore": "Reminiscence",
+        "rarity": 234_030_360,
+        "duration_s": 55 * 60,
+        "chance_per_s": 980,
+        "effect": "Foligrass layer +15%; Mythic-and-below outside Foligrass +8%",
+        "tier": "S",
+    },
+    {
+        "match": "eternal clock",
+        "ore": "DOOMSDAY",
+        "rarity": 266_666_666,
+        "duration_s": 90 * 60,
+        "chance_per_s": 1159,
+        "effect": "Only spawns when this event is active",
+        "tier": "S",
+    },
+    {
+        "match": "elegant lotus",
+        "ore": "Yuki Onna",
+        "rarity": 350_150_200,
+        "duration_s": 34 * 60,
+        "chance_per_s": 1111,
+        "effect": "Variants +11%; Lucitreum layer +10%",
+        "tier": "S",
+    },
+    {
+        "match": "decorations all around",
+        "ore": "Wintburg",
+        "rarity": 590_200_035,
+        "duration_s": 45 * 60,
+        "chance_per_s": 1300,
+        "effect": "1/15 chance for Firework Caves; pinned ores +20%",
+        "tier": "S",
+    },
+]
+
+# ── Lucernia：低稀有度礦（D3 採集確認的「排除清單」）─────────────────────
+# 同 Aesteria 慣例：只有 Surreal + Mythic 這兩階會被動進聊天框；Exotic 以上改用
+# chill 聲音觸發。圖層為 Lucernia 特有：Confectent / Lucitreum / Sepulcrum /
+# Cicallite / Foligrass / Wickrock。
+_LUCERNIA_COMMON_ORES: list[dict] = [
+    # --- Surreal 階（100k–490k）---
+    {"ore": "Presentine",       "rarity": 100_293, "layer": "Confectent", "tier": "Surreal"},
+    {"ore": "Tinsel",           "rarity": 177_825, "layer": "Lucitreum",  "tier": "Surreal"},
+    {"ore": "Vitiscus",         "rarity": 194_067, "layer": "Sepulcrum",  "tier": "Surreal"},
+    {"ore": "Fannolair",        "rarity": 196_499, "layer": "Cicallite",  "tier": "Surreal"},
+    {"ore": "Gup",              "rarity": 202_204, "layer": "Foligrass",  "tier": "Surreal"},
+    {"ore": "Asternigh",        "rarity": 229_322, "layer": "Lucitreum",  "tier": "Surreal"},
+    {"ore": "Frostfeeb",        "rarity": 242_730, "layer": "Cicallite",  "tier": "Surreal"},
+    {"ore": "Darkfeeb",         "rarity": 266_666, "layer": "Wickrock",   "tier": "Surreal"},
+    {"ore": "Kelvine",          "rarity": 273_150, "layer": "Cicallite",  "tier": "Surreal"},
+    {"ore": "Polanorth",        "rarity": 277_777, "layer": "Confectent", "tier": "Surreal"},
+    {"ore": "Starseeker",       "rarity": 326_643, "layer": "Lucitreum",  "tier": "Surreal"},
+    {"ore": "Beanie",           "rarity": 330_010, "layer": "Confectent", "tier": "Surreal"},
+    {"ore": "Hexaburst",        "rarity": 360_420, "layer": "Sepulcrum",  "tier": "Surreal"},
+    {"ore": "Luminescence",     "rarity": 400_400, "layer": "Lucitreum",  "tier": "Surreal"},
+    {"ore": "Syrooze",          "rarity": 430_000, "layer": "Foligrass",  "tier": "Surreal"},
+    {"ore": "Lucifite",         "rarity": 466_666, "layer": "Wickrock",   "tier": "Surreal"},
+    {"ore": "Yuleflare",        "rarity": 490_100, "layer": "Confectent", "tier": "Surreal"},
+    # --- Mythic 階（510k–981k）---
+    {"ore": "Nivaorum",         "rarity": 510_202, "layer": "Cicallite",  "tier": "Mythic"},
+    {"ore": "Memoramber",       "rarity": 533_126, "layer": "Foligrass",  "tier": "Mythic"},
+    {"ore": "Magician",         "rarity": 616_603, "layer": "Sepulcrum",  "tier": "Mythic"},
+    {"ore": "Shattered Amulet", "rarity": 640_100, "layer": "Lucitreum",  "tier": "Mythic"},
+    {"ore": "Crescendo",        "rarity": 666_666, "layer": "Wickrock",   "tier": "Mythic"},
+    {"ore": "Warmthion",        "rarity": 679_010, "layer": "Confectent", "tier": "Mythic"},
+    {"ore": "Glacialyst",       "rarity": 680_102, "layer": "Cicallite",  "tier": "Mythic"},
+    {"ore": "Stockingstone",    "rarity": 710_200, "layer": "Confectent", "tier": "Mythic"},
+    {"ore": "Moonstruck",       "rarity": 724_564, "layer": "Sepulcrum",  "tier": "Mythic"},
+    {"ore": "Vampirite",        "rarity": 766_666, "layer": "Wickrock",   "tier": "Mythic"},
+    {"ore": "Bonium",           "rarity": 803_259, "layer": "Sepulcrum",  "tier": "Mythic"},
+    {"ore": "Plaidore",         "rarity": 850_400, "layer": "Foligrass",  "tier": "Mythic"},
+    {"ore": "Contemptus Gemma", "rarity": 866_666, "layer": "Wickrock",   "tier": "Mythic"},
+    {"ore": "Jollycane",        "rarity": 960_000, "layer": "Confectent", "tier": "Mythic"},
+    {"ore": "Zerocite",         "rarity": 980_999, "layer": "Lucitreum",  "tier": "Mythic"},
+]
+
+
 # ── 世界登記 + 目前世界偵測 ─────────────────────────────────────────────
 AESTERIA = World("Aesteria", _AESTERIA_EVENTS, _AESTERIA_COMMON_ORES)
-WORLDS: dict[str, World] = {"Aesteria": AESTERIA}
+LUCERNIA = World("Lucernia", _LUCERNIA_EVENTS, _LUCERNIA_COMMON_ORES)
+WORLDS: dict[str, World] = {"Aesteria": AESTERIA, "Lucernia": LUCERNIA}
+
+# Discord 表情分頁按鈕：世界 → emoji。新增世界時這裡也要加對應表情（表情要互異）。
+# 使用者在 Discord 點表情 → 切換到該世界的事件分頁（編輯同一則 !list 訊息）。
+WORLD_EMOJI: dict[str, str] = {"Aesteria": "🌍", "Lucernia": "🌙"}
+
+
+def emoji_to_world(emoji: str) -> str | None:
+    """表情 → 世界名（找不到回 None）。Discord 表情分頁切換用。"""
+    for w, em in WORLD_EMOJI.items():
+        if em == emoji:
+            return w
+    return None
 
 # 目前世界：**預設未確定（None）**。遊戲沒有直接顯示在哪個世界，要靠「看到的事件屬於哪個世界」
 # 來推斷（事件是分世界的）。未確定前，採集確認的排除清單用「所有世界的聯集」當保守後備；
@@ -387,11 +614,22 @@ def fuzzy_match_ore(query: str) -> str | None:
     return None
 
 
-def format_event_list_embed(keep_ores: set[str] | None = None) -> dict:
-    """產生 Discord embed JSON，列出所有事件 + keep 狀態（✅/❌）。"""
+def format_event_list_embed(keep_ores: set[str] | None = None, world: str | None = None) -> dict:
+    """產生 Discord embed JSON，列出事件 + keep 狀態（✅/❌）。
+
+    world = 指定世界名（如 "Aesteria"/"Lucernia"）→ 只列該世界事件（分頁用）；
+    None → 所有世界聯集（行為同舊版）。embed title 標註目前分頁的世界。
+    keep_ores 仍是跨世界比對（使用者 keep 清單不分世界）。
+    """
     keep_ores = keep_ores or set()
+    if world is not None and world in WORLDS:
+        events = WORLDS[world].events
+        title_world = world
+    else:
+        events = all_events()
+        title_world = "所有世界"
     fields = []
-    for ev in all_events():
+    for ev in events:
         status = "✅" if ev["ore"] in keep_ores else "❌"
         fields.append({
             "name": f"{status} {ev['ore']}",
@@ -399,8 +637,45 @@ def format_event_list_embed(keep_ores: set[str] | None = None) -> dict:
             "inline": True,
         })
     return {
-        "title": "REX 事件清單",
-        "description": "`!keep <礦物名>` 保留｜`!unkeep <礦物名>` 取消｜`!clear` 全清",
+        "title": f"REX 事件清單（{title_world}）",
+        "description": "`!keep <礦物名>` 保留｜`!unkeep <礦物名>` 取消｜`!clear` 全清｜`!list [世界]` 切換",
         "color": 0x00ff88,
         "fields": fields,
     }
+
+
+def ore_world(ore: str) -> str | None:
+    """ 礦名 → 所屬世界（依各世界 events 的 ore 欄位比對）；找不到回 None。
+
+    保留清單依世界分組顯示用（!keep/!unkeep 回覆）。保留的幾乎都是事件 礦，
+    故只比對 events；common_ores 不檢查（那不是 D4 會刷新的對象）。
+    """
+    for name, world in WORLDS.items():
+        if any(ev["ore"] == ore for ev in world.events):
+            return name
+    return None
+
+
+def format_keep_by_world(keep_ores: set[str]) -> str:
+    """把保留清單依世界分組，回 Discord 顯示字串。
+
+    每個世界一行：``【<世界>】< 礦1>, < 礦2>, …``（ 礦名 sorted）；沒對應到任何
+    世界事件的 礦歸到 ``【其他】``。空集合回 ``（空）``。世界順序依 ``WORLDS``，
+    「其他」最後；沒 礦的世界不輸出該行（避免空行）。
+
+    例： ``【Aesteria】Ephemryst, Sunflower\\n【Lucernia】Celinity, Wintburg``
+    """
+    if not keep_ores:
+        return "（空）"
+    by_world: dict[str | None, list[str]] = {}
+    for ore in keep_ores:
+        by_world.setdefault(ore_world(ore), []).append(ore)
+    lines = []
+    for w in WORLDS:                          # 固定順序（Aesteria → Lucernia → …）
+        ores = sorted(by_world.get(w, []))
+        if ores:
+            lines.append(f"【{w}】{', '.join(ores)}")
+    other = sorted(by_world.get(None, []))
+    if other:
+        lines.append(f"【其他】{', '.join(other)}")
+    return "\n".join(lines)

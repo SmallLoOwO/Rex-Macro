@@ -17,8 +17,15 @@ import time
 import uuid
 import urllib.request
 import urllib.error
+import urllib.parse
 
 API = "https://discord.com/api/v10/channels/{channel_id}/messages"
+# 訊息層級操作（編輯／表情）— 用 {channel_id} + {message_id} 套版
+MESSAGE_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
+# 表情：貼/移除自己（@me）— {emoji} 需 percent-encoded（unicode 表情要編碼成 UTF-8 %xx）
+REACTION_SELF_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me"
+# 表情：列出按過此表情的使用者（含機器人自己）
+REACTIONS_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}"
 
 # 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停/繼續、心跳…）不送，避免洗版。
 # PAUSED/RESUMED 不送——會手動暫停的人一定在畫面前，不需要 Discord 提醒。
@@ -100,22 +107,28 @@ def _build_multipart(payload: dict, files: list[tuple[str, bytes]]) -> tuple[byt
     return buf.getvalue(), f"multipart/form-data; boundary={boundary}"
 
 
-def send_image_message(token: str, channel_id: str, content: str,
-                       image_path: str, timeout: float = 15.0):
-    """送訊息 + 附加一張 PNG 到 Discord 頻道。回 (ok: bool, detail: str)。
+def send_images_message(token: str, channel_id: str, content: str,
+                        image_paths: list, timeout: float = 30.0):
+    """送訊息 + 附加多張 PNG 到 Discord 頻道（一則 multipart 訊息）。回 (ok: bool, detail: str)。
 
-    image_path 是本機 PNG 檔案路徑；函式會讀取後以 multipart 上傳。
+    Discord 單則訊息可附多檔（payload.attachments 每檔一筆 id+filename，對應 files[id]）。
+    採集放棄 NEEDS_HUMAN 用：附 D3 執行前/後兩張讓人工及時判定 礦是否被挖走。
+    image_paths 順序即附件順序（Discord 依此顯示）。
     """
     if not token or not channel_id:
         return False, "缺少 token 或 channel_id"
-    try:
-        with open(image_path, "rb") as f:
-            data = f.read()
-    except Exception as e:
-        return False, f"讀圖失敗 ({image_path}): {e}"
-    filename = os.path.basename(image_path)
-    payload = {"content": content, "attachments": [{"id": 0, "filename": filename}]}
-    body, content_type = _build_multipart(payload, [(filename, data)])
+    files = []
+    for p in image_paths:
+        try:
+            with open(p, "rb") as f:
+                files.append((os.path.basename(p), f.read()))
+        except Exception as e:
+            return False, f"讀圖失敗 ({p}): {e}"
+    if not files:
+        return False, "無可傳圖片"
+    attachments = [{"id": i, "filename": fn} for i, (fn, _) in enumerate(files)]
+    payload = {"content": content, "attachments": attachments}
+    body, content_type = _build_multipart(payload, files)
     url = API.format(channel_id=channel_id)
     req = urllib.request.Request(
         url, data=body, method="POST",
@@ -163,15 +176,111 @@ def fetch_messages(token: str, channel_id: str, after: str | None = None,
 
 def send_embed(token: str, channel_id: str, embed: dict,
                content: str | None = None, timeout: float = 10.0):
-    """送含 embed 的訊息到 Discord 頻道。回 (ok: bool, detail: str)。"""
+    """送含 embed 的訊息到 Discord 頻道。回 (ok: bool, detail: str, message_id: str | None)。
+
+    message_id 取自 Discord 回應 JSON 的 "id" 欄位；分頁功能靠它後續貼表情/編輯。
+    失敗時 message_id=None。舊呼叫端忽略回傳值仍相容（沒有人解包成 2-tuple）。
+    """
     if not token or not channel_id:
-        return False, "缺少 token 或 channel_id"
+        return False, "缺少 token 或 channel_id", None
     payload = {"embeds": [embed]}
     if content:
         payload["content"] = content
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         API.format(channel_id=channel_id), data=data, method="POST",
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+            return True, f"HTTP {resp.status}", body.get("id")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}", None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}", None
+
+
+def add_reaction(token: str, channel_id: str, message_id: str,
+                 emoji: str, timeout: float = 10.0):
+    """機器人對訊息貼一個表情。PUT /reactions/{emoji}/@me。回 (ok: bool, detail: str)。
+
+    emoji = unicode 表情（如 "🌍"）；內部自動 percent-encode（Discord 路徑要求）。
+    成功回 HTTP 204（無 body）。用於 !list 分頁按鈕。
+    """
+    if not token or not channel_id or not message_id:
+        return False, "缺少 token / channel_id / message_id"
+    url = REACTION_SELF_API.format(
+        channel_id=channel_id, message_id=message_id,
+        emoji=urllib.parse.quote(emoji, safe=""))
+    req = urllib.request.Request(
+        url, method="PUT",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def get_reactions(token: str, channel_id: str, message_id: str,
+                  emoji: str, limit: int = 100, timeout: float = 10.0) -> list[dict]:
+    """列出對此訊息此表情按過的使用者（含機器人自己）。GET /reactions/{emoji}。
+
+    失敗回空 list（輪詢失敗不中斷主迴圈）。回傳元素含 "id"（使用者 snowflake）等欄位。
+    """
+    if not token or not channel_id or not message_id:
+        return []
+    url = REACTIONS_API.format(
+        channel_id=channel_id, message_id=message_id,
+        emoji=urllib.parse.quote(emoji, safe=""))
+    req = urllib.request.Request(
+        f"{url}?limit={limit}", method="GET",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return []
+
+
+def edit_message(token: str, channel_id: str, message_id: str,
+                 embed: dict | None = None, content: str | None = None,
+                 timeout: float = 10.0):
+    """編輯機器人自己發的訊息（改 embed/content）。PATCH /messages/{mid}。回 (ok, detail)。
+
+    分頁切換用：把同一則 !list 訊息的 embed 換成另一個世界的事件清單。
+    embed/content 至少給一個；embed 用 {"embeds": [embed]} 包。
+    """
+    if not token or not channel_id or not message_id:
+        return False, "缺少 token / channel_id / message_id"
+    payload: dict = {}
+    if embed is not None:
+        payload["embeds"] = [embed]
+    if content is not None:
+        payload["content"] = content
+    if not payload:
+        return False, "沒有要編輯的欄位"
+    data = json.dumps(payload).encode("utf-8")
+    url = MESSAGE_API.format(channel_id=channel_id, message_id=message_id)
+    req = urllib.request.Request(
+        url, data=data, method="PATCH",
         headers={
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
@@ -242,15 +351,19 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
         content = format_message(rec)
         if content is None:
             return
-        image_path = rec.meta.get("image_path")
-        # 等 snapshot worker 寫完（race 修復）；超時退回純文字（保留通知，至少有原因）
-        if image_path and _wait_for_file(image_path):
-            ok, detail = send_image_message(token, channel_id, content, image_path)
+        # image_paths（多張，採集放棄前後對比）優先；無則退回單張 image_path
+        multi = rec.meta.get("image_paths") or []
+        single = rec.meta.get("image_path")
+        paths = [p for p in multi if p] if multi else ([single] if single else [])
+        # 等 snapshot worker 寫完（race 修復）；都就緒才傳，否則退回純文字
+        ready = [p for p in paths if _wait_for_file(p)]
+        if ready:
+            ok, detail = send_images_message(token, channel_id, content, ready)
             if log:
-                log.info("IMG %s image=%s -> %s (%s)", rec.type,
-                         os.path.basename(image_path), "OK" if ok else "FAIL", detail)
+                log.info("IMG %s x%d -> %s (%s)", rec.type, len(ready),
+                         "OK" if ok else "FAIL", detail)
         else:
-            tag = "TXT" if not image_path else "NOIMG(wait-timeout)"
+            tag = "TXT" if not paths else "NOIMG(wait-timeout)"
             ok, detail = send_message(token, channel_id, content)
             if log:
                 log.info("%s %s -> %s (%s)", tag, rec.type, "OK" if ok else "FAIL", detail)
