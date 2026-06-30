@@ -94,3 +94,11 @@ def test_harvest_state_harvest_id_defaults_empty():
     # 既有呼叫端（HarvestState(0, 0.0)）不傳 id 仍可建構，預設空字串
     st = HarvestState(rotations=0, elapsed_s=0.0)
     assert st.harvest_id == ""
+
+
+# --- strafe 掃描旋鈕（採集時短按 D 挪位清視野）---
+def test_config_has_strafe_knobs():
+    assert DEFAULT.sweep_strafe_enabled is True
+    assert DEFAULT.sweep_strafe_key == "d"
+    assert DEFAULT.sweep_strafe_dirs == (2, 4, 6)   # 右/後/左；前(dir 0)與斜角不挪
+    assert DEFAULT.sweep_strafe_hold_s > 0
