@@ -127,12 +127,17 @@ def extract_new_found_lines(before: str, after: str, found_keywords) -> list:
 
 
 def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
-              preprocess: str = "gray") -> str:
+              preprocess: str = "gray", psm: int = 6) -> str:
     """薄封裝：對已裁切的區域影像做 OCR。
 
     preprocess='gray'        ：標準灰階（適合白字/灰字）
     preprocess='min_channel' ：最小通道（適合紅色/彩色文字，如遊戲聊天框）
                                紅字 min(R,G,B) 低→深色；白底 min=255→亮色，對比好。
+    psm：Tesseract page segmentation mode。預設 6（假設單一均勻文字區塊）——本函式只
+         收「裁切過的 UI 區域」（聊天框/事件列/重置訊息），都是單欄文字塊，psm 6 最準；
+         舊版用隱含預設 psm 3（全頁自動版面分析）會把多行聊天拆錯→「has found」被黏成
+         「hasifoumd」→ count_rare_found=0 → 採集 verify 永遠 no-new → 假性 NEEDS_HUMAN
+         （H005@23:10 根因；psm 6 實測可正確讀出 has found 礦名）。
     """
     import pytesseract
     import cv2
@@ -142,4 +147,4 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
         processed = np.min(image_bgr, axis=2).astype(np.uint8)
     else:
         processed = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    return pytesseract.image_to_string(processed)
+    return pytesseract.image_to_string(processed, config=f"--psm {psm}")
