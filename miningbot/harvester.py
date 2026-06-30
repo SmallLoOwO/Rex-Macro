@@ -82,6 +82,24 @@ def restore_actions(net_rotations: int) -> list:
     return []
 
 
+def should_strafe_at_dir(dir_idx: int, cfg) -> bool:
+    """掃描某方位前是否要先短按 strafe 鍵挪位清視野（純函式）。
+
+    只在指定基本方位（預設 右/後/左 = dir 2/4/6）挪位；前(dir 0)與斜角方位(1/3/5/7)不挪。
+    `sweep_strafe_enabled=False` 時一律 False（沿用原地掃描）。
+    """
+    return cfg.sweep_strafe_enabled and dir_idx in cfg.sweep_strafe_dirs
+
+
+def should_walk_back_to_weak(strafe_enabled: bool) -> bool:
+    """整圈只有弱候選（無一過 early_exit）時，是否走回最佳弱框開火（純函式）。
+
+    strafe 模式下身體已橫向飄移，弱框的舊螢幕座標不再可靠 → 不走回（False），交人工/重掃。
+    非 strafe（原地掃描）維持舊行為：走回最佳弱框驗證後採用（True）。
+    """
+    return not strafe_enabled
+
+
 def format_rotation_hint(net_rotations: int) -> str:
     """把淨轉動轉成給人工看的 Discord 提示文字（純函式）。
 
