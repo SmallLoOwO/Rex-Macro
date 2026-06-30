@@ -74,3 +74,10 @@ def rotate_right():
 
 def rotate_left():
     key_press(",")
+
+def hold_key(key: str, seconds: float):
+    """按住某鍵 seconds 秒再放開（strafe 挪位用：短按 D 幾秒把角色挪離牆/身體靠側清視野）。"""
+    pydirectinput.keyDown(key)
+    time.sleep(seconds)
+    pydirectinput.keyUp(key)
+    time.sleep(_STEP)
