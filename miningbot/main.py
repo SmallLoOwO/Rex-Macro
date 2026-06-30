@@ -91,6 +91,7 @@ class Bot:
             self.logger.error("音訊擷取啟動失敗，chill 偵測停用: %s", e)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
+        self._harvest_seq = 0          # 採集流水號（每進一次 HARVESTING +1）；格式化成 H001 貫穿 log/快照/Discord
         # 非同步快照：主線只丟佇列（即時拿路徑），背景執行緒做 PNG 編碼+寫檔（不卡 aim→D3）
         self._snap_q: queue.Queue = queue.Queue(maxsize=64)
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
@@ -621,13 +622,17 @@ class Bot:
         except Exception as e:
             self.log_hb.error("音訊變動記錄失敗: %s", e)
 
-    def _save_needs_human_screenshot(self, frame) -> str | None:
+    def _save_needs_human_screenshot(self, frame, tag: str = "") -> str | None:
         """NEEDS_HUMAN 時跑 find_tracker 找最佳追蹤框候選，裁出該區域存檔。
 
         比存全螢幕更能當參考：直接看到「bot 認為最像外框的東西在哪、shape score 多少」。
         無候選時退回存全螢幕。回傳存檔路徑（或 None）。
+
+        tag：採集編號（如 "H007"），由採集放棄路徑傳入 → 檔名前綴與該輪其他截圖串連；
+        非採集的 NEEDS_HUMAN（如重新聚焦失敗）傳空字串 → 不前綴（避免沿用上一輪殘留編號）。
         """
         import re, cv2
+        pre = f"{tag}_" if tag else ""
         _cr = cfg.chat_region
         excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
         logs = []
@@ -649,7 +654,7 @@ class Bot:
                     break
         if best is None:
             self.logger.info("NEEDS_HUMAN：無追蹤框候選，存全螢幕")
-            return self._snapshot(frame, "needs_human")
+            return self._snapshot(frame, pre + "needs_human")
         cx, cy, edge = best
         r = 120                                        # 裁圖半徑（240×240，含追蹤框+周圍）
         h, w = frame.shape[:2]
@@ -661,7 +666,7 @@ class Bot:
                       (0, 255, 255), 2)
         cv2.putText(crop, label, (5, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
         self.logger.info("NEEDS_HUMAN 裁圖：最佳候選 (%d,%d) %s", cx, cy, label)
-        return self._snapshot(crop, "needs_human_%d_%d" % (cx, cy))
+        return self._snapshot(crop, pre + "needs_human_%d_%d" % (cx, cy))
 
     def _save_tracker_screenshot(self, frame, marker, net_rotations) -> str | None:
         """以已知 marker 為中心裁圖、標示追蹤框、寫入旋轉提示——給人工接手看。
@@ -691,9 +696,9 @@ class Bot:
             rot_txt = f"face: {key} x{abs_rot} (~{abs_rot*45}deg)"
         cv2.putText(crop, f"tracker ({cx},{cy})  {rot_txt}",
                     (5, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        self.logger.info("NEEDS_HUMAN tracker 截圖: (%d,%d) net_rot=%d %s",
-                         cx, cy, net_rotations, rot_txt)
-        return self._snapshot(crop, "needs_human_tracker_%d_%d" % (cx, cy))
+        self.logger.info("[%s] NEEDS_HUMAN tracker 截圖: (%d,%d) net_rot=%d %s",
+                         self.harvest.harvest_id, cx, cy, net_rotations, rot_txt)
+        return self._hsnap(crop, "needs_human_tracker_%d_%d" % (cx, cy))
 
 
     def _log_w_state(self, label):
@@ -754,35 +759,41 @@ class Bot:
             self.human_cleared = False
             miner.init_mining_sequence()             # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
-            chill_path = self._snapshot_crop(frame, cfg.chill_text_region, "chill_closeup")
-            self._snapshot(frame, "rare_found")
-            # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）
+            # 本輪採集配一個編號（H001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
+            # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
+            self._harvest_seq += 1
+            hid = harvester.format_harvest_id(self._harvest_seq)
+            self.harvest = harvester.HarvestState(0, 0.0, harvest_id=hid)
+            chill_path = self._hsnap_crop(frame, cfg.chill_text_region, "chill_closeup")
+            self._hsnap(frame, "rare_found")
+            # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）；檔名帶編號與截圖對齊
             try:
                 adir = f"{cfg.log_dir}/snapshots/audio"; os.makedirs(adir, exist_ok=True)
-                audio_path = f"{adir}/chill_audio_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+                audio_path = f"{adir}/{hid}_chill_audio_{time.strftime('%Y%m%d_%H%M%S')}.wav"
                 self.listener.save_buffer_wav(audio_path)
                 self.logger.info("chill 音訊已存: %s", audio_path)
             except Exception as e:
                 self.logger.error("chill 音訊存檔失敗: %s", e)
-            self.log.log("RARE_FOUND", image_path=chill_path)
-            self.logger.info("進入採集 HARVESTING: D2 掃描，全方位搜尋追蹤框")
+            self.log.log("RARE_FOUND", harvest_id=hid, image_path=chill_path)
+            self.logger.info("進入採集 HARVESTING [%s]: D2 掃描，全方位搜尋追蹤框", hid)
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
-            self.harvest = harvester.HarvestState(0, 0.0)
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
         if s is State.NEEDS_HUMAN:
             # 採集放棄時可能已預先截好「看到追蹤框」的圖（_needs_human_extra_image，
             # 在 _harvest_giveup 內 restore_view 前截，附 rotation_hint）；否則跑 find_tracker
             # 找最佳候選。用完即清空，避免跨事件殘留。
+            # extra 先取出：採集放棄會帶 harvest_id，傳給 fallback 截圖當檔名前綴（與該輪串連）；
+            # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
+            extra = self._needs_human_extra_meta
+            self._needs_human_extra_meta = {}
             if self._needs_human_extra_image is not None:
                 path = self._needs_human_extra_image
                 self._needs_human_extra_image = None
             else:
-                path = self._save_needs_human_screenshot(frame)
-            extra = self._needs_human_extra_meta
-            self._needs_human_extra_meta = {}
+                path = self._save_needs_human_screenshot(frame, tag=extra.get("harvest_id", ""))
             self.log.log("NEEDS_HUMAN", reason=self._human_reason, image_path=path, **extra)
             ic.key_up("w"); ic.mouse_up()
             self._alert("需要人工：" + self._human_reason)
@@ -903,6 +914,7 @@ class Bot:
         該方位，直接確定、免掃完剩餘方位也免轉回 verify。分數不夠高者仍收集，掃完走
         candidates[0] + verify（保留「不確定就繼續掃」的行為）。
         """
+        hid = self.harvest.harvest_id   # 本輪編號；sweep 偵測敘事行前綴 [Hxxx]（誤判常源於此階段）
         NUM_DIRS = 8
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
@@ -920,30 +932,30 @@ class Bot:
                     # 尺度不同（裝備可達 0.75-0.88），不可用同門檻，故 gate 在 shape_templates。
                     if self._shape_templates and r2[2] >= cfg.tracker_shape_early_exit:
                         self.log_harvest.info(
-                            "sweep dir=%d: 高吻合 edge=%.2f ≥%.2f，早停確定 %s（免掃完/免轉回）",
-                            i, r2[2], cfg.tracker_shape_early_exit, m2)
-                        path = self._snapshot(gf, "sweep_confirmed_%d_%d" % m2)
-                        self.log.log("TRACKER_FOUND", pos=str(m2), image_path=path)
+                            "[%s] sweep dir=%d: 高吻合 edge=%.2f ≥%.2f，早停確定 %s（免掃完/免轉回）",
+                            hid, i, r2[2], cfg.tracker_shape_early_exit, m2)
+                        path = self._hsnap(gf, "sweep_confirmed_%d_%d" % m2)
+                        self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(m2), image_path=path)
                         return m2
-                    self.log_harvest.info("sweep dir=%d: 穩定追蹤框 %s (edge=%.2f)", i, m2, r2[2])
+                    self.log_harvest.info("[%s] sweep dir=%d: 穩定追蹤框 %s (edge=%.2f)", hid, i, m2, r2[2])
                     candidates.append((i, m2))
                 else:
-                    self.log_harvest.info("sweep dir=%d: 不穩定 m1=%s m2=%s", i, m1, m2)
+                    self.log_harvest.info("[%s] sweep dir=%d: 不穩定 m1=%s m2=%s", hid, i, m1, m2)
             else:
-                self.log_harvest.info("sweep dir=%d: 未偵測到追蹤框", i)
+                self.log_harvest.info("[%s] sweep dir=%d: 未偵測到追蹤框", hid, i)
             if i < NUM_DIRS - 1:
                 ic.rotate_right()
                 self.harvest.net_rotations += 1
                 time.sleep(0.35)
 
         if not candidates:
-            self.log_harvest.info("sweep: 全 8 方位均未找到追蹤框")
+            self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
             return None
 
         best_dir, best_pos = candidates[0]  # 取第一個穩定候選（colored_frac 最高的）
         # 目前在 dir 7（rotate_right × 7）→ 需往左轉 (7 - best_dir) 次回到 best_dir
         lefts = (NUM_DIRS - 1) - best_dir
-        self.log_harvest.info("sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", best_dir, best_pos, lefts)
+        self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", hid, best_dir, best_pos, lefts)
         for _ in range(lefts):
             ic.rotate_left()
             self.harvest.net_rotations -= 1
@@ -954,18 +966,18 @@ class Bot:
         verify_f = capture.grab()
         vm = self._find_tracker(verify_f, excl, ref, log=self._tracker_log)
         if vm and abs(vm[0] - best_pos[0]) < 30 and abs(vm[1] - best_pos[1]) < 30:
-            self.log_harvest.info("sweep: 驗證成功 %s", vm)
-            path = self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
-            self.log.log("TRACKER_FOUND", pos=str(vm), image_path=path)
+            self.log_harvest.info("[%s] sweep: 驗證成功 %s", hid, vm)
+            path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
             return vm
         elif vm:
-            self.log_harvest.info("sweep: 位置偏移 %s→%s，用新位置", best_pos, vm)
-            path = self._snapshot(verify_f, "sweep_confirmed_%d_%d" % vm)
-            self.log.log("TRACKER_FOUND", pos=str(vm), image_path=path)
+            self.log_harvest.info("[%s] sweep: 位置偏移 %s→%s，用新位置", hid, best_pos, vm)
+            path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
+            self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
             return vm
         else:
-            self.log_harvest.info("sweep: 驗證時追蹤框消失（掃描位置 %s 未通過 verify），重試",
-                                 best_pos)
+            self.log_harvest.info("[%s] sweep: 驗證時追蹤框消失（掃描位置 %s 未通過 verify），重試",
+                                 hid, best_pos)
             return None
 
     def _harvest_giveup(self, reason: str):
@@ -979,6 +991,8 @@ class Bot:
         時知道從回正視角要按 . 或 , 幾次才能面對該追蹤框（sweep timeout / 未找到追蹤框
         的 case 沒有 _target_marker，走原本即時 find_tracker 截圖流程）。
         """
+        # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
+        self._needs_human_extra_meta = {"harvest_id": self.harvest.harvest_id}
         # D3 失敗：restore_view 前截圖（追蹤框仍在畫面上）；rotation_hint 一併準備好
         if self._target_marker is not None:
             pre_frame = capture.grab()
@@ -986,12 +1000,13 @@ class Bot:
             img_path = self._save_tracker_screenshot(pre_frame, self._target_marker, rot)
             hint = harvester.format_rotation_hint(rot)
             if img_path is not None and hint:
-                # 只有截圖成功 + 有提示時才覆寫；否則讓 _on_enter 跑預設 find_tracker 流程
+                # 只有截圖成功 + 有提示時才覆寫 image；hint 併入 extra_meta（保留 harvest_id）
                 self._needs_human_extra_image = img_path
-                self._needs_human_extra_meta = {"rotation_hint": hint}
+                self._needs_human_extra_meta["rotation_hint"] = hint
 
         if self.harvest.net_rotations:
-            self.logger.info("採集放棄 -> 轉回原方位 net=%d", self.harvest.net_rotations)
+            self.logger.info("[%s] 採集放棄 -> 轉回原方位 net=%d",
+                             self.harvest.harvest_id, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.harvest.net_rotations = 0
         self._human_reason = reason
@@ -1001,6 +1016,7 @@ class Bot:
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
+        hid = self.harvest.harvest_id          # 本輪編號；harvest 里程碑 log 前綴 [Hxxx]
 
         _cr = cfg.chat_region
         _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
@@ -1010,7 +1026,7 @@ class Bot:
         if self._target_marker is None:
             # sweep 階段超時（sweep 固定 8 方位約 19s，30s 已是 1.5x 餘裕）
             if self.harvest.elapsed_s > cfg.sweep_timeout_s:
-                self.logger.info("sweep 超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
+                self.logger.info("[%s] sweep 超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
                 self._harvest_giveup("全方位掃描超時，請手動處理")
                 return
             self.last_action = "全方位掃描（8方位）"
@@ -1018,19 +1034,19 @@ class Bot:
             if self._target_marker is None:
                 # 環繞一次找不到就交人工（偵測已準；再掃一次也是偵測問題，不會更好）。
                 # 先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
-                self.logger.info("sweep 未找到追蹤框（環繞一次）-> 人工")
+                self.logger.info("[%s] sweep 未找到追蹤框（環繞一次）-> 人工", hid)
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
             # ★ sweep 完成：重置計時器，D3 階段從 0 開始算
             # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
             self._harvest_start = time.time()
             self.harvest.elapsed_s = 0.0
-            self.logger.info("sweep 完成 -> 進入 D3 階段 (target=%s)", self._target_marker)
+            self.logger.info("[%s] sweep 完成 -> 進入 D3 階段 (target=%s)", hid, self._target_marker)
             return  # 讓主迴圈抓新 frame 再進 D3
 
         # ---- 階段二：D3 開火 + 驗證（sweep 完成後才計時）----
         if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
-            self.logger.info("D3 階段超時 -> 人工 (t=%.1f)", self.harvest.elapsed_s)
+            self.logger.info("[%s] D3 階段超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
             self._harvest_giveup("稀有礦採集失敗（D3 階段超時），請手動處理")
             return
 
@@ -1039,13 +1055,14 @@ class Bot:
         self.last_action = "D3 採集"
         # D3 前先讀聊天框（差分確認用：只有「新增」的稀有礦才算成功，舊訊息不再偽造）
         # 反轉策略：比對聊天「has found X」，X 不在「低稀有度排除清單」(common_ore_names) → 稀有礦。
+        # hid（本輪編號）已在 _tick_harvest 開頭取好，log 行前綴 [Hxxx]、快照檔名帶同號
         common = game_data.common_ore_names()
         chat_before = self._read_chat(frame)
         rare_before = ocr.count_rare_found(chat_before, common, cfg.found_keywords)
-        self.log_harvest.info("採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
-                         cx, cy, self.harvest.d3_attempts + 1, rare_before)
-        self._snapshot(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
-        self._snapshot_crop(frame, cfg.chat_region, "d3_chat_before")
+        self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
+                         hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
+        self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）
+        self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
         time.sleep(0.15)
         ic.key_press("3")
@@ -1066,26 +1083,26 @@ class Bot:
         # 特殊階（ionized/Spectral）：進別的背包、不在稀有礦名表，只能靠 keyword 字樣辨識 → 也算成功
         special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
         confirmed = confirmed or special
-        chat_after_path = self._snapshot_crop(after, cfg.chat_region, "d3_chat_after")
+        chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
         verdict = harvester.decide_harvest_result(gone, confirmed)
-        self.log_harvest.info("verify harvest: gone=%s rare %d->%d %s special=%s -> %s",
-                         gone, rare_before, rare_after,
+        self.log_harvest.info("[%s] verify harvest: gone=%s rare %d->%d %s special=%s -> %s",
+                         hid, gone, rare_before, rare_after,
                          "NEW" if confirmed else "no-new", special, verdict)
         if verdict == "SUCCESS":
             # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
             # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
             new_lines = ocr.extract_new_found_lines(chat_before, chat_after, cfg.found_keywords)
             if new_lines:
-                self.log_harvest.info("採集新增聊天行: %s", new_lines)
-            self.log.log("HARVEST_SUCCESS", confirmed=confirmed, tracker_gone=gone,
+                self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
+            self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
                          special=special, rare_before=rare_before, rare_after=rare_after,
                          new_found_lines=new_lines, image_path=chat_after_path)
             self.stats["rares"] += 1
             self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
-            self._snapshot(after, "harvest_success" + ("_special" if special else ""))
+            self._hsnap(after, "harvest_success" + ("_special" if special else ""))
             # 採集全程數十秒（sweep ~19s + 多次 D3 嘗試），期間焦點可能被搶走
             # （HUD 從隱藏重顯、系統通知、使用者點別視窗）。後續 restore_view +
             # init_mining_sequence 會送視角鍵 / W / D1 / Shift，必須先確認焦點在
@@ -1120,19 +1137,19 @@ class Bot:
             self._log_w_state("採集成功→置中+鎬子+W重按後")
         elif verdict == "RESWEEP":
             # 框消失但聊天無 has found → 多半是 D2 掃描到期框自己淡掉（或雷達搶採），原地再射也射不到 → 立即重掃。
-            self._snapshot(after, "d3_gone_unconfirmed")  # 關鍵截圖：框沒了卻沒採到（掃描到期/被搶）
-            self.logger.info("採集: 追蹤框消失但聊天未確認（掃描到期/被雷達搶採）-> 重新 D2 掃描＋全方位重掃")
+            self._hsnap(after, "d3_gone_unconfirmed")  # 關鍵截圖：框沒了卻沒採到（掃描到期/被搶）
+            self.logger.info("[%s] 採集: 追蹤框消失但聊天未確認（掃描到期/被雷達搶採）-> 重新 D2 掃描＋全方位重掃", hid)
             self._reharvest_sweep()
         else:  # RETRY：框還在、D3 沒打中 → 原地重試，連續未命中達上限才重掃
-            self._snapshot(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
+            self._hsnap(after, "d3_miss_%d" % (self.harvest.d3_attempts + 1))  # 關鍵截圖：未命中
             self.harvest.d3_attempts += 1
             if self.harvest.d3_attempts >= cfg.max_harvest_attempts:
-                self.logger.info("採集: D3 連 %d 次未命中 -> 重新 D2 掃描＋全方位重掃",
-                                 self.harvest.d3_attempts)
+                self.logger.info("[%s] 採集: D3 連 %d 次未命中 -> 重新 D2 掃描＋全方位重掃",
+                                 hid, self.harvest.d3_attempts)
                 self._reharvest_sweep()
             else:
-                self.log_harvest.info("採集: D3 未命中 (attempt %d/%d rare %d->%d)，下次繼續",
-                                 self.harvest.d3_attempts, cfg.max_harvest_attempts,
+                self.log_harvest.info("[%s] 採集: D3 未命中 (attempt %d/%d rare %d->%d)，下次繼續",
+                                 hid, self.harvest.d3_attempts, cfg.max_harvest_attempts,
                                  rare_before, rare_after)
 
     def _reharvest_sweep(self):
@@ -1160,6 +1177,24 @@ class Bot:
         if not cfg.save_snapshots or frame is None:
             return None
         return self._enqueue_snapshot(capture.crop(frame, region), label)
+
+    def _hlabel(self, label: str) -> str:
+        """把本輪採集編號前綴到快照 label（無編號時原樣回傳，給非採集快照用）。
+
+        結果檔名形如 20260629_022126_H007_d3_fire_960x540.png——grep H007 即可撈出該輪所有
+        截圖。label 內原有的分類關鍵字（d3_fire/sweep_confirmed…）仍在 → snapshot_subdir
+        分流不受影響（仍走子字串比對）。
+        """
+        hid = self.harvest.harvest_id
+        return f"{hid}_{label}" if hid else label
+
+    def _hsnap(self, frame, label: str) -> str | None:
+        """採集用全幀快照：檔名自動帶本輪編號（見 _hlabel）。"""
+        return self._snapshot(frame, self._hlabel(label))
+
+    def _hsnap_crop(self, frame, region, label: str) -> str | None:
+        """採集用區域快照：檔名自動帶本輪編號（見 _hlabel）。"""
+        return self._snapshot_crop(frame, region, self._hlabel(label))
 
     # ---- 控制權熱鍵（全域輪詢）---------------------------------------------
     def _check_hotkeys(self):

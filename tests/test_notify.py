@@ -40,6 +40,30 @@ def test_needs_human_appends_rotation_hint_when_present():
     assert m2 is not None and m2.endswith("X")
 
 
+def test_harvest_id_prefixes_message_when_present():
+    """採集編號出現在 meta 時，訊息要前綴 [Hxxx]，讓 Discord 看到就能回報「哪個編號誤判」。"""
+    m = format_message(rec("RARE_FOUND", harvest_id="H001"))
+    assert m is not None and m.startswith("[H001]")
+
+
+def test_harvest_success_keeps_id_and_mineral():
+    m = format_message(rec("HARVEST_SUCCESS", harvest_id="H007", mineral="Spectral 4FA208"))
+    assert m is not None and m.startswith("[H007]") and "Spectral 4FA208" in m
+
+
+def test_needs_human_keeps_id_reason_and_hint():
+    m = format_message(rec("NEEDS_HUMAN", harvest_id="H003", reason="D3 失敗",
+                           rotation_hint="（面對追蹤框：按 . 3 次 ≈ 135°）"))
+    assert m is not None
+    assert m.startswith("[H003]") and "D3 失敗" in m and "按 . 3 次" in m
+
+
+def test_no_harvest_id_means_no_prefix():
+    # 非採集事件（或缺 id）不可多出 [H 前綴，保持既有相容
+    m = format_message(rec("MINE_RESET"))
+    assert m is not None and not m.startswith("[H")
+
+
 def test_stuck_includes_reason():
     m = format_message(rec("STUCK", reason="60s 無進度"))
     assert m is not None and "60s 無進度" in m

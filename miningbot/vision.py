@@ -300,25 +300,20 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                         log("tracker候選 (%d,%d) area=%d fill=%.2f ref_fill=%.2f -> rej(preexist)"
                             % (cx, cy, int(area), frame_fill, ref_fill))
                     continue
-            roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
-                            max(0, cx - bw // 3):cx + bw // 3]
-            if roi.size == 0:
-                continue
-            dark = float(np.mean(np.all(roi < 60, axis=2)))
-            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            S, V = roi_hsv[:, :, 1], roi_hsv[:, :, 2]
-            # 色相無關：任何階級的中心礦色都算（修：原本 (H<35)|(H>95) 排除黃綠 H35-95，
-            # 害「黃綠中心礦」如 Ionized 的 colored=0 而漏抓——實機 very_rare.png 踩到的根因）。
-            colored = (S > 90) & (V > 90)
+            # 專注外框：量「整個 bbox」的彩色佔比（色相無關 S>90&V>90），不再只看中心。
+            # 為何不看中心：追蹤框中心顏色每次會變（不同礦色/粉紅/甚至純黑空心 BGR[0,0,0]），
+            # 中心非不變特徵；舊版要求中心 2/3 有彩色像素，遇黑心框 colored=0 → 被當暗色 UI
+            # 面板拒掉而漏抓（2026-06-29 黑心綠框 black_center_scene.png 踩坑根因）。
+            # 真追蹤框有「厚實彩色外框」→ 整框彩色佔比高（實測黑心 0.51-0.62、彩心 0.7-1.0）；
+            # 細框暗色 UI 面板佔比低（合成 0.33、實機 ≈0.16）→ 用佔比門檻區隔，形狀確認再精篩。
+            bb_hsv = hsv[y:y+bh, x:x+bw]
+            colored = (bb_hsv[:, :, 1] > 90) & (bb_hsv[:, :, 2] > 90)
             colored_frac = float(colored.mean())
-            # accept 條件：彩色中心要夠明顯（colored_frac>0.50，真實 tracker≈1.00），
-            # 或同時有黑環+部分彩色（合成 tracker dark≈0.65 colored≈0.16）。
-            # 排除「暗色 UI 面板」：dark 高但 colored≈0（左側面板誤判）。
             accept = (in_area and not in_exclude and frame_fill < 0.85
-                      and ((dark > 0.10 and colored_frac > 0.04) or colored_frac > 0.50))
+                      and colored_frac > 0.40)
             if log is not None:
-                log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
-                    % (cx, cy, int(area), frame_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
+                log("tracker候選 (%d,%d) area=%d fill=%.2f colored=%.2f in_area=%s -> %s"
+                    % (cx, cy, int(area), frame_fill, colored_frac, in_area, "OK" if accept else "rej"))
             if accept:
                 candidates.append((colored_frac, cx, cy))
 

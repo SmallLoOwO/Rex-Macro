@@ -1,5 +1,6 @@
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
-                                 decide_harvest_result, format_rotation_hint)
+                                 decide_harvest_result, format_rotation_hint,
+                                 format_harvest_id)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -72,3 +73,24 @@ def test_rotation_hint_negative_means_comma_key():
 def test_rotation_hint_zero_is_empty_string():
     # 在原視角就不必提示（避免 Discord 訊息多出雜訊）
     assert format_rotation_hint(0) == ""
+
+
+# --- format_harvest_id：每輪採集的可搜尋編號（純函式）---
+# 目的：log / 快照檔名 / Discord 共用同一個編號，事後說「H007 似乎誤判」即可一鍵搜查。
+def test_format_harvest_id_zero_pads_to_three_digits():
+    assert format_harvest_id(1) == "H001"
+    assert format_harvest_id(7) == "H007"
+    assert format_harvest_id(42) == "H042"
+
+def test_format_harvest_id_beyond_three_digits_keeps_growing():
+    # 單次執行採超過 999 顆才會到（極罕見），仍要正確不截斷
+    assert format_harvest_id(1000) == "H1000"
+
+def test_harvest_state_carries_harvest_id():
+    st = HarvestState(rotations=0, elapsed_s=0.0, harvest_id="H001")
+    assert st.harvest_id == "H001"
+
+def test_harvest_state_harvest_id_defaults_empty():
+    # 既有呼叫端（HarvestState(0, 0.0)）不傳 id 仍可建構，預設空字串
+    st = HarvestState(rotations=0, elapsed_s=0.0)
+    assert st.harvest_id == ""

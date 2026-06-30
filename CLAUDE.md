@@ -51,6 +51,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 
 - **追蹤框偵測 `vision.find_tracker`（2026-06-28 改混合方案）**：HSV 快速定位 + 實機裁圖外框形狀確認。
   1. **HSV 候選**：各色系範圍獨立 mask（不合併）→ ring_score 環形結構（`frame_fill-inner_fill`<0.15 排除實心 blob）→ reference_bgr 差分（同色 fill>0.15 排除掃描前就有的）→ **色相無關** colored 確認（`(S>90)&(V>90)`，**不可再加 `(H<35)|(H>95)`**——那會漏抓黃綠中心礦如 Ionized，是 very_rare.png 踩過的根因）。
+     - **colored 必須量「整個 bbox」、專注外框，不可只看中心（2026-06-29 黑心框踩坑）**：追蹤框中心顏色每次會變（不同礦色/粉紅/甚至**純黑空心** `BGR[0,0,0]`），中心非不變特徵。舊版量「中心 2/3 ROI 的彩色像素」，遇黑心綠框（`black_center_scene.png`，中心 colored=0.00）→ 被當暗色 UI 面板拒掉 → 整圖回 None、沒進 D3、稀有沒採到（其實形狀 edge=0.64 認得它，只是 HSV 那關太早殺掉）。改量整個 bbox 的彩色佔比：真框厚實外框佔比高（黑心 0.51-0.62、彩心 0.7-1.0），細框暗 UI 面板低（合成 0.33、實機 ≈0.16）→ 門檻 `colored_frac>0.40` 區隔，形狀確認再精篩。
   2. **形狀確認（`shape_templates`）**：在每個 HSV 候選周圍小 ROI 跑「實機裁圖外框」邊緣比對（`best_outline_score`≥`cfg.tracker_shape_threshold`），拒「有色但非追蹤框形狀」的假陽性（如角色裝備誤射）。只在小 ROI 跑（全幀模板比對 5~23s/幀太慢）。
   3. **雙幀穩定**（`_tick_harvest`/sweep 內）：連續兩幀誤差 < 8px 才採用。
   - **模板必須用「實機裁圖」不是 wiki 圖**：wiki 是透明 PNG 只有外框（alpha），但向量 icon 邊緣在合理尺度配不到遊戲內渲染框（實測全 miss）；實機裁圖 edge≈0.91 且**一張可跨階通用**（顏色無關，色相位移仍命中）。形狀確認集 = `assets/markers` 內無 alpha 的裁圖（自動篩，wiki 排除）。新階礦從 log snapshots 裁實機框補進去即可。

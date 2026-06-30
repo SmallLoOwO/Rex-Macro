@@ -88,13 +88,55 @@ def test_find_tracker_inner_color_independent():
 
 
 def test_find_tracker_ignores_dark_panel_without_colored_center():
-    # UI 面板誤判候選：彩色外框 + 暗色內部（高 dark）但「沒有彩色中心」(colored≈0)
-    # → accept 必須排除。模擬 logs/rot_3.png 中 (257,933) 的左側 UI 面板誤判。
+    # UI 面板誤判候選：「細彩色外框 + 暗色內部」→ 整框彩色佔比低（實測 0.33）→ 排除。
+    # 模擬 logs/rot_3.png 中 (257,933) 的左側 UI 面板誤判（實機面板更低、≈0.16）。
+    # 注意：判斷專注「外框彩色佔比」，不再要求中心有顏色——真追蹤框中心會變色甚至純黑空心
+    # （見 test_find_tracker_detects_black_center_marker），但其厚實外框佔比遠高於細框面板。
     scene = np.zeros((1080, 1920, 3), np.uint8)
     cx, cy = 257, 933
     cv2.rectangle(scene, (cx-25, cy-25), (cx+25, cy+25), (0, 255, 0), 3)  # 綠色細外框
     cv2.rectangle(scene, (cx-22, cy-22), (cx+22, cy+22), (25, 25, 25), -1)  # 暗色內部、無彩色中心
     assert find_tracker(scene) is None
+
+
+def test_find_tracker_detects_black_center_marker():
+    """回歸 2026-06-29：厚實綠外框 + 純黑空心中心（無彩色中心）仍要偵測到。
+
+    追蹤框中心顏色每次會變（礦色/粉紅/純黑空心 BGR[0,0,0]），只有外框不變。
+    舊版 accept 要求中心 2/3 ROI 有彩色像素（colored_frac>0.04），遇黑心框
+    colored=0.00 → 被當暗色 UI 面板拒掉 → 漏抓、稀有沒採到。改成「專注外框彩色佔比」後
+    黑心厚框（佔比≈0.62）應通過，細框暗面板（≈0.33）仍排除。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cx, cy = 955, 300
+    cv2.rectangle(scene, (cx-15, cy-15), (cx+15, cy+15), (0, 255, 0), -1)   # 厚實綠外框
+    cv2.rectangle(scene, (cx-10, cy-10), (cx+10, cy+10), (0, 0, 0), -1)     # 純黑中心填滿中央 2/3（無彩色）
+    loc = find_tracker(scene)
+    assert loc is not None, "黑心（純黑中心）追蹤框不應被漏抓——判斷應專注外框"
+    assert abs(loc[0] - cx) < 10 and abs(loc[1] - cy) < 10
+
+
+def test_find_tracker_hybrid_detects_black_center_real_scene():
+    """真實資料：assets/black_center_scene.png（綠框 + 純黑中心的 exquisite 階追蹤框）。
+
+    回歸 2026-06-29 RobloxScreenShot20260629_225228619：中心純黑（BGR 0,0,0）。
+    舊版於 HSV accept 因 colored_frac(中心)=0.00 被拒（當成暗色 UI 面板）→ 整圖回 None
+    → 機器人沒進 D3、稀有沒採到。混合偵測（HSV 專注外框佔比 0.56 + 形狀 edge 0.64）應命中
+    框中心 (~1108,442)，且不被角色紅光/左側面板等假陽性蓋過。"""
+    img_path = "assets/black_center_scene.png"
+    tmpl_path = "assets/markers/exquisite_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exq": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None and abs(loc[0] - 1108) < 40 and abs(loc[1] - 442) < 40
 
 
 def test_find_tracker_prefers_higher_colored_over_larger_area():

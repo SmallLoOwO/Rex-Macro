@@ -10,7 +10,19 @@ class HarvestState:
     elapsed_s: float
     net_rotations: int = 0  # 淨轉動（右+1、左-1），用來挖完後轉回原角度
     d3_attempts: int = 0    # D3 連續未命中次數（達 max_harvest_attempts 自動重掃）
+    harvest_id: str = ""    # 本輪採集編號（如 "H007"）；貫穿 log/快照檔名/Discord 供事後一鍵搜查
     # 註：環繞一次找不到即交人工（2026-06-29 偵測已準，移除二次重掃），故不再記 sweep_attempts
+
+
+def format_harvest_id(seq: int) -> str:
+    """把採集流水號格式化成可搜尋編號 "H007"（純函式）。
+
+    零填充三位讓 grep 精準（"H007" 不會誤中 "H070"）、又好唸（你說「7 號」＝H007）。
+    log 判定行、快照檔名、Discord 訊息共用同一個編號 → 事後說「H007 似乎誤判」即可一鍵搜出
+    該輪全部證據（截圖＋判斷文字＋通知）。超過 999（單次執行採超過 999 顆稀有礦，極罕見）
+    自然進位成 H1000，不截斷。
+    """
+    return f"H{seq:03d}"
 
 @dataclass
 class HarvestStep:
