@@ -251,7 +251,7 @@ class Bot:
             if item is None:                         # 收到哨兵 → 結束
                 break
             frame, snap_dir, path, label = item
-            tmp = path + ".part"                     # 原子寫入暫存檔
+            tmp = diagnostics.tmp_snapshot_path(path)  # 保留 .png 給 cv2（見該函式註解）
             try:
                 os.makedirs(snap_dir, exist_ok=True)
                 # ★ 原子寫入：先寫 .part 再 os.replace 改名。改名前 path 不存在 →

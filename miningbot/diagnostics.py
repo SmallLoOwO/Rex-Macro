@@ -101,6 +101,19 @@ def snapshot_path(log_dir: str, label: str, ts: str = None):
     return snap_dir, os.path.join(snap_dir, f"{ts}_{label}.png")
 
 
+def tmp_snapshot_path(path: str) -> str:
+    """原子寫入用的暫存檔路徑：在最後副檔名前插 .part（**保留副檔名**）。
+
+    cv2.imwrite 依「檔名最後一個副檔名」挑編碼器；若暫存檔取 ``path + ".part"``，
+    副檔名會變 ``.part`` → cv2 拋「could not find a writer for the specified
+    extension」→ 檔案沒寫出 → Discord sink 的 _wait_for_file 必逾時 → 每則通知
+    退回純文字（2026-06-30 回歸：discord.log 全 NOIMG(wait-timeout)）。
+    ``foo.png`` → ``foo.part.png``（cv2 認得 .png）；``os.replace`` 後仍為 ``foo.png``。
+    """
+    root, ext = os.path.splitext(path)
+    return f"{root}.part{ext}"
+
+
 def save_snapshot(frame, log_dir: str, label: str) -> str:
     """把當下畫面存成 log_dir/snapshots/<分類>/<時間>_<label>.png，回傳路徑。
 
