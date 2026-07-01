@@ -113,6 +113,53 @@ def format_rotation_hint(net_rotations: int) -> str:
     key = "." if net_rotations > 0 else ","
     return f"（面對追蹤框：按 {key} {abs_rot} 次 ≈ {abs_rot*45}°）"
 
+@dataclass(frozen=True)
+class GiveupCrop:
+    """放棄時要裁的一張左側對比圖（純資料）。
+
+    source: "before"（本輪 _pre_scan_ref，採集開始基準）| "after"（放棄當下 frame）
+    region: "chat"（左上 has-found 訊息）| "backpack"（左下 NORMAL 面板）
+    label : 快照 label（_hsnap_crop 會再前綴本輪 harvest_id）
+    """
+    source: str
+    region: str
+    label: str
+
+
+@dataclass(frozen=True)
+class GiveupPlan:
+    """採集放棄時的視角處置 + 截圖方案（純資料）。
+
+    restore_view : 轉回原視角？（無框才轉回、便於判斷礦是否已被玩家挖走）
+    tracker_view : 主圖用「面對追蹤框」裁圖？（有框採不到時 True，人工可據此手動採）
+    review_crops : 無框路徑的 4 張左側前後對比裁圖（有框路徑為空 tuple）
+    """
+    restore_view: bool
+    tracker_view: bool
+    review_crops: tuple
+
+
+# 無框放棄路徑固定的 4 張裁圖（Discord 2x2：上排聊天前後、下排背包前後）
+_REVIEW_CROPS = (
+    GiveupCrop("before", "chat", "giveup_before_chat"),
+    GiveupCrop("after", "chat", "giveup_after_chat"),
+    GiveupCrop("before", "backpack", "giveup_before_backpack"),
+    GiveupCrop("after", "backpack", "giveup_after_backpack"),
+)
+
+
+def plan_giveup(face_tracker: bool) -> GiveupPlan:
+    """採集放棄時依「有無追蹤框」決定視角處置 + 截圖方案（純函式，需求 A+C）。
+
+    face_tracker=True（找到追蹤框但採不到，D3 階段失敗）：**不轉回**視角、保持面對追蹤框，
+      主圖給「面對追蹤框」裁圖，人工一眼看到框可手動採。
+    face_tracker=False（沒找到框 / 掃描超時 / 採到但重新聚焦失敗）：**轉回**原視角（快速恢復、
+      便於判斷礦是否已被玩家挖走），附 4 張左側前後對比裁圖（聊天×前後、背包×前後）。
+    """
+    if face_tracker:
+        return GiveupPlan(restore_view=False, tracker_view=True, review_crops=())
+    return GiveupPlan(restore_view=True, tracker_view=False, review_crops=_REVIEW_CROPS)
+
 def prepare_scan():
     """停止移動、置中鏡頭——在這之後應立刻截圖當 reference，再呼叫 execute_scan。"""
     ic.key_up("w"); ic.mouse_up()

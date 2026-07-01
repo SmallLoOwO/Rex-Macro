@@ -2,7 +2,8 @@ from dataclasses import replace
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, format_rotation_hint,
                                  format_harvest_id,
-                                 should_strafe_at_dir, should_walk_back_to_weak)
+                                 should_strafe_at_dir, should_walk_back_to_weak,
+                                 plan_giveup, GiveupPlan, GiveupCrop)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -128,3 +129,34 @@ def test_strafe_mode_does_not_walk_back_to_weak():
 def test_non_strafe_mode_keeps_old_walk_back():
     # 原地掃描：維持舊行為，走回最佳弱框驗證
     assert should_walk_back_to_weak(strafe_enabled=False) is True
+
+
+# --- plan_giveup：放棄時視角處置 + 截圖方案（純函式，需求 A+C）---
+def test_giveup_face_tracker_keeps_view_and_shows_tracker():
+    # 有框採不到：不轉回、保持面對追蹤框，主圖給追蹤框裁圖
+    plan = plan_giveup(face_tracker=True)
+    assert plan.restore_view is False
+    assert plan.tracker_view is True
+    assert plan.review_crops == ()
+
+def test_giveup_no_tracker_restores_and_uses_four_review_crops():
+    # 沒找到框：轉回原視角 + 4 張左側前後對比裁圖
+    plan = plan_giveup(face_tracker=False)
+    assert plan.restore_view is True
+    assert plan.tracker_view is False
+    assert len(plan.review_crops) == 4
+
+def test_giveup_review_crops_order_is_chat_then_backpack_before_after():
+    # Discord 2x2 縮圖：上排聊天(前/後)、下排背包(前/後)
+    crops = plan_giveup(face_tracker=False).review_crops
+    assert [(c.source, c.region) for c in crops] == [
+        ("before", "chat"), ("after", "chat"),
+        ("before", "backpack"), ("after", "backpack"),
+    ]
+
+def test_giveup_review_crop_labels_are_unique_and_descriptive():
+    crops = plan_giveup(face_tracker=False).review_crops
+    labels = [c.label for c in crops]
+    assert labels == ["giveup_before_chat", "giveup_after_chat",
+                      "giveup_before_backpack", "giveup_after_backpack"]
+    assert len(set(labels)) == 4
