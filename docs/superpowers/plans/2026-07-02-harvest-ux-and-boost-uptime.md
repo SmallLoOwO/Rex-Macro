@@ -478,12 +478,12 @@ from miningbot.harvester import (next_harvest_step, HarvestState, restore_action
 `test_no_strafe_at_front_and_diagonals`、`test_strafe_disabled_never_strafes`、
 `test_strafe_mode_does_not_walk_back_to_weak`、`test_non_strafe_mode_keeps_old_walk_back`。
 
-- [ ] **Step 2: 跑測試確認失敗（紅）**
+- [ ] **Step 2: 跑測試確認仍綠（此為刪除型任務，非 red→green）**
 
 Run: `python -m pytest tests/test_harvester.py -q`
-Expected: FAIL — `ImportError: cannot import name 'should_strafe_at_dir'`（import 已刪、但 harvester 仍定義；此步先鎖住「測試不再引用 strafe」，實際刪函式在 Step 3-4 後轉綠）。
+Expected: **PASS**。移除 6 個 strafe 測試 + import 後，其餘測試不再引用 strafe → 綠（此時 production 端 strafe 函式/config 仍在、只是沒被引用）。Step 3-6 移除 production strafe code 後，Step 7 全套件仍應綠。
 
-> 若你偏好先綠再刪，可對調 Step 1 與 3/4；本順序意在先移除測試對 strafe 的依賴。
+> 這是「移除近期功能」的回退，程式碼與其測試一起刪、套件從綠到綠——不套 red→green。若 Step 1 後**沒有**變綠（出現 `ImportError`），代表 import 行未清乾淨或還有別的測試引用 strafe，先修到綠再往下。
 
 - [ ] **Step 3: 刪 harvester.py 兩個純函式**
 
