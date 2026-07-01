@@ -87,11 +87,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   stride-4 的 view 逐元素複製、實測 154ms/幀；cvtColor 走 SIMD、19ms、輸出 byte-identical。grab 每幀都跑
   （主迴圈 ~20/s + sweep 一輪 17 次），這 ~135ms/幀省很大。（mss 原始 full grab 本身在此機 ~106ms，
   更快可換已裝的 bettercam ~25ms——但目前非瓶頸，未接。）
-- **boost/D4 偵測節流 + 少尺度（`buff_scales`）**：`_boost_needs_refresh`/`_activity_ready` 原本每幀跑
-  5 尺度 edge-match（共 ~344ms/幀）。改成每 `boost_check_interval_s`(1s)/`activity_check_interval_s`(3s) 才真掃、
-  其餘沿用快取（`_boost_present`/`_activity_present`）；且 buff/冷卻是**固定尺寸 UI** → 用 `buff_scales=(0.9,1.0,1.1)`
-  取代給會變追蹤框的 `marker_scales`(5 尺度)，實測單次 216→143ms。**注意**：節流與「boost 絕不空轉」有張力
-  （見設計 spec，未來可能改成近到期高頻、中段跳過的自適應頻率）。
+- **boost 高頻偵測「不空轉」＋ D4 較疏節流（`buff_scales`）**：`_boost_needs_refresh`/`_activity_ready` 原本每幀跑
+  5 尺度 edge-match（共 ~344ms/幀）→ 改成節流 + 少尺度、其餘沿用快取（`_boost_present`/`_activity_present`）。
+  - **boost（不空轉）**：提早補 D5 無意義（不刷新、還浪費換道具時間打斷挖礦）→ 只能「到期瞬間即補」＝越快偵測
+    瓶子消失越好。偵測已便宜（單尺度 `boost_buff_scales=(1.0,)` ~56ms）→ 用高頻 `boost_check_interval_s=0.2s`，
+    到期延遲 ≈ 一個 tick + D5 生效，幾乎不空轉。
+  - **D4（不在意空轉）**：維持 `buff_scales=(0.9,1.0,1.1)` 3 尺度 + `activity_check_interval_s=3s` 較疏。
+  - 進階（未做，spec #4 方案 B）：用數字模板讀瓶底秒數做自適應頻率（中段跳過、近到期高頻）——僅在量到中段 CPU 仍痛時才上。
 - **需人工介入（採集放棄）依有無框分流（`_harvest_giveup` → `harvester.plan_giveup` 純決策）**：
   - **有框採不到**（D3 階段超時，`face_tracker=True`）：**不轉回**、保持面對追蹤框，主圖給追蹤框裁圖
     （`_save_tracker_screenshot`），人工一眼看到框可手動採；不附 rotation_hint（已正對著框）。

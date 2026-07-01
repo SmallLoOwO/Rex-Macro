@@ -206,7 +206,7 @@ class Bot:
             # 在整條效果列裡用「形狀/邊緣」找瓶子（忽略顏色與會變的數字、容忍疊加位移）
             self._boost_present = vision.find_template_edges(
                 capture.crop(frame, cfg.boost_indicator_region), t,
-                cfg.boost_edge_threshold, cfg.buff_scales) is not None
+                cfg.boost_edge_threshold, cfg.boost_buff_scales) is not None
         if self._boost_present:
             return False
         return (time.time() - self._last_boost) > cfg.boost_cooldown_s

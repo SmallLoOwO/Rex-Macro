@@ -34,7 +34,8 @@ class Config:
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
-    boost_check_interval_s: float = 1.0          # boost 偵測節流：每隔多久才真的 edge-match 一次（boost 撐 ~60s，不必每幀掃；節流間沿用上次結果）
+    boost_check_interval_s: float = 0.2          # boost 高頻偵測「不空轉」：boost 到期→立刻補，越快偵測瓶子消失越好（提早補無意義且浪費換道具時間，見 2026-07-02 spec #4 方案 A）
+    boost_buff_scales: tuple = (1.0,)            # boost 瓶子＝固定尺寸 UI → 單尺度即可（~56ms/次），高頻掃描才不吃 CPU（D4 續用 buff_scales）
 
     # D4 活動：右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
     # 偵測右下角 D4「冷卻圖示」不在 = 冷卻好 → 就用（避免能用卻沒用）。
