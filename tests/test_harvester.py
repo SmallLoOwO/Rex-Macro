@@ -1,4 +1,3 @@
-from dataclasses import replace
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, format_rotation_hint,
                                  format_harvest_id,

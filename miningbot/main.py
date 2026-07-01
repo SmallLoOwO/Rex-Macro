@@ -192,10 +192,11 @@ class Bot:
         """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
 
         無模板時停用；剛按過 D5（冷卻內）不重按，避免瓶子出現前狂按。
-        **偵測節流**（`boost_check_interval_s`）：boost 撐 ~60s，不必每幀掃；節流間沿用上次
-        `_boost_present`，大幅降低每幀 edge-match 負擔。瓶子是固定尺寸 UI → 用 `buff_scales`
-        少尺度（`marker_scales` 的 5 尺度是給會變大小的追蹤框、對固定 UI 是浪費，實測慢 4x）。
-        按 D5 後瓶子 ~1s 內重現、`boost_cooldown_s` 又擋 5s，故節流不會造成連按。
+        **高頻偵測「不空轉」（#4）**：提早補 D5 無意義（不刷新、還浪費換道具時間），只能「到期
+        瞬間即補」→ 越快偵測瓶子消失越好。偵測已便宜（單尺度 `boost_buff_scales` ~56ms），故用
+        高頻 `boost_check_interval_s`(0.2s)；節流間沿用上次 `_boost_present`。瓶子是固定尺寸 UI
+        → 用 `boost_buff_scales`（會變大小的追蹤框才用多尺度 `marker_scales`；D4 用 `buff_scales`）。
+        即使高頻，重按 D5 仍受 `boost_cooldown_s`(5s) 這關 gate，不會狂按。
         """
         t = self._templates.get("boost_active")
         if t is None:
