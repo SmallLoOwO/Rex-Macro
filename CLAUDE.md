@@ -92,10 +92,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   其餘沿用快取（`_boost_present`/`_activity_present`）；且 buff/冷卻是**固定尺寸 UI** → 用 `buff_scales=(0.9,1.0,1.1)`
   取代給會變追蹤框的 `marker_scales`(5 尺度)，實測單次 216→143ms。**注意**：節流與「boost 絕不空轉」有張力
   （見設計 spec，未來可能改成近到期高頻、中段跳過的自適應頻率）。
-- **需人工介入（採集放棄）附「前/後左側裁圖」**（`_harvest_giveup` → `image_paths`）：before＝該輪
-  `_pre_scan_ref`（採集開始基準）、after＝放棄當下，皆裁 `human_review_region`（左側背包+聊天框）。左側是
-  螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。
-  舊版只在 D3 有開火才附，實測放棄幾乎都是 sweep 未找到框（D3 沒開火）→ 只送單張，故改由 `_pre_scan_ref` 當 before。
+- **需人工介入（採集放棄）依有無框分流（`_harvest_giveup` → `harvester.plan_giveup` 純決策）**：
+  - **有框採不到**（D3 階段超時，`face_tracker=True`）：**不轉回**、保持面對追蹤框，主圖給追蹤框裁圖
+    （`_save_tracker_screenshot`），人工一眼看到框可手動採；不附 rotation_hint（已正對著框）。
+  - **沒找到框 / 掃描超時 / 採到但聚焦失敗**（`face_tracker=False`）：**轉回原視角** + 附 **4 張左側前後對比裁圖**
+    （`chat_review_region`×前後、`backpack_review_region`×前後，Discord 2×2）。before＝該輪 `_pre_scan_ref`、
+    after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」（新 has-found 行 /
+    背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
   **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
 

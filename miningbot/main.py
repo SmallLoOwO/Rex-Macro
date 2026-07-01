@@ -1107,48 +1107,50 @@ class Bot:
                                  hid, best_pos)
             return None
 
-    def _harvest_giveup(self, reason: str):
-        """採集放棄（找不到追蹤框／超時）→ 先轉回原視角再交人工。
+    def _harvest_giveup(self, reason: str, *, face_tracker: bool = False):
+        """採集放棄 → 依「有無追蹤框」決定視角處置 + 截圖，交人工（需求 A+C）。
 
-        轉回原角度讓畫面回正，便於人工一眼判斷「礦已被挖走」的好假警報；
-        也修掉舊版放棄路徑漏呼叫 restore_view（畫面歪掉、像少按角度）的問題。
+        face_tracker=True（D3 階段失敗、追蹤框仍在畫面）：**保持面對追蹤框、不轉回**，主圖給
+          追蹤框裁圖（人工可據此手動採；不附 rotation_hint，因已正對著框）。
+        face_tracker=False（沒找到框/掃描超時/採到但重新聚焦失敗）：**轉回原視角** + 附 4 張左側
+          前後對比裁圖（聊天×前後、背包×前後），判定礦是否已被玩家挖走（好假警報）。
 
-        交人工時一律附「前/後」左側裁圖（背包+聊天框，見 cfg.human_review_region）供對比判定
-        礦是否已被採走：before＝本輪 _pre_scan_ref（採集開始基準）、after＝轉回原視角後的現況。
-        D3 有開火過（_target_marker 已設）且有淨轉動時，另附 rotation_hint 讓人工知道往哪轉。
+        視角/截圖決策抽在 harvester.plan_giveup（純函式、有測試）；本方法只做 I/O glue。
         """
         # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
         self._needs_human_extra_meta = {"harvest_id": self.harvest.harvest_id}
-        # rotation_hint：D3 有開火過（_target_marker 已設）+ 有淨轉動才给，人工接手時知道
-        # 從回正視角要按 . 或 , 幾次才能面對該追蹤框。
-        if self._target_marker is not None:
-            hint = harvester.format_rotation_hint(self.harvest.net_rotations)
-            if hint:
-                self._needs_human_extra_meta["rotation_hint"] = hint
+        # face_tracker 需真的有 marker 才成立（防呼叫端誤傳；D3 超時路徑 marker 必已設）
+        plan = harvester.plan_giveup(face_tracker and self._target_marker is not None)
 
-        if self.harvest.net_rotations:
+        if plan.restore_view and self.harvest.net_rotations:
             self.logger.info("[%s] 採集放棄 -> 轉回原方位 net=%d",
                              self.harvest.harvest_id, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.harvest.net_rotations = 0
+
         self._human_reason = reason
-        frame = capture.grab()              # 轉回後重抓，NEEDS_HUMAN 裁圖呈現回正視角
-        # 前/後對比左側裁圖（背包+聊天框）：不論走哪條放棄路徑都附兩張，供人工判定「礦是否已被採走」。
-        # before＝本輪 _pre_scan_ref（採集開始、掃描前的左側基準）；after＝現在（放棄時）。左側 UI
-        # 是螢幕覆蓋層、不隨鏡頭角度變，前/後同框可直接對比（新 has-found 行 / 背包數量增加＝已採到）。
-        # 舊版只在「D3 有開火」才附前後圖，但實測放棄幾乎都是 sweep 未找到框（_target_marker=None、
-        # D3 沒開火）→ 只送單張。改由每輪必存的 _pre_scan_ref 當 before，任何放棄路徑都有兩張可比。
-        review_imgs = []
-        before_ref = getattr(self, "_pre_scan_ref", None)
-        if before_ref is not None:
-            bp = self._hsnap_crop(before_ref, cfg.human_review_region, "giveup_before")
-            if bp:
-                review_imgs.append(bp)
-        ap = self._hsnap_crop(frame, cfg.human_review_region, "giveup_after")
-        if ap:
-            review_imgs.append(ap)
-        if review_imgs:
-            self._needs_human_extra_meta["image_paths"] = review_imgs
+        frame = capture.grab()              # 轉回後重抓（tracker_view 路徑沒轉回＝面對框現況）
+
+        if plan.tracker_view:
+            # 有框採不到：主圖給「面對追蹤框」裁圖（net_rot=0：現在正對著它，免旋轉提示）
+            p = self._save_tracker_screenshot(frame, self._target_marker, 0)
+            if p:
+                self._needs_human_extra_meta["image_paths"] = [p]
+        else:
+            # 無框：4 張左側前後對比裁圖。before＝本輪 _pre_scan_ref、after＝現在（放棄時）。
+            region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
+            src_map = {"before": getattr(self, "_pre_scan_ref", None), "after": frame}
+            imgs = []
+            for c in plan.review_crops:
+                src = src_map[c.source]
+                if src is None:                 # 首輪還沒 _pre_scan_ref → 跳過該來源
+                    continue
+                p = self._hsnap_crop(src, region_map[c.region], c.label)
+                if p:
+                    imgs.append(p)
+            if imgs:
+                self._needs_human_extra_meta["image_paths"] = imgs
+
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
 
@@ -1185,7 +1187,7 @@ class Bot:
         # ---- 階段二：D3 開火 + 驗證（sweep 完成後才計時）----
         if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
             self.logger.info("[%s] D3 階段超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
-            self._harvest_giveup("稀有礦採集失敗（D3 階段超時），請手動處理")
+            self._harvest_giveup("稀有礦採集失敗（D3 階段超時），請手動處理", face_tracker=True)
             return
 
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
