@@ -103,6 +103,10 @@ class Bot:
         self._antiafk_last = 0.0                   # 防掛機：上次按 Space 的時間（0=未在計時；暫停中才啟用）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
+        self._last_boost_check = 0.0                 # boost 偵測節流：上次真的 edge-match 的時間
+        self._boost_present = False                  # 上次偵測到的 boost 瓶子在否（節流間沿用，避免每幀掃）
+        self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
+        self._activity_present = False               # 上次偵測到的 D4 冷卻圖示在否（節流間沿用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
         # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
@@ -119,10 +123,6 @@ class Bot:
         # 用完即清空（一次性），避免跨事件殘留。
         self._needs_human_extra_image = None
         self._needs_human_extra_meta: dict = {}
-        # D3 採集「執行前/後」截圖路徑（verify 階段存）：採集放棄時附到 Discord 供人工
-        # 對比判定 礦是否被挖走。每輪採集開始時重置（_on_enter HARVESTING）。
-        self._d3_before_path: str | None = None
-        self._d3_after_path: str | None = None
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # 視窗跑位偵測（item ④）：啟動聚焦後記基準，之後相對基準判斷
@@ -192,15 +192,22 @@ class Bot:
         """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
 
         無模板時停用；剛按過 D5（冷卻內）不重按，避免瓶子出現前狂按。
+        **偵測節流**（`boost_check_interval_s`）：boost 撐 ~60s，不必每幀掃；節流間沿用上次
+        `_boost_present`，大幅降低每幀 edge-match 負擔。瓶子是固定尺寸 UI → 用 `buff_scales`
+        少尺度（`marker_scales` 的 5 尺度是給會變大小的追蹤框、對固定 UI 是浪費，實測慢 4x）。
+        按 D5 後瓶子 ~1s 內重現、`boost_cooldown_s` 又擋 5s，故節流不會造成連按。
         """
         t = self._templates.get("boost_active")
         if t is None:
             return False
-        # 在整條效果列裡用「形狀/邊緣 + 多尺度」找瓶子（忽略顏色與會變的數字、容忍疊加位移）
-        present = vision.find_template_edges(
-            capture.crop(frame, cfg.boost_indicator_region), t,
-            cfg.boost_edge_threshold, cfg.marker_scales) is not None
-        if present:
+        now = time.time()
+        if now - self._last_boost_check >= cfg.boost_check_interval_s:
+            self._last_boost_check = now
+            # 在整條效果列裡用「形狀/邊緣」找瓶子（忽略顏色與會變的數字、容忍疊加位移）
+            self._boost_present = vision.find_template_edges(
+                capture.crop(frame, cfg.boost_indicator_region), t,
+                cfg.boost_edge_threshold, cfg.buff_scales) is not None
+        if self._boost_present:
             return False
         return (time.time() - self._last_boost) > cfg.boost_cooldown_s
 
@@ -214,11 +221,14 @@ class Bot:
         t = self._templates.get("activity_cooldown")
         if t is None:                                 # 後備：沒有冷卻圖模板 → 定時
             return (time.time() - self._last_activity) > cfg.activity_reroll_interval_s
-        # 在整條效果/冷卻列裡用「形狀/邊緣 + 多尺度」找 D4 冷卻圖示（與 boost 同一列）
-        present = vision.find_template_edges(
-            capture.crop(frame, cfg.boost_indicator_region), t,
-            cfg.activity_cooldown_edge_threshold, cfg.marker_scales) is not None
-        return miner.cooldown_ready(present, time.time() - self._last_activity,
+        now = time.time()
+        if now - self._last_activity_check >= cfg.activity_check_interval_s:
+            self._last_activity_check = now
+            # 在整條效果/冷卻列裡用「形狀/邊緣」找 D4 冷卻圖示（與 boost 同一列；固定 UI → buff_scales 少尺度）
+            self._activity_present = vision.find_template_edges(
+                capture.crop(frame, cfg.boost_indicator_region), t,
+                cfg.activity_cooldown_edge_threshold, cfg.buff_scales) is not None
+        return miner.cooldown_ready(self._activity_present, time.time() - self._last_activity,
                                     cfg.activity_cooldown_grace_s)
 
     # ---- 提醒與快照 ---------------------------------------------------------
@@ -883,8 +893,6 @@ class Bot:
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
-            self._d3_before_path = None         # 前/後截圖每輪重置（避免沿用上一輪殘留）
-            self._d3_after_path = None
         if s is State.NEEDS_HUMAN:
             # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
@@ -1105,20 +1113,12 @@ class Bot:
         轉回原角度讓畫面回正，便於人工一眼判斷「礦已被挖走」的好假警報；
         也修掉舊版放棄路徑漏呼叫 restore_view（畫面歪掉、像少按角度）的問題。
 
-        D3 階段超時（_target_marker 已設、追蹤框找到過但採不到）時，會在 restore_view
-        **之前**先截「看到追蹤框」的圖——此時追蹤框仍在畫面上，附旋轉提示讓人工接手
-        時知道從回正視角要按 . 或 , 幾次才能面對該追蹤框（sweep timeout / 未找到追蹤框
-        的 case 沒有 _target_marker，走原本即時 find_tracker 截圖流程）。
+        交人工時一律附「前/後」左側裁圖（背包+聊天框，見 cfg.human_review_region）供對比判定
+        礦是否已被採走：before＝本輪 _pre_scan_ref（採集開始基準）、after＝轉回原視角後的現況。
+        D3 有開火過（_target_marker 已設）且有淨轉動時，另附 rotation_hint 讓人工知道往哪轉。
         """
         # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
         self._needs_human_extra_meta = {"harvest_id": self.harvest.harvest_id}
-        # 前/後截圖：D3 有開火過才會有（verify 階段存的 d3_fire 前 / d3_after 後）。
-        # 附到 Discord 讓人工對比「執行前/後」及時判定 礦是否被挖走（不再只附一張）。
-        img_paths = [p for p in (self._d3_before_path, self._d3_after_path) if p]
-        self._d3_before_path = None
-        self._d3_after_path = None
-        if img_paths:
-            self._needs_human_extra_meta["image_paths"] = img_paths
         # rotation_hint：D3 有開火過（_target_marker 已設）+ 有淨轉動才给，人工接手時知道
         # 從回正視角要按 . 或 , 幾次才能面對該追蹤框。
         if self._target_marker is not None:
@@ -1133,6 +1133,22 @@ class Bot:
             self.harvest.net_rotations = 0
         self._human_reason = reason
         frame = capture.grab()              # 轉回後重抓，NEEDS_HUMAN 裁圖呈現回正視角
+        # 前/後對比左側裁圖（背包+聊天框）：不論走哪條放棄路徑都附兩張，供人工判定「礦是否已被採走」。
+        # before＝本輪 _pre_scan_ref（採集開始、掃描前的左側基準）；after＝現在（放棄時）。左側 UI
+        # 是螢幕覆蓋層、不隨鏡頭角度變，前/後同框可直接對比（新 has-found 行 / 背包數量增加＝已採到）。
+        # 舊版只在「D3 有開火」才附前後圖，但實測放棄幾乎都是 sweep 未找到框（_target_marker=None、
+        # D3 沒開火）→ 只送單張。改由每輪必存的 _pre_scan_ref 當 before，任何放棄路徑都有兩張可比。
+        review_imgs = []
+        before_ref = getattr(self, "_pre_scan_ref", None)
+        if before_ref is not None:
+            bp = self._hsnap_crop(before_ref, cfg.human_review_region, "giveup_before")
+            if bp:
+                review_imgs.append(bp)
+        ap = self._hsnap_crop(frame, cfg.human_review_region, "giveup_after")
+        if ap:
+            review_imgs.append(ap)
+        if review_imgs:
+            self._needs_human_extra_meta["image_paths"] = review_imgs
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
 
@@ -1183,7 +1199,7 @@ class Bot:
         rare_before = ocr.count_rare_found(chat_before, common, cfg.found_keywords)
         self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
                          hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
-        self._d3_before_path = self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵截圖：D3 發動瞬間（含追蹤框）=「執行前」
+        self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵診斷截圖：D3 發動瞬間（含追蹤框），存 harvest 追蹤用
         self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
         self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
@@ -1193,7 +1209,7 @@ class Bot:
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
         time.sleep(0.5)          # 等伺服器回應追蹤框消失（實測 0.5s 即足夠，原 1.0s 過長）
         after = capture.grab()
-        self._d3_after_path = self._hsnap(after, "d3_after")   # D3 後全幀 =「執行後」（與 d3_fire 對比，人工判定 礦是否被挖走）
+        self._hsnap(after, "d3_after")   # D3 後全幀診斷截圖（與 d3_fire 對比，事後追蹤採集是否命中）
         gone = self._find_tracker(after, _excl,
                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)

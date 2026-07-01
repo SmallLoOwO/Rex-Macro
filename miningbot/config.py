@@ -24,10 +24,15 @@ class Config:
     # 偵測區域（1920x1080、視窗化最大化實測；切全螢幕需整體上移約 30px 標題列高度）
     chill_text_region: Region = field(default_factory=lambda: Region(360, 44, 1220, 37))  # 頂部事件列深色橫幅（實測裁緊：置中 960、只留深色框 y43-82；減 ~40% 像素加速 OCR）
     chat_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))   # 左上事件/掉落訊息（估計，見到訊息再微調）
+    # 採集放棄 NEEDS_HUMAN 附的「前/後對比」左側裁圖範圍：上半＝聊天/has-found 訊息、
+    # 下半＝NORMAL 背包礦物清單與數量。人工靠這兩者判定「礦是否已被採走」（新 has-found 行
+    # 或背包數量增加＝已採到＝好假警報）。左側 UI 是螢幕覆蓋層、不隨鏡頭角度變，前/後同框可直接對比。
+    human_review_region: Region = field(default_factory=lambda: Region(0, 105, 470, 970))
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
+    boost_check_interval_s: float = 1.0          # boost 偵測節流：每隔多久才真的 edge-match 一次（boost 撐 ~60s，不必每幀掃；節流間沿用上次結果）
 
     # D4 活動：右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
     # 偵測右下角 D4「冷卻圖示」不在 = 冷卻好 → 就用（避免能用卻沒用）。
@@ -37,6 +42,7 @@ class Config:
     activity_cooldown_edge_threshold: float = 0.40             # D4 冷卻圖示邊緣比對門檻（校準時調）
     activity_cooldown_grace_s: float = 3.0                     # 按 D4 後等冷卻圖示出現的寬限（避免重複按）
     activity_reroll_interval_s: float = 30.0                   # 後備：無冷卻圖模板時每隔多久刷新一次
+    activity_check_interval_s: float = 3.0                     # D4 冷卻偵測節流：比 boost 更疏（D4 冷卻更長，掃更疏即可）
     # 視窗跑位偵測（item ④）：用 Win32 查 Roblox 視窗「前景/位置/大小」，相對啟動時量到的
     # 基準判斷是否跑掉（失焦或被移動/縮放）→ 自動重新聚焦+初始化。用基準相對比較而非寫死
     # 1920x1080，因 DPI 縮放會讓 GetWindowRect 回報縮放後座標（實測此機 125% → 1536x864）。
@@ -67,6 +73,7 @@ class Config:
     marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
     marker_edge_threshold: float = 0.45          # 邊緣比對門檻（校準時調）
     marker_scales: tuple = (0.6, 0.8, 1.0, 1.2, 1.5)  # 多尺度比對：模板（含 wiki 圖）尺寸對不準時自動試縮放
+    buff_scales: tuple = (0.9, 1.0, 1.1)         # buff/冷卻圖示是固定尺寸 UI（boost 瓶子/D4 Used）→ 少尺度即可；marker_scales 的 5 尺度是給會變大小的追蹤框，對固定 UI 是浪費（實測 5→1 尺度快 4x，可再降成 (1.0,)）
     marker_dir: str = "assets/markers"           # 多階級標記模板資料夾（每個階級一張 png；用 fetch_trackers 下載）
     # 混合偵測：HSV 快速定位 + 實機裁圖在小 ROI 做外框形狀確認（拒「有色但非追蹤框形狀」的假陽性）
     tracker_shape_confirm: bool = True           # 開啟形狀確認（需 assets/markers 內有實機裁圖；無則自動退回純 HSV）

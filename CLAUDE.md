@@ -76,6 +76,26 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   在 keep 清單 → `use_activity_keep()`（左鍵確認）；否則 `use_activity()`（右鍵刷新）。
   keep 清單透過 Discord 命令控制（`!keep`/`!list`/`!clear`），背景執行緒每 10s 輪詢。
 - **所有座標/門檻改 `miningbot/config.py`**；**輸入保留延遲**（太快會被吃掉，放開挖礦左鍵後要 `settle`）。
+- **OCR 引擎＝tesserocr（in-process）優先、pytesseract 後備（`ocr.read_text`）**：pytesseract 每次
+  `image_to_string` 都 spawn 一個 `tesseract.exe` 子行程 + 重載模型＝**與圖無關的 ~2.5s 固定開銷**
+  （實測連 20×120 空白圖也要 2.5s）。這 OCR 在 MINING 每 2s 跑一次（`_check_reset` 讀頂部列找重置字樣），
+  **同步跑會卡住主迴圈 ~2.5s → 每幀的 boost 偵測被餓死 → 「boost 常常是空的」（D5 補太慢的真因）**。
+  改用 tesserocr（同一顆 Tesseract 引擎/模型、**準度不變**，只是引擎常駐免重複 spawn）：banner OCR 3062→~400ms。
+  `PyTessBaseAPI` 非執行緒安全 → 比照 `capture` 的 mss 用 `threading.local` 每執行緒各持一個持久 API；
+  未裝/初始化失敗自動退回 pytesseract（`PREFER_TESSEROCR=False` 可強制退回）。安裝見 `requirements.txt` 註解。
+- **`capture.grab()` BGRA→BGR 用 `cv2.cvtColor`（不是 `np.ascontiguousarray(arr[:,:,:3])`）**：後者對
+  stride-4 的 view 逐元素複製、實測 154ms/幀；cvtColor 走 SIMD、19ms、輸出 byte-identical。grab 每幀都跑
+  （主迴圈 ~20/s + sweep 一輪 17 次），這 ~135ms/幀省很大。（mss 原始 full grab 本身在此機 ~106ms，
+  更快可換已裝的 bettercam ~25ms——但目前非瓶頸，未接。）
+- **boost/D4 偵測節流 + 少尺度（`buff_scales`）**：`_boost_needs_refresh`/`_activity_ready` 原本每幀跑
+  5 尺度 edge-match（共 ~344ms/幀）。改成每 `boost_check_interval_s`(1s)/`activity_check_interval_s`(3s) 才真掃、
+  其餘沿用快取（`_boost_present`/`_activity_present`）；且 buff/冷卻是**固定尺寸 UI** → 用 `buff_scales=(0.9,1.0,1.1)`
+  取代給會變追蹤框的 `marker_scales`(5 尺度)，實測單次 216→143ms。**注意**：節流與「boost 絕不空轉」有張力
+  （見設計 spec，未來可能改成近到期高頻、中段跳過的自適應頻率）。
+- **需人工介入（採集放棄）附「前/後左側裁圖」**（`_harvest_giveup` → `image_paths`）：before＝該輪
+  `_pre_scan_ref`（採集開始基準）、after＝放棄當下，皆裁 `human_review_region`（左側背包+聊天框）。左側是
+  螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。
+  舊版只在 D3 有開火才附，實測放棄幾乎都是 sweep 未找到框（D3 沒開火）→ 只送單張，故改由 `_pre_scan_ref` 當 before。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
   **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
 

@@ -1,4 +1,6 @@
 import re
+import os
+import threading
 import numpy as np
 
 def _normalize(s: str) -> str:
@@ -126,9 +128,51 @@ def extract_new_found_lines(before: str, after: str, found_keywords) -> list:
     return new_lines
 
 
+# ── OCR 引擎：tesserocr（持久 in-process API）優先，pytesseract 為後備 ──────────────
+# pytesseract 每次 image_to_string 都 spawn 一個 tesseract.exe 子行程 + 重載語言模型：
+# 實測連「20x120 空白圖」都要 ~2.5s（與圖無關的固定開銷）。這 OCR 在 MINING 每 2s 跑一次
+# （_check_reset），會卡住主迴圈 ~2.5s → boost 偵測 2.5s 才跑一次 → 「boost 常常是空的」。
+# tesserocr 是 Tesseract C++ API 的 Cython 綁定，引擎/模型持久留在行程內（免重複 spawn+載模型）：
+# 同一顆 Tesseract → 準度不變（採集 has-found 讀取邏輯不受影響），實測 banner OCR 3062ms→446ms（7x）。
+# PyTessBaseAPI 非執行緒安全 → 比照 capture 的 mss，用 threading.local 每執行緒各持一個持久 API。
+PREFER_TESSEROCR = True          # 想強制退回 pytesseract（A/B 或除錯）時設 False
+_tess_local = threading.local()
+_tesserocr_unavailable = False   # import/init 失敗一次即全程退回 pytesseract（不再每次重試拋例外）
+
+
+def _tessdata_dir(tesseract_path: str | None) -> str | None:
+    """由 tesseract.exe 路徑推得 tessdata（語言模型）目錄——tesserocr 需要它。"""
+    if not tesseract_path:
+        return None
+    d = os.path.join(os.path.dirname(tesseract_path), "tessdata")
+    return d if os.path.isdir(d) else None
+
+
+def _get_tess_api(tesseract_path: str | None):
+    """回本執行緒的持久 tesserocr API；不可用（未裝/初始化失敗/被停用）時回 None → 退回 pytesseract。"""
+    global _tesserocr_unavailable
+    if not PREFER_TESSEROCR or _tesserocr_unavailable:
+        return None
+    api = getattr(_tess_local, "api", None)
+    if api is not None:
+        return api
+    try:
+        import tesserocr
+        kw = {}
+        d = _tessdata_dir(tesseract_path)
+        if d:
+            kw["path"] = d          # 指向系統 tessdata（wheel 自帶 libtesseract，但用系統語言模型）
+        api = tesserocr.PyTessBaseAPI(**kw)
+    except Exception:
+        _tesserocr_unavailable = True   # 一次失敗即全程退回，行為與舊版 pytesseract 完全一致
+        return None
+    _tess_local.api = api
+    return api
+
+
 def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
               preprocess: str = "gray", psm: int = 6) -> str:
-    """薄封裝：對已裁切的區域影像做 OCR。
+    """薄封裝：對已裁切的區域影像做 OCR（tesserocr 優先，pytesseract 後備；兩者同引擎、同準度）。
 
     preprocess='gray'        ：標準灰階（適合白字/灰字）
     preprocess='min_channel' ：最小通道（適合紅色/彩色文字，如遊戲聊天框）
@@ -139,12 +183,21 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
          「hasifoumd」→ count_rare_found=0 → 採集 verify 永遠 no-new → 假性 NEEDS_HUMAN
          （H005@23:10 根因；psm 6 實測可正確讀出 has found 礦名）。
     """
-    import pytesseract
     import cv2
-    if tesseract_path:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_path
     if preprocess == "min_channel":
         processed = np.min(image_bgr, axis=2).astype(np.uint8)
     else:
         processed = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    api = _get_tess_api(tesseract_path)
+    if api is not None:
+        try:
+            from PIL import Image
+            api.SetPageSegMode(psm)                 # 接受原始 int（實測 OK）
+            api.SetImage(Image.fromarray(processed))
+            return api.GetUTF8Text()
+        except Exception:
+            pass                                    # 執行期失敗 → 這次退回 pytesseract（不停用，可能只是暫時）
+    import pytesseract
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
     return pytesseract.image_to_string(processed, config=f"--psm {psm}")

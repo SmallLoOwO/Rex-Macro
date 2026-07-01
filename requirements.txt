@@ -4,6 +4,10 @@ numpy==2.1.2
 pyaudiowpatch==0.2.12.7
 scipy==1.14.1
 pytesseract==0.3.13
+# tesserocr：快速 in-process OCR（Tesseract C++ API 綁定），取代 pytesseract 每次 spawn
+# tesseract.exe 的 ~2.5s 固定開銷（實測 banner OCR 3062ms→~400ms）。ocr.read_text 優先用它、
+# 缺它時自動退回 pytesseract。非 PyPI wheel — Windows/py311 用預編 wheel 安裝（自帶 Tesseract 5.5.2）：
+#   pip install https://github.com/simonflueckiger/tesserocr-windows_build/releases/download/tesserocr-v2.10.0-tesseract-5.5.2/tesserocr-2.10.0-cp311-cp311-win_amd64.whl
 pydirectinput==1.0.4
 keyboard==0.13.5
 python-dotenv==1.0.1
