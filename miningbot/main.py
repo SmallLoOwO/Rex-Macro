@@ -1034,11 +1034,6 @@ class Bot:
         NUM_DIRS = 8
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
-            if harvester.should_strafe_at_dir(i, cfg):
-                self.log_harvest.info("[%s] sweep dir=%d: 短按 %s %.2fs 挪位清視野",
-                                      hid, i, cfg.sweep_strafe_key, cfg.sweep_strafe_hold_s)
-                ic.hold_key(cfg.sweep_strafe_key, cfg.sweep_strafe_hold_s)
-                time.sleep(cfg.sweep_strafe_settle_s)   # 挪位後沉澱，等角色停住/鏡頭穩定再擷幀（太短會在角色還滑時就轉鏡頭）
             f = capture.grab()
             r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
             if r1:
@@ -1071,12 +1066,6 @@ class Bot:
 
         if not candidates:
             self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
-            return None
-
-        if not harvester.should_walk_back_to_weak(cfg.sweep_strafe_enabled):
-            self.log_harvest.info(
-                "[%s] sweep: 只有 %d 個弱候選（無一過 early_exit=%.2f）；strafe 模式不走回弱框（身體已飄移、舊座標不可靠）→ 交人工/重掃",
-                hid, len(candidates), cfg.tracker_shape_early_exit)
             return None
 
         best_dir, best_pos = candidates[0]  # 取第一個穩定候選（colored_frac 最高的）

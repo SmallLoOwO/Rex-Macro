@@ -2,7 +2,6 @@ from dataclasses import replace
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, format_rotation_hint,
                                  format_harvest_id,
-                                 should_strafe_at_dir, should_walk_back_to_weak,
                                  plan_giveup, GiveupPlan, GiveupCrop)
 from miningbot.config import DEFAULT
 
@@ -97,38 +96,6 @@ def test_harvest_state_harvest_id_defaults_empty():
     # 既有呼叫端（HarvestState(0, 0.0)）不傳 id 仍可建構，預設空字串
     st = HarvestState(rotations=0, elapsed_s=0.0)
     assert st.harvest_id == ""
-
-
-# --- strafe 掃描旋鈕（採集時短按 D 挪位清視野）---
-def test_config_has_strafe_knobs():
-    assert DEFAULT.sweep_strafe_enabled is True
-    assert DEFAULT.sweep_strafe_key == "d"
-    assert DEFAULT.sweep_strafe_dirs == (2, 4, 6)   # 右/後/左；前(dir 0)與斜角不挪
-    assert DEFAULT.sweep_strafe_hold_s > 0
-
-
-# --- should_strafe_at_dir：哪些方位轉動前要先短按 D 挪位（純函式）---
-def test_strafe_at_cardinal_dirs_right_back_left():
-    for d in (2, 4, 6):
-        assert should_strafe_at_dir(d, DEFAULT) is True
-
-def test_no_strafe_at_front_and_diagonals():
-    for d in (0, 1, 3, 5, 7):
-        assert should_strafe_at_dir(d, DEFAULT) is False
-
-def test_strafe_disabled_never_strafes():
-    cfg = replace(DEFAULT, sweep_strafe_enabled=False)
-    for d in range(8):
-        assert should_strafe_at_dir(d, cfg) is False
-
-# --- should_walk_back_to_weak：整圈只有弱候選時要不要走回弱框（純函式）---
-def test_strafe_mode_does_not_walk_back_to_weak():
-    # strafe 模式：身體已橫向飄移，弱框舊座標不可靠 → 不走回
-    assert should_walk_back_to_weak(strafe_enabled=True) is False
-
-def test_non_strafe_mode_keeps_old_walk_back():
-    # 原地掃描：維持舊行為，走回最佳弱框驗證
-    assert should_walk_back_to_weak(strafe_enabled=False) is True
 
 
 # --- plan_giveup：放棄時視角處置 + 截圖方案（純函式，需求 A+C）---
