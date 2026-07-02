@@ -27,9 +27,9 @@ class Config:
     # 採集放棄 NEEDS_HUMAN 附的左側「前/後對比」裁圖：拆成「聊天（寬短）」與「背包（窄高）」兩區，
     # 各自更貼近 Discord 縮圖比例、砍掉右側沒用的粉紅場景（見 2026-07-02 spec 需求 A）。
     # before＝本輪 _pre_scan_ref、after＝放棄當下；左側 UI 是螢幕覆蓋層、不隨鏡頭角度變 → 前後同框
-    # 可直接對比「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。**backpack 需實機校準**。
-    chat_review_region: Region = field(default_factory=lambda: Region(0, 110, 460, 200))     # 左上 has-found 聊天（寬短；同 chat_region 上半）
-    backpack_review_region: Region = field(default_factory=lambda: Region(0, 395, 185, 660)) # 左下 NORMAL 背包（礦名+數量，窄高）；座標為估值，Step 5 實機校準
+    # 可直接對比「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。座標實機校準自 logs H010 d3_fire。
+    chat_review_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))     # 左上 has-found 聊天（= chat_region；最新行在底部，勿縮短高度否則漏掉最新 has-found）
+    backpack_review_region: Region = field(default_factory=lambda: Region(0, 395, 226, 670)) # 左下 NORMAL 背包：w226 含完整數字(1,427/2,462)、h670 到清單底 Increpus，右側僅留極少粉紅
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
