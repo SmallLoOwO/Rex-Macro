@@ -84,6 +84,14 @@ def _is_rare_ore(ore: str | None, common_norm) -> bool:
     base = _strip_variant(ore)
     return not any(base.startswith(c) for c in common_norm)
 
+def found_ore_name(line: str, found_keywords) -> str | None:
+    """公開版 _found_ore：從一行聊天抽礦名（正規化小寫）；非 found 行回 None。
+
+    給 main 的三態分類標注用（game_data.classify_found_ore 的輸入）。
+    """
+    return _found_ore(line, found_keywords)
+
+
 def count_rare_found(text: str, common_names, found_keywords) -> int:
     """計聊天中「稀有礦」的 has-found 行數（反轉策略：排除低稀有度礦 common_names）。
 

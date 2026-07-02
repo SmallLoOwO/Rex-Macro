@@ -1239,6 +1239,23 @@ class Bot:
             # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
             # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
             new_lines = ocr.extract_new_found_lines_multi(chat_before, chat_after, cfg.found_keywords)
+            # 三態分類標注：白名單高階→附階級；未知→標注請人核對（OCR 誤讀或遊戲更新
+            # 的清單漂移自己浮出來，不靜默失效）；common（低階被動 find 混入）→原樣。
+            annotated, has_unknown = [], False
+            for line in new_lines:
+                kind, info = game_data.classify_found_ore(
+                    ocr.found_ore_name(line, cfg.found_keywords) or "")
+                if kind == "rare":
+                    annotated.append(f"{line} 〔{info['tier']} 1/{info['rarity']:,}〕")
+                elif kind == "unknown":
+                    annotated.append(f"{line} 〔⚠ 未知礦名〕")
+                    has_unknown = True
+                else:
+                    annotated.append(line)
+            if has_unknown:
+                annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"
+                                 "請核對；可跑 python -m miningbot.fetch_ores 同步清單")
+            new_lines = annotated
             if new_lines:
                 self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
             self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,

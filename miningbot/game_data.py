@@ -580,6 +580,60 @@ def common_ore_names() -> tuple[str, ...]:
     return tuple(dict.fromkeys(o["ore"] for o in ores))
 
 
+# ── 高階白名單（assets/rare_ores.json，fetch_ores 從 wiki 抓）＋三態分類 ─────────
+# 排除清單仍是守門員（common→忽略）；白名單的角色是「分類器＋告警器」：
+# 在白名單 → SUCCESS 且通知標注階級；兩邊都不在（unknown）→ 仍算成功（安全方向：
+# 礦多半真的採到了），但通知標注「未知礦名」——OCR 誤讀或遊戲更新的清單漂移自己浮出來，
+# 不會靜默失效。檔案缺/壞 → 空白名單（一切非 common 都變 unknown，行為安全降級）。
+_RARE_ORES_PATH = None   # 測試可覆寫；None = 預設 assets/rare_ores.json
+
+
+def _rare_ores_path() -> str:
+    import os
+    if _RARE_ORES_PATH:
+        return _RARE_ORES_PATH
+    return os.path.join(os.path.dirname(__file__), "..", "assets", "rare_ores.json")
+
+
+_rare_ores_cache: dict | None = None
+
+
+def rare_ores() -> dict:
+    """正規化礦名 → {ore, tier, rarity, layer, world}（所有世界聯集；lazy 載入＋快取）。"""
+    global _rare_ores_cache
+    if _rare_ores_cache is None:
+        import json
+        table: dict = {}
+        try:
+            with open(_rare_ores_path(), encoding="utf-8") as f:
+                data = json.load(f)
+            for world, rows in data.get("worlds", {}).items():
+                for r in rows:
+                    table[r["ore"].lower()] = {**r, "world": world}
+        except Exception:
+            pass                      # 檔案缺/壞 → 空表（分類降級為 unknown，不炸主迴圈）
+        _rare_ores_cache = table
+    return _rare_ores_cache
+
+
+def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
+    """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"unknown", 白名單 info 或 None)。
+
+    與排除比對同一套容忍：剝 Ionized/Spectral 變體前綴、startswith 容忍尾端雜訊
+    （OCR 噪音、洞穴註記「(floral cave)」）。common 優先於 rare（守門員先判）。
+    """
+    from .ocr import _strip_variant   # 單一事實來源（VARIANT_PREFIXES）；ocr 不 import 本模組、無循環
+    if not ore_text:
+        return "unknown", None
+    base = _strip_variant(ore_text.strip().lower())
+    if any(base.startswith(c.lower()) for c in common_ore_names()):
+        return "common", None
+    for name, info in rare_ores().items():
+        if base.startswith(name):
+            return "rare", info
+    return "unknown", None
+
+
 # 向後相容：模組層 EVENTS 指向 Aesteria 事件（測試與既有呼叫端引用）。
 EVENTS: list[dict] = _AESTERIA_EVENTS
 

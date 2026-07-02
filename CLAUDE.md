@@ -7,6 +7,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - 啟動：`python -m miningbot.main`（Roblox 要先開好）
 - 轉 chill 音檔：`python -m miningbot.convert_audio "chill.mp3"` → `assets/chill_reference.wav`
 - 下載階級標記模板：`python -m miningbot.fetch_trackers`（→ `assets/markers/`）
+- 同步 wiki 礦物清單：`python -m miningbot.fetch_ores`（→ `assets/rare_ores.json` 高階白名單＋印排除清單 diff；遊戲更新後跑一次）
 - 擷取事件模板：`python -m miningbot.capture_template boost`
 - 校準偵測區：`python -m miningbot.calibrate`
 
@@ -41,6 +42,8 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
      - **階級/聊天/聲音機制（使用者確認 2026-06-29，關鍵前提）**：**只有 Surreal + Mythic 兩階會被動出現在聊天框**；Exotic 以上不被動進聊天，改用 **chill 聲音**觸發採集。但**用 D3 親手採到高階礦時，那一筆會進聊天** → 不在排除清單（清單只含 Surreal/Mythic）→ 被算成稀有 → confirmed。故排除清單天生完整（會進聊天的就這兩階），是它有效的關鍵。清單的角色＝**排除器**：擋掉低階誤觸發，剩下不在清單的 has found ＝真正採到的高階。
      - **為何「排除低稀有度」而非「列舉高稀有度」**：聊天「`<小名> has found X`」混了低階礦（Surreal/Mythic）和 D3 採到的高階；單人作業 `小名` 就是自己、污染源同名 → 名字過濾無解。高階礦太多列不完，**低階反而有限且封閉**（只有兩階會進聊天）→ 列舉低階當排除清單（`World.common_ores`）。代價：漏列會進聊天的低階礦、或 OCR 把礦名讀錯 → 偶發假成功（用 `startswith` 容忍尾端雜訊、偏保守降低誤判）。
      - **為何比「數量」不是「存不存在」+ 對抗捲動**：上一輪留下的稀有礦會同名出現 2-3 次；且**舊訊息會從頂部刷掉 → count 可能 2→1 假負**。故主信號是 `has_new_rare_found_last_line`（只看底部最新行，捲動只影響頂部），count 增加為輔。
+     - **變體前綴＋special 判定（2026-07-03 wiki 證實後改）**：**Rare/Master 的 Spectral 變體也會被動進 local chat**、Surreal/Mythic 全變體都會 →「has found Spectral Bandeau」必須剝 `ocr.VARIANT_PREFIXES`（spectral/ionized）再查排除清單（否則 startswith 對不上→假成功）。special 判定＝`any_new_special_found`（**綁 found 行＋base 不在排除清單**，逐 pass 差分）——舊版只看 spectral 字樣出現、事件文字/被動低階變體都會誤觸。
+     - **三態分類（confirmed 成功後的通知標注，`game_data.classify_found_ore`）**：新增行的礦名剝前綴後查——排除清單→原樣；`assets/rare_ores.json` 高階白名單（fetch_ores 抓的 Exotic+，254 個）→附階級/稀有度；**都不在→標「⚠ 未知礦名」仍算成功**（安全方向：礦多半真的採到了），清單漂移（遊戲更新/OCR 誤讀）自己浮出來。白名單檔缺→安全降級全 unknown。**排除清單仍手動維護在 game_data**（安全關鍵、須人工過目；fetch_ores 印 diff 輔助，有測試鎖「Exotic 以上絕不可列」）。**機制事實（wiki）**：所有 find 都進 local chat，只是 Exotic+ 被動挖到 ≤1/1M → 聊天高階行實務上＝D3 採的；chill＝「Chills 設定選定的 Exotic+ tier 出土音」。
      - **Z 雷達不產生 has found、且未實作 → 與採集確認無關**。
      - **未來方向（使用者提到）**：可能關閉「部分高階礦的聲音」，讓「只有出聲的高階」才觸發採集＝天然過濾想採的礦；屆時觸發判斷會更依賴 chill 音訊的**前後對比**（`ChillListener`）。
   7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.init_mining_sequence()`（與 Q 恢復/啟動相同的完整序列：清鍵→視角→置中→確認鎬子→W+左鍵）

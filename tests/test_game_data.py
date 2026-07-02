@@ -387,3 +387,32 @@ def test_lucernia_excludes_d3_targets_of_spring_layers():
 def test_lucernia_common_ores_all_surreal_or_mythic():
     # 排除清單的角色＝「會被動進聊天的低階」；REX 只有 Surreal/Mythic 兩階會被動進聊天
     assert {o["tier"] for o in LUCERNIA.common_ores} == {"Surreal", "Mythic"}
+
+
+# ---- 三態分類（classify_found_ore）：排除清單→common、白名單→rare、都不在→unknown ----
+# 白名單 = assets/rare_ores.json（fetch_ores 從 wiki 抓的 Exotic+ 高階礦）。
+# unknown 仍算採集成功（安全方向），但通知會標注請人核對——清單漂移自己浮出來。
+
+def test_classify_rare_ore_returns_tier_info():
+    kind, info = gd.classify_found_ore("diamorite")
+    assert kind == "rare"
+    assert info["tier"] == "Exquisite"
+
+def test_classify_tolerates_variant_prefix_and_tail_noise():
+    assert gd.classify_found_ore("spectral diamorite")[0] == "rare"
+    assert gd.classify_found_ore("everbloom (floral cave)")[0] == "rare"
+
+def test_classify_common_ore_with_world_locked():
+    gd.set_world("Lucernia")
+    try:
+        assert gd.classify_found_ore("jollycane (candied cave)")[0] == "common"
+        assert gd.classify_found_ore("diamantine")[0] == "common"
+    finally:
+        gd.clear_world()
+
+def test_classify_unknown_ore():
+    kind, info = gd.classify_found_ore("xyzzyplugh")
+    assert kind == "unknown" and info is None
+
+def test_classify_empty_is_unknown():
+    assert gd.classify_found_ore("")[0] == "unknown"
