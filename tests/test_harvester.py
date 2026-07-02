@@ -1,7 +1,8 @@
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, format_rotation_hint,
                                  format_harvest_id,
-                                 plan_giveup, GiveupPlan, GiveupCrop)
+                                 plan_giveup, GiveupPlan, GiveupCrop,
+                                 giveup_send_groups)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -126,3 +127,19 @@ def test_giveup_review_crop_labels_are_unique_and_descriptive():
     assert labels == ["giveup_before_chat", "giveup_after_chat",
                       "giveup_before_backpack", "giveup_after_backpack"]
     assert len(set(labels)) == 4
+
+
+# --- giveup_send_groups：放棄裁圖依 region 分組，供 Discord「先聊天框、再背包」分開發送 ---
+def test_giveup_send_groups_order_is_chat_then_backpack():
+    groups = giveup_send_groups(plan_giveup(face_tracker=False).review_crops)
+    assert [region for region, _ in groups] == ["chat", "backpack"]
+
+def test_giveup_send_groups_each_group_keeps_before_after_pattern():
+    # 「保持一樣的模式」：每群仍是前/後對比兩張
+    groups = giveup_send_groups(plan_giveup(face_tracker=False).review_crops)
+    for _region, crops in groups:
+        assert [c.source for c in crops] == ["before", "after"]
+
+def test_giveup_send_groups_empty_when_no_review_crops():
+    # 有框路徑（face_tracker=True）無 review_crops → 無分組（沿用單張追蹤框圖）
+    assert giveup_send_groups(plan_giveup(face_tracker=True).review_crops) == []

@@ -899,9 +899,14 @@ class Bot:
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
             extra = self._needs_human_extra_meta
             self._needs_human_extra_meta = {}
+            image_groups = extra.pop("image_groups", None)
             image_paths = extra.pop("image_paths", None)
-            if image_paths:
-                # 採集放棄（D3 有開火）：附前後兩張（d3_fire 前 / d3_after 後）供人工及時判定
+            if image_groups:
+                # 採集放棄（無框）：左側前後對比裁圖分組 → Discord 先聊天框、再背包，兩則分開發送
+                self.log.log("NEEDS_HUMAN", reason=self._human_reason,
+                             image_groups=image_groups, **extra)
+            elif image_paths:
+                # 採集放棄（有框，face_tracker）：單張追蹤框圖供人工手動採
                 self.log.log("NEEDS_HUMAN", reason=self._human_reason,
                              image_paths=image_paths, **extra)
             else:
@@ -1127,19 +1132,24 @@ class Bot:
             if p:
                 self._needs_human_extra_meta["image_paths"] = [p]
         else:
-            # 無框：4 張左側前後對比裁圖。before＝本輪 _pre_scan_ref、after＝現在（放棄時）。
+            # 無框：左側前後對比裁圖，依 region 分組成「先聊天框、再背包」兩組分開發送（2026-07-02 需求）。
+            # before＝本輪 _pre_scan_ref、after＝現在（放棄時）。每組保留前/後兩張（對比模式不變）。
             region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
             src_map = {"before": getattr(self, "_pre_scan_ref", None), "after": frame}
-            imgs = []
-            for c in plan.review_crops:
-                src = src_map[c.source]
-                if src is None:                 # 首輪還沒 _pre_scan_ref → 跳過該來源
-                    continue
-                p = self._hsnap_crop(src, region_map[c.region], c.label)
-                if p:
-                    imgs.append(p)
-            if imgs:
-                self._needs_human_extra_meta["image_paths"] = imgs
+            groups = []
+            for region, crops in harvester.giveup_send_groups(plan.review_crops):
+                paths = []
+                for c in crops:
+                    src = src_map[c.source]
+                    if src is None:             # 首輪還沒 _pre_scan_ref → 跳過該來源
+                        continue
+                    p = self._hsnap_crop(src, region_map[c.region], c.label)
+                    if p:
+                        paths.append(p)
+                if paths:
+                    groups.append((region, paths))
+            if groups:
+                self._needs_human_extra_meta["image_groups"] = groups
 
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)

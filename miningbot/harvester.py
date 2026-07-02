@@ -142,6 +142,24 @@ def plan_giveup(face_tracker: bool) -> GiveupPlan:
         return GiveupPlan(restore_view=False, tracker_view=True, review_crops=())
     return GiveupPlan(restore_view=True, tracker_view=False, review_crops=_REVIEW_CROPS)
 
+
+def giveup_send_groups(review_crops):
+    """把放棄裁圖依 region 分組，供 Discord「分開發送」（純函式）。
+
+    回傳 [(region, [GiveupCrop, ...]), ...]，順序＝region 首次出現順序。`_REVIEW_CROPS`
+    為聊天在前、背包在後 → **先發聊天框、再發背包**。每群保留前/後兩張，維持既有「前後
+    對比」模式，只是從「一則 4 圖（Discord 2×2）」改成「兩則各 2 圖」（見 2026-07-02 需求）。
+    有框放棄路徑（review_crops 為空）→ 回空 list（沿用單張追蹤框圖，不分組）。
+    """
+    groups = []
+    index = {}
+    for c in review_crops:
+        if c.region not in index:
+            index[c.region] = len(groups)
+            groups.append((c.region, []))
+        groups[index[c.region]][1].append(c)
+    return groups
+
 def prepare_scan():
     """停止移動、置中鏡頭——在這之後應立刻截圖當 reference，再呼叫 execute_scan。"""
     ic.key_up("w"); ic.mouse_up()

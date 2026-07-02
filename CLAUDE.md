@@ -99,9 +99,11 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   - **有框採不到**（D3 階段超時，`face_tracker=True`）：**不轉回**、保持面對追蹤框，主圖給追蹤框裁圖
     （`_save_tracker_screenshot`），人工一眼看到框可手動採；不附 rotation_hint（已正對著框）。
   - **沒找到框 / 掃描超時 / 採到但聚焦失敗**（`face_tracker=False`）：**轉回原視角** + 附 **4 張左側前後對比裁圖**
-    （`chat_review_region`×前後、`backpack_review_region`×前後，Discord 2×2）。before＝該輪 `_pre_scan_ref`、
-    after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」（新 has-found 行 /
-    背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
+    （`chat_review_region`×前後、`backpack_review_region`×前後）。**Discord 分兩則發送：先聊天框（前/後），再背包（前/後）**
+    （`harvester.giveup_send_groups` 依 region 分組 → meta `image_groups` → `notify.format_group_messages`／sink 各發一則；
+    第一則帶完整警告文字＋群標題，第二則只帶群標題）。舊版一則附 4 圖（2×2）縮圖太小，拆兩則各 2 圖更清楚（2026-07-02 需求）。
+    before＝該輪 `_pre_scan_ref`、after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
+    （新 has-found 行 / 背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
   **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
 

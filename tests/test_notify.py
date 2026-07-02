@@ -1,6 +1,6 @@
 import threading
 import time
-from miningbot.notify import format_message, make_async_sink
+from miningbot.notify import format_message, make_async_sink, format_group_messages
 from miningbot.events import EventRecord
 
 
@@ -79,6 +79,30 @@ def test_noise_events_are_not_sent():
     assert format_message(rec("STATE_CHANGE", from_="MINING", to="HARVESTING")) is None
     assert format_message(rec("PAUSED")) is None
     assert format_message(rec("RESUMED")) is None
+
+
+# --- format_group_messages：人工介入截圖「先聊天框、再背包」分兩則發送（2026-07-02 需求）---
+def test_format_group_messages_splits_into_one_message_per_group():
+    groups = [("chat", ["cb.png", "ca.png"]), ("backpack", ["bb.png", "ba.png"])]
+    msgs = format_group_messages("⚠️ 需要人工介入：X", groups)
+    assert len(msgs) == 2
+    assert msgs[0][1] == ["cb.png", "ca.png"]
+    assert msgs[1][1] == ["bb.png", "ba.png"]
+
+def test_format_group_messages_full_warning_only_on_first():
+    # 第一則帶完整警告文字；第二則只帶群標題，不重複洗版整段警告
+    groups = [("chat", ["a.png"]), ("backpack", ["b.png"])]
+    msgs = format_group_messages("⚠️ 需要人工介入：X", groups)
+    assert msgs[0][0].startswith("⚠️ 需要人工介入：X")
+    assert "需要人工介入" not in msgs[1][0]
+
+def test_format_group_messages_labels_chat_then_backpack():
+    groups = [("chat", ["a.png"]), ("backpack", ["b.png"])]
+    msgs = format_group_messages("X", groups)
+    assert "聊天" in msgs[0][0] and "背包" in msgs[1][0]
+
+def test_format_group_messages_empty_groups_yields_nothing():
+    assert format_group_messages("X", []) == []
 
 
 # --- make_async_sink：把阻塞的 Discord 上傳移出主迴圈 ---------------------------

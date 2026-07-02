@@ -58,6 +58,28 @@ def format_message(rec) -> str | None:
     return content
 
 
+# 人工介入分組截圖的群標題（Discord「先聊天框、再背包」分開發送用）
+_REGION_CAPTIONS = {
+    "chat": "📨 聊天框（前 / 後）",
+    "backpack": "🎒 背包（前 / 後）",
+}
+
+
+def format_group_messages(content: str, image_groups) -> list:
+    """把「分組圖片」攤平成要**分開發送**的 [(訊息文字, 圖片路徑清單), ...]（純函式）。
+
+    image_groups = [(region, [path, ...]), ...]，順序即發送順序（聊天在前、背包在後）。
+    第一則帶完整 content ＋該群標題，其餘只帶群標題——避免把整段警告文字在每則重複洗版。
+    改自「一則附 4 圖（Discord 2×2）」：拆兩則各 2 圖（前/後對比模式不變），見 2026-07-02 需求。
+    """
+    out = []
+    for i, (region, paths) in enumerate(image_groups):
+        caption = _REGION_CAPTIONS.get(region, region)
+        text = f"{content}\n{caption}" if i == 0 else caption
+        out.append((text, list(paths)))
+    return out
+
+
 def send_message(token: str, channel_id: str, content: str, timeout: float = 10.0):
     """直接送一則純文字訊息到 Discord 頻道。回 (ok: bool, detail: str)。"""
     if not token or not channel_id:
@@ -347,26 +369,40 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
 
     失敗只回報不丟例外。log 是可选的 logging.Logger，用來記錄每筆 Discord 送出的結果。
     """
+    def _send(content, paths):
+        """送一則：圖片就緒→附圖上傳，否則退回純文字。回 (ok, detail, tag)。
+
+        等 snapshot worker 寫完（race 修復）；都就緒才附圖，否則退回純文字。
+        """
+        ready = [p for p in paths if _wait_for_file(p)]
+        if ready:
+            ok, detail = send_images_message(token, channel_id, content, ready)
+            return ok, detail, "IMGx%d" % len(ready)
+        ok, detail = send_message(token, channel_id, content)
+        return ok, detail, ("TXT" if not paths else "NOIMG(wait-timeout)")
+
     def sink(rec) -> None:
         content = format_message(rec)
         if content is None:
             return
-        # image_paths（多張，採集放棄前後對比）優先；無則退回單張 image_path
+        # image_groups（分組）→ 分開發送多則（採集放棄：先聊天框、再背包，前/後對比模式不變）
+        groups = rec.meta.get("image_groups")
+        if groups:
+            for text, paths in format_group_messages(content, groups):
+                ok, detail, tag = _send(text, paths)
+                if log:
+                    log.info("%s %s(group) -> %s (%s)", tag, rec.type,
+                             "OK" if ok else "FAIL", detail)
+                if not ok and on_error is not None:
+                    on_error(detail)
+            return
+        # image_paths（多張，一則）優先；無則退回單張 image_path
         multi = rec.meta.get("image_paths") or []
         single = rec.meta.get("image_path")
         paths = [p for p in multi if p] if multi else ([single] if single else [])
-        # 等 snapshot worker 寫完（race 修復）；都就緒才傳，否則退回純文字
-        ready = [p for p in paths if _wait_for_file(p)]
-        if ready:
-            ok, detail = send_images_message(token, channel_id, content, ready)
-            if log:
-                log.info("IMG %s x%d -> %s (%s)", rec.type, len(ready),
-                         "OK" if ok else "FAIL", detail)
-        else:
-            tag = "TXT" if not paths else "NOIMG(wait-timeout)"
-            ok, detail = send_message(token, channel_id, content)
-            if log:
-                log.info("%s %s -> %s (%s)", tag, rec.type, "OK" if ok else "FAIL", detail)
+        ok, detail, tag = _send(content, paths)
+        if log:
+            log.info("%s %s -> %s (%s)", tag, rec.type, "OK" if ok else "FAIL", detail)
         if not ok and on_error is not None:
             on_error(detail)
     return sink
