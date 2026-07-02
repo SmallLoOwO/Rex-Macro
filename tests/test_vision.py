@@ -167,6 +167,34 @@ def test_find_tracker_hybrid_detects_green_solid_center_scene():
     assert abs(loc[0] - 1365) < 40 and abs(loc[1] - 277) < 40
 
 
+def test_find_tracker_hybrid_detects_occluded_green_tracker_near_threshold():
+    """真實資料：assets/occluded_green_tracker_scene.png（173709，綠框被角色帽子擋到角）。
+
+    真綠框（角色頭上 ~982,434、colored≈0.93）但外框被帽子冠飾切到 → 形狀 edge≈0.43，
+    差舊門檻 0.45 一點點、又是實心中心（非 survivor）→ 舊版漏抓、你手動截圖回報。
+    實測「裝備假陽性 edge≤0.30、真框 edge≥0.43」中間有 gap → 門檻降到 0.42（DEFAULT）後應命中。
+    用 DEFAULT.tracker_shape_threshold 鎖意圖：門檻若被調回 ≥0.44 這測試會紅、提醒別回退。"""
+    img_path = "assets/occluded_green_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None, "被帽子擋到角的綠框（edge≈0.43）應在門檻 0.42 下命中"
+    assert 900 < loc[0] < 1060 and 400 < loc[1] < 500, f"應命中角色頭上綠框區，實得 {loc}"
+
+
 def test_find_tracker_prefers_higher_colored_over_larger_area():
     # 兩個都通過 accept 的候選：colored_frac 較高者勝，即使 area 較小。
     # 對應 HANDOFF「修 2」：真 tracker colored≈1.00 要贏過裝備誤判 colored≈0.75-0.88。
