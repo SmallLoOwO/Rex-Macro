@@ -276,16 +276,18 @@ def test_lucernia_common_ores_have_required_fields():
         assert isinstance(o["rarity"], int) and o["rarity"] > 0
 
 def test_lucernia_common_ores_count():
-    # 17 Surreal + 15 Mythic = 32
-    assert len(LUCERNIA.common_ores) == 32
+    # 原六圖層 17 Surreal + 15 Mythic = 32；2026 春季更新四圖層 +19、洞穴限定 +7 = 58
+    assert len(LUCERNIA.common_ores) == 58
 
 def test_lucernia_common_ores_cover_surreal_and_mythic_tiers():
     tiers = {o["tier"] for o in LUCERNIA.common_ores}
     assert {"Surreal", "Mythic"}.issubset(tiers)
 
-def test_lucernia_common_ores_sorted_by_rarity_ascending():
-    rarities = [o["rarity"] for o in LUCERNIA.common_ores]
-    assert rarities == sorted(rarities)
+def test_lucernia_common_ores_no_duplicate_names():
+    # 春季圖層/洞穴限定與原六圖層分段附加後，rarity 全域遞增不再成立
+    # （洞穴 rarity 是洞穴內機率、尺度不同）——改守「無重複礦名」（排除清單去重的前提）
+    names = [o["ore"] for o in LUCERNIA.common_ores]
+    assert len(names) == len(set(names))
 
 def test_lucernia_common_ores_in_global_union():
     # 世界未確定時用全世界聯集；Lucernia 的 礦應出現在聯集
@@ -360,3 +362,28 @@ def test_format_keep_by_world_unknown_ore_into_other_bucket():
     assert "【Aesteria】Ephemryst" in lines
     assert "【其他】MysteryOre" in lines
     assert "【Lucernia】" not in out          # 沒 礦的世界不出現
+
+
+# ---- 2026 春季更新（Lucernia 擴充）：Amourite/Shamrock/Brittlestone/Harmonine 四圖層
+#      + Floral/Lucky/Eggshell 洞穴 —— H014 誤判的環境（情人節主題礦區）----
+# 這些圖層的 Surreal/Mythic 會被動進聊天：漏列 → 聊天淡出喚醒後舊行被當「新稀有」→ 假成功。
+# 資料源：rex-reincarnated wiki Lucernia 頁（2026-07-03 抓取）。
+
+def test_lucernia_includes_spring_layer_surreal_mythic():
+    names = {o["ore"] for o in LUCERNIA.common_ores}
+    # H014 實機聊天出現過的被動 find（Amourite 圖層 + Floral 洞穴）
+    assert {"Diamantine", "Ladyfeeb", "Dulcinette", "Beehive"} <= names
+    # 各圖層代表礦（Shamrock/Brittlestone/Harmonine + 洞穴限定）
+    assert {"Siogyne", "Toppatrick", "Polkegg", "Baggsket",
+            "Synthesite", "Cirfith", "Rotatrim", "Duskgravite"} <= names
+
+def test_lucernia_excludes_d3_targets_of_spring_layers():
+    # Exotic/Exquisite 以上是 D3 採集目標，絕不可進排除清單（否則重演 H014 假陰性：
+    # 真採到 Diamorite 卻被排除 → confirmed=False → 誤交人工）
+    names = {o["ore"] for o in LUCERNIA.common_ores}
+    assert names.isdisjoint({"Diamorite", "Saerylium", "Essentium", "Valytium",
+                             "Everbloom", "Clovara", "Dolce", "Cupid", "Sweetheart"})
+
+def test_lucernia_common_ores_all_surreal_or_mythic():
+    # 排除清單的角色＝「會被動進聊天的低階」；REX 只有 Surreal/Mythic 兩階會被動進聊天
+    assert {o["tier"] for o in LUCERNIA.common_ores} == {"Surreal", "Mythic"}

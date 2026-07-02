@@ -455,6 +455,40 @@ _LUCERNIA_COMMON_ORES: list[dict] = [
     {"ore": "Contemptus Gemma", "rarity": 866_666, "layer": "Wickrock",   "tier": "Mythic"},
     {"ore": "Jollycane",        "rarity": 960_000, "layer": "Confectent", "tier": "Mythic"},
     {"ore": "Zerocite",         "rarity": 980_999, "layer": "Lucitreum",  "tier": "Mythic"},
+    # --- 2026 春季更新四圖層（Amourite / Shamrock / Brittlestone / Harmonine）---
+    # H014（2026-07-03）誤判環境：情人節主題 Amourite 圖層。這批 Surreal/Mythic 會被動
+    # 進聊天，漏列會讓「聊天淡出喚醒後的舊行」被當新稀有 → 假成功。
+    # 資料源：rex-reincarnated wiki Lucernia 頁。Exotic 以上（Saerylium/Diamorite 等）
+    # 是 D3 採集目標，**絕不可列進來**（H014 的 Diamorite 若被排除＝重演假陰性）。
+    {"ore": "Diamantine",       "rarity": 100_000, "layer": "Amourite",     "tier": "Surreal"},
+    {"ore": "Ladyfeeb",         "rarity": 300_000, "layer": "Amourite",     "tier": "Surreal"},
+    {"ore": "Dulcinette",       "rarity": 500_000, "layer": "Amourite",     "tier": "Mythic"},
+    {"ore": "Loveletter",       "rarity": 600_000, "layer": "Amourite",     "tier": "Mythic"},
+    {"ore": "Heartbeet",        "rarity": 900_000, "layer": "Amourite",     "tier": "Mythic"},
+    {"ore": "Siogyne",          "rarity": 232_109, "layer": "Shamrock",     "tier": "Surreal"},
+    {"ore": "Weevil",           "rarity": 323_456, "layer": "Shamrock",     "tier": "Surreal"},
+    {"ore": "Riches",           "rarity": 543_456, "layer": "Shamrock",     "tier": "Mythic"},
+    {"ore": "Cleavelite",       "rarity": 767_676, "layer": "Shamrock",     "tier": "Mythic"},
+    {"ore": "Toppatrick",       "rarity": 901_210, "layer": "Shamrock",     "tier": "Mythic"},
+    {"ore": "Polkegg",          "rarity": 129_129, "layer": "Brittlestone", "tier": "Surreal"},
+    {"ore": "Cracked Egg",      "rarity": 231_231, "layer": "Brittlestone", "tier": "Surreal"},
+    {"ore": "Yolkfeeb",         "rarity": 439_439, "layer": "Brittlestone", "tier": "Surreal"},
+    {"ore": "Ovacuum",          "rarity": 617_617, "layer": "Brittlestone", "tier": "Mythic"},
+    {"ore": "Baggsket",         "rarity": 888_888, "layer": "Brittlestone", "tier": "Mythic"},
+    {"ore": "Synthesite",       "rarity": 222_222, "layer": "Harmonine",    "tier": "Surreal"},
+    {"ore": "Melodium",         "rarity": 444_444, "layer": "Harmonine",    "tier": "Surreal"},
+    {"ore": "Echonox",          "rarity": 555_555, "layer": "Harmonine",    "tier": "Mythic"},
+    {"ore": "Cirfith",          "rarity": 777_777, "layer": "Harmonine",    "tier": "Mythic"},
+    # --- 洞穴限定（Cave Exclusives）的 Surreal/Mythic：聊天行帶「(Xxx Cave)」尾註，
+    #     _is_rare_ore 的 startswith 容忍會正確吃掉尾註仍判為 common（H014 的
+    #     Jollycane (Candied Cave) 即此格式）。rarity 是洞穴內機率、與圖層礦不同尺度。---
+    {"ore": "Bungy",            "rarity": 7_478,  "layer": "Eggshell Cave",   "tier": "Surreal"},
+    {"ore": "Yolkbang",         "rarity": 7_478,  "layer": "Eggshell Cave",   "tier": "Surreal"},
+    {"ore": "Halcylite",        "rarity": 21_234, "layer": "Lucky Cave",      "tier": "Surreal"},
+    {"ore": "Weesp",            "rarity": 41_250, "layer": "Umbragloom Cave", "tier": "Surreal"},
+    {"ore": "Beehive",          "rarity": 36_520, "layer": "Floral Cave",     "tier": "Mythic"},
+    {"ore": "Rotatrim",         "rarity": 46_455, "layer": "Lucky Cave",      "tier": "Mythic"},
+    {"ore": "Duskgravite",      "rarity": 63_836, "layer": "Umbragloom Cave", "tier": "Mythic"},
 ]
 
 
