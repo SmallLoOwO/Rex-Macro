@@ -218,7 +218,7 @@ _AESTERIA_COMMON_ORES: list[dict] = [
     {"ore": "Pobble",          "rarity": 420_000, "layer": "Surmilum",      "tier": "Surreal"},
     {"ore": "Viripendage",     "rarity": 432_000, "layer": "Withered Sand", "tier": "Surreal"},
     {"ore": "Ghostdeerium",    "rarity": 443_210, "layer": "Delucemite",    "tier": "Surreal"},
-    {"ore": "Cublexrtiye",     "rarity": 450_000, "layer": "Frost",         "tier": "Surreal"},
+    {"ore": "Candensium",      "rarity": 450_000, "layer": "Frost",         "tier": "Surreal"},  # 原誤植 "Cublexrtiye"（fetch_ores diff 抓到，2026-07-03；名字錯＝該礦從未被排除）
     {"ore": "Illumite",        "rarity": 490_120, "layer": "Maculite",      "tier": "Surreal"},
     # --- Mythic 階（500k–991k）---
     {"ore": "Crystallized Solarite", "rarity": 500_000, "layer": "Frost",         "tier": "Mythic"},
