@@ -1198,8 +1198,8 @@ class Bot:
         # hid（本輪編號）已在 _tick_harvest 開頭取好，log 行前綴 [Hxxx]、快照檔名帶同號
         common = game_data.common_ore_names()
         chat_before = self._read_chat(frame)
-        rare_before = ocr.count_rare_found(chat_before, common, cfg.found_keywords)
-        self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%d)",
+        rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
+        self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%s)",
                          hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
         self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵診斷截圖：D3 發動瞬間（含追蹤框），存 harvest 追蹤用
         self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
@@ -1215,28 +1215,28 @@ class Bot:
         gone = self._find_tracker(after, _excl,
                                   reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
         chat_after = self._read_chat(after)
-        rare_after = ocr.count_rare_found(chat_after, common, cfg.found_keywords)
-        # 確認：稀有礦 has-found 數量增加，或「底部新出現稀有礦行」。
+        rare_after = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
+        # 確認：任一前處理 pass 內「稀有礦 has-found 數量增加，或底部新出現稀有礦行」。
         # 底部新行是對抗捲動的主信號——舊訊息從頂部刷掉會讓 count 只減不增（2→1 假負），
         # 但新訊息永遠在底部，只看最後一行不受頂部捲動影響（使用者點名的遞減問題）。
-        confirmed = (rare_after > rare_before
-                     or ocr.has_new_rare_found_last_line(chat_before, chat_after,
-                                                         common, cfg.found_keywords))
+        # 逐 pass 自洽比對（不同 pass 噪音不同、不可交叉比）；任一 pass 確認即成功（H014 對策）。
+        confirmed = ocr.any_new_rare_found(chat_before, chat_after,
+                                           common, cfg.found_keywords)
         # 特殊階（ionized/Spectral）：進別的背包、不在稀有礦名表，只能靠 keyword 字樣辨識 → 也算成功
-        special = ocr.has_new_found(chat_before, chat_after, cfg.special_keywords)
+        special = ocr.any_new_found(chat_before, chat_after, cfg.special_keywords)
         confirmed = confirmed or special
         chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
         verdict = harvester.decide_harvest_result(gone, confirmed)
-        self.log_harvest.info("[%s] verify harvest: gone=%s rare %d->%d %s special=%s -> %s",
+        self.log_harvest.info("[%s] verify harvest: gone=%s rare %s->%s %s special=%s -> %s",
                          hid, gone, rare_before, rare_after,
                          "NEW" if confirmed else "no-new", special, verdict)
         if verdict == "SUCCESS":
             # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
             # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
-            new_lines = ocr.extract_new_found_lines(chat_before, chat_after, cfg.found_keywords)
+            new_lines = ocr.extract_new_found_lines_multi(chat_before, chat_after, cfg.found_keywords)
             if new_lines:
                 self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
             self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
@@ -1254,7 +1254,7 @@ class Bot:
                 self.logger.warning("採集成功但無法重新聚焦 Roblox -> 交人工（已採到，僅回正+續挖失敗）")
                 self._harvest_giveup("採集成功但無法重新聚焦 Roblox，請處理後按 Q")
                 return
-            self.logger.info("採集成功（gone=%s rare=%d->%d special=%s）-> 轉回原方位 net=%d",
+            self.logger.info("採集成功（gone=%s rare=%s->%s special=%s）-> 轉回原方位 net=%d",
                              gone, rare_before, rare_after, special, self.harvest.net_rotations)
             harvester.restore_view(self.harvest.net_rotations)
             self.state = State.MINING
@@ -1290,7 +1290,7 @@ class Bot:
                                  hid, self.harvest.d3_attempts)
                 self._reharvest_sweep()
             else:
-                self.log_harvest.info("[%s] 採集: D3 未命中 (attempt %d/%d rare %d->%d)，下次繼續",
+                self.log_harvest.info("[%s] 採集: D3 未命中 (attempt %d/%d rare %s->%s)，下次繼續",
                                  hid, self.harvest.d3_attempts, cfg.max_harvest_attempts,
                                  rare_before, rare_after)
 
@@ -1305,14 +1305,17 @@ class Bot:
         self._harvest_start = time.time()
         self.harvest.elapsed_s = 0.0
 
-    def _read_chat(self, frame) -> str:
-        """讀聊天框區域 OCR 文字（採集差分確認用）。
+    def _read_chat(self, frame) -> list:
+        """讀聊天框區域 OCR 文字（採集差分確認用），回傳「每種前處理一份」的文字 list。
 
-        用 min_channel 預處理：紅色 "has found" 文字在 min(R,G,B) 後對比度佳，
-        標準灰階會把紅字讀成亂碼（實測 "has found" → "ines ounce!"）。
+        單一前處理必有背景盲區（H014 根因）：min_channel 為暗背景紅字校準，在亮粉
+        糖果礦壁上彩色行全滅——真正採到的「has found Diamorite」底部新行沒讀到 →
+        假陰性誤交人工；dark_mask 則在近全黑礦坑失效。故跑 ocr.CHAT_PREPROCESSES
+        全套（min_channel/gray/dark_mask），交給 any_new_rare_found 逐 pass 自洽差分。
+        回歸證據：tests/test_ocr_fixtures.py（實機裁圖，三種背景）。
         """
-        return ocr.read_text(capture.crop(frame, cfg.chat_region),
-                             cfg.tesseract_path, preprocess="min_channel")
+        return ocr.read_text_multi(capture.crop(frame, cfg.chat_region),
+                                   cfg.tesseract_path)
 
     def _snapshot_crop(self, frame, region, label: str) -> str | None:
         """存畫面指定區域截圖（非同步）。crop 很便宜，在主線裁好後把小圖丟背景寫檔。"""

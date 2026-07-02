@@ -183,3 +183,72 @@ def test_extract_new_found_lines_ignores_non_found_chat_lines():
 def test_extract_new_found_lines_empty_when_no_change():
     msg = "small_lo has found Rosarium"
     assert extract_new_found_lines(msg, msg, KW) == []
+
+
+# --- 多前處理融合（H014 根因：min_channel 在亮粉背景漏讀彩色行，單一前處理必有盲區）---
+# 每種前處理各自「內部自洽」比 before/after（同 pass 才可比），任一 pass 有信號即 confirmed。
+# 對應實機證據 2026-07-03 H014：dark_mask 讀得到底部新行 has found Diamorite、min_channel 讀不到。
+from miningbot.ocr import (any_new_rare_found, any_new_found,
+                           extract_new_found_lines_multi, _preprocess)
+import numpy as np
+
+
+def test_any_new_rare_found_true_when_only_one_pass_sees_bottom_rare():
+    # pass0（min_channel）什麼都沒讀到；pass1（dark_mask）讀到底部新稀有行 → True
+    before = ["", "has found Rosarium"]
+    after  = ["", "has found Rosarium\nhas found Lilaverine"]
+    assert any_new_rare_found(before, after, COMMON, KW) is True
+
+
+def test_any_new_rare_found_true_when_one_pass_count_increases():
+    before = ["has found Rosarium", ""]
+    after  = ["has found Lilaverine\nhas found Rosarium", ""]  # 底部沒變新（插頂部），靠 count
+    assert any_new_rare_found(before, after, COMMON, KW) is True
+
+
+def test_any_new_rare_found_false_when_all_passes_negative():
+    before = ["has found Rosarium", ""]
+    after  = ["has found Rosarium\nhas found Bandeau", ""]   # 底部是一般礦、count 沒增
+    assert any_new_rare_found(before, after, COMMON, KW) is False
+
+
+def test_any_new_rare_found_passes_are_independent():
+    # 不同 pass 之間不可交叉比（噪音不同會偽造 diff）：before pass0 的行跑到 after pass1
+    # 不算新增——只有同 pass 自己 before/after 差分才算。
+    before = ["has found Lilaverine", ""]
+    after  = ["has found Lilaverine", ""]
+    assert any_new_rare_found(before, after, COMMON, KW) is False
+
+
+def test_any_new_found_true_when_any_pass_sees_special_keyword():
+    special = ("ionized",)
+    assert any_new_found(["", ""], ["", "obtained IONIZED ore"], special) is True
+    assert any_new_found(["", ""], ["", ""], special) is False
+
+
+def test_extract_new_found_lines_multi_unions_and_dedupes_across_passes():
+    # 兩個 pass 各讀到不同新行 → 聯集；同一行兩個 pass 都讀到 → 去重（正規化比對）
+    before = ["", ""]
+    after  = ["small_lo has found Diamorite",
+              "small_lo HAS FOUND Diamorite\nsmall_lo has found Lilaverine"]
+    lines = extract_new_found_lines_multi(before, after, KW)
+    assert len(lines) == 2
+    assert any("Diamorite" in l for l in lines)
+    assert any("Lilaverine" in l for l in lines)
+
+
+# --- dark_mask 前處理（純像素邏輯，不需 tesseract）---
+def test_preprocess_dark_mask_separates_dark_text_from_bright_bg():
+    # 亮粉背景 + 深色文字外框（H014 場景）：文字→0（黑）、背景→255（白）
+    img = np.full((40, 100, 3), (200, 100, 220), dtype=np.uint8)   # 亮粉 BGR
+    img[10:20, 10:60] = (10, 10, 10)                               # 深色筆畫
+    out = _preprocess(img, "dark_mask")
+    assert out[15, 30] == 0 and out[5, 5] == 255
+
+
+def test_preprocess_known_modes_unchanged():
+    # 既有模式行為不變：gray 是灰階、min_channel 是最小通道
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img[:, :] = (10, 200, 30)
+    assert _preprocess(img, "min_channel").max() == 10
+    assert _preprocess(img, "gray").shape == (4, 4)

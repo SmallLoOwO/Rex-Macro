@@ -107,6 +107,44 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
     return _is_rare_ore(_found_ore(after_last, found_keywords), common)
 
 
+# ── 多前處理融合（H014 假陰性根因的對策）─────────────────────────────────
+# 單一前處理必有背景盲區：min_channel 為暗背景紅字校準、在亮粉糖果礦區彩色行全滅
+# （2026-07-03 H014：真正採到的底部新行 has found Diamorite 沒讀到→誤交人工）；
+# dark_mask 靠「文字深色外框 vs 亮背景」、在近全黑礦坑反而分不開字與背景。
+# 故 verify 對聊天框跑多種前處理，**各 pass 內部自洽比 before/after**（不同 pass 的
+# OCR 噪音不同，交叉比會偽造 diff），任一 pass 有信號即 confirmed。
+# 實測（tests/fixtures/chat 回歸集）：三種 pass 在暗棕混合背景各救回不同行、聯集嚴格更優。
+CHAT_PREPROCESSES = ("min_channel", "gray", "dark_mask")
+
+def any_new_rare_found(before_texts, after_texts, common_names, found_keywords) -> bool:
+    """逐 pass 差分（count 增加或底部新稀有行），任一 pass 確認即 True。
+
+    before_texts/after_texts 依 CHAT_PREPROCESSES 順序一一對應（read_text_multi 的輸出）。
+    """
+    return any(
+        has_new_rare_found(b, a, common_names, found_keywords)
+        or has_new_rare_found_last_line(b, a, common_names, found_keywords)
+        for b, a in zip(before_texts, after_texts)
+    )
+
+def any_new_found(before_texts, after_texts, phrases) -> bool:
+    """逐 pass 的 has_new_found（special keywords 用），任一 pass True 即 True。"""
+    return any(has_new_found(b, a, phrases) for b, a in zip(before_texts, after_texts))
+
+
+def extract_new_found_lines_multi(before_texts, after_texts, found_keywords) -> list:
+    """各 pass 抽新增 found 行後取聯集（正規化去重、保序）——給 Discord 通知看實際採到什麼。"""
+    seen: set = set()
+    out: list = []
+    for b, a in zip(before_texts, after_texts):
+        for line in extract_new_found_lines(b, a, found_keywords):
+            key = _normalize(line)
+            if key not in seen:
+                seen.add(key)
+                out.append(line)
+    return out
+
+
 def extract_new_found_lines(before: str, after: str, found_keywords) -> list:
     """D3 前後比對，回傳 after 多出來的「has found / found a」行（原文，未正規化）。
 
@@ -170,6 +208,20 @@ def _get_tess_api(tesseract_path: str | None):
     return api
 
 
+_DARK_MASK_V_THRESHOLD = 120   # HSV V 低於此視為「文字深色外框」；背景亮（如粉紅礦壁）時分得開
+
+
+def _preprocess(image_bgr: np.ndarray, preprocess: str) -> np.ndarray:
+    """OCR 前處理：BGR → 單通道灰階圖。各模式適用背景見 read_text docstring。"""
+    import cv2
+    if preprocess == "min_channel":
+        return np.min(image_bgr, axis=2).astype(np.uint8)
+    if preprocess == "dark_mask":
+        v = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)[:, :, 2]
+        return np.where(v < _DARK_MASK_V_THRESHOLD, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+
+
 def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
               preprocess: str = "gray", psm: int = 6) -> str:
     """薄封裝：對已裁切的區域影像做 OCR（tesserocr 優先，pytesseract 後備；兩者同引擎、同準度）。
@@ -177,17 +229,16 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
     preprocess='gray'        ：標準灰階（適合白字/灰字）
     preprocess='min_channel' ：最小通道（適合紅色/彩色文字，如遊戲聊天框）
                                紅字 min(R,G,B) 低→深色；白底 min=255→亮色，對比好。
+    preprocess='dark_mask'   ：暗色遮罩（適合**亮背景**上的任意色文字，如亮粉糖果礦壁）
+                               聊天字不論填色都有深色外框→V<門檻視為字；近全黑背景會失效
+                               （整片都「暗」分不開）→ 不可單用，走 read_text_multi 融合。
     psm：Tesseract page segmentation mode。預設 6（假設單一均勻文字區塊）——本函式只
          收「裁切過的 UI 區域」（聊天框/事件列/重置訊息），都是單欄文字塊，psm 6 最準；
          舊版用隱含預設 psm 3（全頁自動版面分析）會把多行聊天拆錯→「has found」被黏成
          「hasifoumd」→ count_rare_found=0 → 採集 verify 永遠 no-new → 假性 NEEDS_HUMAN
          （H005@23:10 根因；psm 6 實測可正確讀出 has found 礦名）。
     """
-    import cv2
-    if preprocess == "min_channel":
-        processed = np.min(image_bgr, axis=2).astype(np.uint8)
-    else:
-        processed = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    processed = _preprocess(image_bgr, preprocess)
     api = _get_tess_api(tesseract_path)
     if api is not None:
         try:
@@ -201,3 +252,14 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
     if tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
     return pytesseract.image_to_string(processed, config=f"--psm {psm}")
+
+
+def read_text_multi(image_bgr: np.ndarray, tesseract_path: str | None = None,
+                    preprocesses=CHAT_PREPROCESSES, psm: int = 6) -> list:
+    """同一張圖跑多種前處理各 OCR 一次，回傳文字 list（與 preprocesses 順序對應）。
+
+    聊天框 verify 專用：搭配 any_new_rare_found / extract_new_found_lines_multi 做
+    逐 pass 自洽差分。tesserocr 下每 pass ~0.4s，只在 D3 前後各跑一次、非每幀。
+    """
+    return [read_text(image_bgr, tesseract_path, preprocess=p, psm=psm)
+            for p in preprocesses]

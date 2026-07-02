@@ -34,6 +34,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   5. D3 射擊：先按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s 在追蹤框座標
   6. **確認（`harvester.decide_harvest_result(gone, confirmed)`，2026-06-29 改用「排除低稀有度」反轉策略）**：成功**只認聊天新增的稀有礦**（confirmed），不再用 `gone`。
      - `confirmed=True` → **SUCCESS**（不論框在不在）。`confirmed` = 聊天「`has found X`」裡 **X 不在低稀有度排除清單** (`game_data.common_ore_names()`) 的筆數**增加**，或**底部新出現一行稀有礦**（`ocr.count_rare_found` / `has_new_rare_found_last_line`）。特殊階（ionized/spectral）另由 `special_keywords` 字樣確認、也算 confirmed。
+     - **聊天 OCR 走多前處理融合（2026-07-03 H014 假陰性對策）**：`_read_chat` 用 `ocr.read_text_multi`（`CHAT_PREPROCESSES`＝min_channel/gray/dark_mask 各 OCR 一次，tesserocr 下每 pass ~0.4s、只在 D3 前後跑），`ocr.any_new_rare_found` **逐 pass 自洽差分**（不同 pass 噪音不同、不可交叉比），任一 pass 確認即成功。**單一前處理必有背景盲區**：min_channel 為暗背景校準、在亮粉糖果礦壁上彩色行全滅（H014：真採到的底部新行 `has found Diamorite` 沒讀到 → 假陰性誤交人工）；dark_mask（文字深色外框 vs 亮背景）反之在近全黑礦坑失效。**改前處理必跑回歸集 `tests/test_ocr_fixtures.py`**（實機裁圖×三種背景），新背景樣本從 `logs/snapshots/trace` 補進 `tests/fixtures/chat/`。
      - 框消失但無新稀有礦（gone & ~confirmed）→ **RESWEEP**：礦被**掃描到期**拿走，原地再射也射不到 → 立即重掃（不浪費 attempts）。
      - 框還在且未命中（~gone & ~confirmed）→ **RETRY**：原地重試 D3。
      - **為何不再用 `gone` 當成功（踩坑根因）**：「框消失 ≠ 我們採到」。真追蹤框會因 **D2 掃描到期（框自己淡掉）**而消失，舊邏輯 `gone or confirmed` 把這誤報成功（2026-06-29 trace 20260629_022126：真框疊在角色額頭 D3 打不到、掃描到期框自己淡掉 → gone=True 假成功，稀有礦 5→5 根本沒變）。
