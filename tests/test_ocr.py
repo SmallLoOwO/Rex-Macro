@@ -252,3 +252,60 @@ def test_preprocess_known_modes_unchanged():
     img[:, :] = (10, 200, 30)
     assert _preprocess(img, "min_channel").max() == 10
     assert _preprocess(img, "gray").shape == (4, 4)
+
+
+# --- Spectral/Ionized 變體前綴（2026-07-03 wiki 證實的假成功漏洞）---
+# Rare/Master 的 Spectral 變體也會進 local chat：聊天行「has found Spectral Bandeau」。
+# 舊邏輯兩處都會誤判成功：(1) "spectral bandeau" 不 startswith "bandeau" → 排除失效、
+# 被 count_rare_found 當稀有；(2) special_keywords 只看 "spectral" 字樣出現 → special=True。
+# 修法：剝變體前綴後查排除清單；special 改「found 行含變體字樣且 base 不在排除清單」。
+from miningbot.ocr import count_special_found, any_new_special_found
+
+SPECIAL = ("ionized", "spectral")
+
+
+def test_spectral_common_ore_is_excluded_after_prefix_strip():
+    # 被動挖到 Spectral 低階礦 → 剝前綴後 base 在排除清單 → 不算稀有
+    text = "small_lo has found Spectral Bandeau"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+
+def test_ionized_common_ore_is_excluded_after_prefix_strip():
+    text = "small_lo has found Ionized Lovelocket"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+
+def test_spectral_rare_ore_still_counts_as_rare():
+    # 高階礦的變體（D3 目標）不受影響：base 不在排除清單 → 稀有
+    text = "small_lo has found Spectral Lilaverine"
+    assert count_rare_found(text, COMMON, KW) == 1
+
+
+def test_spectral_common_at_bottom_not_new_rare_last_line():
+    before = "some chat"
+    after  = "some chat\nsmall_lo has found Spectral Bandeau"
+    assert has_new_rare_found_last_line(before, after, COMMON, KW) is False
+
+
+def test_count_special_found_ignores_spectral_common():
+    # special 判定：found 行含變體字樣，但 base 是排除清單低階 → 不算 special
+    text = "small_lo has found Spectral Bandeau"
+    assert count_special_found(text, COMMON, KW, SPECIAL) == 0
+
+
+def test_count_special_found_counts_spectral_noncommon():
+    text = "small_lo has found Spectral Zynulvinite"
+    assert count_special_found(text, COMMON, KW, SPECIAL) == 1
+
+
+def test_count_special_found_ignores_variant_word_outside_found_line():
+    # 非 found 行出現 spectral 字樣（系統訊息/事件）→ 不算（舊 has_new_found 會誤算）
+    text = "a spectral cyclone ravages the mine"
+    assert count_special_found(text, COMMON, KW, SPECIAL) == 0
+
+
+def test_any_new_special_found_diffs_per_pass():
+    before = ["", ""]
+    after  = ["", "small_lo has found Ionized Zynulvinite"]
+    assert any_new_special_found(before, after, COMMON, KW, SPECIAL) is True
+    assert any_new_special_found(after, after, COMMON, KW, SPECIAL) is False

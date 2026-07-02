@@ -59,15 +59,30 @@ def _found_ore(line: str, found_keywords) -> str | None:
             return n[i + len(k):].strip()
     return None
 
+# 變體前綴：所有非 layer 礦都有 Ionized/Spectral 變體（wiki 證實 2026-07-03）。
+# Rare/Master 的 Spectral 也會進 local chat →「has found Spectral Bandeau」若不剝前綴，
+# "spectral bandeau" 不 startswith "bandeau" → 排除失效 → 被當稀有 → 假成功。
+VARIANT_PREFIXES = ("spectral", "ionized")
+
+
+def _strip_variant(ore: str) -> str:
+    """剝掉礦名開頭的變體前綴（已正規化小寫）："spectral bandeau" → "bandeau"。"""
+    for p in VARIANT_PREFIXES:
+        if ore.startswith(p + " "):
+            return ore[len(p) + 1:]
+    return ore
+
+
 def _is_rare_ore(ore: str | None, common_norm) -> bool:
-    """礦名非空、且不屬於任何「低稀有度礦」（排除清單）→ 視為稀有礦。
+    """礦名非空、且（剝變體前綴後）不屬於任何「低稀有度礦」（排除清單）→ 視為稀有礦。
 
     用 startswith 容忍 OCR 在一般礦名尾端多出的雜訊（如 "bandeau!"）→ 仍判為 common，
     偏保守（寧可把可疑的當 common 漏掉，也不要把一般礦誤當稀有礦造成假成功）。
     """
     if not ore:
         return False
-    return not any(ore.startswith(c) for c in common_norm)
+    base = _strip_variant(ore)
+    return not any(base.startswith(c) for c in common_norm)
 
 def count_rare_found(text: str, common_names, found_keywords) -> int:
     """計聊天中「稀有礦」的 has-found 行數（反轉策略：排除低稀有度礦 common_names）。
@@ -128,8 +143,38 @@ def any_new_rare_found(before_texts, after_texts, common_names, found_keywords) 
     )
 
 def any_new_found(before_texts, after_texts, phrases) -> bool:
-    """逐 pass 的 has_new_found（special keywords 用），任一 pass True 即 True。"""
+    """逐 pass 的 has_new_found（一般 phrase 差分用），任一 pass True 即 True。"""
     return any(has_new_found(b, a, phrases) for b, a in zip(before_texts, after_texts))
+
+
+def count_special_found(text: str, common_names, found_keywords, variant_keywords) -> int:
+    """計「found 行、含變體字樣（ionized/spectral）、且 base 礦名不在排除清單」的行數。
+
+    舊版 special 判定只看 "spectral" 字樣出現次數（has_new_found）：被動挖到 Spectral
+    Rare/Master（會進 local chat）或事件文字含該字 → 假成功。改綁 found 行 + 排除清單：
+    Spectral Bandeau（低階）不算、Spectral Diamorite（高階目標）照算。
+    """
+    common = [_normalize(c) for c in common_names]
+    total = 0
+    for line in text.splitlines():
+        ore = _found_ore(line, found_keywords)
+        if not ore:
+            continue
+        if not any(_normalize(v) in ore for v in variant_keywords):
+            continue
+        if _is_rare_ore(ore, common):
+            total += 1
+    return total
+
+
+def any_new_special_found(before_texts, after_texts, common_names,
+                          found_keywords, variant_keywords) -> bool:
+    """逐 pass 差分 special found 行數，任一 pass 增加 → True（特殊階採集確認）。"""
+    return any(
+        count_special_found(a, common_names, found_keywords, variant_keywords)
+        > count_special_found(b, common_names, found_keywords, variant_keywords)
+        for b, a in zip(before_texts, after_texts)
+    )
 
 
 def extract_new_found_lines_multi(before_texts, after_texts, found_keywords) -> list:

@@ -1222,8 +1222,10 @@ class Bot:
         # 逐 pass 自洽比對（不同 pass 噪音不同、不可交叉比）；任一 pass 確認即成功（H014 對策）。
         confirmed = ocr.any_new_rare_found(chat_before, chat_after,
                                            common, cfg.found_keywords)
-        # 特殊階（ionized/Spectral）：進別的背包、不在稀有礦名表，只能靠 keyword 字樣辨識 → 也算成功
-        special = ocr.any_new_found(chat_before, chat_after, cfg.special_keywords)
+        # 特殊變體（Ionized/Spectral）：綁 found 行 + 排除清單——Rare/Master 的 Spectral
+        # 也會被動進 local chat（wiki 2026-07-03），舊版只看字樣出現會假成功。
+        special = ocr.any_new_special_found(chat_before, chat_after, common,
+                                            cfg.found_keywords, cfg.special_keywords)
         confirmed = confirmed or special
         chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
