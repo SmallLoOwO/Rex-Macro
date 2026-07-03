@@ -185,3 +185,10 @@ def test_find_class_conflicts_allows_same_tier_cross_world():
         "D": [{"ore": "Freon", "tier": "Exotic", "rarity": 3, "layer": "y"}],
     }
     assert find_class_conflicts(worlds) == {}
+
+
+def test_deprecated_worlds_defined():
+    # Wintera Isle 已併入 Aesteria、Tutorial World 已移除（使用者確認 2026-07-03）
+    from miningbot.fetch_ores import DEPRECATED_WORLDS
+    assert "Wintera Isle" in DEPRECATED_WORLDS
+    assert "Tutorial World" in DEPRECATED_WORLDS

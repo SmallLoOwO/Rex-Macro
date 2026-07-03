@@ -32,6 +32,11 @@ LOW_TIERS = ("Surreal", "Mythic")
 HIGH_TIERS = ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
               "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
 
+# 已不存在／已合併的世界（wiki 頁還在但遊戲內沒有）——不蒐集，否則引入假的跨世界同名。
+# Wintera Isle 已併入 Aesteria（其冬季礦現於 Aesteria）；Tutorial World 已移除
+# （使用者確認 2026-07-03）。此二者正是先前 34 個跨世界同名的來源。
+DEPRECATED_WORLDS = frozenset({"Wintera Isle", "Tutorial World"})
+
 # 一列礦：|[[礦名]] 或 |[[礦名|別名]] ＋ |{{Colour|階級}} ＋ |數字rarity（可帶註記）
 _ROW_RE = re.compile(
     r"\|\[\[([^\]|]+)(?:\|[^\]]*)?\]\]\s*\n"
@@ -77,6 +82,7 @@ def fetch_page_wikitext(page: str) -> str:
 def fetch_world_names() -> list:
     """從 wiki Category:Worlds 動態列出所有世界頁名（遊戲不只 game_data.WORLDS 那兩個）。
 
+    過濾 DEPRECATED_WORLDS（wiki 頁還在、但遊戲內已移除/合併的世界）。
     失敗時退回 game_data.WORLDS（至少涵蓋正在玩的世界，不讓整個同步掛掉）。
     """
     url = (f"{API}?action=query&list=categorymembers"
@@ -85,7 +91,8 @@ def fetch_world_names() -> list:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=30) as r:
             data = json.load(r)
-        names = [m["title"] for m in data["query"]["categorymembers"]]
+        names = [m["title"] for m in data["query"]["categorymembers"]
+                 if m["title"] not in DEPRECATED_WORLDS]
         return names or list(game_data.WORLDS)
     except Exception as e:
         print(f"Category:Worlds 抓取失敗: {e}（退回 game_data.WORLDS）")
