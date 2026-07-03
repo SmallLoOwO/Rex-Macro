@@ -890,6 +890,9 @@ class Bot:
             self.log.log("RARE_FOUND", harvest_id=hid, image_path=chill_path)
             self.logger.info("進入採集 HARVESTING [%s]: D2 掃描，全方位搜尋追蹤框", hid)
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
+            # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
+            #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
+            self._harvest_boost_guard(capture.grab())
             self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
             # giveup 前後對比圖的「前」基準只在這裡取一次（H020：_reharvest_sweep 會
             # 重拍 _pre_scan_ref——若 D3 其實已採到才 RESWEEP，重拍的已是「採完後」畫面
@@ -898,7 +901,8 @@ class Bot:
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
-            self._chat_baseline = None          # 聊天基準在 sweep 完成時取（跨 D3 嘗試共用）
+            self._chat_baseline = None          # 聊天基準在 sweep 完成時截圖、開火後才 OCR（跨 D3 嘗試共用）
+            self._chat_baseline_crop = None
             self._chat_last_crop = None
         if s is State.NEEDS_HUMAN:
             # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
@@ -1020,6 +1024,26 @@ class Bot:
         else:
             self.log_harvest.info(msg)
 
+    def _harvest_boost_guard(self, frame) -> bool:
+        """採集期間 boost 守門（H026 對策）：D5 到期會以畫面中心為錨收縮 FOV（~2.6x 縮放），
+        所有螢幕座標整批外推——sweep 確認的框 (1084,744) 實測被推到底緣 (1288,1049)。
+        MINING 的「到期即補」在 HARVESTING 不會跑 → 舊版採集全程凍在收縮後 FOV，ref/座標/
+        偵測全部失準。此守門在採集每個關鍵點（tick 頂、sweep 每方位、輪詢中）跑既有的便宜
+        瓶子檢查（單尺度 edge-match ~56ms、0.2s 節流），一消失立刻補 D5 → FOV 回到掃描時
+        狀態、座標復原（buff 還在時按 D5 無效、無法提早續時，只能到期即補——2026-07-02 實測）。
+        回傳 True＝剛補了 D5 且已等 FOV 展開（畫面已變，呼叫端必須重抓幀再偵測/開火）。
+        """
+        if not self._boost_needs_refresh(frame):
+            return False
+        self.log_act.info("[%s] harvest: boost 消失 -> 立即補 D5（FOV 守門）",
+                          self.harvest.harvest_id if self.harvest else "?")
+        self.stats["boosts"] += 1
+        miner.use_boost_harvest()
+        self._last_boost = time.time()      # 冷卻 gate：瓶子出現前不重複按
+        self._boost_present = True          # 樂觀更新快取；下個節流窗會重驗
+        time.sleep(cfg.boost_fov_settle_s)  # 等 FOV 展開，之後抓的幀才是最終座標
+        return True
+
     def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False):
         """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
 
@@ -1028,6 +1052,7 @@ class Bot:
         """
         return vision.find_tracker(
             frame, exclude=exclude, reference_bgr=reference_bgr, log=log,
+            margin_frac=cfg.tracker_margin_frac,
             shape_templates=self._shape_templates,
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
@@ -1049,6 +1074,10 @@ class Bot:
         candidates = []  # [(dir_idx, position)]
         for i in range(NUM_DIRS):
             f = capture.grab()
+            # ★ boost 守門（H026）：sweep 一輪 ~10-19s，D5 常在中段到期。到期即補則各方位
+            #   都在同一（有 buff）FOV 下偵測，候選座標彼此一致、也與稍後開火時一致。
+            if self._harvest_boost_guard(f):
+                f = capture.grab()
             r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
             if r1:
                 m1 = (r1[0], r1[1])
@@ -1175,6 +1204,11 @@ class Bot:
         self.harvest.elapsed_s = time.time() - self._harvest_start
         hid = self.harvest.harvest_id          # 本輪編號；harvest 里程碑 log 前綴 [Hxxx]
 
+        # ★ boost 守門（H026）：採集中 D5 一到期就補回，FOV 全程釘在「有 buff」狀態，
+        #   sweep 座標/reference/開火重定位才自洽。剛補完＝這幀已過期，下個 tick 重抓。
+        if self._harvest_boost_guard(frame):
+            return
+
         _cr = cfg.chat_region
         _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
         _ref = getattr(self, '_pre_scan_ref', None)
@@ -1210,9 +1244,14 @@ class Bot:
             #  (b) 成功行可能晚到（伺服器延遲/聊天淡出後由新訊息喚醒）——逐次重讀 before
             #      會把晚到的成功行吃進下一次嘗試的基準、差分永遠看不見；共用基準則
             #      不論成功行落在哪一次嘗試的窗口都算「新增」。
+            # ★ 基準只截「像素」不 OCR（H026 對策）：3-pass OCR ~10s 若卡在確認→開火之間，
+            #   D5 到期的 FOV 位移正好落在這空窗（H015 幀齡 12s、H026 卡 12s 期間到期都是它）。
+            #   文字版基準延到「開火之後」才 OCR（見 stage 2）——裁圖已凍結、何時 OCR 結果相同，
+            #   開火不必等它。確認→開火從 ~13s 縮到 ~1.5s。
             base_frame = capture.grab()
-            self._chat_baseline = self._read_chat(base_frame)
-            self._chat_last_crop = capture.crop(base_frame, cfg.chat_region)
+            self._chat_baseline = None
+            self._chat_baseline_crop = capture.crop(base_frame, cfg.chat_region)
+            self._chat_last_crop = self._chat_baseline_crop
             self._hsnap_crop(base_frame, cfg.chat_region, "d3_chat_before")
             # ★ sweep 完成：重置計時器，D3 階段從 0 開始算（基準 OCR 的 ~10s 不吃 D3 預算）
             # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
@@ -1233,12 +1272,11 @@ class Bot:
         # 反轉策略：比對聊天「has found X」，X 不在「低稀有度排除清單」(common_ore_names) → 稀有礦。
         # chat 基準（chat_before）在 sweep 完成時已取、跨嘗試共用（見 stage 1；H015 對策）。
         common = game_data.common_ore_names()
-        chat_before = self._chat_baseline
-        if chat_before is None:                  # 防禦：sweep 完成必已取基準，缺了就補
+        if self._chat_baseline is None and getattr(self, "_chat_baseline_crop", None) is None:
+            # 防禦：sweep 完成必已截基準裁圖，缺了就補（截圖瞬間完成、不擋開火）
             bf = capture.grab()
-            chat_before = self._chat_baseline = self._read_chat(bf)
-            self._chat_last_crop = capture.crop(bf, cfg.chat_region)
-        rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
+            self._chat_baseline_crop = capture.crop(bf, cfg.chat_region)
+            self._chat_last_crop = self._chat_baseline_crop
 
         # ★ 開火前重定位（H015 第一槍對策）：D5 boost 到期會收縮 FOV，畫面上所有座標整批位移
         #   （H015：sweep 座標 (1564,433) 到實際點擊時已是不同牆面 → 點空牆 miss）。開火永遠用
@@ -1254,8 +1292,8 @@ class Bot:
                              hid, cx, cy, refind[0], refind[1])
         cx, cy = refind
         self._target_marker = (cx, cy)
-        self.log_harvest.info("[%s] 採集: 追蹤框當下位置 (%d,%d) -> D3 點選 (attempt=%d rare_before=%s)",
-                         hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
+        self.log_harvest.info("[%s] 採集: 追蹤框當下位置 (%d,%d) -> D3 點選 (attempt=%d)",
+                         hid, cx, cy, self.harvest.d3_attempts + 1)
         self._hsnap(aim_frame, "d3_fire_%dx%d" % (cx, cy))  # 關鍵診斷截圖：開火用的「當下」幀（含追蹤框）
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
         time.sleep(0.15)
@@ -1273,6 +1311,17 @@ class Bot:
         #   （底部新行是抗捲動主信號；逐 pass 自洽比對，H014 對策），或特殊變體（Ionized/Spectral，
         #   綁 found 行＋排除清單）。
         rare_names = game_data.rare_ore_names()  # fuzzy 兜底詞彙表（H020 對策；檔缺→空＝停用）
+        fire_t = time.time()
+        # ★ 基準 OCR 移到「開火之後」跑（H026 對策，見 stage 1）：裁圖在 sweep 完成時已凍結，
+        #   開火後這 ~10s 正好蓋掉「等命中/框淡出/聊天行抵達」的死時間。驗證窗口從 OCR 完成
+        #   起算（fired_at）——否則 10s OCR 一結束窗口已過期，輪詢一次都輪不到。
+        #   RETRY 第二槍時基準已是文字（跨嘗試共用，H015 對策不變）→ 不重跑。
+        if self._chat_baseline is None:
+            t0 = time.time()
+            self._chat_baseline = ocr.read_text_multi(self._chat_baseline_crop, cfg.tesseract_path)
+            self.log_harvest.info("[%s] 基準 OCR（開火後補跑）%.1fs", hid, time.time() - t0)
+        chat_before = self._chat_baseline
+        rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
         fired_at = time.time()
         gone = confirmed = special = False
         first_poll = True
@@ -1280,6 +1329,8 @@ class Bot:
         chat_after = chat_before
         while True:
             after = capture.grab()
+            if self._harvest_boost_guard(after):   # H026：到期即補，gone 檢查才在正確 FOV 下跑
+                after = capture.grab()
             if first_poll:
                 self._hsnap(after, "d3_after")   # 首輪全幀診斷截圖（與 d3_fire 對比，事後追蹤是否命中）
                 first_poll = False
@@ -1328,10 +1379,10 @@ class Bot:
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
-        self.log_harvest.info("[%s] verify harvest: gone=%s rare %s->%s %s special=%s poll=%.1fs -> %s",
+        self.log_harvest.info("[%s] verify harvest: gone=%s rare %s->%s %s special=%s poll=%.1fs 距開火=%.1fs -> %s",
                          hid, gone, rare_before, rare_after,
                          "NEW" if confirmed else "no-new", special,
-                         time.time() - fired_at, verdict)
+                         time.time() - fired_at, time.time() - fire_t, verdict)
         if verdict == "SUCCESS":
             # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
             # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
@@ -1426,25 +1477,20 @@ class Bot:
         self.harvest.d3_attempts = 0
         self._target_marker = None              # 下次 tick 重掃
         self._chat_baseline = None              # 聊天基準跟著作廢，sweep 完成時重取
+        self._chat_baseline_crop = None
         self._chat_last_crop = None
         harvester.prepare_scan()
-        self._pre_scan_ref = capture.grab()
+        # ★ 不重拍 _pre_scan_ref（H026 對策）：重掃時追蹤框往往已在畫面上，重拍會把「活框」
+        #   寫進排除基準 → 之後每方位偵測都 rej(preexist)、自我致盲（H026 dir=0 實錄：
+        #   真框 (1288,1049) fill=0.57 ref_fill=0.57＝ref 裡就是它自己）。沿用進場時
+        #   「框出現前」拍的 reference：靜態 UI（熱鍵列/面板）不隨視角/FOV 變、排除效果不減；
+        #   世界內容錯位漏放的假陽性交給 colored_frac＋形狀確認擋。
+        if getattr(self, "_pre_scan_ref", None) is None:
+            self._pre_scan_ref = capture.grab()  # 防禦：理論上進 HARVESTING 必已拍
         harvester.execute_scan()
         # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
         self._harvest_start = time.time()
         self.harvest.elapsed_s = 0.0
-
-    def _read_chat(self, frame) -> list:
-        """讀聊天框區域 OCR 文字（採集差分確認用），回傳「每種前處理一份」的文字 list。
-
-        單一前處理必有背景盲區（H014 根因）：min_channel 為暗背景紅字校準，在亮粉
-        糖果礦壁上彩色行全滅——真正採到的「has found Diamorite」底部新行沒讀到 →
-        假陰性誤交人工；dark_mask 則在近全黑礦坑失效。故跑 ocr.CHAT_PREPROCESSES
-        全套（min_channel/gray/dark_mask），交給 any_new_rare_found 逐 pass 自洽差分。
-        回歸證據：tests/test_ocr_fixtures.py（實機裁圖，三種背景）。
-        """
-        return ocr.read_text_multi(capture.crop(frame, cfg.chat_region),
-                                   cfg.tesseract_path)
 
     def _verify_chat_ocr(self, crop, chat_before, common, rare_names, hid, why):
         """輪詢驗證的一次聊天 OCR：multi 讀取＋差分判定＋詳細 log（H020 排錯需求）。

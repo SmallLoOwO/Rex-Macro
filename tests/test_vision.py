@@ -580,6 +580,40 @@ def test_find_tracker_edge_clipped_scene_documents_margin_rejection():
     assert find_tracker(img, margin_frac=0.1, **kw) is None       # H019 失敗機制
     loc = find_tracker(img, margin_frac=0.0, **kw)                # 框本身完好可辨
     assert loc is not None and abs(loc[0] - 1862) < 40 and abs(loc[1] - 418) < 40
+    # H026 後 margin 收窄進 config：實戰預設值也必須收得回這顆右緣框
+    loc2 = find_tracker(img, margin_frac=cfg.tracker_margin_frac, **kw)
+    assert loc2 is not None and abs(loc2[0] - 1862) < 40 and abs(loc2[1] - 418) < 40
+
+
+def test_find_tracker_bottom_edge_scene_h026_recovered_by_config_margin():
+    """真實資料：assets/bottom_edge_tracker_scene.png（H026, RobloxScreenShot20260704_005233867）。
+
+    D5 到期的 FOV 收縮是以畫面中心為錨的 ~2.6x 縮放：sweep 早停確認過的框 (1084,744)
+    被推到底緣 (1288,1020)。舊 margin_frac=0.1 的底部排除帶（y>972 全拒）在全部 8 個
+    方位都擋掉它——yaw 旋轉只改 x 不改 y，框永遠在帶內 → 重掃全空、誤交人工（H026）。
+    實戰預設 cfg.tracker_margin_frac=0.02（y≤1058）收得回；邊緣雜訊仍有
+    preexist 差分／colored_frac／形狀確認三道閘擋著（0.02 對全 fixture 集無新假陽性）。"""
+    img_path = "assets/bottom_edge_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    kw = dict(exclude=excl, shape_templates=tmpls,
+              shape_threshold=cfg.tracker_shape_threshold,
+              shape_scales=cfg.tracker_shape_scales,
+              shape_roi_px=cfg.tracker_shape_roi_px,
+              shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert find_tracker(img, margin_frac=0.1, **kw) is None       # H026 失敗機制（舊帶擋真框）
+    loc = find_tracker(img, margin_frac=cfg.tracker_margin_frac, **kw)
+    assert loc is not None and abs(loc[0] - 1288) < 40 and abs(loc[1] - 1020) < 40
+    assert cfg.tracker_margin_frac <= 0.02   # H026 框 y=1020 需 margin ≤ (1-1020/1080)=0.055；留餘裕釘 0.02
 
 
 def test_frames_mean_diff_value_and_none_cases():

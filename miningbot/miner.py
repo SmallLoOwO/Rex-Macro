@@ -86,6 +86,10 @@ def use_boost():           # 對照原巨集：放左鍵 → D5 → 點擊 → D
     ic.key_press("5"); ic.mouse_click(hold=0.08)
     ic.key_press("1"); ic.mouse_down()
 
+def use_boost_harvest():   # 採集中補 D5（H026 FOV 守門）：喝完不切回鎬子、不按住左鍵——採集不挖礦，
+    ic.mouse_up(); ic.settle()  # D3 序列自己按 2→3 處理裝備、回 D1 交給採集收尾的 init_mining_sequence
+    ic.key_press("5"); ic.mouse_click(hold=0.08)
+
 def use_activity():        # 對照原巨集：放左鍵 → D4 → 點擊 → D1 → 按住左鍵
     ic.mouse_up(); ic.settle()
     ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（使用者確認；加強事件之後再做）
