@@ -416,3 +416,26 @@ def test_classify_unknown_ore():
 
 def test_classify_empty_is_unknown():
     assert gd.classify_found_ore("")[0] == "unknown"
+
+
+# ---- 白名單依世界收斂（與 common_ore_names 同款模式）----
+# 世界已由事件鎖定 → 只查該世界的高階白名單（同名礦跨世界階級可能不同、也不可能
+# 採到別世界的礦）；未定 → 聯集（保守）。
+
+def test_classify_scopes_whitelist_to_locked_world():
+    gd.set_world("Lucernia")
+    try:
+        assert gd.classify_found_ore("arachnophyte")[0] == "rare"      # Lucernia 高階
+        assert gd.classify_found_ore("abyssium")[0] == "unknown"       # Aesteria 高階 → 本世界不可能
+    finally:
+        gd.clear_world()
+
+def test_classify_uses_union_when_world_unknown():
+    gd.clear_world()
+    assert gd.classify_found_ore("arachnophyte")[0] == "rare"
+    assert gd.classify_found_ore("abyssium")[0] == "rare"
+
+def test_rare_ores_scoped_by_world_and_union():
+    assert "abyssium" not in gd.rare_ores("Lucernia")
+    assert "abyssium" in gd.rare_ores("Aesteria")
+    assert "abyssium" in gd.rare_ores(None) and "arachnophyte" in gd.rare_ores(None)

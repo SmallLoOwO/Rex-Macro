@@ -595,32 +595,45 @@ def _rare_ores_path() -> str:
     return os.path.join(os.path.dirname(__file__), "..", "assets", "rare_ores.json")
 
 
-_rare_ores_cache: dict | None = None
+_rare_ores_cache: dict | None = None    # world 名 → {正規化礦名 → info}；"__union__" = 聯集
 
 
-def rare_ores() -> dict:
-    """正規化礦名 → {ore, tier, rarity, layer, world}（所有世界聯集；lazy 載入＋快取）。"""
+def _load_rare_ores() -> dict:
     global _rare_ores_cache
     if _rare_ores_cache is None:
         import json
-        table: dict = {}
+        by_world: dict = {}
+        union: dict = {}
         try:
             with open(_rare_ores_path(), encoding="utf-8") as f:
                 data = json.load(f)
             for world, rows in data.get("worlds", {}).items():
-                for r in rows:
-                    table[r["ore"].lower()] = {**r, "world": world}
+                table = {r["ore"].lower(): {**r, "world": world} for r in rows}
+                by_world[world] = table
+                union.update(table)
         except Exception:
             pass                      # 檔案缺/壞 → 空表（分類降級為 unknown，不炸主迴圈）
-        _rare_ores_cache = table
+        by_world["__union__"] = union
+        _rare_ores_cache = by_world
     return _rare_ores_cache
+
+
+def rare_ores(world_name: str | None = None) -> dict:
+    """正規化礦名 → {ore, tier, rarity, layer, world}（lazy 載入＋快取）。
+
+    與 `common_ore_names` 同款收斂模式：給定世界（事件已鎖定）→ 只回該世界的表
+    （不可能採到別世界的礦、同名礦跨世界階級可能不同）；None/未知世界 → 全世界聯集（保守）。
+    """
+    tables = _load_rare_ores()
+    return tables.get(world_name) or tables["__union__"]
 
 
 def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"unknown", 白名單 info 或 None)。
 
     與排除比對同一套容忍：剝 Ionized/Spectral 變體前綴、startswith 容忍尾端雜訊
-    （OCR 噪音、洞穴註記「(floral cave)」）。common 優先於 rare（守門員先判）。
+    （OCR 噪音、洞穴註記「(floral cave)」）。common 優先於 rare（守門員先判）；
+    兩張表都隨 current_world 收斂（排除清單走 common_ore_names、白名單走 rare_ores）。
     """
     from .ocr import _strip_variant   # 單一事實來源（VARIANT_PREFIXES）；ocr 不 import 本模組、無循環
     if not ore_text:
@@ -628,7 +641,7 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     base = _strip_variant(ore_text.strip().lower())
     if any(base.startswith(c.lower()) for c in common_ore_names()):
         return "common", None
-    for name, info in rare_ores().items():
+    for name, info in rare_ores(current_world_name()).items():
         if base.startswith(name):
             return "rare", info
     return "unknown", None
