@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from miningbot.vision import (find_template, template_present, find_template_edges,
                               find_tracker, find_marker, best_outline_score,
-                              template_outline_edges)
+                              template_outline_edges, frames_differ)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -529,3 +529,24 @@ def test_best_outline_score_high_for_matching_shape_low_for_blank():
     assert best_outline_score(scene, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) >= 0.4
     blank = np.full((200, 200, 3), 30, np.uint8)
     assert best_outline_score(blank, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) < 0.4
+
+
+# --- frames_differ：聊天輪詢的省 OCR 閘（H015 對策）---
+# D3 後輪詢驗證每 ~1s 抓幀；聊天全區 3-pass OCR 實測 ~10s（滿版文字），不能每輪都跑。
+# 聊天是螢幕覆蓋層、角色靜止時裁圖近乎逐位元相同 → 只有像素變了（新訊息/淡出）才值得 OCR。
+def test_frames_differ_false_for_identical_crops():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    assert frames_differ(a, a.copy()) is False
+
+
+def test_frames_differ_true_when_text_like_change_appears():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    b = a.copy()
+    cv2.putText(b, "has found X", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    assert frames_differ(a, b) is True
+
+
+def test_frames_differ_true_when_baseline_missing_or_shape_mismatch():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    assert frames_differ(None, a) is True          # 尚無基準 → 必須 OCR
+    assert frames_differ(a[:40], a) is True        # 尺寸不同（區域改了）→ 必須 OCR

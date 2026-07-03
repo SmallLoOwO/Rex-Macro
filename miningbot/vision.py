@@ -21,6 +21,20 @@ def find_template(scene_bgr, template_bgr, threshold: float):
 def template_present(scene_bgr, template_bgr, threshold: float) -> bool:
     return find_template(scene_bgr, template_bgr, threshold) is not None
 
+def frames_differ(baseline_bgr, current_bgr, mean_diff_threshold: float = 2.0) -> bool:
+    """兩張同尺寸裁圖是否有肉眼可見變化（平均絕對差 > 門檻）——聊天輪詢的省 OCR 閘。
+
+    D3 後輪詢驗證（H015 對策）每 ~1s 檢查聊天，但聊天全區 3-pass OCR 實測 ~10s
+    （滿版文字），不能每輪都跑。聊天是螢幕覆蓋層、輪詢期間角色靜止 → 沒新訊息時
+    裁圖近乎逐位元相同（實測連 PNG 位元組數都一樣）；新訊息出現或聊天淡出都會
+    大幅改變像素 → 只在變化時才 OCR。基準缺失或尺寸不合＝無從比較 → 當作有變化。
+    """
+    if baseline_bgr is None or current_bgr is None:
+        return True
+    if baseline_bgr.shape != current_bgr.shape:
+        return True
+    return float(np.mean(cv2.absdiff(baseline_bgr, current_bgr))) > mean_diff_threshold
+
 def _canny(img_bgr):
     return cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
 

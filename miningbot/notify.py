@@ -58,8 +58,10 @@ def format_message(rec) -> str | None:
     return content
 
 
-# 人工介入分組截圖的群標題（Discord「先聊天框、再背包」分開發送用）
+# 人工介入分組截圖的群標題（Discord「先聊天框、再背包」分開發送用；
+# D3 超時（有框）路徑另有 tracker 群＝追蹤框現況，排最前）
 _REGION_CAPTIONS = {
+    "tracker": "🎯 追蹤框（現況）",
     "chat": "📨 聊天框（前 / 後）",
     "backpack": "🎒 背包（前 / 後）",
 }

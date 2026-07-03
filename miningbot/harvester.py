@@ -70,6 +70,26 @@ def decide_harvest_result(gone: bool, confirmed: bool) -> str:
         return "RESWEEP"
     return "RETRY"
 
+def decide_verify_poll(gone: bool, confirmed: bool, elapsed_s: float, window_s: float) -> str:
+    """D3 開火後「輪詢驗證」的單步決策（純函式，H015 對策）。
+
+    回傳 "SUCCESS" / "POLL" / "RESWEEP" / "RETRY"。
+
+    舊流程 click 後固定等 0.5s 抓一幀就判生死——太早：H015 第二槍實際命中，但追蹤框
+    是擊中後 2~10s 才消失、聊天成功行更晚才到（且聊天無新訊息 ~15s 會整個淡出，唯有
+    新訊息會讓它重新顯示）→ 單幀抓在空窗上 = gone=False + no-new → RETRY → 超時誤交人工。
+
+    - confirmed → SUCCESS（隨時早退；晚到的聊天行就是靠輪詢接住的）
+    - 窗口未到 → POLL（框在不在都續等：框慢消失/成功行未到都不是結論）
+    - 窗口到   → 交 decide_harvest_result 收尾（gone→RESWEEP、框還在→RETRY）
+    """
+    if confirmed:
+        return "SUCCESS"
+    if elapsed_s < window_s:
+        return "POLL"
+    return decide_harvest_result(gone, confirmed)
+
+
 def restore_actions(net_rotations: int) -> list:
     """挖完後要轉回原角度的動作序列（純函式）。
 
@@ -114,7 +134,8 @@ class GiveupPlan:
 
     restore_view : 轉回原視角？（無框才轉回、便於判斷礦是否已被玩家挖走）
     tracker_view : 主圖用「面對追蹤框」裁圖？（有框採不到時 True，人工可據此手動採）
-    review_crops : 無框路徑的 4 張左側前後對比裁圖（有框路徑為空 tuple）
+    review_crops : 4 張左側前後對比裁圖（聊天×前後、背包×前後）。**兩條路徑都附**
+                   （H015：D3 超時只送框裁圖、而框已消失＝圖上空無一物，使用者無從判斷）
     """
     restore_view: bool
     tracker_view: bool
@@ -136,10 +157,14 @@ def plan_giveup(face_tracker: bool) -> GiveupPlan:
     face_tracker=True（找到追蹤框但採不到，D3 階段失敗）：**不轉回**視角、保持面對追蹤框，
       主圖給「面對追蹤框」裁圖，人工一眼看到框可手動採。
     face_tracker=False（沒找到框 / 掃描超時 / 採到但重新聚焦失敗）：**轉回**原視角（快速恢復、
-      便於判斷礦是否已被玩家挖走），附 4 張左側前後對比裁圖（聊天×前後、背包×前後）。
+      便於判斷礦是否已被玩家挖走）。
+
+    兩條路徑都附 4 張左側前後對比裁圖（聊天×前後、背包×前後）——H015：D3 超時其實已採到
+    （驗證抓太早誤判），只送的框裁圖上框已消失＝空無一物，人工無從判斷；聊天/背包前後對比
+    才是「礦是否已採到」的可判證據，與視角無關（左側 UI 是螢幕覆蓋層）。
     """
     if face_tracker:
-        return GiveupPlan(restore_view=False, tracker_view=True, review_crops=())
+        return GiveupPlan(restore_view=False, tracker_view=True, review_crops=_REVIEW_CROPS)
     return GiveupPlan(restore_view=True, tracker_view=False, review_crops=_REVIEW_CROPS)
 
 

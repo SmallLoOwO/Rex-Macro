@@ -894,6 +894,8 @@ class Bot:
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
+            self._chat_baseline = None          # 聊天基準在 sweep 完成時取（跨 D3 嘗試共用）
+            self._chat_last_crop = None
         if s is State.NEEDS_HUMAN:
             # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
@@ -1105,11 +1107,12 @@ class Bot:
     def _harvest_giveup(self, reason: str, *, face_tracker: bool = False):
         """採集放棄 → 依「有無追蹤框」決定視角處置 + 截圖，交人工（需求 A+C）。
 
-        face_tracker=True（D3 階段失敗、追蹤框仍在畫面）：**保持面對追蹤框、不轉回**，主圖給
-          追蹤框裁圖（人工可據此手動採；不附 rotation_hint，因已正對著框）。
-        face_tracker=False（沒找到框/掃描超時/採到但重新聚焦失敗）：**轉回原視角** + 附 4 張左側
-          前後對比裁圖（聊天×前後、背包×前後），判定礦是否已被玩家挖走（好假警報）。
+        face_tracker=True（D3 階段失敗、追蹤框仍在畫面）：**保持面對追蹤框、不轉回**，tracker
+          群給追蹤框裁圖（人工可據此手動採；不附 rotation_hint，因已正對著框）。
+        face_tracker=False（沒找到框/掃描超時/採到但重新聚焦失敗）：**轉回原視角**。
 
+        兩條路徑都附聊天/背包前後對比裁圖（H015 對策：D3 超時時框可能已消失，框裁圖上空無
+        一物；前後對比才判得出「礦其實已採到」的好假警報）。
         視角/截圖決策抽在 harvester.plan_giveup（純函式、有測試）；本方法只做 I/O glue。
         """
         # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
@@ -1126,30 +1129,30 @@ class Bot:
         self._human_reason = reason
         frame = capture.grab()              # 轉回後重抓（tracker_view 路徑沒轉回＝面對框現況）
 
+        # 兩條路徑都附「聊天/背包前後對比」分組（H015：D3 超時只送框裁圖、而框已消失＝圖上
+        # 空無一物，人工無從判斷「礦是否其實已採到」；左側 UI 是螢幕覆蓋層、與視角無關）。
+        # 有框路徑另加 tracker 群排最前＝追蹤框現況（人工可據此手動採）。
+        # before＝本輪 _pre_scan_ref、after＝現在（放棄時）。每組保留前/後兩張（對比模式不變）。
+        groups = []
         if plan.tracker_view:
-            # 有框採不到：主圖給「面對追蹤框」裁圖（net_rot=0：現在正對著它，免旋轉提示）
-            p = self._save_tracker_screenshot(frame, self._target_marker, 0)
+            p = self._save_tracker_screenshot(frame, self._target_marker, 0)  # net_rot=0：正對著框，免旋轉提示
             if p:
-                self._needs_human_extra_meta["image_paths"] = [p]
-        else:
-            # 無框：左側前後對比裁圖，依 region 分組成「先聊天框、再背包」兩組分開發送（2026-07-02 需求）。
-            # before＝本輪 _pre_scan_ref、after＝現在（放棄時）。每組保留前/後兩張（對比模式不變）。
-            region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
-            src_map = {"before": getattr(self, "_pre_scan_ref", None), "after": frame}
-            groups = []
-            for region, crops in harvester.giveup_send_groups(plan.review_crops):
-                paths = []
-                for c in crops:
-                    src = src_map[c.source]
-                    if src is None:             # 首輪還沒 _pre_scan_ref → 跳過該來源
-                        continue
-                    p = self._hsnap_crop(src, region_map[c.region], c.label)
-                    if p:
-                        paths.append(p)
-                if paths:
-                    groups.append((region, paths))
-            if groups:
-                self._needs_human_extra_meta["image_groups"] = groups
+                groups.append(("tracker", [p]))
+        region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
+        src_map = {"before": getattr(self, "_pre_scan_ref", None), "after": frame}
+        for region, crops in harvester.giveup_send_groups(plan.review_crops):
+            paths = []
+            for c in crops:
+                src = src_map[c.source]
+                if src is None:             # 首輪還沒 _pre_scan_ref → 跳過該來源
+                    continue
+                p = self._hsnap_crop(src, region_map[c.region], c.label)
+                if p:
+                    paths.append(p)
+            if paths:
+                groups.append((region, paths))
+        if groups:
+            self._needs_human_extra_meta["image_groups"] = groups
 
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
@@ -1177,7 +1180,17 @@ class Bot:
                 self.logger.info("[%s] sweep 未找到追蹤框（環繞一次）-> 人工", hid)
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
-            # ★ sweep 完成：重置計時器，D3 階段從 0 開始算
+            # ★ 聊天基準改在 sweep 完成時取一次、跨本輪所有 D3 嘗試共用（H015 對策）：
+            #  (a) 舊版每次開火前重讀 before（3-pass 滿版文字實測 ~10s）→ 開火座標的幀齡
+            #      高達 12s，D5 buff 到期 FOV 收縮的跑位剛好落在這空窗（第一槍打歪根因）；
+            #  (b) 成功行可能晚到（伺服器延遲/聊天淡出後由新訊息喚醒）——逐次重讀 before
+            #      會把晚到的成功行吃進下一次嘗試的基準、差分永遠看不見；共用基準則
+            #      不論成功行落在哪一次嘗試的窗口都算「新增」。
+            base_frame = capture.grab()
+            self._chat_baseline = self._read_chat(base_frame)
+            self._chat_last_crop = capture.crop(base_frame, cfg.chat_region)
+            self._hsnap_crop(base_frame, cfg.chat_region, "d3_chat_before")
+            # ★ sweep 完成：重置計時器，D3 階段從 0 開始算（基準 OCR 的 ~10s 不吃 D3 預算）
             # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
             self._harvest_start = time.time()
             self.harvest.elapsed_s = 0.0
@@ -1193,48 +1206,83 @@ class Bot:
         # 看到追蹤框 → 裝 D3、直接點選它的位置（不需精準置中；右鍵微調難控）
         cx, cy = self._target_marker
         self.last_action = "D3 採集"
-        # D3 前先讀聊天框（差分確認用：只有「新增」的稀有礦才算成功，舊訊息不再偽造）
         # 反轉策略：比對聊天「has found X」，X 不在「低稀有度排除清單」(common_ore_names) → 稀有礦。
-        # hid（本輪編號）已在 _tick_harvest 開頭取好，log 行前綴 [Hxxx]、快照檔名帶同號
+        # chat 基準（chat_before）在 sweep 完成時已取、跨嘗試共用（見 stage 1；H015 對策）。
         common = game_data.common_ore_names()
-        chat_before = self._read_chat(frame)
+        chat_before = self._chat_baseline
+        if chat_before is None:                  # 防禦：sweep 完成必已取基準，缺了就補
+            bf = capture.grab()
+            chat_before = self._chat_baseline = self._read_chat(bf)
+            self._chat_last_crop = capture.crop(bf, cfg.chat_region)
         rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
-        self.log_harvest.info("[%s] 採集: 找到追蹤框 (%d,%d) -> D3 點選 (attempt=%d rare_before=%s)",
+
+        # ★ 開火前重定位（H015 第一槍對策）：D5 boost 到期會收縮 FOV，畫面上所有座標整批位移
+        #   （H015：sweep 座標 (1564,433) 到實際點擊時已是不同牆面 → 點空牆 miss）。開火永遠用
+        #   「當下」幀重新偵測的座標；找不到＝框已消失/跑位出視野 → 立即重掃，不浪費一發。
+        aim_frame = capture.grab()
+        refind = self._find_tracker(aim_frame, _excl, reference_bgr=_ref)
+        if refind is None:
+            self.logger.info("[%s] 開火前重定位失敗（框已消失/FOV 變動）-> 重新 D2 掃描＋全方位重掃", hid)
+            self._reharvest_sweep()
+            return
+        if abs(refind[0] - cx) >= 8 or abs(refind[1] - cy) >= 8:
+            self.log_harvest.info("[%s] 開火前重定位: (%d,%d) -> (%d,%d)（FOV/視角位移已吸收）",
+                             hid, cx, cy, refind[0], refind[1])
+        cx, cy = refind
+        self._target_marker = (cx, cy)
+        self.log_harvest.info("[%s] 採集: 追蹤框當下位置 (%d,%d) -> D3 點選 (attempt=%d rare_before=%s)",
                          hid, cx, cy, self.harvest.d3_attempts + 1, rare_before)
-        self._hsnap(frame, "d3_fire_%dx%d" % (cx, cy))      # 關鍵診斷截圖：D3 發動瞬間（含追蹤框），存 harvest 追蹤用
-        self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
-        self._hsnap_crop(frame, cfg.chat_region, "d3_chat_before")
+        self._hsnap(aim_frame, "d3_fire_%dx%d" % (cx, cy))  # 關鍵診斷截圖：開火用的「當下」幀（含追蹤框）
         ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
         time.sleep(0.15)
         ic.key_press("3")
         time.sleep(0.3)          # 等 D3 裝備動畫（實測 0.3s 即足夠，原 0.6s 過長）
         ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
-        time.sleep(0.5)          # 等伺服器回應追蹤框消失（實測 0.5s 即足夠，原 1.0s 過長）
-        after = capture.grab()
-        self._hsnap(after, "d3_after")   # D3 後全幀診斷截圖（與 d3_fire 對比，事後追蹤採集是否命中）
-        gone = self._find_tracker(after, _excl,
-                                  reference_bgr=getattr(self, '_pre_scan_ref', None)) is None
-        chat_after = self._read_chat(after)
+        time.sleep(0.5)          # 等伺服器初步回應（後續交給輪詢，不再單幀判生死）
+
+        # ★ 輪詢驗證（H015 第二槍對策）：實機追蹤框是擊中後 2~10s 才消失、聊天成功行更晚到
+        #   （且聊天無新訊息 ~15s 會整個淡出、唯有新訊息會讓它重新顯示）→ 舊「固定等 0.5s 抓
+        #   一幀判生死」必然踩在空窗上（gone=False + no-new → RETRY → 超時誤交人工，礦其實採到了）。
+        #   窗口內每輪：框未消失則再查一次；聊天裁圖像素有變（frames_differ 省 OCR 閘，滿版文字
+        #   3-pass OCR ~10s 不能每輪跑）才重 OCR 差分。confirmed 隨時早退。
+        #   確認信號不變：任一前處理 pass 內「稀有礦 has-found 數量增加，或底部新出現稀有礦行」
+        #   （底部新行是抗捲動主信號；逐 pass 自洽比對，H014 對策），或特殊變體（Ionized/Spectral，
+        #   綁 found 行＋排除清單）。
+        fired_at = time.time()
+        gone = confirmed = special = False
+        first_poll = True
+        after = None
+        chat_after = chat_before
+        while True:
+            after = capture.grab()
+            if first_poll:
+                self._hsnap(after, "d3_after")   # 首輪全幀診斷截圖（與 d3_fire 對比，事後追蹤是否命中）
+                first_poll = False
+            if not gone:
+                gone = self._find_tracker(after, _excl, reference_bgr=_ref) is None
+            cur_crop = capture.crop(after, cfg.chat_region)
+            if vision.frames_differ(self._chat_last_crop, cur_crop, cfg.chat_change_mean_diff):
+                chat_after = ocr.read_text_multi(cur_crop, cfg.tesseract_path)
+                self._chat_last_crop = cur_crop
+                confirmed = ocr.any_new_rare_found(chat_before, chat_after,
+                                                   common, cfg.found_keywords)
+                special = ocr.any_new_special_found(chat_before, chat_after, common,
+                                                    cfg.found_keywords, cfg.special_keywords)
+                confirmed = confirmed or special
+            verdict = harvester.decide_verify_poll(gone, confirmed, time.time() - fired_at,
+                                                   cfg.harvest_verify_window_s)
+            if verdict != "POLL":
+                break
+            time.sleep(cfg.harvest_verify_poll_interval_s)
         rare_after = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
-        # 確認：任一前處理 pass 內「稀有礦 has-found 數量增加，或底部新出現稀有礦行」。
-        # 底部新行是對抗捲動的主信號——舊訊息從頂部刷掉會讓 count 只減不增（2→1 假負），
-        # 但新訊息永遠在底部，只看最後一行不受頂部捲動影響（使用者點名的遞減問題）。
-        # 逐 pass 自洽比對（不同 pass 噪音不同、不可交叉比）；任一 pass 確認即成功（H014 對策）。
-        confirmed = ocr.any_new_rare_found(chat_before, chat_after,
-                                           common, cfg.found_keywords)
-        # 特殊變體（Ionized/Spectral）：綁 found 行 + 排除清單——Rare/Master 的 Spectral
-        # 也會被動進 local chat（wiki 2026-07-03），舊版只看字樣出現會假成功。
-        special = ocr.any_new_special_found(chat_before, chat_after, common,
-                                            cfg.found_keywords, cfg.special_keywords)
-        confirmed = confirmed or special
         chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
-        verdict = harvester.decide_harvest_result(gone, confirmed)
-        self.log_harvest.info("[%s] verify harvest: gone=%s rare %s->%s %s special=%s -> %s",
+        self.log_harvest.info("[%s] verify harvest: gone=%s rare %s->%s %s special=%s poll=%.1fs -> %s",
                          hid, gone, rare_before, rare_after,
-                         "NEW" if confirmed else "no-new", special, verdict)
+                         "NEW" if confirmed else "no-new", special,
+                         time.time() - fired_at, verdict)
         if verdict == "SUCCESS":
             # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
             # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
@@ -1317,6 +1365,8 @@ class Bot:
         """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""
         self.harvest.d3_attempts = 0
         self._target_marker = None              # 下次 tick 重掃
+        self._chat_baseline = None              # 聊天基準跟著作廢，sweep 完成時重取
+        self._chat_last_crop = None
         harvester.prepare_scan()
         self._pre_scan_ref = capture.grab()
         harvester.execute_scan()

@@ -151,3 +151,9 @@ def test_async_sink_inner_error_does_not_kill_worker():
     sink(rec("OK"))
     assert second.wait(2.0), "worker 應在前一事件出錯後仍處理後續事件"
     assert "OK" in seen
+
+def test_format_group_messages_tracker_group_has_caption():
+    # H015：D3 超時（有框）路徑改用分組發送＝追蹤框現況一則＋聊天/背包前後對比各一則，
+    # tracker 群也要有人看得懂的標題（不能印裸 region 名）。
+    msgs = format_group_messages("X", [("tracker", ["t.png"]), ("chat", ["a.png"])])
+    assert "追蹤框" in msgs[0][0]

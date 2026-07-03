@@ -1,5 +1,6 @@
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
-                                 decide_harvest_result, format_rotation_hint,
+                                 decide_harvest_result, decide_verify_poll,
+                                 format_rotation_hint,
                                  format_harvest_id,
                                  plan_giveup, GiveupPlan, GiveupCrop,
                                  giveup_send_groups)
@@ -104,7 +105,16 @@ def test_giveup_face_tracker_keeps_view_and_shows_tracker():
     plan = plan_giveup(face_tracker=True)
     assert plan.restore_view is False
     assert plan.tracker_view is True
-    assert plan.review_crops == ()
+
+def test_giveup_face_tracker_also_attaches_review_crops():
+    # H015：D3 超時交人工時只送了追蹤框裁圖（而框已消失＝圖上空無一物），
+    # 使用者無從判斷 → 有框路徑也要附聊天/背包前後對比（與無框路徑同一組）。
+    plan = plan_giveup(face_tracker=True)
+    assert len(plan.review_crops) == 4
+    assert [(c.source, c.region) for c in plan.review_crops] == [
+        ("before", "chat"), ("after", "chat"),
+        ("before", "backpack"), ("after", "backpack"),
+    ]
 
 def test_giveup_no_tracker_restores_and_uses_four_review_crops():
     # 沒找到框：轉回原視角 + 4 張左側前後對比裁圖
@@ -141,5 +151,25 @@ def test_giveup_send_groups_each_group_keeps_before_after_pattern():
         assert [c.source for c in crops] == ["before", "after"]
 
 def test_giveup_send_groups_empty_when_no_review_crops():
-    # 有框路徑（face_tracker=True）無 review_crops → 無分組（沿用單張追蹤框圖）
-    assert giveup_send_groups(plan_giveup(face_tracker=True).review_crops) == []
+    # 空 review_crops → 無分組（防呆；兩條路徑現在都有 crops，但函式仍須處理空輸入）
+    assert giveup_send_groups(()) == []
+
+
+# --- decide_verify_poll：D3 後輪詢驗證（H015 對策）---
+# 舊流程 click 後固定等 0.5s 抓一幀就判生死：H015 第二槍實際命中，但框 2~10s 後才消失、
+# 聊天成功行更晚到（且聊天淡出後看不見）→ gone=False + no-new → RETRY → 下一 tick 超時交人工。
+# 改成在窗口內輪詢：confirmed 隨時早退成功；窗口未到一律續等（等晚到的行/慢消失的框）；
+# 窗口到才用 decide_harvest_result 收尾。
+def test_verify_poll_confirmed_is_immediate_success():
+    assert decide_verify_poll(gone=False, confirmed=True, elapsed_s=0.1, window_s=8.0) == "SUCCESS"
+    assert decide_verify_poll(gone=True, confirmed=True, elapsed_s=9.9, window_s=8.0) == "SUCCESS"
+
+def test_verify_poll_keeps_polling_inside_window():
+    # 窗口內未確認 → 續等（框在不在都一樣：晚到的聊天行才是成功的唯一證據）
+    assert decide_verify_poll(gone=False, confirmed=False, elapsed_s=3.0, window_s=8.0) == "POLL"
+    assert decide_verify_poll(gone=True, confirmed=False, elapsed_s=3.0, window_s=8.0) == "POLL"
+
+def test_verify_poll_window_end_falls_back_to_harvest_result():
+    # 窗口到、未確認 → 與既有 decide_harvest_result 同語意（gone→RESWEEP、框還在→RETRY）
+    assert decide_verify_poll(gone=True, confirmed=False, elapsed_s=8.1, window_s=8.0) == "RESWEEP"
+    assert decide_verify_poll(gone=False, confirmed=False, elapsed_s=8.1, window_s=8.0) == "RETRY"
