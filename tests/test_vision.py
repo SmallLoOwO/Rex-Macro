@@ -550,3 +550,33 @@ def test_frames_differ_true_when_baseline_missing_or_shape_mismatch():
     a = np.full((80, 200, 3), 120, np.uint8)
     assert frames_differ(None, a) is True          # 尚無基準 → 必須 OCR
     assert frames_differ(a[:40], a) is True        # 尺寸不同（區域改了）→ 必須 OCR
+
+
+def test_find_tracker_edge_clipped_scene_documents_margin_rejection():
+    """真實資料：assets/edge_clipped_tracker_scene.png（H019, RobloxScreenShot20260703_172635259）。
+
+    追蹤框被 D5 到期的 FOV 收縮推到畫面右緣 (~1862,418)、部分裁切。預設 margin_frac=0.1
+    的邊緣排除帶會拒收（in_area=False）→ 整圖回 None——這正是 H019 verify 失敗、誤判
+    「未找到」交人工的機制。margin=0 時同一顆框 edge≈0.57（≫0.42 門檻）可正常命中。
+    此測試釘住兩個事實：邊緣框對預設偵測不可見（上游靠 pick_sweep_candidate 選居中候選
+    ＋verify 失敗重掃一次補救），以及框本身形狀完好可辨（margin 是唯一擋它的關卡）。"""
+    img_path = "assets/edge_clipped_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    kw = dict(exclude=excl, shape_templates=tmpls,
+              shape_threshold=cfg.tracker_shape_threshold,
+              shape_scales=cfg.tracker_shape_scales,
+              shape_roi_px=cfg.tracker_shape_roi_px,
+              shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert find_tracker(img, margin_frac=0.1, **kw) is None       # H019 失敗機制
+    loc = find_tracker(img, margin_frac=0.0, **kw)                # 框本身完好可辨
+    assert loc is not None and abs(loc[0] - 1862) < 40 and abs(loc[1] - 418) < 40

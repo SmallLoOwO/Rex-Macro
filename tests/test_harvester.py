@@ -1,5 +1,6 @@
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, decide_verify_poll,
+                                 pick_sweep_candidate, decide_sweep_failure,
                                  format_rotation_hint,
                                  format_harvest_id,
                                  plan_giveup, GiveupPlan, GiveupCrop,
@@ -173,3 +174,33 @@ def test_verify_poll_window_end_falls_back_to_harvest_result():
     # 窗口到、未確認 → 與既有 decide_harvest_result 同語意（gone→RESWEEP、框還在→RETRY）
     assert decide_verify_poll(gone=True, confirmed=False, elapsed_s=8.1, window_s=8.0) == "RESWEEP"
     assert decide_verify_poll(gone=False, confirmed=False, elapsed_s=8.1, window_s=8.0) == "RETRY"
+
+
+# --- pick_sweep_candidate：sweep 多方位候選中選「最接近畫面中心」者（H019 對策）---
+# H019：dir=3/4/5 三方位都看到同一顆框（x=1473/939/372），舊版取 candidates[0]（=最先看到的
+# dir=3，x 離中心 533px）；轉回後 D5 到期 FOV 收縮把框往外推 ~390px → 撞進畫面邊緣 10%
+# 排除帶（margin_frac）→ verify 整幀找不到 → 誤判「未找到」交人工。選最居中者（dir=4，
+# 離中心 21px）天然留足邊緣餘裕，同樣位移後仍在偵測區內。
+def test_pick_sweep_candidate_prefers_most_centered_x():
+    cands = [(3, (1473, 493)), (4, (939, 512)), (5, (372, 489))]
+    assert pick_sweep_candidate(cands, screen_w=1920) == (4, (939, 512))
+
+def test_pick_sweep_candidate_single_candidate_returned_as_is():
+    assert pick_sweep_candidate([(0, (1600, 400))], screen_w=1920) == (0, (1600, 400))
+
+def test_pick_sweep_candidate_empty_returns_none():
+    assert pick_sweep_candidate([], screen_w=1920) is None
+
+
+# --- decide_sweep_failure：sweep 失敗依「掃描時是否看過穩定框」分流（H019 對策）---
+# 「全 8 方位都沒看到」＝偵測已準、礦多半已被挖走 → 人工（2026-06-29 決策不變）。
+# 「看到過穩定框、只是轉回後 verify 失敗」＝框確實存在（FOV 位移/邊緣裁切/短暫遮擋）
+# → 重掃一次值得；上限 1 次防 verify 反覆失敗的無限重掃。
+def test_sweep_failure_no_candidates_goes_human():
+    assert decide_sweep_failure(had_candidates=False, resweeps_done=0) == "HUMAN"
+
+def test_sweep_failure_with_candidates_resweeps_once():
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=0) == "RESWEEP"
+
+def test_sweep_failure_resweep_budget_exhausted_goes_human():
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=1) == "HUMAN"

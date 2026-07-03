@@ -11,6 +11,7 @@ class HarvestState:
     net_rotations: int = 0  # 淨轉動（右+1、左-1），用來挖完後轉回原角度
     d3_attempts: int = 0    # D3 連續未命中次數（達 max_harvest_attempts 自動重掃）
     harvest_id: str = ""    # 本輪採集編號（如 "H007"）；貫穿 log/快照檔名/Discord 供事後一鍵搜查
+    verify_fail_resweeps: int = 0  # 「掃到框但 verify 失敗」已重掃次數（decide_sweep_failure 上限用，H019）
     # 註：環繞一次找不到即交人工（2026-06-29 偵測已準，移除二次重掃），故不再記 sweep_attempts
 
 
@@ -69,6 +70,42 @@ def decide_harvest_result(gone: bool, confirmed: bool) -> str:
     if gone:
         return "RESWEEP"
     return "RETRY"
+
+def pick_sweep_candidate(candidates, screen_w: int):
+    """sweep 多方位候選中選「x 最接近畫面中心」者（純函式，H019 對策）。
+
+    candidates = [(dir_idx, (x, y)), ...]；空 list 回 None。
+
+    同一顆追蹤框常橫跨相鄰 2~3 個方位都被看到（45° 旋轉有視野重疊）。舊版取
+    candidates[0]（最先看到的方位）——H019 取到離中心 533px 的 dir=3，轉回期間
+    D5 boost 到期 FOV 收縮把框往外推 ~390px → 撞進 find_tracker 的畫面邊緣排除帶
+    （margin_frac=0.1，外緣 10% 一律拒收）→ verify 整幀找不到 → 誤判「未找到」。
+    選最居中者（H019 的 dir=4 離中心僅 21px）天然留足邊緣餘裕：同樣的 FOV 位移
+    後仍在偵測區內，D3 點擊也更不易受後續位移影響。
+    """
+    if not candidates:
+        return None
+    cx = screen_w // 2
+    return min(candidates, key=lambda c: abs(c[1][0] - cx))
+
+
+def decide_sweep_failure(had_candidates: bool, resweeps_done: int,
+                         max_resweeps: int = 1) -> str:
+    """sweep 失敗時依「掃描過程是否看過穩定框」分流（純函式，H019 對策）。
+
+    回傳 "RESWEEP" / "HUMAN"。
+
+    - 全 8 方位都沒看到（had_candidates=False）→ HUMAN：偵測已準（2026-06-29 決策），
+      礦多半已被挖走，再掃一次也不會更好。
+    - 看到過穩定框、只是轉回後 verify 失敗 → 框確實存在（FOV 位移把它推出偵測區/
+      邊緣裁切/短暫遮擋），重掃一次值得（重掃在新 FOV 下重新定位，H019 的框在
+      相鄰方位就能以居中位置被找回）。上限 max_resweeps 次，防 verify 反覆失敗
+      的無限重掃循環。
+    """
+    if had_candidates and resweeps_done < max_resweeps:
+        return "RESWEEP"
+    return "HUMAN"
+
 
 def decide_verify_poll(gone: bool, confirmed: bool, elapsed_s: float, window_s: float) -> str:
     """D3 開火後「輪詢驗證」的單步決策（純函式，H015 對策）。

@@ -30,7 +30,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   1. `harvester.prepare_scan()` — 停止移動、置中鏡頭（裝備位置穩定）
   2. 置中後截 `_pre_scan_ref`（reference）— 排除「掃描前就存在的裝備/礦石假陽性」
   3. `harvester.execute_scan()` — 裝備 D2 + 點擊觸發掃描（等 1.5s）
-  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，選最佳後 rotate_left 旋回該方位。
+  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，**選「x 最居中」候選**（`harvester.pick_sweep_candidate`，2026-07-03 H019 對策）後 rotate_left 旋回該方位。**同一顆框常橫跨相鄰 2~3 方位**（45° 視野重疊）；舊版取最先看到的方位可能離中心 500px+，轉回期間 D5 到期 FOV 收縮把框往外推 ~390px → 撞進 `find_tracker` 邊緣 10% 排除帶（`margin_frac=0.1`）→ verify 整幀找不到（H019：框其實在 (1862,418)、edge 0.57 完好，只是進了排除帶；回歸圖 `assets/edge_clipped_tracker_scene.png`）。居中候選天然留足邊緣餘裕。
      **早停（2026-06-29）**：某方位雙幀穩定且 `edge ≥ tracker_shape_early_exit=0.60`（遠高於裝備上限 0.26，實測真框 0.54-1.00）→ 人已在該方位，直接確定、免掃完剩餘方位也免轉回 verify（`find_tracker(with_score=True)` 外露 edge 分數）。分數不夠高者仍收集 → 掃完走 candidates[0]+verify（保留「不確定就繼續掃」）。
   5. D3 射擊：**開火前重定位（2026-07-03 H015 對策）**——先重抓當下幀 re-find 追蹤框、用**當下座標**開火（找不到→立即重掃不浪費一發）。**根因：D5 boost 到期會收縮 FOV、畫面所有座標整批位移**（buff 週期 ~60s，到期常落在採集中段；H015 第一槍 sweep 座標到點擊時已是不同牆面→點空牆）。舊版開火座標的幀齡可達 12s（被 before-OCR 卡住），現 before 基準已移到 sweep 完成時取。射擊序列不變：按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s。
   6. **確認（`harvester.decide_verify_poll` 輪詢 → `decide_harvest_result` 收尾，2026-07-03 H015 改輪詢；2026-06-29 改用「排除低稀有度」反轉策略）**：成功**只認聊天新增的稀有礦**（confirmed），不再用 `gone`。
@@ -50,7 +50,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
      - **未來方向（使用者提到）**：可能關閉「部分高階礦的聲音」，讓「只有出聲的高階」才觸發採集＝天然過濾想採的礦；屆時觸發判斷會更依賴 chill 音訊的**前後對比**（`ChillListener`）。
   7. 成功後 `harvester.restore_view(net_rotations)` 轉回原視角 → `miner.init_mining_sequence()`（與 Q 恢復/啟動相同的完整序列：清鍵→視角→置中→確認鎬子→W+左鍵）
   - **超時兩階段**：sweep 階段 `sweep_timeout_s=30s`；sweep 完成後重置計時器（聊天基準 OCR 的 ~10s 不吃 D3 預算），D3 階段 `harvest_verify_timeout_s=45s`——一次 D3 嘗試實測 ~20s，舊 15s 連一次都裝不下 → RETRY 後 1s 即超時交人工、5 次重試預算形同虛設（H015 根因之一）。
-  - **重試**：RETRY 連 `max_harvest_attempts=5` 次未命中 → 重掃（`_reharvest_sweep`）；RESWEEP 立即重掃；sweep **環繞一次**找不到 → **先 `restore_view` 轉回原視角** → NEEDS_HUMAN（2026-06-29：偵測已準，移除二次重掃；放棄路徑統一走 `_harvest_giveup` 先轉回視角，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
+  - **重試**：RETRY 連 `max_harvest_attempts=5` 次未命中 → 重掃（`_reharvest_sweep`）；RESWEEP 立即重掃；sweep 失敗依「掃描時是否看過穩定框」分流（`harvester.decide_sweep_failure`，2026-07-03 H019）——**全 8 方位都沒看到** → 人工（2026-06-29：偵測已準，再掃不會更好）；**看到過但轉回後 verify 失敗**（FOV 位移/邊緣裁切）→ 框確實存在，**重掃一次**（上限 1 次防無限循環）。交人工時 **先 `restore_view` 轉回原視角**（放棄路徑統一走 `_harvest_giveup`，讓畫面回正便於人工判斷「礦已被挖走」的好假警報）。
   - **聊天裡的 `小名 has found` 全是自己**（單人作業、無其他玩家）：混了**普通鎬子挖的一般礦**（Lovelocket/Bandeau 等在左側 NORMAL 面板）和 D3 稀有礦——故不能用「出現 has found」判斷成功，要**排除低稀有度礦後看是否有新稀有礦**（見步驟 6）。
   - **遊戲資料分世界（`game_data.World`）**：REX 分 world，每世界各有 `events`（D4 事件）與 `common_ores`（低稀有度排除清單）。目前有 **Aesteria + Lucernia**（Lucernia 含 2026 春季四圖層 Amourite/Shamrock/Brittlestone/Harmonine 與洞穴限定，wiki Lucernia 頁為資料源；洞穴礦聊天行帶 `(Xxx Cave)` 尾註、`startswith` 容忍會正確排除）；新增世界＝建一個 `World` 加進 `WORLDS`。`EVENTS` 是模組層相容別名＝Aesteria 事件。**排除清單只收 Surreal/Mythic**——Exotic 以上是 D3 目標，列進去＝重演 H014 假陰性（真採到 Diamorite 卻被排除）。
   - **世界偵測（`game_data.detect_world`/`update_world_from_event`，2026-06-29）**：遊戲不直接顯示在哪個世界，靠**「看到的事件屬於哪個世界」**推斷（事件分世界）。`main._maybe_detect_world` 搭既有事件 OCR 便車（`_check_reset` 每 2s + D4 路徑）呼叫；某事件唯一命中一個世界 → `set_world` 鎖定（跨世界共用事件＝無法區分→不鎖）。**世界未確定時 `common_ore_names()` 用「所有世界聯集」當保守排除清單**；鎖定後收斂成該世界的，更準（同名礦在不同世界階級可能不同，用錯世界會把高階採集目標誤排除→漏判成功）。`match_event`/`fuzzy_match_ore` 一律搜全世界聯集（讀到事件時可能還沒鎖世界）。

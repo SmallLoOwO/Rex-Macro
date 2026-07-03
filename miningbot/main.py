@@ -1032,11 +1032,13 @@ class Bot:
 
     def _sweep_for_tracker(self, excl, ref):
         """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
-        回傳最佳追蹤框螢幕座標 (cx, cy)；找不到回 None。
+        回傳 (最佳追蹤框螢幕座標 (cx, cy) | None, 掃描過程是否看過穩定候選)。
+        had_candidates 讓呼叫端分流 sweep 失敗（H019）：全程沒看到→人工；
+        看到過但 verify 失敗（FOV 位移/邊緣裁切）→ 重掃一次。
 
         早停：某方位雙幀穩定且 edge ≥ tracker_shape_early_exit（遠高於裝備上限）→ 人已在
-        該方位，直接確定、免掃完剩餘方位也免轉回 verify。分數不夠高者仍收集，掃完走
-        candidates[0] + verify（保留「不確定就繼續掃」的行為）。
+        該方位，直接確定、免掃完剩餘方位也免轉回 verify。分數不夠高者仍收集，掃完選
+        「x 最居中」的候選（pick_sweep_candidate，H019 對策）+ verify（保留「不確定就繼續掃」）。
         """
         hid = self.harvest.harvest_id   # 本輪編號；sweep 偵測敘事行前綴 [Hxxx]（誤判常源於此階段）
         NUM_DIRS = 8
@@ -1060,7 +1062,7 @@ class Bot:
                             hid, i, r2[2], cfg.tracker_shape_early_exit, m2)
                         path = self._hsnap(gf, "sweep_confirmed_%d_%d" % m2)
                         self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(m2), image_path=path)
-                        return m2
+                        return m2, True
                     self.log_harvest.info("[%s] sweep dir=%d: 穩定追蹤框 %s (edge=%.2f)", hid, i, m2, r2[2])
                     candidates.append((i, m2))
                 else:
@@ -1074,9 +1076,12 @@ class Bot:
 
         if not candidates:
             self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
-            return None
+            return None, False
 
-        best_dir, best_pos = candidates[0]  # 取第一個穩定候選（colored_frac 最高的）
+        # 同一顆框常橫跨相鄰 2~3 個方位（45° 視野重疊）→ 選 x 最居中者（H019 對策）：
+        # 舊版 candidates[0]（最先看到的方位）可能離中心 500px+，轉回期間 D5 到期 FOV
+        # 收縮把框往外推 → 撞進 find_tracker 邊緣 10% 排除帶 → verify 整幀找不到。
+        best_dir, best_pos = harvester.pick_sweep_candidate(candidates, cfg.screen_w)
         # 目前在 dir 7（rotate_right × 7）→ 需往左轉 (7 - best_dir) 次回到 best_dir
         lefts = (NUM_DIRS - 1) - best_dir
         self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", hid, best_dir, best_pos, lefts)
@@ -1093,16 +1098,16 @@ class Bot:
             self.log_harvest.info("[%s] sweep: 驗證成功 %s", hid, vm)
             path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
             self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
-            return vm
+            return vm, True
         elif vm:
             self.log_harvest.info("[%s] sweep: 位置偏移 %s→%s，用新位置", hid, best_pos, vm)
             path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
             self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
-            return vm
+            return vm, True
         else:
             self.log_harvest.info("[%s] sweep: 驗證時追蹤框消失（掃描位置 %s 未通過 verify），重試",
                                  hid, best_pos)
-            return None
+            return None, True
 
     def _harvest_giveup(self, reason: str, *, face_tracker: bool = False):
         """採集放棄 → 依「有無追蹤框」決定視角處置 + 截圖，交人工（需求 A+C）。
@@ -1173,10 +1178,20 @@ class Bot:
                 self._harvest_giveup("全方位掃描超時，請手動處理")
                 return
             self.last_action = "全方位掃描（8方位）"
-            self._target_marker = self._sweep_for_tracker(_excl, _ref)
+            self._target_marker, had_candidates = self._sweep_for_tracker(_excl, _ref)
             if self._target_marker is None:
-                # 環繞一次找不到就交人工（偵測已準；再掃一次也是偵測問題，不會更好）。
-                # 先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
+                # 依「掃描過程是否看過穩定框」分流（H019）：
+                # - 全 8 方位都沒看到 → 人工（偵測已準；再掃也不會更好，2026-06-29 決策）。
+                #   先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
+                # - 看到過但轉回後 verify 失敗 → 框確實存在（D5 到期 FOV 位移把它推進畫面
+                #   邊緣排除帶/短暫遮擋）→ 重掃一次，在新 FOV 下重新定位（上限 1 次）。
+                if harvester.decide_sweep_failure(had_candidates,
+                                                  self.harvest.verify_fail_resweeps) == "RESWEEP":
+                    self.harvest.verify_fail_resweeps += 1
+                    self.logger.info("[%s] sweep 看過穩定框但 verify 失敗（FOV 位移/邊緣裁切）"
+                                     "-> 重掃一次 (%d/1)", hid, self.harvest.verify_fail_resweeps)
+                    self._reharvest_sweep()
+                    return
                 self.logger.info("[%s] sweep 未找到追蹤框（環繞一次）-> 人工", hid)
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
