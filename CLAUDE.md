@@ -34,10 +34,12 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
      **早停（2026-06-29）**：某方位雙幀穩定且 `edge ≥ tracker_shape_early_exit=0.60`（遠高於裝備上限 0.26，實測真框 0.54-1.00）→ 人已在該方位，直接確定、免掃完剩餘方位也免轉回 verify（`find_tracker(with_score=True)` 外露 edge 分數）。分數不夠高者仍收集 → 掃完走 candidates[0]+verify（保留「不確定就繼續掃」）。
   5. D3 射擊：**開火前重定位（2026-07-03 H015 對策）**——先重抓當下幀 re-find 追蹤框、用**當下座標**開火（找不到→立即重掃不浪費一發）。**根因：D5 boost 到期會收縮 FOV、畫面所有座標整批位移**（buff 週期 ~60s，到期常落在採集中段；H015 第一槍 sweep 座標到點擊時已是不同牆面→點空牆）。舊版開火座標的幀齡可達 12s（被 before-OCR 卡住），現 before 基準已移到 sweep 完成時取。射擊序列不變：按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s。
   6. **確認（`harvester.decide_verify_poll` 輪詢 → `decide_harvest_result` 收尾，2026-07-03 H015 改輪詢；2026-06-29 改用「排除低稀有度」反轉策略）**：成功**只認聊天新增的稀有礦**（confirmed），不再用 `gone`。
-     - **輪詢驗證（H015 第二槍對策）**：實機框是**擊中後 2~10s 才消失**、聊天成功行更晚到（且聊天無新訊息 ~15s 整個淡出、唯有新訊息會重新顯示）→ 舊「click 後固定等 0.5s 抓單幀判生死」必然踩空窗（其實採到卻 RETRY→超時誤交人工）。改在 `harvest_verify_window_s=8s` 窗口內輪詢：confirmed 隨時早退；窗口到才 RESWEEP/RETRY。聊天 OCR 有 `vision.frames_differ` 省 OCR 閘（角色靜止時聊天裁圖近乎逐位元相同，只在像素變了才重 OCR——滿版文字 3-pass 實測 ~10s/次，不能每輪跑）。
+     - **輪詢驗證（H015 第二槍對策）**：實機框是**擊中後 2~10s 才消失**、聊天成功行更晚到（且聊天無新訊息 ~15s 整個淡出、唯有新訊息會重新顯示）→ 舊「click 後固定等 0.5s 抓單幀判生死」必然踩空窗（其實採到卻 RETRY→超時誤交人工）。改在 `harvest_verify_window_s=8s` 窗口內輪詢：confirmed 隨時早退；窗口到才 RESWEEP/RETRY。聊天 OCR 有 `vision.frames_differ` 省 OCR 閘（角色靜止時聊天裁圖近乎逐位元相同，只在像素變了才重 OCR——滿版文字 3-pass 實測 ~10s/次，不能每輪跑）。**窗口到期最終確認（2026-07-03 H020 對策）**：一次 OCR 7~11s ≈ 整個 8s 窗口＝窗口內只有一次機會；且幀差閘可能在聊天**淡入中**就觸發 OCR 並更新 `_chat_last_crop`（讀到半透明文字必歪、之後像素不再變不重讀）→ 判 RESWEEP/RETRY 前強制對最新幀再 OCR 一次（只在失敗路徑多花 ~10s，`_verify_chat_ocr(..., "final-check")`）。
      - **聊天基準（chat_before）在 sweep 完成時取一次、跨本輪所有 D3 嘗試共用**：逐次重讀 before 會把晚到的成功行吃進下一次嘗試的基準→差分永遠看不見；共用基準則成功行落在哪個窗口都算「新增」。RESWEEP 時作廢重取。
      - `confirmed=True` → **SUCCESS**（不論框在不在）。`confirmed` = 聊天「`has found X`」裡 **X 不在低稀有度排除清單** (`game_data.common_ore_names()`) 的筆數**增加**，或**底部新出現一行稀有礦**（`ocr.count_rare_found` / `has_new_rare_found_last_line`）。特殊階（ionized/spectral）另由 `special_keywords` 字樣確認、也算 confirmed。
      - **聊天 OCR 走多前處理融合（2026-07-03 H014 假陰性對策）**：`_read_chat` 用 `ocr.read_text_multi`（`CHAT_PREPROCESSES`＝min_channel/gray/dark_mask 各 OCR 一次；**滿版文字實測 ~3.3s/pass、3 pass ~10s**（H015 實測，空白圖 0.14s——舊註記 0.4s/pass 是小圖數字），故只在「基準」與「輪詢中像素有變」時跑），`ocr.any_new_rare_found` **逐 pass 自洽差分**（不同 pass 噪音不同、不可交叉比），任一 pass 確認即成功。**單一前處理必有背景盲區**：min_channel 為暗背景校準、在亮粉糖果礦壁上彩色行全滅（H014：真採到的底部新行 `has found Diamorite` 沒讀到 → 假陰性誤交人工）；dark_mask（文字深色外框 vs 亮背景）反之在近全黑礦坑失效。**改前處理必跑回歸集 `tests/test_ocr_fixtures.py`**（實機裁圖×三種背景），新背景樣本從 `logs/snapshots/trace` 補進 `tests/fixtures/chat/`。
+     - **模糊 found 兜底（2026-07-03 H020 假陰性對策）**：H014 是「整行讀不到」（前處理盲區），H020 是**「行讀得到、關鍵字讀歪」**——dark_mask 把 `has found Valytium` 讀成 `hee foumel velyiiuinm`，精確子字串 `"has found"` 對不上→三 pass 全滅→RESWEEP→重掃全空（礦已被自己採走）→誤交人工。對策：`any_new_rare_found(..., rare_names=game_data.rare_ore_names())` 加模糊路徑——found-ish token（SequenceMatcher≥0.52、**非行首**（found 行前面必有玩家名，系統行 "friends can chat..." 曾誤收）、**長度≥4**（OCR 黏字的 "un" 曾誤當））＋其後礦名對**白名單** fuzzy ≥0.62 **且嚴格高於排除清單分數**（雙向最近鄰：`biemnentine`＝Surreal Diamantine 誤讀，對 Solemn Lamentine=對 Presentine=0.667 平手→判 common，寧漏勿假成功）。門檻由 H020 實資料兩側夾出（真值 founcl=0.727/foumel=0.545/velyiiuinm→Valytium=0.667；誤收值 friends=0.500/Luckant=0.600）。白名單檔缺→`rare_ore_names()` 空→fuzzy 自動停用（降級回精確）。回歸：`tests/fixtures/chat/h020_*.png` 鎖「精確=False、fuzzy=True」。
+     - **verify 詳細 log（H020 起，這類假陰性已發生多次）**：poll 每輪 DEBUG 記 chat 像素差值 vs 門檻（回答「為何那輪沒觸發 OCR」）；每次 OCR 記觸發原因/耗時/逐 pass 稀有計數/末行原文；fuzzy 收/拒診斷附雙邊分數；**未確認收場時逐 pass OCR 全文落盤 `trace/*_chat_ocr.txt`**（`_dump_chat_ocr`——事後排錯不必重跑 10s OCR、引擎一改也不可重現）。
      - 框消失但無新稀有礦（gone & ~confirmed）→ **RESWEEP**：礦被**掃描到期**拿走，原地再射也射不到 → 立即重掃（不浪費 attempts）。
      - 框還在且未命中（~gone & ~confirmed）→ **RETRY**：原地重試 D3。
      - **為何不再用 `gone` 當成功（踩坑根因）**：「框消失 ≠ 我們採到」。真追蹤框會因 **D2 掃描到期（框自己淡掉）**而消失，舊邏輯 `gone or confirmed` 把這誤報成功（2026-06-29 trace 20260629_022126：真框疊在角色額頭 D3 打不到、掃描到期框自己淡掉 → gone=True 假成功，稀有礦 5→5 根本沒變）。
@@ -110,7 +112,9 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
     附圖＝`chat_review_region`×前後、`backpack_review_region`×前後。**Discord 分則發送：先聊天框（前/後），再背包（前/後）**
     （`harvester.giveup_send_groups` 依 region 分組 → meta `image_groups` → `notify.format_group_messages`／sink 各發一則；
     第一則帶完整警告文字＋群標題，其餘只帶群標題）。舊版一則附 4 圖（2×2）縮圖太小，拆兩則各 2 圖更清楚（2026-07-02 需求）。
-    before＝該輪 `_pre_scan_ref`、after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
+    before＝**本輪採集開始時的 `_harvest_origin_ref`**（2026-07-03 H020 修正：舊版用最近一次 sweep 的 `_pre_scan_ref`，但
+    `_reharvest_sweep` 會重拍它——礦其實已採到才 RESWEEP 時，重拍的已是「採完後」畫面 → before/after 兩張一模一樣、對比失去鑑別力）、
+    after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
     （新 has-found 行 / 背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
   **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
