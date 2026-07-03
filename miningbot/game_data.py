@@ -628,6 +628,16 @@ def rare_ores(world_name: str | None = None) -> dict:
     return tables.get(world_name) or tables["__union__"]
 
 
+def rare_ore_names() -> tuple[str, ...]:
+    """高階白名單的礦名（原大小寫、去重保序）——OCR 模糊匹配的詞彙表（H020 對策）。
+
+    與 `common_ore_names` 同款收斂：世界已鎖定 → 該世界白名單；未定 → 全世界聯集。
+    檔案缺/壞 → 空 tuple（fuzzy 兜底自動停用，行為安全降級回精確匹配）。
+    """
+    table = rare_ores(current_world_name())
+    return tuple(dict.fromkeys(info["ore"] for info in table.values()))
+
+
 def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"unknown", 白名單 info 或 None)。
 

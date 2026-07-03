@@ -891,6 +891,10 @@ class Bot:
             self.logger.info("進入採集 HARVESTING [%s]: D2 掃描，全方位搜尋追蹤框", hid)
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
+            # giveup 前後對比圖的「前」基準只在這裡取一次（H020：_reharvest_sweep 會
+            # 重拍 _pre_scan_ref——若 D3 其實已採到才 RESWEEP，重拍的已是「採完後」畫面
+            # → 送人工的 before/after 兩張一模一樣、對比失去鑑別力）
+            self._harvest_origin_ref = self._pre_scan_ref
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
@@ -1137,14 +1141,19 @@ class Bot:
         # 兩條路徑都附「聊天/背包前後對比」分組（H015：D3 超時只送框裁圖、而框已消失＝圖上
         # 空無一物，人工無從判斷「礦是否其實已採到」；左側 UI 是螢幕覆蓋層、與視角無關）。
         # 有框路徑另加 tracker 群排最前＝追蹤框現況（人工可據此手動採）。
-        # before＝本輪 _pre_scan_ref、after＝現在（放棄時）。每組保留前/後兩張（對比模式不變）。
+        # before＝**本輪採集開始時**的 _harvest_origin_ref（不是最近一次 sweep 的
+        # _pre_scan_ref——RESWEEP 會重拍它，若礦其實已採到，重拍的是「採完後」畫面，
+        # before/after 會一模一樣、對比失去鑑別力，H020 實錄）、after＝現在（放棄時）。
         groups = []
         if plan.tracker_view:
             p = self._save_tracker_screenshot(frame, self._target_marker, 0)  # net_rot=0：正對著框，免旋轉提示
             if p:
                 groups.append(("tracker", [p]))
         region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
-        src_map = {"before": getattr(self, "_pre_scan_ref", None), "after": frame}
+        before_ref = getattr(self, "_harvest_origin_ref", None)
+        if before_ref is None:                  # 舊路徑後備（理論上進 HARVESTING 必已設）
+            before_ref = getattr(self, "_pre_scan_ref", None)
+        src_map = {"before": before_ref, "after": frame}
         for region, crops in harvester.giveup_send_groups(plan.review_crops):
             paths = []
             for c in crops:
@@ -1263,6 +1272,7 @@ class Bot:
         #   確認信號不變：任一前處理 pass 內「稀有礦 has-found 數量增加，或底部新出現稀有礦行」
         #   （底部新行是抗捲動主信號；逐 pass 自洽比對，H014 對策），或特殊變體（Ionized/Spectral，
         #   綁 found 行＋排除清單）。
+        rare_names = game_data.rare_ore_names()  # fuzzy 兜底詞彙表（H020 對策；檔缺→空＝停用）
         fired_at = time.time()
         gone = confirmed = special = False
         first_poll = True
@@ -1276,21 +1286,45 @@ class Bot:
             if not gone:
                 gone = self._find_tracker(after, _excl, reference_bgr=_ref) is None
             cur_crop = capture.crop(after, cfg.chat_region)
-            if vision.frames_differ(self._chat_last_crop, cur_crop, cfg.chat_change_mean_diff):
-                chat_after = ocr.read_text_multi(cur_crop, cfg.tesseract_path)
+            mean_diff = vision.frames_mean_diff(self._chat_last_crop, cur_crop)
+            # 每輪都留一行 DEBUG（H020 事後排錯需求）：沒觸發 OCR 的輪也要能回答
+            # 「當時像素差多少、離門檻多遠」
+            self.log_harvest.debug("[%s] verify poll t=%.1f gone=%s chat_diff=%s thr=%.1f",
+                                   hid, time.time() - fired_at, gone,
+                                   "None" if mean_diff is None else f"{mean_diff:.2f}",
+                                   cfg.chat_change_mean_diff)
+            if mean_diff is None or mean_diff > cfg.chat_change_mean_diff:
+                chat_after, confirmed, special = self._verify_chat_ocr(
+                    cur_crop, chat_before, common, rare_names, hid,
+                    f"poll@{time.time() - fired_at:.1f}s diff={mean_diff}")
                 self._chat_last_crop = cur_crop
-                confirmed = ocr.any_new_rare_found(chat_before, chat_after,
-                                                   common, cfg.found_keywords)
-                special = ocr.any_new_special_found(chat_before, chat_after, common,
-                                                    cfg.found_keywords, cfg.special_keywords)
                 confirmed = confirmed or special
             verdict = harvester.decide_verify_poll(gone, confirmed, time.time() - fired_at,
                                                    cfg.harvest_verify_window_s)
             if verdict != "POLL":
                 break
             time.sleep(cfg.harvest_verify_poll_interval_s)
+        # ★ 窗口到期最終確認（H020 對策）：幀差閘可能在「聊天淡入中」就觸發 OCR 並把
+        #   _chat_last_crop 更新成與最終畫面幾乎相同的幀 → 之後像素「不再有變」、不再
+        #   重 OCR，而那次 OCR 讀的是半透明/未定稿文字（必歪）。且一次 3-pass OCR
+        #   實測 7~11s ≈ 整個 8s 窗口 → 窗口內只有一次機會、失敗即出局。
+        #   判 RESWEEP/RETRY 前強制對最新幀再 OCR 一次（只在失敗路徑多花 ~10s，
+        #   換掉「其實採到了卻誤交人工」——H020 的直接死因）。
+        if verdict != "SUCCESS" and not confirmed:
+            after = capture.grab()
+            chat_after, confirmed, special = self._verify_chat_ocr(
+                capture.crop(after, cfg.chat_region), chat_before, common, rare_names,
+                hid, "final-check")
+            confirmed = confirmed or special
+            if confirmed:
+                verdict = "SUCCESS"
+                self.log_harvest.info("[%s] 窗口到期最終確認救回：聊天確認已採到（原判 %s）",
+                                      hid, "RESWEEP" if gone else "RETRY")
         rare_after = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
+        if verdict != "SUCCESS":
+            # 未確認收場 → 逐 pass OCR 全文落盤，下次假陰性調查不必重跑 OCR（H020 需求）
+            self._dump_chat_ocr(hid, chat_before, chat_after)
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
@@ -1315,6 +1349,17 @@ class Bot:
                     has_unknown = True
                 else:
                     annotated.append(line)
+            # fuzzy 命中行（H020：關鍵字被 OCR 讀歪 → 精確抽取抓不到）另列，
+            # 標注「≈匹配到的白名單礦名＋相似度」讓人工可核對是不是誤配
+            seen = {l.lower() for l in new_lines}
+            for b, a in zip(chat_before, chat_after):
+                for line, ore_name, ratio in ocr.new_fuzzy_rare_lines(b, a, common, rare_names):
+                    if line.lower() in seen:
+                        continue
+                    seen.add(line.lower())
+                    kind, info = game_data.classify_found_ore(ore_name.lower())
+                    tier = f"，{info['tier']} 1/{info['rarity']:,}" if kind == "rare" and info else ""
+                    annotated.append(f"{line} 〔≈{ore_name} {ratio:.2f}{tier}〕")
             if has_unknown:
                 annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"
                                  "請核對；可跑 python -m miningbot.fetch_ores 同步清單")
@@ -1400,6 +1445,57 @@ class Bot:
         """
         return ocr.read_text_multi(capture.crop(frame, cfg.chat_region),
                                    cfg.tesseract_path)
+
+    def _verify_chat_ocr(self, crop, chat_before, common, rare_names, hid, why):
+        """輪詢驗證的一次聊天 OCR：multi 讀取＋差分判定＋詳細 log（H020 排錯需求）。
+
+        回傳 (chat_after, confirmed, special)。log 內容：觸發原因/耗時/逐 pass 稀有計數
+        與末行原文；未確認且有白名單時再印 fuzzy 診斷（疑似 found 行的收/拒與分數）——
+        「讀到行但關鍵字歪了」這類假陰性從此直接可見，不用重跑 OCR 猜。
+        """
+        t0 = time.time()
+        chat_after = ocr.read_text_multi(crop, cfg.tesseract_path)
+        confirmed = ocr.any_new_rare_found(chat_before, chat_after, common,
+                                           cfg.found_keywords, rare_names=rare_names)
+        special = ocr.any_new_special_found(chat_before, chat_after, common,
+                                            cfg.found_keywords, cfg.special_keywords)
+        counts = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
+        self.log_harvest.info("[%s] verify OCR(%s) %.1fs rare/pass=%s confirmed=%s special=%s",
+                              hid, why, time.time() - t0, counts, confirmed, special)
+        for i, t in enumerate(chat_after):
+            last = t.strip().splitlines()[-1] if t.strip() else ""
+            self.log_harvest.info("[%s]   pass%d(%s) 末行=%r", hid, i,
+                                  ocr.CHAT_PREPROCESSES[i], last[-90:])
+        if not confirmed and rare_names:
+            for i, t in enumerate(chat_after):
+                for d in ocr.fuzzy_found_diagnostics(t, common, rare_names):
+                    self.log_harvest.info(
+                        "[%s]   pass%d fuzzy %s: %r token=%r cand=%r rare=%s(%.2f) common=%s(%.2f)",
+                        hid, i, "收" if d["accepted"] else "拒", d["line"][:70],
+                        d["token"], d["candidate"],
+                        d["best_rare"][0], d["best_rare"][1],
+                        d["best_common"][0], d["best_common"][1])
+        return chat_after, confirmed, special
+
+    def _dump_chat_ocr(self, hid, chat_before, chat_after):
+        """驗證未確認收場時，把逐 pass OCR 全文落盤 trace/*.txt。
+
+        H020 調查時只有截圖、沒有「當時 OCR 實際讀到什麼」——得事後重跑 10s OCR 且
+        引擎版本/前處理一改就不可重現。文字檔很小，直接同步寫。
+        """
+        try:
+            d = os.path.join(cfg.log_dir, "snapshots", "trace")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, f"{time.strftime('%Y%m%d_%H%M%S')}_{hid}_chat_ocr.txt")
+            parts = []
+            for tag, texts in (("before", chat_before), ("after", chat_after)):
+                for i, t in enumerate(texts):
+                    parts.append(f"==== {tag} pass{i} ({ocr.CHAT_PREPROCESSES[i]}) ====\n{t}\n")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(parts))
+            self.log_harvest.info("[%s] OCR 全文已落盤: %s", hid, path)
+        except Exception as e:                    # 診斷輔助，失敗不擋主迴圈
+            self.log_harvest.warning("[%s] OCR 全文落盤失敗: %s", hid, e)
 
     def _snapshot_crop(self, frame, region, label: str) -> str | None:
         """存畫面指定區域截圖（非同步）。crop 很便宜，在主線裁好後把小圖丟背景寫檔。"""

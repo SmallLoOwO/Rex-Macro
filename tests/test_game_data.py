@@ -439,3 +439,18 @@ def test_rare_ores_scoped_by_world_and_union():
     assert "abyssium" not in gd.rare_ores("Lucernia")
     assert "abyssium" in gd.rare_ores("Aesteria")
     assert "abyssium" in gd.rare_ores(None) and "arachnophyte" in gd.rare_ores(None)
+
+
+def test_rare_ore_names_converges_by_world():
+    # 與 common_ore_names 同款收斂：未鎖世界→聯集；鎖定→只回該世界白名單名稱
+    gd.clear_world()
+    names = gd.rare_ore_names()
+    assert "Valytium" in names            # Lucernia Exotic（H020 實際採到的）
+    assert "Abyssium" in names            # Aesteria 高階（聯集要有）
+    try:
+        gd.set_world("Lucernia")
+        scoped = gd.rare_ore_names()
+        assert "Valytium" in scoped
+        assert "Abyssium" not in scoped
+    finally:
+        gd.clear_world()

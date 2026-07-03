@@ -29,11 +29,21 @@ def frames_differ(baseline_bgr, current_bgr, mean_diff_threshold: float = 2.0) -
     裁圖近乎逐位元相同（實測連 PNG 位元組數都一樣）；新訊息出現或聊天淡出都會
     大幅改變像素 → 只在變化時才 OCR。基準缺失或尺寸不合＝無從比較 → 當作有變化。
     """
+    d = frames_mean_diff(baseline_bgr, current_bgr)
+    return True if d is None else d > mean_diff_threshold
+
+
+def frames_mean_diff(baseline_bgr, current_bgr) -> float | None:
+    """兩張裁圖的平均絕對差；基準缺/尺寸不合回 None（無從比較＝frames_differ 視為有變）。
+
+    拆出數值版是給詳細 log 用（H020 事後排錯）：光看 frames_differ 的 bool 無法回答
+    「為什麼那輪沒觸發 OCR」——差值多少、離門檻多遠，要留在 harvest.log 裡。
+    """
     if baseline_bgr is None or current_bgr is None:
-        return True
+        return None
     if baseline_bgr.shape != current_bgr.shape:
-        return True
-    return float(np.mean(cv2.absdiff(baseline_bgr, current_bgr))) > mean_diff_threshold
+        return None
+    return float(np.mean(cv2.absdiff(baseline_bgr, current_bgr)))
 
 def _canny(img_bgr):
     return cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)

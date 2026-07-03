@@ -73,3 +73,19 @@ def test_h005_mixed_dark_bg_union_recovers_more_lines_than_any_single_pass():
     union = ocr.extract_new_found_lines_multi([""] * len(texts), texts, KW)
     assert len(union) > max(len(p) for p in per_pass)
     assert any("saeryliu" in l.lower() for l in union)   # 容忍 OCR 尾端雜訊（Saeryliuim）
+
+
+def test_h020_pink_bg_fuzzy_confirms_valytium_harvest():
+    # H020 實況重演（2026-07-03 21:22）：before 聊天淡出全空；after 底部兩行
+    # 「has found Diamantine」（Surreal、被動挖到）＋「has found Valytium」（Exotic、D3 採到）。
+    # 亮粉背景讓三 pass 的精確關鍵字全滅（dark_mask 讀成 "hee foumel velyiiuinm"）→
+    # 當時 rare [0,0,0]->[0,0,0] 假陰性誤交人工。模糊匹配必須救回 Valytium 行。
+    before = ocr.read_text_multi(_load("h020_before_faded_pink.png"), cfg.tesseract_path)
+    after = ocr.read_text_multi(_load("h020_after_pink_bg.png"), cfg.tesseract_path)
+    common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
+    rares = tuple(r["ore"] for r in game_data.rare_ores("Lucernia").values())
+    # 當時的行為（精確匹配、無 fuzzy）＝假陰性——鎖住這個事實，若未來 OCR 前處理
+    # 進步到精確匹配就讀得到，這條會 fail 提醒我們 fuzzy 兜底可以簡化
+    assert ocr.any_new_rare_found(before, after, common, KW) is False
+    # fuzzy 兜底（rare_names 白名單詞彙表）必須確認採集成功
+    assert ocr.any_new_rare_found(before, after, common, KW, rare_names=rares) is True

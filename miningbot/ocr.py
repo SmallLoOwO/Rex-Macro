@@ -139,14 +139,19 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
 # 實測（tests/fixtures/chat 回歸集）：三種 pass 在暗棕混合背景各救回不同行、聯集嚴格更優。
 CHAT_PREPROCESSES = ("min_channel", "gray", "dark_mask")
 
-def any_new_rare_found(before_texts, after_texts, common_names, found_keywords) -> bool:
+def any_new_rare_found(before_texts, after_texts, common_names, found_keywords,
+                       rare_names=()) -> bool:
     """逐 pass 差分（count 增加或底部新稀有行），任一 pass 確認即 True。
 
     before_texts/after_texts 依 CHAT_PREPROCESSES 順序一一對應（read_text_multi 的輸出）。
+    rare_names（白名單詞彙表）非空時加開模糊兜底（H020：關鍵字被 OCR 讀歪、精確
+    匹配全滅時，靠「found-ish token＋礦名≈白名單」救回）；空＝行為不變。
     """
     return any(
         has_new_rare_found(b, a, common_names, found_keywords)
         or has_new_rare_found_last_line(b, a, common_names, found_keywords)
+        or (bool(rare_names)
+            and has_new_fuzzy_rare_found(b, a, common_names, rare_names))
         for b, a in zip(before_texts, after_texts)
     )
 
@@ -173,6 +178,136 @@ def count_special_found(text: str, common_names, found_keywords, variant_keyword
         if _is_rare_ore(ore, common):
             total += 1
     return total
+
+
+# ── 模糊 found 行匹配（2026-07-03 H020 假陰性對策）──────────────────────────
+# 根因：亮粉背景下三個前處理 pass 的「精確關鍵字」全滅——dark_mask 其實讀得到行，
+# 但 "has found Valytium" 被讀成 "hee foumel velyiiuinm"，`has found` 子字串對不上
+# → 整行作廢 → RESWEEP → 重掃全空（礦已採走）→ 誤交人工。
+# 對策：行內找 token≈"found"（SequenceMatcher ≥ FUZZY_FOUND_TOKEN_RATIO），其後文字
+# 同時對「稀有白名單」與「排除清單」模糊比對——白名單分數 ≥ FUZZY_ORE_RATIO **且
+# 嚴格高於**排除清單分數才算稀有（"biemnentine"＝Surreal Diamantine 誤讀，對
+# Solemn Lamentine 0.667 = 對 Diamantine 0.667 → 平手判 common；寧漏勿假成功）。
+# 三重閘門（found-ish token ＋ 白名單命中 ＋ 贏過 common）讓寬鬆的 token 門檻安全。
+from difflib import SequenceMatcher
+
+# 門檻由 H020 實資料兩側夾出（真值 vs 誤收值都是實測）：
+#   token：真誤讀 founcl=0.727、foumel=0.545；系統行 "friends"=0.500 曾誤收 → 0.52
+#   ore：真誤讀 velyiiuinm→Valytium=0.667；"can chat"→Luckant=0.600 曾誤收 → 0.62
+FUZZY_FOUND_TOKEN_RATIO = 0.52  # token vs "found"
+FUZZY_FOUND_TOKEN_MIN_LEN = 4   # "un"(2字元)曾以 0.57 誤當 found-ish token
+FUZZY_ORE_RATIO = 0.62          # 礦名 vs 白名單
+FUZZY_STALE_LINE_RATIO = 0.85   # before/after 底行相似度 ≥ 此值 → 同一行的 OCR 噪音、非新行
+
+
+def _best_match(cand: str, names_norm) -> tuple[float, str | None]:
+    """cand 對 names_norm（(正規化, 原名) 對）取最高 SequenceMatcher 比率。"""
+    best_r, best_n = 0.0, None
+    sm = SequenceMatcher()
+    sm.set_seq2(cand)                       # seq2 固定可重用內部索引
+    for norm, orig in names_norm:
+        sm.set_seq1(norm)
+        if sm.real_quick_ratio() <= best_r or sm.quick_ratio() <= best_r:
+            continue
+        r = sm.ratio()
+        if r > best_r:
+            best_r, best_n = r, orig
+    return best_r, best_n
+
+
+def _name_pairs(names) -> list:
+    return [(_normalize(n), n) for n in names]
+
+
+def _fuzzy_rare_line(line: str, common_pairs, rare_pairs) -> dict | None:
+    """單行模糊判定；回傳診斷 dict（accepted 註明收/拒），無 found-ish token 回 None。
+
+    候選礦名取 found-token 之後的「全部 / 前 1 / 前 2 個 token」（容忍礦名後黏雜訊、
+    也涵蓋多字礦名），各剝變體前綴後比對，取白名單分數最高的一組。
+    """
+    tokens = _normalize(line).split()
+    best = None
+    for i, t in enumerate(tokens[:-1]):     # found-token 之後至少要有礦名
+        if i == 0:                          # 行首＝前面沒玩家名，不符 "<名> has found X" 結構
+            continue                        # （系統行 "friends can chat..." 曾因此誤收）
+        if len(t) < FUZZY_FOUND_TOKEN_MIN_LEN:
+            continue
+        if SequenceMatcher(None, t, "found").ratio() < FUZZY_FOUND_TOKEN_RATIO:
+            continue
+        rest = tokens[i + 1:]
+        for cand in {" ".join(rest), rest[0], " ".join(rest[:2])}:
+            cand = _strip_variant(cand)
+            rare_r, rare_n = _best_match(cand, rare_pairs)
+            if best is None or rare_r > best["best_rare"][1]:
+                common_r, common_n = _best_match(cand, common_pairs)
+                best = {"line": line.strip(), "token": t, "candidate": cand,
+                        "best_rare": (rare_n, rare_r), "best_common": (common_n, common_r)}
+    if best is None:
+        return None
+    best["accepted"] = (best["best_rare"][1] >= FUZZY_ORE_RATIO
+                        and best["best_rare"][1] > best["best_common"][1])
+    return best
+
+
+def fuzzy_found_diagnostics(text: str, common_names, rare_names) -> list:
+    """每個「含 found-ish token 的行」一筆診斷（含被拒者與分數）——詳細 log 用。"""
+    common_pairs, rare_pairs = _name_pairs(common_names), _name_pairs(rare_names)
+    out = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        d = _fuzzy_rare_line(line, common_pairs, rare_pairs)
+        if d is not None:
+            out.append(d)
+    return out
+
+
+def count_fuzzy_rare_found(text: str, common_names, rare_names) -> int:
+    """計「模糊 found 行且礦名最接近白名單稀有礦」的行數（差分用，語意同 count_rare_found）。"""
+    return sum(1 for d in fuzzy_found_diagnostics(text, common_names, rare_names)
+               if d["accepted"])
+
+
+def has_new_fuzzy_rare_found(before: str, after: str, common_names, rare_names) -> bool:
+    """模糊稀有行的前後差分：count 增加，或底部出現新的模糊稀有行。
+
+    底行比對比精確版多一道「噪音守門」：同一實體行在前後兩次 OCR 常讀出略不同字樣
+    （模糊路徑對此特別敏感），底行相似度 ≥ FUZZY_STALE_LINE_RATIO 視為同一行、不算新增。
+    """
+    common_pairs, rare_pairs = _name_pairs(common_names), _name_pairs(rare_names)
+    if (count_fuzzy_rare_found(after, common_names, rare_names)
+            > count_fuzzy_rare_found(before, common_names, rare_names)):
+        return True
+    def last_line(text: str) -> str:
+        stripped = text.strip()
+        return stripped.split("\n")[-1].strip() if stripped else ""
+    b, a = _normalize(last_line(before)), _normalize(last_line(after))
+    if not a or a == b or SequenceMatcher(None, b, a).ratio() >= FUZZY_STALE_LINE_RATIO:
+        return False
+    d = _fuzzy_rare_line(a, common_pairs, rare_pairs)
+    return bool(d and d["accepted"])
+
+
+def new_fuzzy_rare_lines(before: str, after: str, common_names, rare_names) -> list:
+    """after 新增的模糊稀有行 [(原行, 匹配白名單礦名, 比率)]——通知標注用。
+
+    「新增」＝與 before 任一行相似度 < FUZZY_STALE_LINE_RATIO（噪音守門，同
+    has_new_fuzzy_rare_found 的底行邏輯，推廣到全部行）。
+    """
+    common_pairs, rare_pairs = _name_pairs(common_names), _name_pairs(rare_names)
+    before_lines = [_normalize(l) for l in before.splitlines() if l.strip()]
+    out = []
+    for line in after.splitlines():
+        if not line.strip():
+            continue
+        n = _normalize(line)
+        if any(SequenceMatcher(None, b, n).ratio() >= FUZZY_STALE_LINE_RATIO
+               for b in before_lines):
+            continue
+        d = _fuzzy_rare_line(line, common_pairs, rare_pairs)
+        if d and d["accepted"]:
+            out.append((line.strip(), d["best_rare"][0], d["best_rare"][1]))
+    return out
 
 
 def any_new_special_found(before_texts, after_texts, common_names,

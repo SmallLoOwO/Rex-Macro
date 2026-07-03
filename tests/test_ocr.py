@@ -309,3 +309,123 @@ def test_any_new_special_found_diffs_per_pass():
     after  = ["", "small_lo has found Ionized Zynulvinite"]
     assert any_new_special_found(before, after, COMMON, KW, SPECIAL) is True
     assert any_new_special_found(after, after, COMMON, KW, SPECIAL) is False
+
+
+# ---- 模糊 found 行匹配（H020 假陰性對策，2026-07-03）----
+# 根因：dark_mask pass 在亮粉背景「讀得到行、但關鍵字讀歪」——
+# "small_lo has found Valytium" → "smeill_lo hee foumel velyiiuinm"，
+# 精確子字串 "has found" 對不上 → 三 pass 全滅 → RESWEEP → 重掃全空 → 誤交人工。
+# 對策：token≈"found"（比對比率門檻）＋ 礦名同時對「白名單稀有」與「排除清單」做
+# 模糊比對，白名單分數須達門檻**且嚴格高於**排除清單分數（Surreal 誤讀
+# "biemnentine"≈"Solemn Lamentine" 0.667 但同時 ≈"Diamantine" 0.667 → 平手判 common，
+# 保守方向：寧可漏也不假成功）。
+from miningbot.ocr import (count_fuzzy_rare_found, has_new_fuzzy_rare_found,
+                           new_fuzzy_rare_lines, fuzzy_found_diagnostics)
+
+F_COMMON = ("Diamantine", "Bandeau", "Jollycane")
+F_RARES  = ("Valytium", "Solemn Lamentine", "Celinity")
+
+# H020 實機 dark_mask pass 逐字輸出（tests/fixtures/chat/h020_after_pink_bg.png 重跑）
+H020_DARKMASK = (
+    "Only people iim sinniler egie Groups sinc Your tin\n"
+    "ffrieingle cain elnsit warty youu\n"
+    "Use fognel ior RE om Goraaltel, OF press ne [suTt\n"
+    "KIT i@ennell_lo} Fes rSR Esl the event po Calin\n"
+    "small hee founcl Biemnentine\n"
+    "smeill_lo hee foumel velyiiuinm"
+)
+
+
+def test_fuzzy_rescues_mangled_valytium_line():
+    # "hee foumel velyiiuinm"：foumel≈found、velyiiuinm≈Valytium(0.667) → 算 1 筆稀有
+    assert count_fuzzy_rare_found("smeill_lo hee foumel velyiiuinm", F_COMMON, F_RARES) == 1
+
+
+def test_fuzzy_rejects_misread_closer_or_equal_to_common():
+    # "biemnentine"＝Surreal Diamantine 的誤讀：對 Solemn Lamentine 0.667 但對
+    # Diamantine 也 0.667 → 未「嚴格高於」common → 判 common（防假成功）
+    assert count_fuzzy_rare_found("small hee founcl Biemnentine", F_COMMON, F_RARES) == 0
+
+
+def test_fuzzy_rejects_reroll_event_line_with_ore_name():
+    # 事件行含礦名（Celinity）但無 found-ish token → 不可觸發
+    line = "KIT (@small_lo) has rerolled the event to Celinity"
+    assert count_fuzzy_rare_found(line, F_COMMON, F_RARES) == 0
+
+
+def test_fuzzy_rejects_exact_common_found_line():
+    assert count_fuzzy_rare_found("small_lo has found Bandeau", F_COMMON, F_RARES) == 0
+
+
+def test_fuzzy_strips_variant_prefix_before_lookup():
+    # Spectral + 排除清單礦 → 剝前綴後仍是 common → 不算
+    assert count_fuzzy_rare_found("small_lo has found Spectral Bandeau", F_COMMON, F_RARES) == 0
+
+
+def test_fuzzy_tolerates_trailing_junk_after_ore():
+    # OCR 在礦名後黏了雜訊字 → 取前 1~2 token 比對仍要命中
+    assert count_fuzzy_rare_found("smeill_lo hee foumel velyiiuinm game", F_COMMON, F_RARES) == 1
+
+
+def test_fuzzy_full_h020_darkmask_counts_only_valytium():
+    assert count_fuzzy_rare_found(H020_DARKMASK, F_COMMON, F_RARES) == 1
+
+
+def test_has_new_fuzzy_rare_found_h020_scenario():
+    assert has_new_fuzzy_rare_found("", H020_DARKMASK, F_COMMON, F_RARES) is True
+
+
+def test_has_new_fuzzy_rare_ignores_stale_line_with_ocr_noise():
+    # 上一輪殘留的稀有行在 before/after 被讀成略不同字樣 → 不可當「新增」
+    before = "smeill_lo hee foumel velyiiuinm"
+    after  = "smeill_lo hee foumel velyiiuinrn"
+    assert has_new_fuzzy_rare_found(before, after, F_COMMON, F_RARES) is False
+
+
+def test_any_new_rare_found_fuzzy_opt_in_via_rare_names():
+    before = ["", "", ""]
+    after = ["", "", H020_DARKMASK]
+    # 不給 rare_names（預設）＝行為不變（三 pass 精確匹配全滅 → False）
+    assert any_new_rare_found(before, after, F_COMMON, KW) is False
+    # 給 rare_names → fuzzy 兜底救回
+    assert any_new_rare_found(before, after, F_COMMON, KW, rare_names=F_RARES) is True
+
+
+def test_new_fuzzy_rare_lines_reports_matched_ore():
+    lines = new_fuzzy_rare_lines("", H020_DARKMASK, F_COMMON, F_RARES)
+    assert len(lines) == 1
+    line, ore, ratio = lines[0]
+    assert "velyiiuinm" in line.lower()
+    assert ore == "Valytium"
+    assert ratio >= 0.6
+
+
+def test_fuzzy_found_diagnostics_reports_rejected_near_miss():
+    # 診斷要把「有 found-ish token 但被拒」的行連同分數一起回報（詳細 log 用）
+    diags = fuzzy_found_diagnostics("small hee founcl Biemnentine", F_COMMON, F_RARES)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d["accepted"] is False
+    assert d["best_rare"][0] == "Solemn Lamentine"
+    assert d["best_common"][0] == "Diamantine"
+
+
+# ---- 模糊匹配的假陽性防護（用聯集詞彙表重演 H020 時暴露的實際誤收）----
+# 這些行在 H020 的 after 畫面真實存在（系統訊息/OCR 黏字），寬鬆閘門下曾被誤收：
+# 危險方向是「假成功」——D3 其實沒打中卻判成功 → 直接續挖、稀有礦丟失。
+
+def test_fuzzy_rejects_system_line_friends_can_chat():
+    # "friends"≈found 恰好 0.5（門檻須 >0.5）且是行首（found 行前面必有玩家名）
+    line = "friends can chat with you."
+    assert count_fuzzy_rare_found(line, (), ("Luckant",)) == 0
+
+
+def test_fuzzy_rejects_short_token_as_found():
+    # OCR 黏字行："un"（2 字元）曾被當 found-ish token、"game"≈Amare 0.667 誤收
+    line = "smal lBloassfoulmebVallyti Un game"
+    assert count_fuzzy_rare_found(line, (), ("Amare",)) == 0
+
+
+def test_fuzzy_rejects_found_token_at_line_start():
+    # found-ish token 在行首＝前面沒有玩家名 → 結構不符 "<名> has found X"，拒收
+    assert count_fuzzy_rare_found("founcl velyiiuinm", (), ("Valytium",)) == 0

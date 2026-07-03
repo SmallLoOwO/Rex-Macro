@@ -580,3 +580,14 @@ def test_find_tracker_edge_clipped_scene_documents_margin_rejection():
     assert find_tracker(img, margin_frac=0.1, **kw) is None       # H019 失敗機制
     loc = find_tracker(img, margin_frac=0.0, **kw)                # 框本身完好可辨
     assert loc is not None and abs(loc[0] - 1862) < 40 and abs(loc[1] - 418) < 40
+
+
+def test_frames_mean_diff_value_and_none_cases():
+    # 詳細 log 用：回傳實際平均差值；基準缺/尺寸不合 → None（無從比較）
+    from miningbot.vision import frames_mean_diff
+    a = np.zeros((20, 30, 3), dtype=np.uint8)
+    b = a.copy(); b[:, :, :] = 6
+    assert frames_mean_diff(a, a.copy()) == 0.0
+    assert abs(frames_mean_diff(a, b) - 6.0) < 1e-6
+    assert frames_mean_diff(None, a) is None
+    assert frames_mean_diff(a, np.zeros((10, 30, 3), dtype=np.uint8)) is None
