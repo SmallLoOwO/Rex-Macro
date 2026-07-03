@@ -74,6 +74,24 @@ def fetch_page_wikitext(page: str) -> str:
     return data["parse"]["wikitext"]["*"]
 
 
+def find_name_collisions(worlds_rows: dict) -> dict:
+    """跨世界撞名檢查：{world: rows} → {礦名: [(world, tier, layer), ...]}（只含跨≥2世界的）。
+
+    分類/排除都靠礦名比對，跨世界同名（尤其階級不同）會互相污染——世界收斂
+    （rare_ores(world)/common_ore_names）就是為此；這裡讓假設「目前無撞名」可驗證。
+    同世界同名多圖層（如 Ambitium 同在 Amourite/Shamrock 層）合法、不算撞名。
+    """
+    seen: dict = {}
+    for world, rows in worlds_rows.items():
+        for r in rows:
+            seen.setdefault(r["ore"], {}).setdefault(world, []).append((r["tier"], r["layer"]))
+    out = {}
+    for ore, by_world in seen.items():
+        if len(by_world) >= 2:
+            out[ore] = [(w, t, layer) for w, pairs in by_world.items() for t, layer in pairs]
+    return out
+
+
 def diff_common_ores(world_name: str, low_rows: list) -> list:
     """wiki 低階 vs game_data 排除清單：回傳 game_data 缺的 rows（要人工補列的候選）。"""
     have = {o["ore"] for o in game_data.WORLDS[world_name].common_ores}
@@ -82,11 +100,14 @@ def diff_common_ores(world_name: str, low_rows: list) -> list:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true", help="只印 diff、不寫 rare_ores.json")
+    ap.add_argument("--dry-run", action="store_true", help="只印 diff/撞名報告、不寫檔")
     ap.add_argument("--dest", default="assets/rare_ores.json", help="高階白名單輸出路徑")
+    ap.add_argument("--dest-all", default="assets/ores_all.json",
+                    help="全礦（所有 tier、依世界分）輸出路徑——撞名驗證/未來擴充用")
     args = ap.parse_args()
 
     out = {"source": API, "worlds": {}}
+    all_rows: dict = {}
     for world in game_data.WORLDS:
         print(f"== {world} ==")
         try:
@@ -95,6 +116,7 @@ def main():
             print(f"  FAIL 抓取失敗: {e}（沿用舊檔）")
             continue
         rows = parse_ore_rows(wikitext)
+        all_rows[world] = rows
         low, high = split_tiers(rows)
         out["worlds"][world] = high
         print(f"  解析 {len(rows)} 礦：低階 {len(low)}、高階 {len(high)}")
@@ -107,14 +129,27 @@ def main():
         else:
             print("  排除清單與 wiki 一致")
 
+    # 跨世界撞名報告：分類/排除靠礦名比對，同名跨世界會互相污染（世界收斂的存在理由）
+    collisions = find_name_collisions(all_rows)
+    if collisions:
+        print(f"\n★ 跨世界同名礦 {len(collisions)} 個：")
+        for ore, places in sorted(collisions.items()):
+            tiers = {t for _, t, _ in places}
+            mark = "（階級不同！）" if len(tiers) > 1 else ""
+            print(f"  {ore}{mark}: " + "; ".join(f"{w}/{layer}/{t}" for w, t, layer in places))
+    else:
+        print("\n跨世界撞名：無（世界收斂目前只是保險）")
+
     if args.dry_run:
-        print("\n--dry-run：不寫檔")
+        print("--dry-run：不寫檔")
         return
-    os.makedirs(os.path.dirname(args.dest) or ".", exist_ok=True)
-    with open(args.dest, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=1)
-    total = sum(len(v) for v in out["worlds"].values())
-    print(f"\n寫入 {args.dest}：{total} 個高階礦（白名單）")
+    for dest, data, desc in ((args.dest, out, "高階白名單"),
+                             (args.dest_all, {"source": API, "worlds": all_rows}, "全礦")):
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        total = sum(len(v) for v in data["worlds"].values())
+        print(f"寫入 {dest}：{total} 筆（{desc}）")
 
 
 if __name__ == "__main__":

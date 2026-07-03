@@ -121,3 +121,44 @@ Sugarstone Layer =
 """
     rows = parse_ore_rows(sample)
     assert rows[0]["ore"] == "Candy Bucket"
+
+
+# ---- 全礦蒐集＋跨世界撞名檢查 ----
+# 分類/排除都靠礦名比對，跨世界同名（尤其階級不同時）會互相污染；
+# 蒐集全部礦（所有 tier、依世界分）讓這個假設可驗證、可回歸。
+from miningbot.fetch_ores import find_name_collisions
+
+
+def test_find_name_collisions_reports_cross_world_same_name():
+    worlds = {
+        "A": [{"ore": "Foo", "tier": "Surreal", "rarity": 1, "layer": "x"},
+              {"ore": "Bar", "tier": "Common",  "rarity": 2, "layer": "x"}],
+        "B": [{"ore": "Foo", "tier": "Exotic",  "rarity": 3, "layer": "y"}],
+    }
+    col = find_name_collisions(worlds)
+    assert set(col) == {"Foo"}
+    assert {(w, t) for w, t, _ in col["Foo"]} == {("A", "Surreal"), ("B", "Exotic")}
+
+
+def test_find_name_collisions_ignores_same_world_multi_layer():
+    # 同世界同名多圖層（如 Ambitium 同時在 Amourite/Shamrock 層）＝合法，不算撞名
+    worlds = {"A": [{"ore": "Ambitium", "tier": "Common", "rarity": 400, "layer": "Amourite"},
+                    {"ore": "Ambitium", "tier": "Common", "rarity": 400, "layer": "Shamrock"}]}
+    assert find_name_collisions(worlds) == {}
+
+
+def test_find_name_collisions_empty_when_no_overlap():
+    worlds = {"A": [{"ore": "Foo", "tier": "Rare", "rarity": 1, "layer": "x"}],
+              "B": [{"ore": "Bar", "tier": "Rare", "rarity": 1, "layer": "y"}]}
+    assert find_name_collisions(worlds) == {}
+
+
+def test_committed_ores_all_has_no_cross_world_collisions():
+    # 鎖住分類器依賴的假設：目前 663 礦（全 tier）跨世界零同名（2026-07-03 wiki 驗證）。
+    # 未來 fetch_ores 重抓後若出現同名，本測試會叫——世界收斂已能正確處理行為，
+    # 但要人工確認該礦在兩世界的階級是否一致（不一致會影響「未鎖定世界」時的聯集判定）。
+    import json, os
+    path = os.path.join(os.path.dirname(__file__), "..", "assets", "ores_all.json")
+    with open(path, encoding="utf-8") as f:
+        worlds = json.load(f)["worlds"]
+    assert find_name_collisions(worlds) == {}
