@@ -153,12 +153,35 @@ def test_find_name_collisions_empty_when_no_overlap():
     assert find_name_collisions(worlds) == {}
 
 
-def test_committed_ores_all_has_no_cross_world_collisions():
-    # 鎖住分類器依賴的假設：目前 663 礦（全 tier）跨世界零同名（2026-07-03 wiki 驗證）。
-    # 未來 fetch_ores 重抓後若出現同名，本測試會叫——世界收斂已能正確處理行為，
-    # 但要人工確認該礦在兩世界的階級是否一致（不一致會影響「未鎖定世界」時的聯集判定）。
+def test_committed_ores_all_has_no_cross_class_conflicts():
+    # 分類正確性真正依賴的不變量：沒有礦名「在 A 世界是低階（排除對象）、在 B 世界是
+    # 高階（採集目標）」——否則世界未鎖定時的聯集判定會歧義。同階同名合法且存在
+    # （2026-07-03 驗證：34 個，全是 Aesteria↔Wintera Isle / Tutorial↔World 1 共用礦）。
     import json, os
     path = os.path.join(os.path.dirname(__file__), "..", "assets", "ores_all.json")
     with open(path, encoding="utf-8") as f:
         worlds = json.load(f)["worlds"]
-    assert find_name_collisions(worlds) == {}
+    assert find_class_conflicts(worlds) == {}
+
+
+# ---- 低/高衝突檢查（find_class_conflicts）----
+from miningbot.fetch_ores import find_class_conflicts
+
+
+def test_find_class_conflicts_flags_low_in_one_high_in_another():
+    worlds = {
+        "A": [{"ore": "Foo", "tier": "Surreal", "rarity": 1, "layer": "x"}],
+        "B": [{"ore": "Foo", "tier": "Exotic",  "rarity": 2, "layer": "y"}],
+    }
+    assert set(find_class_conflicts(worlds)) == {"Foo"}
+
+
+def test_find_class_conflicts_allows_same_tier_cross_world():
+    # 季節島/教學關共用礦：同名同階（甚至同名不同「階但同類」）→ 不算衝突
+    worlds = {
+        "A": [{"ore": "Sub-Zero", "tier": "Surreal", "rarity": 1, "layer": "Frost"}],
+        "B": [{"ore": "Sub-Zero", "tier": "Surreal", "rarity": 1, "layer": "Isle"}],
+        "C": [{"ore": "Freon", "tier": "Exotic", "rarity": 3, "layer": "x"}],
+        "D": [{"ore": "Freon", "tier": "Exotic", "rarity": 3, "layer": "y"}],
+    }
+    assert find_class_conflicts(worlds) == {}

@@ -74,6 +74,24 @@ def fetch_page_wikitext(page: str) -> str:
     return data["parse"]["wikitext"]["*"]
 
 
+def fetch_world_names() -> list:
+    """從 wiki Category:Worlds 動態列出所有世界頁名（遊戲不只 game_data.WORLDS 那兩個）。
+
+    失敗時退回 game_data.WORLDS（至少涵蓋正在玩的世界，不讓整個同步掛掉）。
+    """
+    url = (f"{API}?action=query&list=categorymembers"
+           f"&cmtitle=Category:Worlds&cmlimit=100&format=json")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        names = [m["title"] for m in data["query"]["categorymembers"]]
+        return names or list(game_data.WORLDS)
+    except Exception as e:
+        print(f"Category:Worlds 抓取失敗: {e}（退回 game_data.WORLDS）")
+        return list(game_data.WORLDS)
+
+
 def find_name_collisions(worlds_rows: dict) -> dict:
     """跨世界撞名檢查：{world: rows} → {礦名: [(world, tier, layer), ...]}（只含跨≥2世界的）。
 
@@ -89,6 +107,20 @@ def find_name_collisions(worlds_rows: dict) -> dict:
     for ore, by_world in seen.items():
         if len(by_world) >= 2:
             out[ore] = [(w, t, layer) for w, pairs in by_world.items() for t, layer in pairs]
+    return out
+
+
+def find_class_conflicts(worlds_rows: dict) -> dict:
+    """低/高衝突：礦名在某世界屬低階（排除對象）、另一世界屬高階（採集目標）→ 歧義。
+
+    這才是分類正確性依賴的不變量（同階同名跨世界合法且存在：季節島/教學關共用礦）。
+    回傳 {礦名: [(world, tier), ...]}，空 dict = 無衝突。
+    """
+    out = {}
+    for ore, places in find_name_collisions(worlds_rows).items():
+        classes = {("low" if t in LOW_TIERS else "high") for _, t, _ in places}
+        if len(classes) > 1:
+            out[ore] = [(w, t) for w, t, _ in places]
     return out
 
 
@@ -108,7 +140,7 @@ def main():
 
     out = {"source": API, "worlds": {}}
     all_rows: dict = {}
-    for world in game_data.WORLDS:
+    for world in fetch_world_names():          # 所有 wiki 世界（不只 game_data.WORLDS 那兩個）
         print(f"== {world} ==")
         try:
             wikitext = fetch_page_wikitext(world)
@@ -116,35 +148,34 @@ def main():
             print(f"  FAIL 抓取失敗: {e}（沿用舊檔）")
             continue
         rows = parse_ore_rows(wikitext)
-        all_rows[world] = rows
         low, high = split_tiers(rows)
+        # 只留「會進聊天框」的階級（Surreal+）：Common~Master 不進聊天、與採集確認無關
+        all_rows[world] = low + high
         out["worlds"][world] = high
-        print(f"  解析 {len(rows)} 礦：低階 {len(low)}、高階 {len(high)}")
-        missing = diff_common_ores(world, low)
-        if missing:
-            print(f"  ★ 排除清單缺 {len(missing)} 個（請人工過目後補進 game_data）：")
-            for r in missing:
-                print(f"    {{\"ore\": \"{r['ore']}\", \"rarity\": {r['rarity']}, "
-                      f"\"layer\": \"{r['layer']}\", \"tier\": \"{r['tier']}\"}},")
-        else:
-            print("  排除清單與 wiki 一致")
+        print(f"  解析 {len(rows)} 礦：低階 {len(low)}、高階 {len(high)}（聊天相關 {len(low) + len(high)}）")
+        if world in game_data.WORLDS:          # 排除清單只維護正在玩的世界
+            missing = diff_common_ores(world, low)
+            if missing:
+                print(f"  ★ 排除清單缺 {len(missing)} 個（請人工過目後補進 game_data）：")
+                for r in missing:
+                    print(f"    {{\"ore\": \"{r['ore']}\", \"rarity\": {r['rarity']}, "
+                          f"\"layer\": \"{r['layer']}\", \"tier\": \"{r['tier']}\"}},")
+            else:
+                print("  排除清單與 wiki 一致")
 
-    # 跨世界撞名報告：分類/排除靠礦名比對，同名跨世界會互相污染（世界收斂的存在理由）
-    collisions = find_name_collisions(all_rows)
-    if collisions:
-        print(f"\n★ 跨世界同名礦 {len(collisions)} 個：")
-        for ore, places in sorted(collisions.items()):
-            tiers = {t for _, t, _ in places}
-            mark = "（階級不同！）" if len(tiers) > 1 else ""
-            print(f"  {ore}{mark}: " + "; ".join(f"{w}/{layer}/{t}" for w, t, layer in places))
-    else:
-        print("\n跨世界撞名：無（世界收斂目前只是保險）")
+    # 低/高衝突＝分類正確性依賴的不變量；同階同名（季節島/教學關共用礦）合法、只列數字
+    conflicts = find_class_conflicts(all_rows)
+    same = find_name_collisions(all_rows)
+    print(f"\n跨世界同名 {len(same)} 個（同階合法）；低/高衝突 {len(conflicts)} 個")
+    for ore, places in sorted(conflicts.items()):
+        print(f"  ★ {ore}: " + "; ".join(f"{w}:{t}" for w, t in places))
 
     if args.dry_run:
         print("--dry-run：不寫檔")
         return
     for dest, data, desc in ((args.dest, out, "高階白名單"),
-                             (args.dest_all, {"source": API, "worlds": all_rows}, "全礦")):
+                             (args.dest_all, {"source": API, "worlds": all_rows},
+                              "聊天相關階級（Surreal+）")):
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         with open(dest, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)

@@ -7,7 +7,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - 啟動：`python -m miningbot.main`（Roblox 要先開好）
 - 轉 chill 音檔：`python -m miningbot.convert_audio "chill.mp3"` → `assets/chill_reference.wav`
 - 下載階級標記模板：`python -m miningbot.fetch_trackers`（→ `assets/markers/`）
-- 同步 wiki 礦物清單：`python -m miningbot.fetch_ores`（→ `assets/rare_ores.json` 高階白名單＋印排除清單 diff；遊戲更新後跑一次）
+- 同步 wiki 礦物清單：`python -m miningbot.fetch_ores`（Category:Worlds 動態發現**全部世界**（9 個）→ `assets/rare_ores.json` 高階白名單、`assets/ores_all.json` 聊天相關階級 Surreal+；印排除清單 diff＋跨世界低/高衝突報告；遊戲更新後跑一次。Common~Master 不進聊天、不收）
 - 擷取事件模板：`python -m miningbot.capture_template boost`
 - 校準偵測區：`python -m miningbot.calibrate`
 
