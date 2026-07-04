@@ -70,18 +70,23 @@ def _existing_refs(refs_dir: str) -> list:
     return refs
 
 
-def scan_sources(snapshots_dir: str) -> list:
-    """收集 snapshots 夾下所有 chill 取樣（**遞迴**，含 2026-06-29 分類後的 audio/ 子夾）。
+def scan_sources(snapshots_dir: str, include_miss: bool = False) -> list:
+    """收集 snapshots 夾下的 chill 取樣（**遞迴**，含 2026-06-29 分類後的 audio/ 子夾）。
 
     舊版只 glob 扁平的 logs/snapshots/audiochg_*.wav，分類後檔案改放 audio/ 子夾 → 掃不到。
     這裡用 recursive glob 同時涵蓋舊扁平位置與新子夾。
 
-    順序＝**confirmed chill（chill_audio_*）在前、audiochg_*（含可能是雜訊的 _miss）在後**：
-    confirmed 是「確定有觸發過」的安全來源，先當去重種子；audiochg 的 _miss 只有與所有
-    confirmed 都不同才會被加入，降低把非 chill 雜訊誤升級成參考的風險。
+    **預設只收 confirmed（chill_audio_*，確定觸發過的安全來源）**——2026-07-04 實測教訓：
+    盲掃 audiochg 把 6 個 _miss 升級成參考，對照實驗證實它們對 25 個 confirmed 真 chill
+    分數零貢獻（原參考已全覆蓋）、對任何 confirmed 錄音最高只像 0.16-0.48＝非 chill 雜訊，
+    純假觸發風險（假觸發＝白跑一輪採集＋誤發人工警報）。「與現有參考不像」無法區分
+    「新 chill 家族」和「雜訊」，去重種子順序擋不住這洞。audiochg 來源須顯式
+    include_miss=True（CLI --include-miss）且建議人工聽過再收；confirmed 在前當去重種子。
     """
     confirmed = sorted(glob.glob(os.path.join(snapshots_dir, "**", "chill_audio_*.wav"),
                                  recursive=True))
+    if not include_miss:
+        return confirmed
     changes = sorted(glob.glob(os.path.join(snapshots_dir, "**", "audiochg_*.wav"),
                                recursive=True))
     return confirmed + changes
@@ -111,14 +116,18 @@ def main():
     ap = argparse.ArgumentParser(description="把實錄 chill 升級成多參考集（自動去重）")
     ap.add_argument("src", nargs="*", help="來源 WAV（通常是 logs/snapshots/audiochg_*.wav）")
     ap.add_argument("--scan", action="store_true",
-                    help="掃 logs/snapshots 所有 audiochg_*.wav 自動挑 distinct 加入")
+                    help="掃 logs/snapshots 的 confirmed chill（chill_audio_*）自動挑 distinct 加入")
+    ap.add_argument("--include-miss", action="store_true",
+                    help="--scan 連 audiochg_*（含 _miss）一起掃——可能是非 chill 雜訊，"
+                         "會害假觸發採集，建議人工聽過再用")
     ap.add_argument("--refs-dir", default=cfg.chill_refs_dir)
     ap.add_argument("--dup-threshold", type=float, default=0.6)
     args = ap.parse_args()
 
     srcs = list(args.src)
     if args.scan:
-        srcs += scan_sources(os.path.join(cfg.log_dir, "snapshots"))
+        srcs += scan_sources(os.path.join(cfg.log_dir, "snapshots"),
+                             include_miss=args.include_miss)
     if not srcs:
         ap.error("請給來源 WAV 或用 --scan")
 

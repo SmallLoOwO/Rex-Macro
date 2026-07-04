@@ -87,9 +87,14 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   **match_score 很重（~110ms）**，每 chunk（85ms）都算會讓音訊執行緒積壓→6s 延遲。
   解法：score 每 `audio_score_interval_s`（0.3s）算一次，緩衝每 chunk 照常更新。延遲 ~1s。
   **低分觸發（0.26-0.39）≠ 誤觸**（H034 分數 0.26 採到 Transcendent 級 Kardiá）＝真 chill
-  但不像任何現有參考 → 解法是擴充參考集：`python -m miningbot.add_chill_ref --scan`
-  （2026-07-04 跑過，6→12 個；**參考變多要同步查 decimate 預算**——k=4 一輪 ~312ms 超過
-  0.3s 間隔必積壓，已改 `audio_match_decimate=8` ~131ms、實錄驗證分數差 ≤0.007）。
+  但不像任何現有參考 → 解法是擴充參考集 `python -m miningbot.add_chill_ref --scan`
+  （2026-07-04 跑過，6→8 個：H014/H034 兩個新家族）。**--scan 預設只收 confirmed
+  （chill_audio_\*）**——同日教訓：盲掃 audiochg `_miss` 加的 6 個參考經對照實驗全是
+  「對 25 個 confirmed 真 chill 零貢獻、對任何 confirmed 最高只像 0.16-0.48」的雜訊
+  （「與現有參考不像」分不出新家族 vs 雜訊），已移除；`_miss` 要 `--include-miss`
+  顯式 opt-in＋人工聽過。**參考變多要同步查 decimate 預算**（k=4 12 refs 一輪 ~312ms
+  超過 0.3s 間隔必積壓）：已改 `audio_match_decimate=8`（8 refs ~98ms；20 個實錄驗證
+  k=4/8 分數差 ≤0.007）。
 - **D4 事件保留**：USE_D4 前讀頂部事件列 OCR → `game_data.match_event` → `is_kept` →
   在 keep 清單 → `use_activity_keep()`（左鍵確認）；否則 `use_activity()`（右鍵刷新）。
   keep 清單透過 Discord 命令控制（`!keep`/`!list`/`!clear`），背景執行緒每 10s 輪詢。

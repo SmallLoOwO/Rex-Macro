@@ -38,7 +38,7 @@ def test_scan_sources_recurses_into_audio_subdir(tmp_path):
     snap = tmp_path / "snapshots"
     _touch(str(snap / "audio" / "audiochg_20260629_205139_s18_miss.wav"))
     _touch(str(snap / "audiochg_20260629_013442_s15_miss.wav"))   # 舊扁平位置也要找到
-    found = scan_sources(str(snap))
+    found = scan_sources(str(snap), include_miss=True)
     names = {os.path.basename(p) for p in found}
     assert "audiochg_20260629_205139_s18_miss.wav" in names
     assert "audiochg_20260629_013442_s15_miss.wav" in names
@@ -50,9 +50,22 @@ def test_scan_sources_includes_confirmed_chills_first(tmp_path):
     snap = tmp_path / "snapshots"
     _touch(str(snap / "audio" / "chill_audio_20260629_021105.wav"))
     _touch(str(snap / "audio" / "audiochg_20260629_205139_s18_miss.wav"))
-    found = scan_sources(str(snap))
+    found = scan_sources(str(snap), include_miss=True)
     names = [os.path.basename(p) for p in found]
     assert "chill_audio_20260629_021105.wav" in names
     assert "audiochg_20260629_205139_s18_miss.wav" in names
     assert names.index("chill_audio_20260629_021105.wav") < names.index(
         "audiochg_20260629_205139_s18_miss.wav")
+
+
+def test_scan_sources_excludes_miss_by_default(tmp_path):
+    """--scan 預設**只收 confirmed**（2026-07-04 實測教訓）：盲掃把 6 個 audiochg
+    _miss 升級成參考，對照實驗證實它們對 25 個 confirmed 真 chill 分數零貢獻、
+    對任何 confirmed 錄音最高只像 0.16-0.48＝非 chill 雜訊，只帶假觸發風險。
+    audiochg 來源須顯式 --include-miss 且人工聽過再收。"""
+    snap = tmp_path / "snapshots"
+    _touch(str(snap / "audio" / "chill_audio_20260629_021105.wav"))
+    _touch(str(snap / "audio" / "audiochg_20260629_205139_s18_miss.wav"))
+    names = {os.path.basename(p) for p in scan_sources(str(snap))}
+    assert "chill_audio_20260629_021105.wav" in names
+    assert "audiochg_20260629_205139_s18_miss.wav" not in names
