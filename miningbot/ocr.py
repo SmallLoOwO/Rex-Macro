@@ -157,19 +157,17 @@ def _lines_alike(a: str, b: str) -> bool:
     return a == b or SequenceMatcher(None, a, b).ratio() >= FUZZY_STALE_LINE_RATIO
 
 
-def new_chat_tail_lines(before: str, after: str) -> list:
-    """after 相對 before 的底部新增行（原文，保序）。
+def _align_tail(before: str, after: str) -> tuple[bool, list]:
+    """把 before 底行對齊到 after 中的錨點，回 (是否對到錨點, 錨點之後的新增行原文)。
 
-    聊天是 append-only＋頂部刷掉：after ＝ before 的尾段＋新行。把 before 的底行對齊到
-    after 中的位置當錨點（候選多個時取「向上連續吻合最長」者——before 底行可能是重複礦名、
-    新行裡也有同名行，錨到新行會漏；同長取較晚位置，新行越少越保守）。
-    對不到錨點（換場景/該 pass 的 OCR 噪音）→ 回空 list（保守：交回 count/底行信號，不假陽性）。
+    「對不到錨點」與「對到但沒有新增行」呼叫端待遇不同（ChatLedger 前者不推進錨點、
+    後者要推進）→ 分開回報；new_chat_tail_lines 是不分辨的舊介面 wrapper。
     """
     b = [_normalize(l) for l in _chat_lines(before)]
     a_orig = _chat_lines(after)
     a = [_normalize(l) for l in a_orig]
     if not b or not a:
-        return []
+        return False, []
     best_j, best_run = -1, 0
     for j in range(len(a)):
         if not _lines_alike(a[j], b[-1]):
@@ -180,8 +178,19 @@ def new_chat_tail_lines(before: str, after: str) -> list:
         if run >= best_run:
             best_j, best_run = j, run
     if best_j < 0:
-        return []
-    return a_orig[best_j + 1:]
+        return False, []
+    return True, a_orig[best_j + 1:]
+
+
+def new_chat_tail_lines(before: str, after: str) -> list:
+    """after 相對 before 的底部新增行（原文，保序）。
+
+    聊天是 append-only＋頂部刷掉：after ＝ before 的尾段＋新行。把 before 的底行對齊到
+    after 中的位置當錨點（候選多個時取「向上連續吻合最長」者——before 底行可能是重複礦名、
+    新行裡也有同名行，錨到新行會漏；同長取較晚位置，新行越少越保守）。
+    對不到錨點（換場景/該 pass 的 OCR 噪音）→ 回空 list（保守：交回 count/底行信號，不假陽性）。
+    """
+    return _align_tail(before, after)[1]
 
 
 def has_new_rare_found_tail(before: str, after: str, common_names, found_keywords) -> bool:
@@ -385,6 +394,99 @@ def new_fuzzy_rare_lines(before: str, after: str, common_names, rare_names) -> l
         if d and d["accepted"]:
             out.append((line.strip(), d["best_rare"][0], d["best_rare"][1]))
     return out
+
+
+# ── Episode 級聊天帳本（2026-07-04，H032 延伸對策）─────────────────────────────
+# 單一基準的點對點差分守不住兩個時間軸破口：
+#  (a) 誤判失敗 → RESWEEP 作廢重取基準，晚到的成功行被吃進新基準 → 從此不算「新增」；
+#  (b) 失敗路徑（D2 重掃/D5 守門 settle/8 方位重掃）沒人在看聊天，成功行抵達後又被
+#      一般礦行往上推、捲出裁圖 → 之後任何 after 裡都不再出現，錨點對齊也救不了。
+# 對策：基準在 HARVESTING 進場時取一次（episode 級、全程不作廢），之後每次 OCR 以
+# 「上一次讀取」為錨點鏈式對齊（間隔短 → 錨點幾乎不會捲丟），新增行累積進帳本。
+# 領域事實讓 episode 級語意成立：單人作業＋Exotic+ 被動出土 ≤1/1M → episode 內任何
+# 時點出現的新稀有 found 行只可能來自自己的 D3 ＝成功，不論晚到多久、在哪個階段被看到。
+
+class ChatLedger:
+    """HARVESTING episode 的聊天新增行帳本（滾動錨點鏈、逐 pass 自洽）。
+
+    baseline_texts＝read_text_multi 輸出（各前處理 pass 一份文字）；各 pass 各自維護
+    錨點鏈（H014 原則：pass 間噪音不同、不可交叉比）。update() 是加法信號：帳本只補
+    「對 episode 基準單次差分」的洞，count/底行等長程信號仍由呼叫端照跑、任一確認即可。
+    """
+
+    @staticmethod
+    def _same_entity_line(prev_line: str, new_line: str, found_keywords) -> bool:
+        """兩行是否為「同一實體行」（重讀噪音）。
+
+        聊天行共享長前綴「<名> has found 」→ 整行相似度 0.85 連不同礦名的兩行都會過
+        （saerylium vs essentlum 整行 ≈0.86）→ 真新增行被誤當重讀。都是 found 行時改比
+        「礦名部分」（單人作業玩家名恆同，鑑別力全在礦名）；任一方不是 found 行
+        （行讀歪到關鍵字都沒了）才退回整行比對。
+        """
+        po = _found_ore(prev_line, found_keywords)
+        no = _found_ore(new_line, found_keywords)
+        if po is not None and no is not None:
+            return po == no or SequenceMatcher(None, po, no).ratio() >= FUZZY_STALE_LINE_RATIO
+        return _lines_alike(_normalize(prev_line), _normalize(new_line))
+
+    def __init__(self, baseline_texts):
+        self._last = list(baseline_texts)      # 各 pass 的錨點鏈（最後一次成功對齊的讀取）
+        self.new_lines: list = []              # 累積新增行（各 pass 聯集、保序去重）——診斷/通知用
+        self.rare_lines: list = []             # 其中確認為稀有 found 的行
+
+    @property
+    def confirmed(self) -> bool:
+        return bool(self.rare_lines)
+
+    def update(self, after_texts, common_names, found_keywords, rare_names=()) -> list:
+        """逐 pass 對齊上次讀取、把新增行累積進帳本；回傳本次新確認的稀有行。
+
+        保守規則（寧漏勿假陽性，漏的交給長程信號兜底）：
+        - 錨點對不到（大幅捲動/該 pass 整段讀歪）→ 該 pass 本次不追加、錨點不推進
+          （留住上次好的錨點，下次讀取正常時仍可對齊）。
+        - 上次讀取為空（聊天淡出/基準時無字）→ 新訊息會讓「舊行連同新行」重顯示，
+          無從分辨 → 只推進錨點起鏈、不計新增（舊稀有行重顯示不可假陽性）。
+        - 噪音守門：tail 行 ≈ 上次已有的行（FUZZY_STALE_LINE_RATIO）＝錨點誤差的重讀、
+          非新增（一般礦重讀讀歪礦名會翻成稀有＝假陽性）。代價是同名稀有連續兩筆
+          帳本不收——該情境 count 差分本來就抓得住（1→2），不漏。
+        """
+        common = [_normalize(c) for c in common_names]
+        common_pairs = _name_pairs(common_names) if rare_names else None
+        rare_pairs = _name_pairs(rare_names) if rare_names else None
+        seen = {_normalize(l) for l in self.new_lines}
+        rare_seen = {_normalize(l) for l in self.rare_lines}
+        confirmed_now: list = []
+        for i, after in enumerate(after_texts):
+            if i >= len(self._last):
+                break                          # 防禦：pass 數不該變（引擎切換只在 init 時）
+            prev = self._last[i]
+            if not _chat_lines(prev):
+                if _chat_lines(after):
+                    self._last[i] = after      # 起鏈：重顯示的舊行不計，之後的增量才算
+                continue
+            anchored, tail = _align_tail(prev, after)
+            if not anchored:
+                continue
+            prev_lines = _chat_lines(prev)
+            for line in tail:
+                n = _normalize(line)
+                if any(self._same_entity_line(p, line, found_keywords)
+                       for p in prev_lines):
+                    continue                   # 噪音守門（見 docstring）
+                if n not in seen:
+                    seen.add(n)
+                    self.new_lines.append(line.strip())
+                is_rare = _is_rare_ore(_found_ore(line, found_keywords), common)
+                if not is_rare and rare_pairs:
+                    # H020 模糊兜底：found-ish token＋礦名≈白名單且贏過排除清單
+                    d = _fuzzy_rare_line(line, common_pairs, rare_pairs)
+                    is_rare = bool(d and d["accepted"])
+                if is_rare and n not in rare_seen:
+                    rare_seen.add(n)
+                    self.rare_lines.append(line.strip())
+                    confirmed_now.append(line.strip())
+            self._last[i] = after
+        return confirmed_now
 
 
 def any_new_special_found(before_texts, after_texts, common_names,

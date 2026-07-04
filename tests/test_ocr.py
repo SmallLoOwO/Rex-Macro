@@ -571,3 +571,106 @@ def test_count_special_found_strips_article_for_common_base():
 def test_count_special_found_article_variant_rare_base_still_special():
     text = "small_lo has found an ionized Zynulvinite"
     assert count_special_found(text, H032_COMMON, KW, SPECIAL) == 1
+
+
+# ---- Episode 級聊天帳本 ChatLedger（2026-07-04，H032 延伸對策）----
+# 情境：D3 其實命中但驗證誤判失敗 → RESWEEP 期間（D2 重掃/D5 守門 settle）晚到的成功行
+# 抵達、又被一般礦行往上推；等下次 OCR 時「episode 基準的底行」已捲出裁圖 → 錨點對不到，
+# count 又被頂部捲掉的舊稀有行補償 → 對單一基準的全部差分信號同時滅（假陰性誤交人工）。
+# 對策：基準提升到 HARVESTING episode 級、每次 OCR 以「上一次讀取」為錨點鏈式對齊
+# （間隔短 → 錨點幾乎不會捲丟），新增行累積進帳本；episode 內累積出任一稀有 found 行
+# 即確認（單人作業＋Exotic+ 被動出土 ≤1/1M → episode 內新稀有行只可能來自自己的 D3）。
+from miningbot.ocr import ChatLedger
+
+LG_COMMON = ("Diamantine", "Dulcinette", "Loveletter", "Halcylite")
+
+LG_BASE = ("small_lo has found Saerylium\n"       # 舊 episode 殘留稀有行（將捲出、補償 count）
+           "small_lo has found Diamantine\n"
+           "small_lo has found Loveletter\n"
+           "small_lo has found Dulcinette")
+LG_STEP1 = ("small_lo has found Diamantine\n"     # 頂部捲掉 Saerylium
+            "small_lo has found Loveletter\n"
+            "small_lo has found Dulcinette\n"
+            "small_lo has found Halcylite")
+LG_STEP2 = ("small_lo has found Halcylite\n"      # 基準的行已全數捲出裁圖
+            "small_lo has found Essentlum\n"      # 晚到的成功行（非底行）
+            "small_lo has found Halcylite (Lucky Cave)")
+
+
+def test_ledger_confirms_late_rare_after_baseline_scrolled_out():
+    led = ChatLedger([LG_BASE])
+    assert led.update([LG_STEP1], LG_COMMON, KW) == []
+    assert led.confirmed is False
+    got = led.update([LG_STEP2], LG_COMMON, KW)
+    assert got == ["small_lo has found Essentlum"]
+    assert led.confirmed is True
+    # 對照組：同一情境下「對 episode 基準的單次差分」全滅（count 被捲動補償、底行是
+    # 一般礦、基準底行已捲出對不到錨點）——這正是帳本存在的理由
+    assert any_new_rare_found([LG_BASE], [LG_STEP2], LG_COMMON, KW) is False
+
+
+def test_ledger_skips_unanchored_read_and_recovers_on_next():
+    led = ChatLedger([LG_BASE])
+    # 整段讀歪（錨點對不到）→ 保守：不追加、錨點不推進
+    assert led.update(["complete garbage text"], LG_COMMON, KW) == []
+    assert led.confirmed is False
+    # 下一次讀取正常：以「上次好的錨點」（基準底行）仍可對齊、收下新增行
+    after = LG_BASE + "\nsmall_lo has found Essentlum"
+    assert led.update([after], LG_COMMON, KW) == ["small_lo has found Essentlum"]
+
+
+def test_ledger_passes_are_self_consistent():
+    # pass 間噪音不同不可交叉比（H014 原則）→ 各 pass 各自鏈錨點；
+    # 只有 pass2 讀到成功行 → 仍確認
+    base1 = "small_lo has found Loveletter"
+    base2 = "small_lo has found Love1etter"        # pass2 對同一行的讀法略異
+    led = ChatLedger([base1, base2])
+    up1 = base1                                     # pass1 沒讀到新行
+    up2 = base2 + "\nsmall_lo has found Essentlum"  # pass2 讀到成功行
+    assert led.update([up1, up2], LG_COMMON, KW) == ["small_lo has found Essentlum"]
+    assert led.confirmed is True
+
+
+def test_ledger_empty_baseline_does_not_count_redisplayed_lines():
+    # 聊天在基準時淡出（讀到空）→ 之後新訊息會讓「舊行連同新行」一起重顯示，
+    # 無從分辨舊行重顯示 vs 真新增 → 首次非空讀取只起鏈、不計新增（舊稀有行
+    # 重顯示不可假陽性）；起鏈之後的增量照常計
+    led = ChatLedger([""])
+    redisplay = "small_lo has found Saerylium\nsmall_lo has found Loveletter"
+    assert led.update([redisplay], LG_COMMON, KW) == []
+    assert led.confirmed is False
+    assert led.update([redisplay + "\nsmall_lo has found Essentlum"],
+                      LG_COMMON, KW) == ["small_lo has found Essentlum"]
+
+
+def test_ledger_ignores_common_and_article_variant_lines():
+    led = ChatLedger([LG_BASE])
+    after = (LG_BASE + "\nsmall_lo has found an ionized Diamantine"
+                       "\nsmall_lo has found Halcylite (Lucky Cave)")
+    assert led.update([after], LG_COMMON, KW) == []
+    assert led.confirmed is False
+    # 新增行仍留檔（診斷/通知用），只是不算稀有
+    assert led.new_lines == ["small_lo has found an ionized Diamantine",
+                             "small_lo has found Halcylite (Lucky Cave)"]
+
+
+def test_ledger_fuzzy_rescues_mangled_found_line():
+    # H020 語意的模糊兜底也要在帳本上生效（rare_names 非空才開）
+    led = ChatLedger([LG_BASE])
+    after = LG_BASE + "\nsmall_lo hee foumel velyiiuinm"   # ≈ has found Valytium
+    got = led.update([after], LG_COMMON, KW,
+                     rare_names=("Valytium", "Solemn Lamentine"))
+    assert got == ["small_lo hee foumel velyiiuinm"]
+    assert led.confirmed is True
+
+
+def test_ledger_duplicate_rare_line_is_guarded_but_count_diff_backstops():
+    # 噪音守門：≈上次已有行一律當「錨點誤差的重讀」跳過（一般礦重讀讀歪礦名會翻成
+    # 稀有＝假陽性，寧漏勿假成功）。代價是「同名稀有連續兩筆」帳本不收——但這種
+    # 情境 episode 基準的 count 差分本來就抓得住（1→2）＝兜底不漏。
+    base = "small_lo has found Loveletter\nsmall_lo has found Saerylium"
+    led = ChatLedger([base])
+    after = base + "\nsmall_lo has found Saerylium"
+    assert led.update([after], LG_COMMON, KW) == []
+    assert led.new_lines == []
+    assert any_new_rare_found([base], [after], LG_COMMON, KW) is True

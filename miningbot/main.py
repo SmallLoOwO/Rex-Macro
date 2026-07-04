@@ -947,9 +947,14 @@ class Bot:
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
-            self._chat_baseline = None          # 聊天基準在 sweep 完成時截圖、開火後才 OCR（跨 D3 嘗試共用）
-            self._chat_baseline_crop = None
-            self._chat_last_crop = None
+            # ★ 聊天基準提升到 episode 級（2026-07-04 H032 延伸對策）：進場拍一次、
+            #   全程不作廢（RESWEEP 重取會把晚到的成功行吃進新基準 → 差分從此看不見
+            #   → 白掃誤交人工）。開火前不可能有自己的 D3 成功行 → 進場基準天生乾淨；
+            #   OCR 仍延到開火後才跑（H026 對策不變）。
+            self._chat_baseline = None          # 開火後才 OCR（跨本 episode 全部 D3 嘗試共用）
+            self._chat_baseline_crop = capture.crop(gf, cfg.chat_region)
+            self._chat_last_crop = self._chat_baseline_crop
+            self._chat_ledger = None            # episode 帳本（ocr.ChatLedger）：基準 OCR 完成時建立
         if s is State.NEEDS_HUMAN:
             # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
@@ -1274,6 +1279,11 @@ class Bot:
 
         # ---- 階段一：全方位掃描（找追蹤框；_target_marker 尚未設定時執行）----
         if self._target_marker is None:
+            # ★ 重掃路徑先聽聊天（晚到確認）：誤判 RESWEEP 後，成功行常在 D2 重掃描/
+            #   守門 settle 期間才抵達——先於重掃檢查，接得住就不必白掃一輪（首掃未開火
+            #   時 _late_chat_confirm 直接 False、零成本）
+            if self._late_chat_confirm(frame, hid, "pre-sweep"):
+                return
             # sweep 階段超時（sweep 固定 8 方位約 19s，30s 已是 1.5x 餘裕）
             if self.harvest.elapsed_s > cfg.sweep_timeout_s:
                 self.logger.info("[%s] sweep 超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
@@ -1282,6 +1292,10 @@ class Bot:
             self.last_action = "全方位掃描（8方位）"
             self._target_marker, had_candidates = self._sweep_for_tracker(_excl, _ref)
             if self._target_marker is None:
+                # ★ 掃完全空再聽一次聊天（晚到確認）：sweep 一輪數秒，成功行可能這期間
+                #   才抵達；frame 已舊 → 重抓當下幀
+                if self._late_chat_confirm(capture.grab(), hid, "post-sweep"):
+                    return
                 # 依「掃描過程是否看過穩定框」分流（H019）：
                 # - 全 8 方位都沒看到 → 人工（偵測已準；再掃也不會更好，2026-06-29 決策）。
                 #   先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
@@ -1297,20 +1311,18 @@ class Bot:
                 self.logger.info("[%s] sweep 未找到追蹤框（環繞一次）-> 人工", hid)
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
-            # ★ 聊天基準改在 sweep 完成時取一次、跨本輪所有 D3 嘗試共用（H015 對策）：
-            #  (a) 舊版每次開火前重讀 before（3-pass 滿版文字實測 ~10s）→ 開火座標的幀齡
-            #      高達 12s，D5 buff 到期 FOV 收縮的跑位剛好落在這空窗（第一槍打歪根因）；
-            #  (b) 成功行可能晚到（伺服器延遲/聊天淡出後由新訊息喚醒）——逐次重讀 before
-            #      會把晚到的成功行吃進下一次嘗試的基準、差分永遠看不見；共用基準則
-            #      不論成功行落在哪一次嘗試的窗口都算「新增」。
+            # ★ 聊天基準是 episode 級（2026-07-04 起在進場時拍、RESWEEP 不作廢，見 _on_enter）：
+            #   舊版在此每輪 sweep 重取——誤判失敗 RESWEEP 後重取會把晚到的成功行吃進新基準，
+            #   差分從此看不見（H015 對策只護到同輪 D3 嘗試、護不到跨 RESWEEP）。
+            #   這裡只防禦性補拍（理論上進 HARVESTING 必已拍）。
             # ★ 基準只截「像素」不 OCR（H026 對策）：3-pass OCR ~10s 若卡在確認→開火之間，
             #   D5 到期的 FOV 位移正好落在這空窗（H015 幀齡 12s、H026 卡 12s 期間到期都是它）。
             #   文字版基準延到「開火之後」才 OCR（見 stage 2）——裁圖已凍結、何時 OCR 結果相同，
             #   開火不必等它。確認→開火從 ~13s 縮到 ~1.5s。
             base_frame = capture.grab()
-            self._chat_baseline = None
-            self._chat_baseline_crop = capture.crop(base_frame, cfg.chat_region)
-            self._chat_last_crop = self._chat_baseline_crop
+            if self._chat_baseline is None and getattr(self, "_chat_baseline_crop", None) is None:
+                self._chat_baseline_crop = capture.crop(base_frame, cfg.chat_region)
+                self._chat_last_crop = self._chat_baseline_crop
             self._hsnap_crop(base_frame, cfg.chat_region, "d3_chat_before")
             # ★ sweep 完成：重置計時器，D3 階段從 0 開始算（基準 OCR 的 ~10s 不吃 D3 預算）
             # （否則 sweep 吃掉全部預算，D3 永遠超時——對應 2026-06-27 那次「判斷錯誤」）
@@ -1321,6 +1333,10 @@ class Bot:
 
         # ---- 階段二：D3 開火 + 驗證（sweep 完成後才計時）----
         if self.harvest.elapsed_s > cfg.harvest_verify_timeout_s:
+            # ★ 交人工前最後聽一次聊天（晚到確認）：poll 的 final-check 之後、走到這裡
+            #   之間仍可能有成功行抵達
+            if self._late_chat_confirm(frame, hid, "d3-timeout"):
+                return
             self.logger.info("[%s] D3 階段超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
             self._harvest_giveup("稀有礦採集失敗（D3 階段超時），請手動處理", face_tracker=True)
             return
@@ -1329,7 +1345,8 @@ class Bot:
         cx, cy = self._target_marker
         self.last_action = "D3 採集"
         # 反轉策略：比對聊天「has found X」，X 不在「低稀有度排除清單」(common_ore_names) → 稀有礦。
-        # chat 基準（chat_before）在 sweep 完成時已取、跨嘗試共用（見 stage 1；H015 對策）。
+        # chat 基準（chat_before）在進場時已截（episode 級、跨嘗試與 RESWEEP 共用；
+        # H015 對策 + 2026-07-04 延伸）。
         common = game_data.common_ore_names()
         if self._chat_baseline is None and getattr(self, "_chat_baseline_crop", None) is None:
             # 防禦：sweep 完成必已截基準裁圖，缺了就補（截圖瞬間完成、不擋開火）
@@ -1380,6 +1397,8 @@ class Bot:
             self._chat_baseline = ocr.read_text_multi(self._chat_baseline_crop, cfg.tesseract_path)
             self.log_harvest.info("[%s] 基準 OCR（開火後補跑）%.1fs", hid, time.time() - t0)
             self._log_rapid_diag(hid, "baseline")
+            # episode 帳本起點：之後每次 verify OCR 鏈式對齊、累積新增行（跨 RESWEEP 存活）
+            self._chat_ledger = ocr.ChatLedger(self._chat_baseline)
         chat_before = self._chat_baseline
         rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
         fired_at = time.time()
@@ -1444,77 +1463,10 @@ class Bot:
                          "NEW" if confirmed else "no-new", special,
                          time.time() - fired_at, time.time() - fire_t, verdict)
         if verdict == "SUCCESS":
-            # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
-            # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
-            new_lines = ocr.extract_new_found_lines_multi(chat_before, chat_after, cfg.found_keywords)
-            # 三態分類標注：白名單高階→附階級；未知→標注請人核對（OCR 誤讀或遊戲更新
-            # 的清單漂移自己浮出來，不靜默失效）；common（低階被動 find 混入）→原樣。
-            annotated, has_unknown = [], False
-            for line in new_lines:
-                kind, info = game_data.classify_found_ore(
-                    ocr.found_ore_name(line, cfg.found_keywords) or "")
-                if kind == "rare":
-                    annotated.append(f"{line} 〔{info['tier']} 1/{info['rarity']:,}〕")
-                elif kind == "unknown":
-                    annotated.append(f"{line} 〔⚠ 未知礦名〕")
-                    has_unknown = True
-                else:
-                    annotated.append(line)
-            # fuzzy 命中行（H020：關鍵字被 OCR 讀歪 → 精確抽取抓不到）另列，
-            # 標注「≈匹配到的白名單礦名＋相似度」讓人工可核對是不是誤配
-            seen = {l.lower() for l in new_lines}
-            for b, a in zip(chat_before, chat_after):
-                for line, ore_name, ratio in ocr.new_fuzzy_rare_lines(b, a, common, rare_names):
-                    if line.lower() in seen:
-                        continue
-                    seen.add(line.lower())
-                    kind, info = game_data.classify_found_ore(ore_name.lower())
-                    tier = f"，{info['tier']} 1/{info['rarity']:,}" if kind == "rare" and info else ""
-                    annotated.append(f"{line} 〔≈{ore_name} {ratio:.2f}{tier}〕")
-            if has_unknown:
-                annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"
-                                 "請核對；可跑 python -m miningbot.fetch_ores 同步清單")
-            new_lines = annotated
-            if new_lines:
-                self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
-            self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
-                         special=special, rare_before=rare_before, rare_after=rare_after,
-                         new_found_lines=new_lines, image_path=chat_after_path)
-            self.stats["rares"] += 1
-            self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
-            self._hsnap(after, "harvest_success" + ("_special" if special else ""))
-            # 採集全程數十秒（sweep ~19s + 多次 D3 嘗試），期間焦點可能被搶走
-            # （HUD 從隱藏重顯、系統通知、使用者點別視窗）。後續 restore_view +
-            # init_mining_sequence 會送視角鍵 / W / D1 / Shift，必須先確認焦點在
-            # Roblox，否則全被 GUI 視窗吃掉——「偶爾挖到稀有礦回正不會動」的根因。
-            # 聚焦失敗 → 走 _harvest_giveup（會先轉回視角再交人工，使用者可一眼判斷）。
-            if not self._focus_roblox():
-                self.logger.warning("採集成功但無法重新聚焦 Roblox -> 交人工（已採到，僅回正+續挖失敗）")
-                self._harvest_giveup("採集成功但無法重新聚焦 Roblox，請處理後按 Q")
-                return
-            self.logger.info("採集成功（gone=%s rare=%s->%s special=%s）-> 轉回原方位 net=%d",
-                             gone, rare_before, rare_after, special, self.harvest.net_rotations)
-            harvester.restore_view(self.harvest.net_rotations)
-            self.state = State.MINING
-            self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
-            # 採集後遊戲有 pickup 動畫（1-2s），期間 keyDown 被吃掉；動畫結束後遊戲
-            # 認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。Q-恢復能用是
-            # 因為暫停期間有自然 gap。這裡模擬：init 後等動畫結束 → release+re-press W。
-            self._log_w_state("採集成功→init 前")
-            miner.init_mining_sequence(log=self.logger.info)
-            self._log_w_state("採集成功→init 後（等動畫）")
-            time.sleep(1.0)                  # 等 pickup 動畫結束
-            # 動畫結束後重新置中 + re-press W（init 裡的 center_crosshair / keyDown 都被動畫吃掉）
-            ic.key_up("w"); ic.mouse_up()
-            time.sleep(0.15)
-            ic.center_crosshair()            # 重新雙擊 Shift 置中（遊戲已 settle）
-            time.sleep(0.2)
-            # 動畫結束後再確認鎬子：init 期的切換常被 pickup 動畫吃掉，導致 D3 沒切回 D1
-            # → 按住 W 卻拿著 D3 無法前進（使用者實機回報）。settle 後條件式補按 D1。
-            if miner.ensure_pickaxe():
-                self.logger.info("採集後動畫結束：補按 D1 切回鎬子（init 期被 pickup 動畫吃掉）")
-            ic.key_down("w"); ic.mouse_down()
-            self._log_w_state("採集成功→置中+鎬子+W重按後")
+            self._harvest_success(hid, after, chat_before, chat_after,
+                                  confirmed=confirmed, gone=gone, special=special,
+                                  rare_before=rare_before, rare_after=rare_after,
+                                  chat_after_path=chat_after_path)
         elif verdict == "RESWEEP":
             # 框消失但聊天無 has found → 多半是 D2 掃描到期框自己淡掉（或雷達搶採），原地再射也射不到 → 立即重掃。
             self._hsnap(after, "d3_gone_unconfirmed")  # 關鍵截圖：框沒了卻沒採到（掃描到期/被搶）
@@ -1532,13 +1484,137 @@ class Bot:
                                  hid, self.harvest.d3_attempts, cfg.max_harvest_attempts,
                                  rare_before, rare_after)
 
+    def _harvest_success(self, hid, after_frame, chat_before, chat_after, *,
+                         confirmed, gone, special, rare_before, rare_after,
+                         chat_after_path=None):
+        """採集成功收尾（通知標注/統計/聚焦/回正/續挖）。
+
+        poll 驗證路徑與晚到確認路徑（_late_chat_confirm）共用：晚到路徑的確認行可能
+        已被後續訊息推到「對 episode 基準差分抓不到」的位置，故通知行以差分抽取結果
+        聯集 episode 帳本的稀有行（帳本在入帳當下留了原文）。
+        """
+        common = game_data.common_ore_names()
+        rare_names = game_data.rare_ore_names()
+        # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
+        # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
+        new_lines = ocr.extract_new_found_lines_multi(chat_before, chat_after, cfg.found_keywords)
+        ledger = getattr(self, "_chat_ledger", None)
+        if ledger is not None:
+            seen_lg = {l.lower() for l in new_lines}
+            for line in ledger.rare_lines:
+                if line.lower() not in seen_lg:
+                    new_lines.append(line)
+        # 三態分類標注：白名單高階→附階級；未知→標注請人核對（OCR 誤讀或遊戲更新
+        # 的清單漂移自己浮出來，不靜默失效）；common（低階被動 find 混入）→原樣。
+        annotated, has_unknown = [], False
+        for line in new_lines:
+            kind, info = game_data.classify_found_ore(
+                ocr.found_ore_name(line, cfg.found_keywords) or "")
+            if kind == "rare":
+                annotated.append(f"{line} 〔{info['tier']} 1/{info['rarity']:,}〕")
+            elif kind == "unknown":
+                annotated.append(f"{line} 〔⚠ 未知礦名〕")
+                has_unknown = True
+            else:
+                annotated.append(line)
+        # fuzzy 命中行（H020：關鍵字被 OCR 讀歪 → 精確抽取抓不到）另列，
+        # 標注「≈匹配到的白名單礦名＋相似度」讓人工可核對是不是誤配
+        seen = {l.lower() for l in new_lines}
+        for b, a in zip(chat_before, chat_after):
+            for line, ore_name, ratio in ocr.new_fuzzy_rare_lines(b, a, common, rare_names):
+                if line.lower() in seen:
+                    continue
+                seen.add(line.lower())
+                kind, info = game_data.classify_found_ore(ore_name.lower())
+                tier = f"，{info['tier']} 1/{info['rarity']:,}" if kind == "rare" and info else ""
+                annotated.append(f"{line} 〔≈{ore_name} {ratio:.2f}{tier}〕")
+        if has_unknown:
+            annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"
+                             "請核對；可跑 python -m miningbot.fetch_ores 同步清單")
+        new_lines = annotated
+        if new_lines:
+            self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
+        self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
+                     special=special, rare_before=rare_before, rare_after=rare_after,
+                     new_found_lines=new_lines, image_path=chat_after_path)
+        self.stats["rares"] += 1
+        self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
+        self._hsnap(after_frame, "harvest_success" + ("_special" if special else ""))
+        # 採集全程數十秒（sweep ~19s + 多次 D3 嘗試），期間焦點可能被搶走
+        # （HUD 從隱藏重顯、系統通知、使用者點別視窗）。後續 restore_view +
+        # init_mining_sequence 會送視角鍵 / W / D1 / Shift，必須先確認焦點在
+        # Roblox，否則全被 GUI 視窗吃掉——「偶爾挖到稀有礦回正不會動」的根因。
+        # 聚焦失敗 → 走 _harvest_giveup（會先轉回視角再交人工，使用者可一眼判斷）。
+        if not self._focus_roblox():
+            self.logger.warning("採集成功但無法重新聚焦 Roblox -> 交人工（已採到，僅回正+續挖失敗）")
+            self._harvest_giveup("採集成功但無法重新聚焦 Roblox，請處理後按 Q")
+            return
+        self.logger.info("採集成功（gone=%s rare=%s->%s special=%s）-> 轉回原方位 net=%d",
+                         gone, rare_before, rare_after, special, self.harvest.net_rotations)
+        harvester.restore_view(self.harvest.net_rotations)
+        self.state = State.MINING
+        self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
+        # 採集後遊戲有 pickup 動畫（1-2s），期間 keyDown 被吃掉；動畫結束後遊戲
+        # 認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。Q-恢復能用是
+        # 因為暫停期間有自然 gap。這裡模擬：init 後等動畫結束 → release+re-press W。
+        self._log_w_state("採集成功→init 前")
+        miner.init_mining_sequence(log=self.logger.info)
+        self._log_w_state("採集成功→init 後（等動畫）")
+        time.sleep(1.0)                  # 等 pickup 動畫結束
+        # 動畫結束後重新置中 + re-press W（init 裡的 center_crosshair / keyDown 都被動畫吃掉）
+        ic.key_up("w"); ic.mouse_up()
+        time.sleep(0.15)
+        ic.center_crosshair()            # 重新雙擊 Shift 置中（遊戲已 settle）
+        time.sleep(0.2)
+        # 動畫結束後再確認鎬子：init 期的切換常被 pickup 動畫吃掉，導致 D3 沒切回 D1
+        # → 按住 W 卻拿著 D3 無法前進（使用者實機回報）。settle 後條件式補按 D1。
+        if miner.ensure_pickaxe():
+            self.logger.info("採集後動畫結束：補按 D1 切回鎬子（init 期被 pickup 動畫吃掉）")
+        ic.key_down("w"); ic.mouse_down()
+        self._log_w_state("採集成功→置中+鎬子+W重按後")
+
+    def _late_chat_confirm(self, frame, hid, why) -> bool:
+        """失敗/重掃路徑上聽聊天（2026-07-04 H032 延伸對策）：晚到成功行抵達 → 直接成功收尾。
+
+        誤判失敗 → RESWEEP 期間（D2 重掃描/D5 守門 settle/8 方位重掃）成功行才抵達的情境，
+        舊版這段路上沒人在看聊天、之後該行又被一般礦行推到捲出裁圖 → 白掃一輪誤交人工。
+        對策：失敗路徑的關鍵決策點先跑既有 frames_mean_diff 便宜閘（聊天是螢幕覆蓋層，
+        不受旋轉/FOV 影響），像素有變才 OCR——episode 帳本鏈式對齊接住晚到行。
+        只在開過火後有意義（基準 OCR 前不可能有自己的成功行）→ 未開火直接 False。
+        回 True 時已走完成功收尾，呼叫端應立即 return。
+        """
+        if self._chat_baseline is None or getattr(self, "_chat_ledger", None) is None:
+            return False
+        cur = capture.crop(frame, cfg.chat_region)
+        mean_diff = vision.frames_mean_diff(self._chat_last_crop, cur)
+        if mean_diff is not None and mean_diff <= cfg.chat_change_mean_diff:
+            return False
+        common = game_data.common_ore_names()
+        chat_after, confirmed, special = self._verify_chat_ocr(
+            cur, self._chat_baseline, common, game_data.rare_ore_names(), hid,
+            f"late@{why}")
+        self._chat_last_crop = cur
+        if not (confirmed or special):
+            return False
+        self.logger.info("[%s] 晚到確認（%s）：聊天確認已採到（誤判失敗轉成功）", hid, why)
+        self._dump_chat_ocr(hid, self._chat_baseline, chat_after, "late-success")
+        rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords)
+                       for t in self._chat_baseline]
+        rare_after = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
+        self._harvest_success(
+            hid, frame, self._chat_baseline, chat_after,
+            confirmed=True, gone=True, special=special,
+            rare_before=rare_before, rare_after=rare_after,
+            chat_after_path=self._hsnap_crop(frame, cfg.chat_region, "late_chat_after"))
+        return True
+
     def _reharvest_sweep(self):
         """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""
         self.harvest.d3_attempts = 0
         self._target_marker = None              # 下次 tick 重掃
-        self._chat_baseline = None              # 聊天基準跟著作廢，sweep 完成時重取
-        self._chat_baseline_crop = None
-        self._chat_last_crop = None
+        # ★ 聊天基準/帳本不作廢（2026-07-04 H032 延伸對策）：若其實已採到才誤判 RESWEEP，
+        #   成功行常在重掃期間才抵達——作廢重取會把它吃進新基準、差分永遠看不見。
+        #   episode 基準＋ChatLedger 鏈式錨點跨 RESWEEP 存活，晚到行照樣算「新增」。
         harvester.prepare_scan()
         # ★ 不重拍 _pre_scan_ref（H026 對策）：重掃時追蹤框往往已在畫面上，重拍會把「活框」
         #   寫進排除基準 → 之後每方位偵測都 rej(preexist)、自我致盲（H026 dir=0 實錄：
@@ -1566,6 +1642,15 @@ class Bot:
                                            cfg.found_keywords, rare_names=rare_names)
         special = ocr.any_new_special_found(chat_before, chat_after, common,
                                             cfg.found_keywords, cfg.special_keywords)
+        # episode 帳本（H032 延伸對策）：鏈式對齊累積新增行——基準底行已捲出裁圖時，
+        # 上面的單次差分全滅，帳本以「上一次讀取」為錨仍接得住晚到/被推走的成功行。
+        # confirmed 一旦入帳全 episode 有效（誤判失敗後的任何 OCR 都會把它撈回來）。
+        ledger = getattr(self, "_chat_ledger", None)
+        if ledger is not None:
+            got = ledger.update(chat_after, common, cfg.found_keywords, rare_names=rare_names)
+            if got:
+                self.log_harvest.info("[%s] 帳本入帳新稀有行: %s", hid, got)
+            confirmed = confirmed or ledger.confirmed
         counts = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         self.log_harvest.info("[%s] verify OCR(%s) %.1fs rare/pass=%s confirmed=%s special=%s",
                               hid, why, time.time() - t0, counts, confirmed, special)
