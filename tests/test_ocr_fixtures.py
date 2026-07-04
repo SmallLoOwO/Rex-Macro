@@ -165,3 +165,25 @@ def test_h020_pink_bg_fuzzy_confirms_valytium_harvest():
     assert ocr.any_new_rare_found(before, after, common, KW) is False
     # fuzzy 兜底（rare_names 白名單詞彙表）必須確認採集成功
     assert ocr.any_new_rare_found(before, after, common, KW, rare_names=rares) is True
+
+
+@rapid_skip
+def test_rapidocr_diagnostics_exposes_line_scores_and_elapse():
+    # 裁決輸出：rapid 呼叫後可取回逐行信心分數與耗時（main 記 harvest.log 用）；
+    # pop 一次即清（不殘留到下一次 verify 的 log）
+    ocr.read_text_multi(_load("h014_after_pink_bg.png"), cfg.tesseract_path,
+                        engine="rapidocr")
+    d = ocr.pop_rapid_diagnostics()
+    assert d is not None and d["elapse"] > 0
+    assert len(d["lines"]) > 0
+    for text, score in d["lines"]:
+        assert isinstance(text, str) and 0.0 <= score <= 1.0
+    assert ocr.pop_rapid_diagnostics() is None
+
+
+def test_tesseract_engine_leaves_no_rapid_diagnostics():
+    # tesseract 路徑不得殘留 rapid 診斷（否則 main 會把上一次 rapid 的分數記到這次頭上）
+    ocr.pop_rapid_diagnostics() if hasattr(ocr, "pop_rapid_diagnostics") else None
+    ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
+                        engine="tesseract")
+    assert ocr.pop_rapid_diagnostics() is None

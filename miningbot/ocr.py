@@ -1,6 +1,8 @@
 import re
 import os
+import logging
 import threading
+import time
 import numpy as np
 
 def _normalize(s: str) -> str:
@@ -470,11 +472,17 @@ def _get_rapid_engine():
         return _rapid_engine
     with _rapid_lock:
         if _rapid_engine is None and not _rapidocr_unavailable:
+            # init 成敗記主敘事 log（miningbot.log）——裁決時第一個問題是「這場用的是哪個引擎」
+            log = logging.getLogger("miningbot")
             try:
+                t0 = time.perf_counter()
                 from rapidocr import RapidOCR
                 _rapid_engine = RapidOCR(params=dict(_RAPIDOCR_PARAMS))
-            except Exception:
+                log.info("聊天 OCR 引擎＝RapidOCR（init %.1fs，常駐）",
+                         time.perf_counter() - t0)
+            except Exception as e:
                 _rapidocr_unavailable = True
+                log.warning("RapidOCR 初始化失敗→聊天 OCR 退回 tesseract 三前處理融合：%r", e)
                 return None
     return _rapid_engine
 
@@ -483,10 +491,43 @@ def rapidocr_available() -> bool:
     return _get_rapid_engine() is not None
 
 
+_rapid_last_diag = None          # 最近一次 rapid 呼叫的逐行分數/耗時（pop 即清）
+
+
 def _read_text_rapid(image_bgr: np.ndarray) -> str:
-    """RapidOCR 讀整張裁圖，回傳按偵測順序以換行接起的全文（與聊天行差分邏輯相容）。"""
+    """RapidOCR 讀整張裁圖，回傳按偵測順序以換行接起的全文（與聊天行差分邏輯相容）。
+
+    順手把逐行信心分數與耗時存進 _rapid_last_diag（pop_rapid_diagnostics 取用）——
+    裁決引擎好壞的素材：讀歪的行分數通常偏低，log 收集後可回頭調門檻/換模型。
+    """
+    global _rapid_last_diag
+    t0 = time.perf_counter()
     out = _get_rapid_engine()(image_bgr, use_cls=False)   # use_cls=False：遊戲字不旋轉
-    return "\n".join(out.txts) if out.txts else ""
+    txts = list(out.txts) if out.txts else []
+    scores = list(out.scores) if out.scores else [0.0] * len(txts)
+    _rapid_last_diag = {"lines": list(zip(txts, scores)),
+                        "elapse": time.perf_counter() - t0}
+    return "\n".join(txts)
+
+
+def pop_rapid_diagnostics():
+    """取回最近一次 rapid 呼叫的 {'lines': [(text, score)...], 'elapse': s}，取後即清。
+
+    None＝上次聊天 OCR 不是走 rapid（tesseract 後備路徑不產生診斷、也不殘留舊的）。
+    """
+    global _rapid_last_diag
+    d, _rapid_last_diag = _rapid_last_diag, None
+    return d
+
+
+RAPID_LOW_CONF_THRESHOLD = 0.80   # found 行低於此信心→WARNING（初始經驗值；乾淨文字實測 >0.9）
+
+
+def low_confidence_found_lines(lines, found_keywords,
+                               threshold: float = RAPID_LOW_CONF_THRESHOLD) -> list:
+    """從 (text, score) 行列表挑出「是 found 行且信心低於門檻」者——疑似讀歪的裁決素材。"""
+    return [(t, s) for t, s in lines
+            if s < threshold and contains_any(t, found_keywords)]
 
 
 def pass_labels(texts) -> list:

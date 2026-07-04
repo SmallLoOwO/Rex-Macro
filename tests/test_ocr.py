@@ -441,3 +441,23 @@ def test_pass_labels_single_pass_is_rapidocr():
     # RapidOCR 路徑回單元素 list——log 若標成 min_channel 會誤導事後排錯
     from miningbot.ocr import pass_labels
     assert pass_labels(["text"]) == ["rapidocr"]
+
+
+# ---- RapidOCR 裁決輸出：低信心 found 行偵測（純邏輯）----
+# 之後裁決引擎好壞的素材：found 行信心分數低於門檻 → main 記 WARNING，grep 即收集疑似讀歪樣本
+
+def test_low_confidence_found_lines_flags_weak_found_line():
+    from miningbot.ocr import low_confidence_found_lines
+    lines = [("small_lo has found Valytium", 0.62), ("The mine is resetting...", 0.55)]
+    flagged = low_confidence_found_lines(lines, ("has found", "found a"))
+    assert flagged == [("small_lo has found Valytium", 0.62)]  # 非 found 行不收
+
+def test_low_confidence_found_lines_ignores_confident_lines():
+    from miningbot.ocr import low_confidence_found_lines
+    lines = [("small_lo has found Valytium", 0.97)]
+    assert low_confidence_found_lines(lines, ("has found",)) == []
+
+def test_low_confidence_found_lines_threshold_is_tunable():
+    from miningbot.ocr import low_confidence_found_lines
+    lines = [("x has found Y", 0.9)]
+    assert low_confidence_found_lines(lines, ("has found",), threshold=0.95) == lines

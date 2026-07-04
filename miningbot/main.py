@@ -1320,6 +1320,7 @@ class Bot:
             t0 = time.time()
             self._chat_baseline = ocr.read_text_multi(self._chat_baseline_crop, cfg.tesseract_path)
             self.log_harvest.info("[%s] 基準 OCR（開火後補跑）%.1fs", hid, time.time() - t0)
+            self._log_rapid_diag(hid, "baseline")
         chat_before = self._chat_baseline
         rare_before = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_before]
         fired_at = time.time()
@@ -1373,9 +1374,9 @@ class Bot:
                                       hid, "RESWEEP" if gone else "RETRY")
         rare_after = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         chat_after_path = self._hsnap_crop(after, cfg.chat_region, "d3_chat_after")
-        if verdict != "SUCCESS":
-            # 未確認收場 → 逐 pass OCR 全文落盤，下次假陰性調查不必重跑 OCR（H020 需求）
-            self._dump_chat_ocr(hid, chat_before, chat_after)
+        # 一律落盤（檔名帶 verdict）：失敗查假陰性（H020 需求）、成功查誤判成功
+        # （RapidOCR 觀察期裁決素材，2026-07-04）
+        self._dump_chat_ocr(hid, chat_before, chat_after, verdict)
         # 成功只認「新增的稀有礦名/特殊階」（confirmed）；框消失但未確認 = 礦被掃描到期/雷達拿走 → 重掃。
         # （舊邏輯 `gone or confirmed` 把 gone 當成功；2026-06-29 trace 20260629_022126：
         #  真框疊角色身上 D3 打不到、D2 掃描到期框自己淡掉 → gone=True 誤報成功，稀有礦名 5→5 沒變。）
@@ -1501,6 +1502,7 @@ class Bot:
         """
         t0 = time.time()
         chat_after = ocr.read_text_multi(crop, cfg.tesseract_path)
+        self._log_rapid_diag(hid, why)
         confirmed = ocr.any_new_rare_found(chat_before, chat_after, common,
                                            cfg.found_keywords, rare_names=rare_names)
         special = ocr.any_new_special_found(chat_before, chat_after, common,
@@ -1524,16 +1526,35 @@ class Bot:
                         d["best_common"][0], d["best_common"][1])
         return chat_after, confirmed, special
 
-    def _dump_chat_ocr(self, hid, chat_before, chat_after):
-        """驗證未確認收場時，把逐 pass OCR 全文落盤 trace/*.txt。
+    def _log_rapid_diag(self, hid, why):
+        """RapidOCR 裁決輸出（2026-07-04 引擎切換的實機觀察期）：逐行信心分數記 DEBUG、
+        「found 行但信心低於門檻」記 WARNING——grep harvest.log 的 WARNING 即收集
+        疑似讀歪樣本，之後裁決引擎去留/調 RAPID_LOW_CONF_THRESHOLD。tesseract 後備
+        路徑無診斷（pop 回 None）＝零成本。"""
+        d = ocr.pop_rapid_diagnostics()
+        if not d:
+            return
+        self.log_harvest.debug("[%s]   rapid(%s) %.2fs 共 %d 行", hid, why,
+                               d["elapse"], len(d["lines"]))
+        for t, s in d["lines"]:
+            self.log_harvest.debug("[%s]     conf=%.2f %r", hid, s, t[:90])
+        for t, s in ocr.low_confidence_found_lines(d["lines"], cfg.found_keywords):
+            self.log_harvest.warning("[%s]   rapid(%s) found行低信心 conf=%.2f %r"
+                                     "（疑似讀歪，裁決素材）", hid, why, s, t[:90])
+
+    def _dump_chat_ocr(self, hid, chat_before, chat_after, verdict="unconfirmed"):
+        """把逐 pass OCR 全文落盤 trace/*.txt（檔名帶 verdict）。
 
         H020 調查時只有截圖、沒有「當時 OCR 實際讀到什麼」——得事後重跑 10s OCR 且
         引擎版本/前處理一改就不可重現。文字檔很小，直接同步寫。
+        RapidOCR 觀察期（2026-07-04）起成功路徑也落盤：裁決「誤判成功」（confirmed
+        但其實沒採到）同樣需要當時全文，只靠失敗落盤看不見這一類。
         """
         try:
             d = os.path.join(cfg.log_dir, "snapshots", "trace")
             os.makedirs(d, exist_ok=True)
-            path = os.path.join(d, f"{time.strftime('%Y%m%d_%H%M%S')}_{hid}_chat_ocr.txt")
+            path = os.path.join(
+                d, f"{time.strftime('%Y%m%d_%H%M%S')}_{hid}_chat_ocr_{verdict.lower()}.txt")
             parts = []
             for tag, texts in (("before", chat_before), ("after", chat_after)):
                 labels = ocr.pass_labels(texts)
