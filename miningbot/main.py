@@ -626,9 +626,9 @@ class Bot:
         # 啟動時 Discord 通知目前保留的事件清單（讓使用者一目了然不用 !list）
         if cfg.discord_bot_token and cfg.discord_channel_id:
             from . import notify
-            kept = ", ".join(sorted(self._keep_ores)) or "（空＝全部刷新）"
+            kept = game_data.format_keep_by_world(self._keep_ores)
             notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
-                                f"🤖 Bot 已啟動\n保留事件：{kept}")
+                                f"🤖 Bot 已啟動\n目前保留事件：\n{kept}")
         try:
             while self._running:
                 if self.paused:
@@ -1595,20 +1595,33 @@ class Bot:
         self._hk.tick()
 
     def _antiafk_tick(self, context: str):
-        """等待狀態（暫停/需人工/重置等待）防踢除：每 antiafk_interval_s 按一次 Space。
+        """等待狀態（暫停/需人工/重置等待）防踢除：每 antiafk_interval_s 保活一次。
 
-        _antiafk_last=0 代表剛進入等待 → 設成 now 開始計時；累積逾時則按 Space 並重置計時。
-        Roblox 閒置過久會被踢；按 Space（原地跳）是最不打擾畫面的保活。恢復活動時呼叫端
-        應把 _antiafk_last 歸 0（見主迴圈 elif 分支），下次等待才重新從 0 計時。
+        _antiafk_last=0 代表剛進入等待 → 設成 now 開始計時；累積逾時則保活並重置計時。
+        Roblox 閒置過久會被踢。保活兩步：先把視窗切回 Roblox（等待期間使用者可能 alt-tab
+        走、或別的視窗搶走焦點——不先聚焦，Space 會送到錯誤視窗等於沒保活），再按 Space
+        （原地跳，最不打擾畫面）。已在前景就不重抓（_focus_roblox 含 ~1.3s sleep，不必每輪
+        都付）。恢復活動時呼叫端把 _antiafk_last 歸 0（見主迴圈 elif 分支），下次等待才重新
+        從 0 計時。
         """
         now = time.time()
         if self._antiafk_last == 0:
             self._antiafk_last = now
-        elif now - self._antiafk_last >= cfg.antiafk_interval_s:
-            ic.key_press("space")
-            self.logger.info("防掛機：按 Space（%s中等超過 %.0f 分鐘）",
-                             context, cfg.antiafk_interval_s / 60)
-            self._antiafk_last = now
+            return
+        if now - self._antiafk_last < cfg.antiafk_interval_s:
+            return
+        # 切回 Roblox：等待期間可能失焦，不先聚焦 Space 會送錯視窗
+        u = ctypes.windll.user32
+        hwnd = u.FindWindowW(None, cfg.window_title)
+        refocused = False
+        if not (hwnd and u.GetForegroundWindow() == hwnd):
+            self._focus_roblox()
+            refocused = True
+        ic.key_press("space")
+        self.logger.info("防掛機：%s按 Space（%s中等超過 %.0f 分鐘）",
+                         "已失焦→重聚焦 Roblox 後" if refocused else "",
+                         context, cfg.antiafk_interval_s / 60)
+        self._antiafk_last = now
 
     def _pause(self):
         """暫停：放開所有按鍵、停住。idempotent（已暫停再呼叫無副作用）。
