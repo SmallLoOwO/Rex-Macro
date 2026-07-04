@@ -574,6 +574,18 @@ class Bot:
             notify.send_message(token, ch, "🗑️ 保留清單已清空（所有事件都會刷新）")
             self.log_discord.info("CMD !clear -> keep set cleared")
 
+        elif cmd == "!pause":
+            # 遠距暫停：等同在電腦前按 Ctrl+Q（只暫停，不繼續；繼續走 !resume）。
+            # _pause() idempotent 且會設 _antiafk_last，主迴圈暫停分支（run() 內）每輪
+            # 呼叫 _antiafk_tick("暫停") → 防掛機在暫停期間照常保活，無需這裡額外處理。
+            already = self.paused
+            self._pause()
+            notify.send_message(token, ch,
+                f"{'ℹ️ 已在暫停中' if already else '⏸ 已暫停'}（狀態: {self.state.value}）\n"
+                f"防掛機保持開啟，每 {cfg.antiafk_interval_s / 60:.0f} 分鐘自動保活一次\n"
+                f"→ 用 `!resume` 恢復挖礦（等同按 Q）")
+            self.log_discord.info("CMD !pause -> state=%s paused=%s", self.state.value, self.paused)
+
         elif cmd == "!resume":
             # 遠距恢復採礦：等同在電腦前按 Q。設 human_cleared=True，主迴圈下個 tick
             # decide_transition 就會從 NEEDS_HUMAN/RESET_WAIT 跳 MINING（_on_enter(MINING)
@@ -618,6 +630,7 @@ class Bot:
         elif cmd == "!help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**\n"
+                "`!pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `!resume` 恢復）\n"
                 "`!resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
                 "`!status` — 查詢目前狀態、統計、保留清單\n"
                 "`!list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
