@@ -61,7 +61,9 @@ class Config:
     chill_refs_dir: str = "assets/chill_refs"    # 多參考集資料夾：放各種 chill 實錄裁片（取最高分）。
                                                  # 實測同樣是清楚 chill 對單一參考飄 0.15-0.87、至少 3 種不同音效→單參考必漏。
                                                  # 新 chill 漏抓時：把 logs/snapshots 的 audiochg_*.wav 裁片丟進來即可擴充。
-    audio_match_decimate: int = 4                # 比對前抽樣加速倍率（k=4：分數不變、單次 118→22ms，多參考才不積壓）
+    audio_match_decimate: int = 8                # 比對前抽樣加速倍率。2026-07-04 參考集 6→12 個後
+                                                 # k=4 一輪 ~312ms > 0.3s 間隔必積壓 → k=8 ~131ms；
+                                                 # 20 個實錄驗證 k=4/k=8 分數差 ≤0.007（距門檻 0.25 很遠）
     audio_match_threshold: float = 0.25          # 交叉相關門檻。多參考取 max：命中任一已知 chill 即觸發。
                                                  # 真 chill 對自己的參考 ~1.0、靜音約 0.01；0.25 遠離雜訊（誤觸再往上調）
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）

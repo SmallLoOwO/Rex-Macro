@@ -418,6 +418,40 @@ def test_classify_empty_is_unknown():
     assert gd.classify_found_ore("")[0] == "unknown"
 
 
+# ---- 模糊兜底（2026-07-04 H033 對策）：RapidOCR 對遊戲字型 i/l 同形的誤讀信心很高
+# （Essentium→Essentlum 不觸發低信心 WARNING）、精確 startswith 對不上 → 真採到的
+# 高階被標「⚠ 未知礦名」；低階被動 find 的同類誤讀（Dianantine 等）則洗版未知警告。
+# 兜底＝對兩張表取最近鄰：門檻 CLASSIFY_FUZZY_RATIO 遠高於 H020 垃圾救援層的 0.62——
+# 這裡只修「近失拼字」，真正的清單漂移（新礦名）仍須落 unknown 浮出來；
+# rare 須嚴格贏過 common（寧漏勿假，與 ocr 模糊路徑同規則）、平手判 common。
+
+def test_classify_fuzzy_rescues_il_confusion_as_rare():
+    # H033 實錄（2026-07-04 16:25）：聊天實際顯示 Essentium、RapidOCR 讀成 Essentlum
+    kind, info = gd.classify_found_ore("essentlum")
+    assert kind == "rare_fuzzy"
+    assert info["ore"] == "Essentium"
+    assert info["fuzzy_ratio"] >= gd.CLASSIFY_FUZZY_RATIO
+
+def test_classify_fuzzy_does_not_mutate_whitelist_table():
+    gd.classify_found_ore("essentlum")
+    kind, info = gd.classify_found_ore("essentium")    # 精確路徑拿的是快取表的原 dict
+    assert kind == "rare" and "fuzzy_ratio" not in info
+
+def test_classify_fuzzy_common_misread_stays_common():
+    gd.set_world("Lucernia")
+    try:
+        # H027–H030 實錄誤讀（Diamantine 被動 find），舊版全標「⚠ 未知礦名」洗版通知
+        assert gd.classify_found_ore("dianantine")[0] == "common"
+        assert gd.classify_found_ore("diamantina")[0] == "common"
+    finally:
+        gd.clear_world()
+
+def test_classify_fuzzy_far_names_stay_unknown():
+    # 低於門檻的（含 0.62~0.80 之間「模糊救援層會收」的程度）仍是 unknown：
+    # 清單漂移警示不能被兜底吃掉
+    assert gd.classify_found_ore("velyiiuinm")[0] == "unknown"   # H020 實錄，對 Valytium 0.667
+
+
 # ---- 白名單依世界收斂（與 common_ore_names 同款模式）----
 # 世界已由事件鎖定 → 只查該世界的高階白名單（同名礦跨世界階級可能不同、也不可能
 # 採到別世界的礦）；未定 → 聯集（保守）。

@@ -639,8 +639,9 @@ _rapidocr_unavailable = False    # import/init 失敗一次即全程退回 tesse
 def _get_rapid_engine():
     """回程序共用的 RapidOCR 引擎；不可用（未裝/init 失敗/被停用）時回 None → 退回 tesseract。
 
-    首次呼叫載模型 ~2.5s（常駐，之後免費）。onnxruntime session 執行緒安全，
-    單例即可（聊天 OCR 只在主迴圈 verify 路徑呼叫）。
+    首次呼叫載模型（實機 6~7s，常駐後免費；勿信 benchmark 機的 ~2.5s）——故 main 啟動時
+    用背景執行緒預熱，別讓 init 落在第一次採集的基準 OCR 前。onnxruntime session
+    執行緒安全，單例即可（聊天 OCR 只在主迴圈 verify 路徑呼叫）。
     """
     global _rapid_engine, _rapidocr_unavailable
     if not PREFER_RAPIDOCR or _rapidocr_unavailable:

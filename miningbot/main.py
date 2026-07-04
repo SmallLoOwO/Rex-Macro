@@ -667,6 +667,10 @@ class Bot:
         miner.init_mining_sequence()
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
+        # RapidOCR 預熱（實測 init 6~7s）：lazy init 會落在第一次採集的基準 OCR 前、
+        # 白吃掉大半個 verify 窗口（H032/H033 實錄 14:12/16:24 init 都在採集中）。
+        # _get_rapid_engine 有鎖、冪等；未裝時這條執行緒只是快速失敗一次。
+        threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
@@ -1525,6 +1529,11 @@ class Bot:
                 ocr.found_ore_name(line, cfg.found_keywords) or "")
             if kind == "rare":
                 annotated.append(f"{line} 〔{info['tier']} 1/{info['rarity']:,}〕")
+            elif kind == "rare_fuzzy":
+                # 近失拼字兜底（H033：RapidOCR 把 Essentium 讀成 Essentlum，i/l 同形）
+                # ——標 ≈白名單礦名＋相似度讓人工可核對，不再誤標「⚠ 未知礦名」
+                annotated.append(f"{line} 〔≈{info['ore']} {info['fuzzy_ratio']:.2f}，"
+                                 f"{info['tier']} 1/{info['rarity']:,}〕")
             elif kind == "unknown":
                 annotated.append(f"{line} 〔⚠ 未知礦名〕")
                 has_unknown = True
@@ -1539,7 +1548,8 @@ class Bot:
                     continue
                 seen.add(line.lower())
                 kind, info = game_data.classify_found_ore(ore_name.lower())
-                tier = f"，{info['tier']} 1/{info['rarity']:,}" if kind == "rare" and info else ""
+                tier = (f"，{info['tier']} 1/{info['rarity']:,}"
+                        if kind in ("rare", "rare_fuzzy") and info else "")
                 annotated.append(f"{line} 〔≈{ore_name} {ratio:.2f}{tier}〕")
         if has_unknown:
             annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"

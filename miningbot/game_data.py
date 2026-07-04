@@ -638,22 +638,49 @@ def rare_ore_names() -> tuple[str, ...]:
     return tuple(dict.fromkeys(info["ore"] for info in table.values()))
 
 
+# 三態分類的模糊兜底門檻（2026-07-04 H033 對策）：RapidOCR 對遊戲字型 i/l 同形的誤讀
+# （Essentium→Essentlum=0.889、Diamantine→Dianantine=0.90）信心很高、精確 startswith
+# 對不上 → 高階被標「⚠ 未知礦名」、低階誤讀洗版未知警告。0.80 遠高於 ocr 垃圾救援層的
+# FUZZY_ORE_RATIO=0.62：這裡只修「近失拼字」，真正的清單漂移（新礦名）仍須落 unknown
+# 浮出來（H020 垃圾 velyiiuinm→Valytium=0.667 必須不被吃掉）。
+CLASSIFY_FUZZY_RATIO = 0.80
+
+
 def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
-    """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"unknown", 白名單 info 或 None)。
+    """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"rare_fuzzy"|"unknown", 白名單 info 或 None)。
 
     與排除比對同一套容忍：剝 Ionized/Spectral 變體前綴、startswith 容忍尾端雜訊
     （OCR 噪音、洞穴註記「(floral cave)」）。common 優先於 rare（守門員先判）；
     兩張表都隨 current_world 收斂（排除清單走 common_ore_names、白名單走 rare_ores）。
+    精確都對不上 → 模糊最近鄰兜底（CLASSIFY_FUZZY_RATIO；rare 須嚴格贏過 common、
+    平手判 common——與 ocr 模糊路徑同的「寧漏勿假」規則）。"rare_fuzzy" 的 info
+    是白名單 info 的複本、多帶 fuzzy_ratio（供通知標注 ≈ 讓人工核對是否誤配）。
     """
-    from .ocr import _strip_variant   # 單一事實來源（VARIANT_PREFIXES）；ocr 不 import 本模組、無循環
+    from .ocr import _strip_variant, _best_match   # 單一事實來源；ocr 不 import 本模組、無循環
     if not ore_text:
         return "unknown", None
     base = _strip_variant(ore_text.strip().lower())
     if any(base.startswith(c.lower()) for c in common_ore_names()):
         return "common", None
-    for name, info in rare_ores(current_world_name()).items():
+    rare_table = rare_ores(current_world_name())
+    for name, info in rare_table.items():
         if base.startswith(name):
             return "rare", info
+    # 模糊兜底：候選比照 ocr._fuzzy_rare_line 取「全部 / 前 1 / 前 2 個 token」
+    # （容忍礦名後黏雜訊/洞穴註記，也涵蓋多字礦名），各表取最高分。
+    tokens = base.split()
+    if not tokens:
+        return "unknown", None
+    cands = {base, tokens[0], " ".join(tokens[:2])}
+    common_pairs = [(c.lower(), c) for c in common_ore_names()]
+    rare_pairs = [(name, name) for name in rare_table]
+    best_common = max(_best_match(c, common_pairs)[0] for c in cands)
+    best_rare, best_rare_name = max(
+        (_best_match(c, rare_pairs) for c in cands), key=lambda t: t[0])
+    if best_rare >= CLASSIFY_FUZZY_RATIO and best_rare > best_common:
+        return "rare_fuzzy", {**rare_table[best_rare_name], "fuzzy_ratio": best_rare}
+    if best_common >= CLASSIFY_FUZZY_RATIO:
+        return "common", None
     return "unknown", None
 
 
