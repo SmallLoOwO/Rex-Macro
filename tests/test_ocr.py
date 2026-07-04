@@ -461,3 +461,113 @@ def test_low_confidence_found_lines_threshold_is_tunable():
     from miningbot.ocr import low_confidence_found_lines
     lines = [("x has found Y", 0.9)]
     assert low_confidence_found_lines(lines, ("has found",), threshold=0.95) == lines
+
+
+# ---- H032（2026-07-04）假陰性：新稀有行「不是底行」＋ 頂部捲動剛好補償 count ----
+# 實錄：D3 第一發命中、聊天新增 "has found Essentlum"（Essentium），但同窗口又進來一行
+# 一般礦 "has found Halcylite (Lucky Cave)" 排在它後面 → 底行信號滅；同時頂部剛好刷掉
+# 一行舊稀有（Saerylium）→ count 3→3 不增 → confirmed=False → RESWEEP 全空 → 誤交人工。
+# 對策：new_chat_tail_lines 用「before 底行在 after 的對齊錨點」找出 after 的全部新增行，
+# 任一新增行是稀有 found 行即確認（不再假設新稀有行必在底部）。
+from miningbot.ocr import new_chat_tail_lines, has_new_rare_found_tail
+
+H032_COMMON = ("Diamantine", "Dulcinette", "Loveletter", "Halcylite")
+
+H032_BEFORE = (
+    "small_lo has found Saerylium\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Diamantine\n"
+    "KIT (@small_lo) has boosted the event's length\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Dulcinette\n"
+    "small_lo has found an ionized Diamantine\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Loveletter\n"
+    "small_lo has found Valytium"
+)
+H032_AFTER = (
+    "small_lo has found Diamantine\n"
+    "KIT (@small_lo) has boosted the event's length\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Dulcinette\n"
+    "small_lo has found an ionized Diamantine\n"
+    "small_lo has found Diamantine\n"
+    "small_lo has found Loveletter\n"
+    "small_lo has found Valytium\n"
+    "small_lo has found Essentlum\n"
+    "small_lo has found Halcylite (Lucky Cave)"
+)
+
+
+def test_h032_confirms_new_rare_when_not_at_bottom_and_count_compensated():
+    # 實錄回歸：count 差分與底行信號雙滅，tail 對齊要救回
+    assert any_new_rare_found([H032_BEFORE], [H032_AFTER], H032_COMMON, KW) is True
+
+
+def test_new_chat_tail_lines_h032_alignment():
+    tail = new_chat_tail_lines(H032_BEFORE, H032_AFTER)
+    assert tail == ["small_lo has found Essentlum",
+                    "small_lo has found Halcylite (Lucky Cave)"]
+
+
+def test_new_chat_tail_lines_anchors_on_longest_run_with_duplicate_bottom_line():
+    # before 底行（Diamantine）在 after 出現多次（新行裡也有一筆）→
+    # 要取「向上連續吻合最長」的錨點，不可錨到新進來的那筆重複行
+    before = "has found Loveletter\nhas found Diamantine"
+    after  = ("has found Loveletter\nhas found Diamantine\n"
+              "has found Essentium\nhas found Diamantine")
+    assert new_chat_tail_lines(before, after) == ["has found Essentium",
+                                                  "has found Diamantine"]
+
+
+def test_new_chat_tail_lines_empty_when_no_anchor():
+    # before 的行完全對不到 after（換場景/OCR 噪音）→ 保守回空、不假陽性
+    assert new_chat_tail_lines("completely different", "has found Essentium") == []
+
+
+def test_new_chat_tail_lines_empty_when_bottom_unchanged():
+    msg = "has found Loveletter\nhas found Valytium"
+    assert new_chat_tail_lines(msg, msg) == []
+
+
+def test_has_new_rare_found_tail_false_when_new_lines_all_common():
+    before = "has found Valytium"
+    after  = "has found Valytium\nhas found Bandeau\nhas found Lovelocket"
+    assert has_new_rare_found_tail(before, after, COMMON, KW) is False
+
+
+def test_has_new_rare_found_tail_tolerates_ocr_noise_in_anchor():
+    # 錨點行前後兩次 OCR 略有出入（模糊比對 ≥ FUZZY_STALE_LINE_RATIO 仍可對齊）
+    before = "has found Loveletter\nhas found Valytium"
+    after  = "has found Loveletter\nhas found Va1ytium\nhas found Essentium"
+    assert has_new_rare_found_tail(before, after, COMMON, KW) is True
+
+
+def test_fuzzy_tail_rescues_mangled_rare_not_at_bottom():
+    # 模糊路徑同樣不可假設新稀有行在底部：讀歪的稀有行後面跟了一行一般礦
+    before = "small_lo has found Diamantine"
+    after  = ("small_lo has found Diamantine\n"
+              "small_lo hee foumel velyiiuinm\n"      # ≈ has found Valytium
+              "small_lo has found Diamantine")
+    assert has_new_fuzzy_rare_found(before, after, F_COMMON, F_RARES) is True
+
+
+# ---- 變體行帶冠詞「an/a」（H032 實錄同批發現）----
+# 遊戲實際聊天行是 "has found an ionized Diamantine"（帶冠詞），舊 _strip_variant 只剝
+# 行首的 ionized/spectral → "an ionized diamantine" 剝不掉 → 不 startswith 任何排除清單
+# → 被動挖到的低階變體被當稀有/special → 假成功風險（H032 裡它讓 rare count 虛胖成 3）。
+def test_count_rare_found_strips_article_before_variant_prefix():
+    text = "small_lo has found an ionized Diamantine"
+    assert count_rare_found(text, H032_COMMON, KW) == 0
+
+
+def test_count_special_found_strips_article_for_common_base():
+    text = "small_lo has found an ionized Diamantine"
+    assert count_special_found(text, H032_COMMON, KW, SPECIAL) == 0
+
+
+def test_count_special_found_article_variant_rare_base_still_special():
+    text = "small_lo has found an ionized Zynulvinite"
+    assert count_special_found(text, H032_COMMON, KW, SPECIAL) == 1

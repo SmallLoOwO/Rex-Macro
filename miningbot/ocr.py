@@ -67,8 +67,18 @@ def _found_ore(line: str, found_keywords) -> str | None:
 VARIANT_PREFIXES = ("spectral", "ionized")
 
 
+# 變體行帶冠詞（H032 實錄 2026-07-04）：遊戲實際聊天是 "has found an ionized Diamantine"，
+# 冠詞不剝掉的話 "an ionized diamantine" 剝不到變體前綴 → 不 startswith 任何排除清單
+# → 被動低階變體被當稀有/special（假成功風險）。
+_ARTICLES = ("an", "a")
+
+
 def _strip_variant(ore: str) -> str:
-    """剝掉礦名開頭的變體前綴（已正規化小寫）："spectral bandeau" → "bandeau"。"""
+    """剝掉礦名開頭的冠詞與變體前綴（已正規化小寫）："an ionized bandeau" → "bandeau"。"""
+    for a in _ARTICLES:
+        if ore.startswith(a + " "):
+            ore = ore[len(a) + 1:]
+            break
     for p in VARIANT_PREFIXES:
         if ore.startswith(p + " "):
             return ore[len(p) + 1:]
@@ -132,6 +142,59 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
     return _is_rare_ore(_found_ore(after_last, found_keywords), common)
 
 
+# ── 底部新增行對齊（2026-07-04 H032 假陰性對策）─────────────────────────────
+# H032 實錄：D3 命中、聊天新增稀有行，但**同窗口又進來一行一般礦排在它後面**→底行信號滅；
+# 同時頂部剛好刷掉一行舊稀有 → count 差分 3→3 也滅 → 假陰性誤交人工。
+# 「新稀有行必在底部」的假設在多行同窗口抵達時不成立 → 改對齊 before 底行在 after 的
+# 錨點位置，錨點之後**全部**都是新增行，任一行是稀有 found 行即確認。
+
+def _chat_lines(text: str) -> list:
+    return [l.strip() for l in text.splitlines() if l.strip()]
+
+
+def _lines_alike(a: str, b: str) -> bool:
+    """同一實體行的前後兩次 OCR 常略有出入 → 完全相等或相似度達噪音門檻即視為同行。"""
+    return a == b or SequenceMatcher(None, a, b).ratio() >= FUZZY_STALE_LINE_RATIO
+
+
+def new_chat_tail_lines(before: str, after: str) -> list:
+    """after 相對 before 的底部新增行（原文，保序）。
+
+    聊天是 append-only＋頂部刷掉：after ＝ before 的尾段＋新行。把 before 的底行對齊到
+    after 中的位置當錨點（候選多個時取「向上連續吻合最長」者——before 底行可能是重複礦名、
+    新行裡也有同名行，錨到新行會漏；同長取較晚位置，新行越少越保守）。
+    對不到錨點（換場景/該 pass 的 OCR 噪音）→ 回空 list（保守：交回 count/底行信號，不假陽性）。
+    """
+    b = [_normalize(l) for l in _chat_lines(before)]
+    a_orig = _chat_lines(after)
+    a = [_normalize(l) for l in a_orig]
+    if not b or not a:
+        return []
+    best_j, best_run = -1, 0
+    for j in range(len(a)):
+        if not _lines_alike(a[j], b[-1]):
+            continue
+        run = 1
+        while run < len(b) and j - run >= 0 and _lines_alike(a[j - run], b[-1 - run]):
+            run += 1
+        if run >= best_run:
+            best_j, best_run = j, run
+    if best_j < 0:
+        return []
+    return a_orig[best_j + 1:]
+
+
+def has_new_rare_found_tail(before: str, after: str, common_names, found_keywords) -> bool:
+    """底部新增行（對齊錨點後）任一行是稀有 found 行 → True。
+
+    比 has_new_rare_found_last_line 多涵蓋「新稀有行後面又跟了一般礦行」（H032）；
+    錨點對不到時回 False，由 count/底行信號決定（不取代、只補洞）。
+    """
+    common = [_normalize(c) for c in common_names]
+    return any(_is_rare_ore(_found_ore(l, found_keywords), common)
+               for l in new_chat_tail_lines(before, after))
+
+
 # ── 多前處理融合（H014 假陰性根因的對策）─────────────────────────────────
 # 單一前處理必有背景盲區：min_channel 為暗背景紅字校準、在亮粉糖果礦區彩色行全滅
 # （2026-07-03 H014：真正採到的底部新行 has found Diamorite 沒讀到→誤交人工）；
@@ -152,6 +215,7 @@ def any_new_rare_found(before_texts, after_texts, common_names, found_keywords,
     return any(
         has_new_rare_found(b, a, common_names, found_keywords)
         or has_new_rare_found_last_line(b, a, common_names, found_keywords)
+        or has_new_rare_found_tail(b, a, common_names, found_keywords)
         or (bool(rare_names)
             and has_new_fuzzy_rare_found(b, a, common_names, rare_names))
         for b, a in zip(before_texts, after_texts)
@@ -271,10 +335,12 @@ def count_fuzzy_rare_found(text: str, common_names, rare_names) -> int:
 
 
 def has_new_fuzzy_rare_found(before: str, after: str, common_names, rare_names) -> bool:
-    """模糊稀有行的前後差分：count 增加，或底部出現新的模糊稀有行。
+    """模糊稀有行的前後差分：count 增加、底部出現新的模糊稀有行、或底部新增行
+    （對齊錨點後，H032：新稀有行後面又跟了一般礦行）任一行是模糊稀有行。
 
-    底行比對比精確版多一道「噪音守門」：同一實體行在前後兩次 OCR 常讀出略不同字樣
-    （模糊路徑對此特別敏感），底行相似度 ≥ FUZZY_STALE_LINE_RATIO 視為同一行、不算新增。
+    底行/新增行比對比精確版多一道「噪音守門」：同一實體行在前後兩次 OCR 常讀出略不同
+    字樣（模糊路徑對此特別敏感），與 before 任一行相似度 ≥ FUZZY_STALE_LINE_RATIO
+    視為同一行、不算新增。
     """
     common_pairs, rare_pairs = _name_pairs(common_names), _name_pairs(rare_names)
     if (count_fuzzy_rare_found(after, common_names, rare_names)
@@ -284,10 +350,19 @@ def has_new_fuzzy_rare_found(before: str, after: str, common_names, rare_names) 
         stripped = text.strip()
         return stripped.split("\n")[-1].strip() if stripped else ""
     b, a = _normalize(last_line(before)), _normalize(last_line(after))
-    if not a or a == b or SequenceMatcher(None, b, a).ratio() >= FUZZY_STALE_LINE_RATIO:
-        return False
-    d = _fuzzy_rare_line(a, common_pairs, rare_pairs)
-    return bool(d and d["accepted"])
+    if a and a != b and SequenceMatcher(None, b, a).ratio() < FUZZY_STALE_LINE_RATIO:
+        d = _fuzzy_rare_line(a, common_pairs, rare_pairs)
+        if d and d["accepted"]:
+            return True
+    before_lines = [_normalize(l) for l in _chat_lines(before)]
+    for line in new_chat_tail_lines(before, after):
+        n = _normalize(line)
+        if any(_lines_alike(bl, n) for bl in before_lines):
+            continue                       # 噪音守門：before 已有的行（略讀歪）不算新增
+        d = _fuzzy_rare_line(line, common_pairs, rare_pairs)
+        if d and d["accepted"]:
+            return True
+    return False
 
 
 def new_fuzzy_rare_lines(before: str, after: str, common_names, rare_names) -> list:
