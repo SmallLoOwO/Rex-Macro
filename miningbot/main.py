@@ -1508,10 +1508,11 @@ class Bot:
         counts = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         self.log_harvest.info("[%s] verify OCR(%s) %.1fs rare/pass=%s confirmed=%s special=%s",
                               hid, why, time.time() - t0, counts, confirmed, special)
+        labels = ocr.pass_labels(chat_after)
         for i, t in enumerate(chat_after):
             last = t.strip().splitlines()[-1] if t.strip() else ""
             self.log_harvest.info("[%s]   pass%d(%s) 末行=%r", hid, i,
-                                  ocr.CHAT_PREPROCESSES[i], last[-90:])
+                                  labels[i], last[-90:])
         if not confirmed and rare_names:
             for i, t in enumerate(chat_after):
                 for d in ocr.fuzzy_found_diagnostics(t, common, rare_names):
@@ -1535,8 +1536,9 @@ class Bot:
             path = os.path.join(d, f"{time.strftime('%Y%m%d_%H%M%S')}_{hid}_chat_ocr.txt")
             parts = []
             for tag, texts in (("before", chat_before), ("after", chat_after)):
+                labels = ocr.pass_labels(texts)
                 for i, t in enumerate(texts):
-                    parts.append(f"==== {tag} pass{i} ({ocr.CHAT_PREPROCESSES[i]}) ====\n{t}\n")
+                    parts.append(f"==== {tag} pass{i} ({labels[i]}) ====\n{t}\n")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(parts))
             self.log_harvest.info("[%s] OCR 全文已落盤: %s", hid, path)

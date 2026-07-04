@@ -46,11 +46,83 @@ def _load(name: str):
     return img
 
 
+def _rapidocr_installed() -> bool:
+    try:
+        import rapidocr  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+rapid_skip = pytest.mark.skipif(not _rapidocr_installed(), reason="rapidocr 未安裝")
+
+
+# ---------- RapidOCR 後端（2026-07-04 起聊天 OCR 首選引擎） ----------
+# benchmark（scratchpad/bench_rapidocr.py，實機 fixtures）：滿版 2.7~3.1s/次 vs tess
+# 三 pass 1.7~2.0s——速度打平，但拼字精準度壓倒性（H020 精確匹配直接過、Saerylium
+# 拼字全對），消滅「關鍵字被讀歪」整類假陰性。
+
+@rapid_skip
+def test_rapidocr_engine_returns_single_pass():
+    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    assert len(texts) == 1
+
+
+@rapid_skip
+def test_rapidocr_auto_preferred_for_chat_multi():
+    # engine 未指定＝自動：rapidocr 可用時走它（單 pass），取代三前處理融合
+    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path)
+    assert len(texts) == 1
+
+
+def test_auto_engine_falls_back_to_tesseract_when_rapidocr_missing(monkeypatch):
+    # rapidocr 不可用（未裝/init 失敗）→ 自動退回三 pass tesseract 融合，行為與舊版一致
+    monkeypatch.setattr(ocr, "_get_rapid_engine", lambda: None)
+    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path)
+    assert len(texts) == len(ocr.CHAT_PREPROCESSES)
+
+
+@rapid_skip
+def test_rapidocr_h020_exact_match_confirms_valytium():
+    # H020 用 tesseract 是假陰性（讀成 hee foumel velyiiuinm、靠 fuzzy 兜底才救回）；
+    # RapidOCR 必須精確讀出 has found Valytium → 不開 fuzzy 也 confirmed
+    before = ocr.read_text_multi(_load("h020_before_faded_pink.png"), cfg.tesseract_path,
+                                 engine="rapidocr")
+    after = ocr.read_text_multi(_load("h020_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    assert any("valytium" in t.lower() for t in after)
+    common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
+    assert ocr.any_new_rare_found(before, after, common, KW) is True
+
+
+@rapid_skip
+def test_rapidocr_h014_confirms_diamorite():
+    before = ocr.read_text_multi(_load("h014_before_faded_pink.png"), cfg.tesseract_path,
+                                 engine="rapidocr")
+    after = ocr.read_text_multi(_load("h014_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    assert any("diamorite" in t.lower() for t in after)
+    common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
+    assert ocr.any_new_rare_found(before, after, common, KW) is True
+
+
+@rapid_skip
+def test_rapidocr_no_hallucinated_found_on_faded_chat():
+    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    assert sum(ocr.count_found(t, KW) for t in texts) == 0
+
+
+# ---------- tesseract 三前處理融合（後備路徑，engine="tesseract" 釘住） ----------
+
 def test_h014_pink_bg_fusion_confirms_diamorite_harvest():
     # H014 實況重演：before 聊天淡出全空、after 底部新行是 Diamorite（暗紫字＋亮粉背景）。
     # 單一 min_channel 讀不到 Diamorite（當時的假陰性）；融合讀取必須確認採集成功。
-    before = ocr.read_text_multi(_load("h014_before_faded_pink.png"), cfg.tesseract_path)
-    after = ocr.read_text_multi(_load("h014_after_pink_bg.png"), cfg.tesseract_path)
+    before = ocr.read_text_multi(_load("h014_before_faded_pink.png"), cfg.tesseract_path,
+                                 engine="tesseract")
+    after = ocr.read_text_multi(_load("h014_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="tesseract")
     assert any("diamorite" in t.lower() for t in after), \
         "至少一個前處理 pass 要能讀到 has found Diamorite 行"
     # 當時世界已鎖 Lucernia → 排除清單用 Lucernia 的（Jollycane 在清單內、Diamorite 不在）
@@ -60,7 +132,8 @@ def test_h014_pink_bg_fusion_confirms_diamorite_harvest():
 
 def test_h010_faded_chat_reads_nothing_in_every_pass():
     # 聊天淡出＝畫面只剩礦壁：所有 pass 都不得讀出 found 行（防止新前處理引入幻覺文字）
-    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path)
+    texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
+                                engine="tesseract")
     for t in texts:
         assert ocr.count_found(t, KW) == 0
 
@@ -68,7 +141,8 @@ def test_h010_faded_chat_reads_nothing_in_every_pass():
 def test_h005_mixed_dark_bg_union_recovers_more_lines_than_any_single_pass():
     # 暗棕混合背景：三種前處理各救回不同子集（實測 min_channel=3、gray=4、dark_mask=4 行），
     # 聯集必須「嚴格優於」任何單一 pass，且要含只有 gray 讀得到的底部 Saerylium 行
-    texts = ocr.read_text_multi(_load("h005_mixed_dark_bg.png"), cfg.tesseract_path)
+    texts = ocr.read_text_multi(_load("h005_mixed_dark_bg.png"), cfg.tesseract_path,
+                                engine="tesseract")
     per_pass = [ocr.extract_new_found_lines("", t, KW) for t in texts]
     union = ocr.extract_new_found_lines_multi([""] * len(texts), texts, KW)
     assert len(union) > max(len(p) for p in per_pass)
@@ -80,8 +154,10 @@ def test_h020_pink_bg_fuzzy_confirms_valytium_harvest():
     # 「has found Diamantine」（Surreal、被動挖到）＋「has found Valytium」（Exotic、D3 採到）。
     # 亮粉背景讓三 pass 的精確關鍵字全滅（dark_mask 讀成 "hee foumel velyiiuinm"）→
     # 當時 rare [0,0,0]->[0,0,0] 假陰性誤交人工。模糊匹配必須救回 Valytium 行。
-    before = ocr.read_text_multi(_load("h020_before_faded_pink.png"), cfg.tesseract_path)
-    after = ocr.read_text_multi(_load("h020_after_pink_bg.png"), cfg.tesseract_path)
+    before = ocr.read_text_multi(_load("h020_before_faded_pink.png"), cfg.tesseract_path,
+                                 engine="tesseract")
+    after = ocr.read_text_multi(_load("h020_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="tesseract")
     common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
     rares = tuple(r["ore"] for r in game_data.rare_ores("Lucernia").values())
     # 當時的行為（精確匹配、無 fuzzy）＝假陰性——鎖住這個事實，若未來 OCR 前處理

@@ -442,12 +442,77 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
     return pytesseract.image_to_string(processed, config=f"--psm {psm}")
 
 
-def read_text_multi(image_bgr: np.ndarray, tesseract_path: str | None = None,
-                    preprocesses=CHAT_PREPROCESSES, psm: int = 6) -> list:
-    """同一張圖跑多種前處理各 OCR 一次，回傳文字 list（與 preprocesses 順序對應）。
+# ---------- RapidOCR 聊天引擎（2026-07-04 起首選；tesseract 三 pass 融合為後備） ----------
+# 動機：Tesseract 是文件掃描引擎，對彩色遊戲背景上的抗鋸齒 UI 文字天生弱——H014（亮粉背景
+# 彩色行全滅）、H020（has found 讀成 hee foumel）兩次「真採到卻誤交人工」都源於此，專案為它
+# 堆了三前處理融合＋fuzzy 兜底＋final-check 多層補丁。RapidOCR（PaddleOCR 模型轉 ONNX，
+# 深度學習偵測+辨識）對這類文字拼字精準（benchmark：H020 精確匹配直接過、Saerylium 全對），
+# 從源頭消滅「關鍵字讀歪」假陰性；速度與三 pass 打平（滿版 ~3s、空圖 ~0.3s，實機 fixtures）。
+# 只用於聊天 verify（read_text_multi）；banner/事件列等小圖仍走 tesserocr（夠快夠準、不動）。
+PREFER_RAPIDOCR = True           # 強制退回 tesseract 融合（A/B 或除錯）時設 False
+# Det.limit_type=max：偵測不把短邊放大到 736（460x280 聊天裁圖被放大 2.6x 是預設慢 3 倍的主因）
+_RAPIDOCR_PARAMS = {"Det.limit_type": "max", "Det.limit_side_len": 960.0}
+_rapid_lock = threading.Lock()
+_rapid_engine = None
+_rapidocr_unavailable = False    # import/init 失敗一次即全程退回 tesseract 融合
 
-    聊天框 verify 專用：搭配 any_new_rare_found / extract_new_found_lines_multi 做
-    逐 pass 自洽差分。tesserocr 下每 pass ~0.4s，只在 D3 前後各跑一次、非每幀。
+
+def _get_rapid_engine():
+    """回程序共用的 RapidOCR 引擎；不可用（未裝/init 失敗/被停用）時回 None → 退回 tesseract。
+
+    首次呼叫載模型 ~2.5s（常駐，之後免費）。onnxruntime session 執行緒安全，
+    單例即可（聊天 OCR 只在主迴圈 verify 路徑呼叫）。
     """
+    global _rapid_engine, _rapidocr_unavailable
+    if not PREFER_RAPIDOCR or _rapidocr_unavailable:
+        return None
+    if _rapid_engine is not None:
+        return _rapid_engine
+    with _rapid_lock:
+        if _rapid_engine is None and not _rapidocr_unavailable:
+            try:
+                from rapidocr import RapidOCR
+                _rapid_engine = RapidOCR(params=dict(_RAPIDOCR_PARAMS))
+            except Exception:
+                _rapidocr_unavailable = True
+                return None
+    return _rapid_engine
+
+
+def rapidocr_available() -> bool:
+    return _get_rapid_engine() is not None
+
+
+def _read_text_rapid(image_bgr: np.ndarray) -> str:
+    """RapidOCR 讀整張裁圖，回傳按偵測順序以換行接起的全文（與聊天行差分邏輯相容）。"""
+    out = _get_rapid_engine()(image_bgr, use_cls=False)   # use_cls=False：遊戲字不旋轉
+    return "\n".join(out.txts) if out.txts else ""
+
+
+def pass_labels(texts) -> list:
+    """log 標籤：read_text_multi 輸出對應的引擎/前處理名（rapid 單 pass vs tess 三 pass）。"""
+    if len(texts) == len(CHAT_PREPROCESSES):
+        return list(CHAT_PREPROCESSES)
+    return ["rapidocr"] * len(texts)
+
+
+def read_text_multi(image_bgr: np.ndarray, tesseract_path: str | None = None,
+                    preprocesses=CHAT_PREPROCESSES, psm: int = 6,
+                    engine: str | None = None) -> list:
+    """聊天框 OCR：回傳文字 list，搭配 any_new_rare_found / extract_new_found_lines_multi
+    做逐 pass 自洽差分（差分邏輯對 list 長度無假設，1 或 3 個 pass 都能跑）。
+
+    engine=None       ：自動——rapidocr 可用走它（單元素 list），否則 tesseract 三 pass 融合
+    engine="rapidocr" ：強制 RapidOCR（不可用時 RuntimeError；測試用）
+    engine="tesseract"：強制三前處理融合（後備路徑回歸測試用）
+    注意：同一輪 verify 的 before/after 必須同引擎（差分逐 pass 對應）——引擎在首次
+    init 後即固定，執行期不會中途切換；rapid 單次呼叫失敗直接拋出（不靜默混用引擎）。
+    """
+    if engine == "rapidocr":
+        if _get_rapid_engine() is None:
+            raise RuntimeError("rapidocr 引擎不可用")
+        return [_read_text_rapid(image_bgr)]
+    if engine is None and _get_rapid_engine() is not None:
+        return [_read_text_rapid(image_bgr)]
     return [read_text(image_bgr, tesseract_path, preprocess=p, psm=psm)
             for p in preprocesses]

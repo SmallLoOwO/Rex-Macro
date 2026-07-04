@@ -429,3 +429,15 @@ def test_fuzzy_rejects_short_token_as_found():
 def test_fuzzy_rejects_found_token_at_line_start():
     # found-ish token 在行首＝前面沒有玩家名 → 結構不符 "<名> has found X"，拒收
     assert count_fuzzy_rare_found("founcl velyiiuinm", (), ("Valytium",)) == 0
+
+
+# ---- pass_labels（log 標籤：rapid 單 pass vs tesseract 三 pass 融合）----
+
+def test_pass_labels_tesseract_fusion_uses_preprocess_names():
+    from miningbot.ocr import pass_labels, CHAT_PREPROCESSES
+    assert pass_labels(["a", "b", "c"]) == list(CHAT_PREPROCESSES)
+
+def test_pass_labels_single_pass_is_rapidocr():
+    # RapidOCR 路徑回單元素 list——log 若標成 min_channel 會誤導事後排錯
+    from miningbot.ocr import pass_labels
+    assert pass_labels(["text"]) == ["rapidocr"]
