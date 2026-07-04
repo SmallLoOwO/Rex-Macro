@@ -3,6 +3,7 @@ from miningbot.harvester import (next_harvest_step, HarvestState, restore_action
                                  pick_sweep_candidate, decide_sweep_failure,
                                  format_rotation_hint,
                                  format_harvest_id,
+                                 normalize_rotations, plan_return_rotations,
                                  plan_giveup, GiveupPlan, GiveupCrop,
                                  giveup_send_groups)
 from miningbot.config import DEFAULT
@@ -41,6 +42,53 @@ def test_restore_actions_undoes_net_left_rotation():
 
 def test_restore_actions_noop_when_balanced():
     assert restore_actions(0) == []
+
+
+# --- normalize_rotations：淨轉動取「最短等價路徑」（純函式，主線程提速）---
+# 8 方位＝360° 環：淨右轉 7 次 ≡ 左轉 1 次、淨 ±8 ≡ 不動。旋轉一次要 key_press +
+# 0.35s settle，繞遠路一輪最多白花 ~2.4s（restore 淨 8 更是白轉整圈 ~2.8s）。
+def test_normalize_rotations_seven_rights_is_one_left():
+    assert normalize_rotations(7) == -1
+
+def test_normalize_rotations_seven_lefts_is_one_right():
+    assert normalize_rotations(-7) == 1
+
+def test_normalize_rotations_full_circle_is_zero():
+    assert normalize_rotations(8) == 0
+    assert normalize_rotations(-8) == 0
+
+def test_normalize_rotations_short_paths_unchanged():
+    assert normalize_rotations(3) == 3
+    assert normalize_rotations(-2) == -2
+    assert normalize_rotations(0) == 0
+
+def test_normalize_rotations_halfway_keeps_four():
+    # 正好對面（4 格）：左右等距，取 +4（方向不影響步數）
+    assert normalize_rotations(4) == 4
+
+def test_restore_actions_takes_shortest_path():
+    # 淨右轉 7 → 再右轉 1 次補滿 360° 即回原角（不必左轉 7 次）
+    assert restore_actions(7) == ["ROTATE_RIGHT"]
+    assert restore_actions(-7) == ["ROTATE_LEFT"]
+    assert restore_actions(8) == []
+
+
+# --- plan_return_rotations：sweep 完成後轉回最佳方位走最短方向（純函式）---
+# sweep 結束站在 dir 7（rotate_right×7）；舊版一律往左轉 (7-best_dir) 次——
+# best_dir=0 要左轉 7 次（~2.4s），其實右轉 1 次 wrap 360° 就到（0.35s）。
+def test_plan_return_wraps_right_when_shorter():
+    assert plan_return_rotations(7, 0) == 1     # 右轉 1 次 wrap，不左轉 7 次
+    assert plan_return_rotations(7, 1) == 2
+
+def test_plan_return_goes_left_when_shorter():
+    assert plan_return_rotations(7, 6) == -1
+    assert plan_return_rotations(7, 4) == -3
+
+def test_plan_return_same_dir_is_noop():
+    assert plan_return_rotations(7, 7) == 0
+
+def test_plan_return_opposite_is_four_steps():
+    assert abs(plan_return_rotations(7, 3)) == 4
 
 
 # --- decide_harvest_result：成功判定（修「框消失≠我們採到」假成功）---

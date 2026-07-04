@@ -30,7 +30,7 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   1. `harvester.prepare_scan()` — 停止移動、置中鏡頭（裝備位置穩定）
   2. 置中後截 `_pre_scan_ref`（reference）— 排除「掃描前就存在的裝備/礦石假陽性」
   3. `harvester.execute_scan()` — 裝備 D2 + 點擊觸發掃描（等 1.5s）
-  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，**選「x 最居中」候選**（`harvester.pick_sweep_candidate`，2026-07-03 H019 對策）後 rotate_left 旋回該方位。**同一顆框常橫跨相鄰 2~3 方位**（45° 視野重疊）；舊版取最先看到的方位可能離中心 500px+，轉回期間 D5 到期 FOV 收縮把框往外推 ~390px → 撞進 `find_tracker` 邊緣 10% 排除帶（`margin_frac=0.1`）→ verify 整幀找不到（H019：框其實在 (1862,418)、edge 0.57 完好，只是進了排除帶；回歸圖 `assets/edge_clipped_tracker_scene.png`）。居中候選天然留足邊緣餘裕。
+  4. **全 8 方位掃描（`Bot._sweep_for_tracker`）**：rotate_right×7，每方位雙幀穩定確認（0.08s 間隔，誤差<8px 才接受），記錄有追蹤框的方位，**選「x 最居中」候選**（`harvester.pick_sweep_candidate`，2026-07-03 H019 對策）後**走最短方向旋回該方位（`plan_return_rotations`，2026-07-04）**——可右轉 wrap 360°（best_dir=0 從左轉 7 次 ~2.4s 變右轉 1 次）；`restore_actions` 亦 `normalize_rotations` mod 8 取最短（淨 ±8 ≡ 不轉，省整圈 ~2.8s）。**同一顆框常橫跨相鄰 2~3 方位**（45° 視野重疊）；舊版取最先看到的方位可能離中心 500px+，轉回期間 D5 到期 FOV 收縮把框往外推 ~390px → 撞進 `find_tracker` 邊緣 10% 排除帶（`margin_frac=0.1`）→ verify 整幀找不到（H019：框其實在 (1862,418)、edge 0.57 完好，只是進了排除帶；回歸圖 `assets/edge_clipped_tracker_scene.png`）。居中候選天然留足邊緣餘裕。
      **早停（2026-06-29）**：某方位雙幀穩定且 `edge ≥ tracker_shape_early_exit=0.60`（遠高於裝備上限 0.26，實測真框 0.54-1.00）→ 人已在該方位，直接確定、免掃完剩餘方位也免轉回 verify（`find_tracker(with_score=True)` 外露 edge 分數）。分數不夠高者仍收集 → 掃完走 candidates[0]+verify（保留「不確定就繼續掃」）。
   5. D3 射擊：**開火前重定位（2026-07-03 H015 對策）**——先重抓當下幀 re-find 追蹤框、用**當下座標**開火（找不到→立即重掃不浪費一發）。**根因：D5 boost 到期會收縮 FOV、畫面所有座標整批位移**（實測是**以畫面中心為錨的 ~2.6x 縮放**，H026 兩軸一致量出：(1084,744)→(1288,1049)；buff 週期 ~60s，到期常落在採集中段；H015 第一槍 sweep 座標到點擊時已是不同牆面→點空牆）。舊版開火座標的幀齡可達 12s（被 before-OCR 卡住）；**基準 OCR 現移到「開火之後」跑（2026-07-04 H026）**——sweep 完成只截聊天裁圖（瞬間），先開火，~10s 的 3-pass OCR 挪到開火後、正好蓋掉等命中/框淡出的死時間（驗證窗口從 OCR 完成起算），確認→開火從 ~13s 縮到 ~1.5s（H026 就是這 12s 空窗內 D5 到期）。射擊序列不變：按 2（切離 D3）→ 等 0.15s → 按 3 → 等 0.3s → hold click 0.4s → 等 0.5s。
   5b. **HARVESTING 全程 boost 守門（2026-07-04 H026 對策，`Bot._harvest_boost_guard`）**：MINING 的「D5 到期即補」在採集中不會跑 → 舊版採集途中到期就全程凍在收縮後 FOV，ref/sweep 座標/重定位全部失準。守門在**每個關鍵點**（`_tick_harvest` 頂、sweep 每方位、verify 輪詢每輪、進場 ref 拍攝前）跑既有便宜瓶子檢查（單尺度 edge-match ~56ms、0.2s 節流），瓶子一消失→`miner.use_boost_harvest()`（不切 D1、不按住左鍵的採集版）→等 `boost_fov_settle_s=1.5s` FOV 展開→**重抓幀**再繼續。FOV 全程釘在「有 buff」狀態、座標自洽。**「快到期先補」不可行**：buff 還在時按 D5 無效、無法續時（2026-07-02 實測），只能到期即補——這是使用者「補 D5 再掃」提案的可行落地形。
@@ -96,6 +96,14 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   改用 tesserocr（同一顆 Tesseract 引擎/模型、**準度不變**，只是引擎常駐免重複 spawn）：banner OCR 3062→~400ms。
   `PyTessBaseAPI` 非執行緒安全 → 比照 `capture` 的 mss 用 `threading.local` 每執行緒各持一個持久 API；
   未裝/初始化失敗自動退回 pytesseract（`PREFER_TESSEROCR=False` 可強制退回）。安裝見 `requirements.txt` 註解。
+  **2026-07-04 再進一步：banner OCR 整顆移背景執行緒（`main._banner_ocr_loop`）**——tesserocr 的 ~400ms
+  仍每 2s 同步卡主迴圈一次（MINING tick 常態 ~0.2s、尖峰 ~0.6s，D5 到期偵測跟著被拖）。worker 讀主迴圈
+  每 tick 發佈的 `_latest_frame`（grab 後 buffer 不再改寫、跨執行緒唯讀安全），寫 `_mine_resetting`/
+  `_banner_text` 快取；D4 路徑 4s 內重用快取免同步 OCR。**回 MINING 入口必清 `_mine_resetting`**
+  （worker 只在 MINING 跑，RESET_WAIT 期間快取凍在 True，不清會一回來就彈回 RESET_WAIT）。
+  搭配主迴圈 sleep 補償（50ms 目標節奏扣掉 tick 已花時間、保留 10ms 下限讓 GIL）與
+  `_focus_roblox` 焦點輪詢早退（固定睡 1.0s → 每 50ms 查、到手即走；採集回正/Q 恢復/防掛機每次省 ~1s），
+  MINING tick 穩定 ~0.12-0.16s、D5 補瓶延遲最壞 ~0.8s → ~0.2s。
 - **`capture.grab()` BGRA→BGR 用 `cv2.cvtColor`（不是 `np.ascontiguousarray(arr[:,:,:3])`）**：後者對
   stride-4 的 view 逐元素複製、實測 154ms/幀；cvtColor 走 SIMD、19ms、輸出 byte-identical。grab 每幀都跑
   （主迴圈 ~20/s + sweep 一輪 17 次），這 ~135ms/幀省很大。（mss 原始 full grab 本身在此機 ~106ms，

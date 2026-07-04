@@ -127,11 +127,33 @@ def decide_verify_poll(gone: bool, confirmed: bool, elapsed_s: float, window_s: 
     return decide_harvest_result(gone, confirmed)
 
 
+def normalize_rotations(net: int, dirs: int = 8) -> int:
+    """淨轉動化約成 360° 環上的最短等價路徑（純函式）。
+
+    8 方位 45° 一格：淨右轉 7 ≡ 左轉 1（回 -1）、淨 ±8 ≡ 不動（回 0）。
+    每次旋轉要 key_press + 0.35s settle，繞遠路一趟最多白花 ~2.4s。
+    正好對面（|net|=dirs/2）左右等距，取正（步數相同，方向無差）。
+    """
+    r = net % dirs
+    return r if r <= dirs // 2 else r - dirs
+
+
+def plan_return_rotations(from_dir: int, to_dir: int, dirs: int = 8) -> int:
+    """sweep 完成後從 from_dir 轉到 to_dir 的最短帶號步數（純函式；正=右轉、負=左轉）。
+
+    sweep 結束站在 dir 7；舊版一律往左轉 (7-best_dir) 次——best_dir=0 要左轉 7 次
+    （~2.4s），其實右轉 1 次 wrap 360° 就到（0.35s）。
+    """
+    return normalize_rotations(to_dir - from_dir, dirs)
+
+
 def restore_actions(net_rotations: int) -> list:
     """挖完後要轉回原角度的動作序列（純函式）。
 
-    淨右轉 N（net>0）→ 回傳 N 個 ROTATE_LEFT；淨左轉則相反。
+    先 normalize_rotations 取最短等價路徑（淨右轉 7 → 右轉 1 補滿 360°，不左轉 7 次），
+    再反向：淨右轉 N（net>0）→ N 個 ROTATE_LEFT；淨左轉則相反。
     """
+    net_rotations = normalize_rotations(net_rotations)
     if net_rotations > 0:
         return ["ROTATE_LEFT"] * net_rotations
     if net_rotations < 0:

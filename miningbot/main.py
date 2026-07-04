@@ -125,6 +125,12 @@ class Bot:
         self._needs_human_extra_meta: dict = {}
         self._last_reset_check = 0.0
         self._mine_resetting = False
+        # 頂部事件列 OCR 快取（背景 worker _banner_ocr_loop 寫、主迴圈讀）：
+        # tesserocr 單次 ~400ms 若同步跑會把 MINING tick 從 ~0.15s 撐到 ~0.6s，
+        # boost 到期偵測（0.2s 高頻）跟著被拖慢——移出主迴圈後 tick 穩定。
+        self._banner_text = ""                   # 最近一次頂部列 OCR 全文（D4 路徑重用免重跑）
+        self._banner_text_at = 0.0               # 該次 OCR 完成時間（判斷快取新鮮度）
+        self._latest_frame = None                # 主迴圈每 tick 發佈最新幀給 worker（唯讀共享）
         # 視窗跑位偵測（item ④）：啟動聚焦後記基準，之後相對基準判斷
         self._window_baseline = None
         self._last_window_check = 0.0
@@ -331,20 +337,44 @@ class Bot:
             self.logger.info("偵測到世界: %s（依事件 %r）", world, event_text.strip()[:40])
 
     def _check_reset(self, frame) -> bool:
-        """節流 OCR 頂部訊息列，偵測「mine will reset in」。只在 MINING 檢查。"""
+        """讀重置偵測快取。OCR 本體已移背景 worker（_banner_ocr_loop），不再卡主迴圈。"""
         if self.state is not State.MINING:
             return False
-        now = time.time()
-        if now - self._last_reset_check < cfg.reset_check_interval_s:
-            return self._mine_resetting
-        self._last_reset_check = now
-        text = ocr.read_text(capture.crop(frame, cfg.chill_text_region), cfg.tesseract_path)
-        self._maybe_detect_world(text)          # 搭便車：頂部事件列也用來推斷目前世界
-        self._mine_resetting = ocr.contains_any(text, cfg.reset_phrases)
-        if self._mine_resetting:
-            self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
-            self._human_reason = "礦坑重置，請重新定位後按 Q 繼續"
         return self._mine_resetting
+
+    def _banner_ocr_loop(self):
+        """背景執行緒：頂部事件列 OCR（重置偵測＋世界推斷）移出主迴圈。
+
+        原本 _check_reset 每 2s 在主迴圈同步跑 tesserocr（~400ms）——這是 MINING tick
+        最大的週期性卡點，boost 到期偵測（0.2s 高頻、「到期即補」）每 2 秒就被拖一次。
+        worker 只讀 _latest_frame（主迴圈每 tick 發佈；grab 回傳的 buffer 之後不再被
+        改寫，跨執行緒唯讀安全），結果寫 _mine_resetting/_banner_text 快取（bool/str
+        賦值在 GIL 下原子，與熱鍵執行緒寫 human_cleared 同模式）。tesserocr 走
+        threading.local，worker 自持一個引擎實例（與 capture 的 mss 同模式）。
+        只在 MINING 且未暫停時跑（原 _check_reset 同語意）；D4 路徑重用 _banner_text。
+        """
+        while self._running:
+            time.sleep(0.1)
+            try:
+                frame = self._latest_frame
+                if frame is None or self.paused or self.state is not State.MINING:
+                    continue
+                now = time.time()
+                if now - self._last_reset_check < cfg.reset_check_interval_s:
+                    continue
+                self._last_reset_check = now
+                text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
+                                     cfg.tesseract_path)
+                self._banner_text = text
+                self._banner_text_at = time.time()
+                self._maybe_detect_world(text)  # 搭便車：頂部事件列也用來推斷目前世界
+                resetting = ocr.contains_any(text, cfg.reset_phrases)
+                if resetting and not self._mine_resetting:
+                    self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
+                    self._human_reason = "礦坑重置，請重新定位後按 Q 繼續"
+                self._mine_resetting = resetting
+            except Exception as e:              # OCR 偶發失敗不中斷 worker
+                self.logger.error("banner OCR worker: %s", e)
 
     def _window_displaced(self) -> bool:
         """節流查 Roblox 視窗是否跑位（失焦/被移動或縮放）。需先有啟動基準。"""
@@ -386,7 +416,11 @@ class Bot:
         u.AttachThreadInput(t1, t2, True)
         u.BringWindowToTop(hwnd); u.SetForegroundWindow(hwnd)
         u.AttachThreadInput(t1, t2, False)
-        time.sleep(1.0)
+        # 輪詢等焦點到手（上限 1.0s、每 50ms 查）：多數情況 0.1-0.3s 即成功，固定睡滿
+        # 1.0s 是白等——此函式在採集成功回正/Q 恢復/回 MINING/防掛機保活都會跑，每次省 ~1s。
+        deadline = time.time() + 1.0
+        while time.time() < deadline and u.GetForegroundWindow() != hwnd:
+            time.sleep(0.05)
         if u.GetForegroundWindow() != hwnd:          # API 沒成功 → 點畫面中央取焦（已最大化，中央在遊戲內）
             import pydirectinput
             pydirectinput.moveTo(cfg.screen_w // 2, cfg.screen_h // 2)
@@ -619,6 +653,7 @@ class Bot:
                                     base.found, base.foreground)
         miner.init_mining_sequence()
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
@@ -635,7 +670,9 @@ class Bot:
                     # 防掛機踢除：暫停中每 antiafk_interval_s 按一次 Space
                     self._antiafk_tick("暫停")
                     time.sleep(0.05); continue
+                tick_started = time.time()
                 frame = capture.grab()
+                self._latest_frame = frame       # 發佈給背景 banner OCR worker（唯讀共享）
                 obs = self.observe(frame)
                 decided = decide_transition(self.state, obs)
                 if decided != self.state:
@@ -661,7 +698,10 @@ class Bot:
                     self._antiafk_tick("需人工/重置等待")
                 elif self._antiafk_last and not self.paused:
                     self._antiafk_last = 0.0
-                time.sleep(0.05)
+                # sleep 補償：tick 本身已花掉的時間（grab ~106ms 起跳）從 50ms 目標
+                # 節奏裡扣掉，長 tick 後不再多睡滿 50ms；保留 10ms 下限讓出 GIL
+                # 給音訊/熱鍵/OCR worker。
+                time.sleep(max(0.01, 0.05 - (time.time() - tick_started)))
         finally:
             self._running = False
             self._audio_cap.stop()
@@ -869,6 +909,10 @@ class Bot:
                 self._on_enter(State.NEEDS_HUMAN, frame)  # screenshot + log + alert 副作用
                 return State.NEEDS_HUMAN                  # 信號外層降級（不直接寫 self.state）
             self.human_cleared = False
+            # 清重置快取：OCR 已背景化，RESET_WAIT 期間快取凍在 True（worker 只在
+            # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
+            # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
+            self._mine_resetting = False
             miner.init_mining_sequence()             # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（H001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -892,8 +936,10 @@ class Bot:
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
             #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
-            self._harvest_boost_guard(capture.grab())
-            self._pre_scan_ref = capture.grab() # 置中後截 reference（排除裝備假陽性）
+            gf = capture.grab()
+            if self._harvest_boost_guard(gf):
+                gf = capture.grab()             # 剛補 D5、FOV 已展開 → 必須重抓
+            self._pre_scan_ref = gf             # 置中後截 reference（排除裝備假陽性）
             # giveup 前後對比圖的「前」基準只在這裡取一次（H020：_reharvest_sweep 會
             # 重拍 _pre_scan_ref——若 D3 其實已採到才 RESWEEP，重拍的已是「採完後」畫面
             # → 送人工的 before/after 兩張一模一樣、對比失去鑑別力）
@@ -978,10 +1024,15 @@ class Bot:
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
-            # D4 前先讀事件文字，判斷該保留（左鍵）還是刷新（右鍵）
-            event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
-                                       cfg.tesseract_path).strip()
-            self._maybe_detect_world(event_text)
+            # D4 前先讀事件文字，判斷該保留（左鍵）還是刷新（右鍵）。
+            # 背景 worker（_banner_ocr_loop）每 2s 已 OCR 同一區——快取夠新就直接用，
+            # 免再付 ~400ms 同步 OCR 卡主迴圈；過舊（worker 剛好沒跑到）才同步後備。
+            if time.time() - self._banner_text_at <= cfg.reset_check_interval_s * 2:
+                event_text = self._banner_text.strip()
+            else:
+                event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
+                                           cfg.tesseract_path).strip()
+                self._maybe_detect_world(event_text)
             ev = game_data.match_event(event_text)
             if ev and game_data.is_kept(event_text, self._keep_ores):
                 self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])
@@ -1115,12 +1166,20 @@ class Bot:
         # 舊版 candidates[0]（最先看到的方位）可能離中心 500px+，轉回期間 D5 到期 FOV
         # 收縮把框往外推 → 撞進 find_tracker 邊緣 10% 排除帶 → verify 整幀找不到。
         best_dir, best_pos = harvester.pick_sweep_candidate(candidates, cfg.screen_w)
-        # 目前在 dir 7（rotate_right × 7）→ 需往左轉 (7 - best_dir) 次回到 best_dir
-        lefts = (NUM_DIRS - 1) - best_dir
-        self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往左轉 %d 次對齊", hid, best_dir, best_pos, lefts)
-        for _ in range(lefts):
-            ic.rotate_left()
-            self.harvest.net_rotations -= 1
+        # 目前在 dir 7（rotate_right × 7）→ 走最短方向回 best_dir（plan_return_rotations，
+        # 正=右轉 wrap 360°、負=左轉）：舊版一律左轉 (7-best_dir) 次，best_dir=0 要白轉
+        # 7 次 ~2.4s；右轉 1 次 wrap 就到。net_rotations 照實累計（restore_actions 會再
+        # normalize 取最短，淨 8 ≡ 回原角不轉）。
+        delta = harvester.plan_return_rotations(NUM_DIRS - 1, best_dir, NUM_DIRS)
+        self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往%s轉 %d 次對齊（最短路徑）",
+                              hid, best_dir, best_pos, "右" if delta > 0 else "左", abs(delta))
+        for _ in range(abs(delta)):
+            if delta > 0:
+                ic.rotate_right()
+                self.harvest.net_rotations += 1
+            else:
+                ic.rotate_left()
+                self.harvest.net_rotations -= 1
             time.sleep(0.35)
 
         # 對齊後驗證追蹤框仍在
