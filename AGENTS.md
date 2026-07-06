@@ -13,7 +13,7 @@ Windows-only Python 3.11+ bot that idles the Roblox game "REX" (rex-3 wiki): aut
 無聊的挖礦遊戲/
 ├── miningbot/        # importable package — Bot orchestrator + I/O wrappers + pure logic + 4 CLI tools
 ├── tests/            # 131 pytest tests — pure-logic only (no Roblox, no audio device needed)
-├── docs/             # HANDOFF.md (live status), game-mechanics.md (REX rules), superpowers/{specs,plans}/ (frozen 2026-06-23 design)
+├── docs/             # incidents.md (H 系列實機事故錄：症狀/根因/對策/fixture/commit), HANDOFF.md (live status), game-mechanics.md (REX rules), superpowers/{specs,plans}/ (frozen 2026-06-23 design)
 ├── assets/           # gitignored binaries — chill_reference.wav, boost_active.png, d4_cooldown.png, markers/*.png
 ├── logs/             # runtime (gitignored) — miningbot.log, events.log, snapshots/*.png
 ├── *.mcr             # Roblox macro recordings (NOT Python — human-recorded hotkey sequences, original source for sequences in miner.py)
@@ -28,8 +28,8 @@ Windows-only Python 3.11+ bot that idles the Roblox game "REX" (rex-3 wiki): aut
 | **Understand what the bot does** | `CLAUDE.md` (top), `docs/game-mechanics.md` | `miningbot/main.py:245` `Bot.run()` loop |
 | **Tweak a coordinate / threshold / hotkey** | `miningbot/config.py` (`Config` dataclass, ~110 fields) | No call-site edits — all consumers read `cfg` |
 | **Change state-machine logic** | `miningbot/states.py:19` `decide_transition` + `tests/test_states.py` | TDD: failing test first |
-| **Fix tracker detection** | `miningbot/vision.py` `find_tracker` (hybrid HSV + shape) + `tests/test_vision.py` | Read CLAUDE.md "追蹤框偵測" + ANTI-PATTERNS 6-9; needs REAL frames (see NOTES) |
-| **Change D3 harvest timing** | `miningbot/main.py` `_tick_harvest` D3 fire section + `config.py` `sweep_timeout_s`/`harvest_verify_timeout_s` | CLAUDE.md "D3 採集" rule (0.3s equip + 0.4s hold + 0.5s server) |
+| **Fix tracker detection** | `miningbot/vision.py` `find_tracker` (hybrid HSV + shape) + `tests/test_vision.py` | Read CLAUDE.md "追蹤框偵測" + ANTI-PATTERNS 6-9; **門檻來歷/漏抓事故見 `docs/incidents.md`**; needs REAL frames (see NOTES) |
+| **Change D3 harvest timing** | `miningbot/main.py` `_tick_harvest` D3 fire section + `config.py` `sweep_timeout_s`/`harvest_verify_timeout_s` | CLAUDE.md "D3 採集" rule (0.3s equip + 0.4s hold + 0.5s server); **改門檻前先讀 `docs/incidents.md` 對應 Hxxx** |
 | **D4 事件保留/刷新** | `miningbot/game_data.py` `EVENTS` + `match_event`/`is_kept` | `main.py` USE_D4 分支；Discord `!keep`/`!list` 命令 |
 | **Discord 通知/命令** | `miningbot/notify.py` `send_image_message`/`fetch_messages` | `main.py` `_discord_poll_loop`/`_handle_discord_command` |
 | **Chill 音訊偵測** | `miningbot/audio.py` `ChillListener`（節流 `score_interval_s`）| `config.py` `audio_match_threshold`/`audio_score_interval_s` |
