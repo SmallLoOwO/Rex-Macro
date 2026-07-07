@@ -191,6 +191,26 @@ def test_update_world_from_event_keeps_none_on_unknown(restore_world_state):
     update_world_from_event("nothing matches here")
     assert current_world_name() is None
 
+
+# ---- 世界偵測（透過礦名反推，2026-07-07 Task 4.1）----
+# 7/9 世界 events 空 → 事件式 detect_world 永遠鎖不了它們；common_ores（被動聊天礦名，
+# Surreal/Mythic）是更高頻的信號，verify OCR 已在讀聊天行、零額外 OCR 成本。
+# 結構同 detect_world：唯一命中一個世界才回傳（世界名字串，None=未知/跨世界撞名）。
+
+def test_detect_world_from_ore_unique_name_locks_world():
+    # Hyposhock 只在 "World 0" 的 common_ores（真實資料，非 events）
+    assert gd.detect_world_from_ore("Hyposhock") == "World 0"
+
+def test_detect_world_from_ore_variant_prefix_stripped():
+    # Heartstone 只在 Lucernia（Master 底名，H039：ionized 變體會被動進聊天）
+    assert gd.detect_world_from_ore("an ionized Heartstone") == "Lucernia"
+
+def test_detect_world_from_ore_ambiguous_or_unknown_returns_none():
+    assert gd.detect_world_from_ore("NotARealOre") is None
+    # 跨世界同名（掃 common_ores 找到的真實撞名）：Unobtainium 同時在 World 1 與
+    # Subworld 1 的排除清單 → 無法區分該用哪個世界的表 → 保守回 None。
+    assert gd.detect_world_from_ore("Unobtainium") is None
+
 def test_common_ores_union_when_world_undetermined(restore_world_state):
     # 未確定 → 用所有世界聯集當排除清單（保守）
     clear_world()

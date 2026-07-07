@@ -1476,6 +1476,26 @@ def detect_world(event_text: str) -> str | None:
     return next(iter(hit)) if len(hit) == 1 else None
 
 
+def detect_world_from_ore(ore_name: str) -> str | None:
+    """從被動聊天「has found X」的礦名 X 反推世界：哪個世界的 common_ores 命中此名。
+
+    結構同 `detect_world`（事件版），差別是掃 common_ores 而非 events，且來源是
+    D3 verify 已在讀的聊天行（零額外 OCR 成本；7/9 世界 events 空、無法靠事件鎖定）。
+    剝變體前綴/冠詞後（沿用 classify_found_ore 同一套 `_strip_variant` 前處理）用
+    startswith 找命中世界；唯一命中一個世界 → 回該世界名；零個或跨世界撞名 → None
+    （保守，同 detect_world 的規則——不確定就不鎖，寧可繼續用聯集排除清單）。
+    """
+    from .ocr import _strip_variant
+    if not ore_name:
+        return None
+    base = _strip_variant(ore_name.strip().lower())
+    if not base:
+        return None
+    hit = {name for name, w in WORLDS.items()
+           if any(base.startswith(o["ore"].lower()) for o in w.common_ores)}
+    return next(iter(hit)) if len(hit) == 1 else None
+
+
 def update_world_from_event(event_text: str) -> str | None:
     """偵測並（若唯一命中且與現況不同）鎖定世界；回傳目前世界名（或 None）。
 
