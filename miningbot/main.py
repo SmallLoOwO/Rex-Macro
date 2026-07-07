@@ -636,17 +636,22 @@ class Bot:
                 pass                                     # 輪詢失敗不中斷主迴圈
 
     def _poll_discord(self):
-        """讀 Discord 新訊息，處理命令；並輪詢 list 表情分頁點擊。"""
+        """讀 Discord 新訊息，處理命令；並輪詢 list 分頁與遙控器的反應點擊。"""
         from . import notify
-        # 1. 表情分頁輪詢（獨立於新訊息；沒新訊息時也要檢查表情點擊 → 切換分頁）
+        # 1. 表情輪詢（list 分頁 + 遙控器按鈕；獨立於新訊息，沒新訊息時也要檢查）
         if self._list_message_id:
             self._poll_list_reactions()
+        if self._remote_message_id:
+            self._poll_remote_reactions()       # 觸發動作時內部 _refresh_remote_control 會重建
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
             after=self._last_discord_msg_id, limit=10)
         if not msgs:
             return
+        # 2a. 遙控器釘底：最新訊息若不是遙控器，代表被擠上去 → 刪舊的、貼新的到頻道底
+        if self._remote_message_id and msgs[0]["id"] != self._remote_message_id:
+            self._refresh_remote_control()
         newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
         if self._last_discord_msg_id is None:
             # 首次輪詢：只記基準 ID，不處理歷史命令（避免重跑舊指令）
@@ -1000,6 +1005,9 @@ class Bot:
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = f"🤖 Bot 已啟動\n目前保留事件：\n{kept}"
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
+                # 遙控器釘底：啟動訊息貼完後張貼遙控器到頻道底（含 ▶️/⏸️ 反應按鈕）。
+                # 之後每輪 _poll_discord 會自動維持它在最新訊息位置、偵測按鈕點擊。
+                self._post_remote_control()
         threading.Thread(target=_preflight_and_notify, daemon=True).start()
         try:
             while self._running:

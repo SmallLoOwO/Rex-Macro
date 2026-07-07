@@ -1716,6 +1716,7 @@ def format_event_list_embed(keep_ores: set[str] | None = None, world: str | None
         "description": "`keep <礦物名>` 保留｜`unkeep <礦物名>` 取消｜`clear` 全清｜`list [世界]` 切換（點下方表情直接跳世界）",
         "color": 0x00ff88,
         "fields": fields,
+        "footer": {"text": "符號對照：" + "｜".join(f"{em} {w}" for w, em in WORLD_EMOJI.items())},
     }
 
 

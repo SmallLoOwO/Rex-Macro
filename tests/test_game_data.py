@@ -144,6 +144,13 @@ def test_embed_keep_status_markers():
     assert other_field["name"].startswith("❌")
 
 
+def test_embed_footer_lists_every_world_emoji():
+    embed = format_event_list_embed()
+    footer = embed["footer"]["text"]
+    for w, em in WORLD_EMOJI.items():           # 每個符號 → 對應世界
+        assert f"{em} {w}" in footer
+
+
 # ---- 分世界結構（World）----
 
 def test_world_aesteria_registered():

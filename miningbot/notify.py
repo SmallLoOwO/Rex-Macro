@@ -284,6 +284,33 @@ def get_reactions(token: str, channel_id: str, message_id: str,
         return []
 
 
+def delete_message(token: str, channel_id: str, message_id: str,
+                   timeout: float = 10.0):
+    """刪除機器人自己發的訊息。DELETE /channels/{id}/messages/{mid}。回 (ok, detail)。
+
+    遙控器釘底用：當遙控器被新訊息擠上去，刪掉舊的、再貼新的到頻道底。
+    失敗只回報不丟例外（缺 manage messages 權限時靜默降級——舊遙控器殘留，新的一樣能用）。
+    """
+    if not token or not channel_id or not message_id:
+        return False, "缺少 token / channel_id / message_id"
+    url = MESSAGE_API.format(channel_id=channel_id, message_id=message_id)
+    req = urllib.request.Request(
+        url, method="DELETE",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def edit_message(token: str, channel_id: str, message_id: str,
                  embed: dict | None = None, content: str | None = None,
                  timeout: float = 10.0):

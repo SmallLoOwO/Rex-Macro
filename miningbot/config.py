@@ -167,6 +167,6 @@ class Config:
     discord_webhook_url: str = ""
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
-    discord_poll_interval_s: float = 10.0       # Discord 命令輪詢間隔（秒）
+    discord_poll_interval_s: float = 3.0        # Discord 命令輪詢間隔（秒；2026-07-07 10→3 加快遙控器/命令回應）
 
 DEFAULT = Config()
