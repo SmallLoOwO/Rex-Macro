@@ -98,6 +98,9 @@ class Config:
     max_harvest_attempts: int = 5
     harvest_verify_window_s: float = 8.0         # D3 後輪詢驗證窗口（H015：框擊中後 2~10s 才消失、聊天成功行更晚到，單幀判定必假陰性）
     harvest_verify_poll_interval_s: float = 0.5  # 輪詢間隔（每輪本身含 find_tracker ~2s，這只是喘息 sleep）
+    verify_roi_radius_px: int = 180              # verify 輪詢 gone 檢查的 ROI 半徑：涵蓋雙幀穩定 8px 誤差
+                                                  # ＋輕微視角/FOV 殘餘漂移；大位移（D5 到期縮放）由
+                                                  # 「ROI miss → 全幀後備」兜住（見 find_tracker_near 註解）
     chat_change_mean_diff: float = 2.0           # 聊天裁圖平均像素差超過此值才重跑 OCR（角色靜止時無新訊息＝近乎逐位元相同）
 
     # 驗證式旋轉（2026-07-05 視角回歸 45° 偏移對策）：每次 ,/. 送鍵後以前後幀確認「真的轉了」。

@@ -409,3 +409,37 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     candidates.sort(reverse=True)
     s, cx, cy = candidates[0]
     return (cx, cy, s) if with_score else (cx, cy)
+
+
+def find_tracker_near(frame_bgr, center_xy, radius_px, *, frame_margin_frac=0.0,
+                      exclude=(), reference_bgr=None, log=None, **kwargs):
+    """在 center_xy 周圍 radius_px 的方形 ROI 內跑 find_tracker，座標映射回全幀。
+
+    verify 輪詢的 gone 檢查用：開火座標已知，全幀掃描（~2s）是浪費——ROI 版 ~0.3s。
+    frame_margin_frac＝「全幀」邊緣排除帶：ROI 邊不是螢幕邊，故子圖內 margin 一律 0、
+    改在映射回全幀後套同一條帶（語意與全幀版一致，H019/H026 的 margin 教訓不重演）。
+    找不到回 None——呼叫端自行決定是否全幀後備（H026 FOV 位移可能超出任何小 ROI）。
+    """
+    h, w = frame_bgr.shape[:2]
+    cx, cy = int(center_xy[0]), int(center_xy[1])
+    x0, y0 = max(0, cx - radius_px), max(0, cy - radius_px)
+    x1, y1 = min(w, cx + radius_px), min(h, cy + radius_px)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return None
+    sub = frame_bgr[y0:y1, x0:x1]
+    sub_ref = reference_bgr[y0:y1, x0:x1] if reference_bgr is not None else None
+    shifted = []
+    for ex0, ey0, ex1, ey1 in exclude:
+        sx0, sy0 = max(ex0 - x0, 0), max(ey0 - y0, 0)
+        sx1, sy1 = min(ex1 - x0, x1 - x0), min(ey1 - y0, y1 - y0)
+        if sx1 > sx0 and sy1 > sy0:
+            shifted.append((sx0, sy0, sx1, sy1))
+    res = find_tracker(sub, margin_frac=0.0, exclude=tuple(shifted),
+                       reference_bgr=sub_ref, log=log, **kwargs)
+    if res is None:
+        return None
+    mapped = (res[0] + x0, res[1] + y0) + tuple(res[2:])
+    mx, my = int(w * frame_margin_frac), int(h * frame_margin_frac)
+    if not (mx <= mapped[0] <= w - mx and my <= mapped[1] <= h - my):
+        return None
+    return mapped

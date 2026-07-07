@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 from miningbot.vision import (find_template, template_present, find_template_edges,
-                              find_tracker, find_marker, best_outline_score,
+                              find_tracker, find_tracker_near, find_marker, best_outline_score,
                               template_outline_edges, frames_differ)
 
 def _scene_with_patch(patch, at):
@@ -654,3 +654,50 @@ def test_frames_changed_frac_none_when_uncomparable():
     a = np.zeros((10, 10, 3), dtype=np.uint8)
     assert frames_changed_frac(None, a, pixel_thresh=12) is None
     assert frames_changed_frac(a, np.zeros((5, 5, 3), dtype=np.uint8), pixel_thresh=12) is None
+
+
+def test_find_tracker_near_maps_roi_hit_back_to_full_frame_coords():
+    scene = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    _draw_tracker(scene, 900, 500, size=44, color=(60, 220, 240))
+    full = find_tracker(scene, margin_frac=0.02)
+    near = find_tracker_near(scene, (905, 495), 180, frame_margin_frac=0.02)
+    assert full is not None and near is not None
+    assert abs(near[0] - full[0]) <= 2 and abs(near[1] - full[1]) <= 2
+
+
+def test_find_tracker_near_returns_none_when_center_far_from_tracker():
+    scene = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    _draw_tracker(scene, 1500, 800, size=44, color=(60, 220, 240))
+    assert find_tracker_near(scene, (300, 300), 180, frame_margin_frac=0.02) is None
+
+
+def test_find_tracker_near_shifts_exclude_rects_into_roi():
+    scene = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    _draw_tracker(scene, 900, 500, size=44, color=(60, 220, 240))
+    excl = [(860, 460, 940, 540)]   # 全幀座標蓋住框 → ROI 內也必須被排除
+    assert find_tracker_near(scene, (905, 495), 180,
+                             frame_margin_frac=0.02, exclude=excl) is None
+
+
+def test_find_tracker_near_keeps_h026_bottom_edge_tracker_visible():
+    # 對應 H026：ROI 路徑不可重新引入邊緣排除帶殺真框的機制。
+    # 全幀 margin 0.02 收得回 (1288,1020) → ROI 版在同 margin 下也必須收得回；
+    # margin 0.10 下必須同樣拒收（語意與全幀版一致）。
+    img_path = "assets/bottom_edge_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    kw = dict(shape_templates=tmpls, shape_threshold=cfg.tracker_shape_threshold,
+              shape_scales=cfg.tracker_shape_scales, shape_roi_px=cfg.tracker_shape_roi_px,
+              shape_hard_floor=cfg.tracker_shape_hard_floor)
+    loc = find_tracker_near(img, (1288, 1020), 180,
+                            frame_margin_frac=cfg.tracker_margin_frac, **kw)
+    assert loc is not None and abs(loc[0] - 1288) < 40 and abs(loc[1] - 1020) < 40
+    assert find_tracker_near(img, (1288, 1020), 180,
+                             frame_margin_frac=0.10, **kw) is None
