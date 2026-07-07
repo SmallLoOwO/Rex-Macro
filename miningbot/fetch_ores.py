@@ -32,6 +32,11 @@ LOW_TIERS = ("Surreal", "Mythic")
 HIGH_TIERS = ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
               "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
 
+# Rare/Master：H039 教訓——這兩階的 ionized/spectral 變體也會被動進聊天，
+# 底名缺列 common_ores → 假 special/假 rare count。仍非 D3 目標（chill 只對 Exotic+），
+# 列底名不會重演 H014；advisory 只印、不自動寫入 game_data（清單仍人工維護）。
+ADVISORY_TIERS = ("Rare", "Master")
+
 # 已不存在／已合併的世界（wiki 頁還在但遊戲內沒有）——不蒐集，否則引入假的跨世界同名。
 # Wintera Isle 已併入 Aesteria（其冬季礦現於 Aesteria）；Tutorial World 已移除
 # （使用者確認 2026-07-03）。此二者正是先前 34 個跨世界同名的來源。
@@ -137,16 +142,45 @@ def diff_common_ores(world_name: str, low_rows: list) -> list:
     return [r for r in low_rows if r["ore"] not in have]
 
 
+def low_tier_advisory(all_ores: list) -> list:
+    """Rare/Master 底名 advisory（H039 類缺口事前補）——只印，不自動寫入 game_data。
+
+    過濾 tier ∈ ADVISORY_TIERS，依 world 再依 ore 名排序。Exotic 以上是 D3 目標，
+    絕不可出現在這裡（誤列＝重演 H014 假陰性）；Surreal/Mythic 已由主清單（低階排除清單）
+    涵蓋，不重複列出。
+    """
+    rows = [r for r in all_ores if r.get("tier") in ADVISORY_TIERS]
+    return sorted(rows, key=lambda r: (r.get("world", ""), r["ore"]))
+
+
+def print_low_tier_advisory(advisory: list) -> None:
+    """印 Rare/Master 底名 advisory 表（依世界分組）——人工核對後補進 game_data common_ores。"""
+    if not advisory:
+        print("\n（無 Rare/Master 底名資料）")
+        return
+    print(f"\n== Rare/Master 底名 advisory（{len(advisory)} 筆，H039 類缺口事前補）==")
+    print("僅供人工核對，不會自動寫入 game_data；Exotic 以上絕不會出現在此表。")
+    cur_world = None
+    for r in advisory:
+        if r.get("world") != cur_world:
+            cur_world = r.get("world")
+            print(f"  -- {cur_world} --")
+        print(f"    {{\"ore\": \"{r['ore']}\", \"tier\": \"{r['tier']}\"}}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只印 diff/撞名報告、不寫檔")
     ap.add_argument("--dest", default="assets/rare_ores.json", help="高階白名單輸出路徑")
     ap.add_argument("--dest-all", default="assets/ores_all.json",
                     help="全礦（所有 tier、依世界分）輸出路徑——撞名驗證/未來擴充用")
+    ap.add_argument("--audit-low-tiers", action="store_true",
+                    help="印 Rare/Master 底名 advisory（H039 類缺口事前補；只印不寫檔）")
     args = ap.parse_args()
 
     out = {"source": API, "worlds": {}}
     all_rows: dict = {}
+    advisory_rows: list = []
     for world in fetch_world_names():          # 所有 wiki 世界（不只 game_data.WORLDS 那兩個）
         print(f"== {world} ==")
         try:
@@ -159,6 +193,9 @@ def main():
         # 只留「會進聊天框」的階級（Surreal+）：Common~Master 不進聊天、與採集確認無關
         all_rows[world] = low + high
         out["worlds"][world] = high
+        for r in rows:
+            if r["tier"] in ADVISORY_TIERS:
+                advisory_rows.append({**r, "world": world})
         print(f"  解析 {len(rows)} 礦：低階 {len(low)}、高階 {len(high)}（聊天相關 {len(low) + len(high)}）")
         if world in game_data.WORLDS:          # 排除清單只維護正在玩的世界
             missing = diff_common_ores(world, low)
@@ -176,6 +213,9 @@ def main():
     print(f"\n跨世界同名 {len(same)} 個（同階合法）；低/高衝突 {len(conflicts)} 個")
     for ore, places in sorted(conflicts.items()):
         print(f"  ★ {ore}: " + "; ".join(f"{w}:{t}" for w, t in places))
+
+    if args.audit_low_tiers:
+        print_low_tier_advisory(low_tier_advisory(advisory_rows))
 
     if args.dry_run:
         print("--dry-run：不寫檔")

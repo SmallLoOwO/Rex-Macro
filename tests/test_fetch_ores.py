@@ -192,3 +192,16 @@ def test_deprecated_worlds_defined():
     from miningbot.fetch_ores import DEPRECATED_WORLDS
     assert "Wintera Isle" in DEPRECATED_WORLDS
     assert "Tutorial World" in DEPRECATED_WORLDS
+
+
+# ---- Task 4.2: 低階底名 advisory（Rare/Master，H039 類缺口事前補）----
+import miningbot.fetch_ores as fetch_ores
+
+
+def test_low_tier_advisory_keeps_only_rare_and_master():
+    ores = [{"ore": "A", "tier": "Rare", "world": "X"},
+            {"ore": "B", "tier": "Master", "world": "X"},
+            {"ore": "C", "tier": "Exotic", "world": "X"},      # D3 目標，絕不可入 advisory
+            {"ore": "D", "tier": "Surreal", "world": "X"}]     # 已由主清單涵蓋
+    got = fetch_ores.low_tier_advisory(ores)
+    assert [o["ore"] for o in got] == ["A", "B"]
