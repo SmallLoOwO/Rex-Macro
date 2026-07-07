@@ -1,3 +1,4 @@
+from miningbot import harvester
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, decide_verify_poll,
                                  pick_sweep_candidate, decide_sweep_failure,
@@ -303,3 +304,18 @@ def test_sweep_failure_with_candidates_resweeps_once():
 
 def test_sweep_failure_resweep_budget_exhausted_goes_human():
     assert decide_sweep_failure(had_candidates=True, resweeps_done=1) == "HUMAN"
+
+
+# --- scan_succeeded：D2 掃描成功確認（HANDOFF F）——OCR 左下 Local 標籤 ---
+def test_scan_succeeded_exact_local():
+    assert harvester.scan_succeeded(["Local"]) is True
+
+def test_scan_succeeded_tolerates_ocr_noise():
+    # 遊戲字型 i/l 同形（H033 教訓）＋常見誤讀
+    assert harvester.scan_succeeded(["LocaI 12"]) is True
+    assert harvester.scan_succeeded(["1ocal"]) is True
+
+def test_scan_succeeded_rejects_empty_and_unrelated():
+    assert harvester.scan_succeeded([]) is False
+    assert harvester.scan_succeeded([""]) is False
+    assert harvester.scan_succeeded(["Global"]) is False   # ratio("global","local")≈0.73 < 0.75

@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from .geometry import aim_decision
 from . import input_control as ic
 from .config import DEFAULT as cfg
@@ -295,3 +296,19 @@ def restore_view(net_rotations: int, rotate=None):
             ic.rotate_left()
         else:
             ic.rotate_right()
+
+
+def scan_succeeded(texts) -> bool:
+    """D2 掃描成功確認：OCR 文字裡有 Local-ish token 即成功（左下 Local 標籤）。
+
+    彈窗吃掉 click 時掃描沒觸發 → 白掃 8 方位 ~19s（CLAUDE.md D2 段）。
+    容忍 OCR 噪音（i/l 同形），0.75 門檻夾在 'global'(0.73) 與 'locaI'(0.8+) 之間。
+    """
+    for text in texts or []:
+        for tok in (text or "").lower().split():
+            t = tok.strip(":.,!1234567890 ")
+            if not t:
+                continue
+            if t == "local" or SequenceMatcher(None, t, "local").ratio() >= 0.75:
+                return True
+    return False

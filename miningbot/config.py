@@ -101,6 +101,11 @@ class Config:
     verify_roi_radius_px: int = 180              # verify 輪詢 gone 檢查的 ROI 半徑：涵蓋雙幀穩定 8px 誤差
                                                   # ＋輕微視角/FOV 殘餘漂移；大位移（D5 到期縮放）由
                                                   # 「ROI miss → 全幀後備」兜住（見 find_tracker_near 註解）
+    # D2 掃描成功確認（HANDOFF F）：掃描後 OCR 左下 Local 標籤。彈窗吃掉 click → 白掃
+    # 8 方位 ~19s＋可能誤交人工。模式循 RapidOCR 觀察期慣例：
+    #   off=不跑；observe=只記 log 收誤判數據（不重試）；enforce=失敗重聚焦重掃一次
+    scan_confirm_mode: str = "off"               # 校準 region 後先切 observe，2-3 天裁決再 enforce
+    scan_confirm_region: Region = field(default_factory=lambda: Region(20, 850, 200, 60))  # 左下 Local 標籤（估值，校準時調——照 chat_review_region 慣例從 logs/snapshots 全幀圖裁）
     chat_change_mean_diff: float = 2.0           # 聊天裁圖平均像素差超過此值才重跑 OCR（角色靜止時無新訊息＝近乎逐位元相同）
 
     # 驗證式旋轉（2026-07-05 視角回歸 45° 偏移對策）：每次 ,/. 送鍵後以前後幀確認「真的轉了」。
