@@ -12,6 +12,7 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      toggle_pause_action, is_blocked_from_mining)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import input_control as ic
+from .preflight import PreflightFacts, run_checks
 
 # Discord 命令清單（小寫）。第一個詞比對此集合才觸發——讓一般聊天訊息不致誤判為命令。
 # 不需 ! 前綴：使用者直接打 `status` 即觸發（打 `!status` 也相容，見 _handle_discord_command）。
@@ -199,6 +200,79 @@ class Bot:
             self.logger.info("loaded %d marker templates: %s",
                              len(templates), ", ".join(templates))
         return templates
+
+    def _collect_preflight_facts(self) -> PreflightFacts:
+        """啟動自檢：收集 I/O 事實給 preflight.run_checks（純決策）。任何來源失敗都優雅降級
+        （count 0 / age -1），preflight 本身絕不可擋啟動。"""
+        import glob
+        # marker_real_count：與 __init__ 的 _shape_templates 同一套過濾（無 alpha 的實機裁圖）
+        marker_real_count = len(self._shape_templates)
+        try:
+            chill_ref_count = len(glob.glob(os.path.join(cfg.chill_refs_dir, "*.wav")))
+        except Exception:
+            chill_ref_count = 0
+        rare_ores_path = os.path.join("assets", "rare_ores.json")
+        try:
+            age_days = (time.time() - os.path.getmtime(rare_ores_path)) / 86400.0
+        except OSError:
+            age_days = -1.0
+        ores_all_present = os.path.exists(os.path.join("assets", "ores_all.json"))
+        d4_cooldown_present = os.path.exists(cfg.activity_cooldown_template)
+        discord_token_set = bool(cfg.discord_bot_token and cfg.discord_channel_id)
+        # 引擎可用性：沿用 ocr 模組既有的 init 成敗旗標，不自行重新 import/init。
+        # rapidocr_available() 呼叫既有的單例 getter（冪等、有鎖）；tesserocr 無對應公開函式，
+        # 只有私有旗標 _tesserocr_unavailable（lazy，尚未跑過 OCR 時仍是 False=樂觀預設）。
+        try:
+            rapidocr_ok = ocr.rapidocr_available()
+        except Exception:
+            rapidocr_ok = False
+        tesserocr_ok = not getattr(ocr, "_tesserocr_unavailable", False)
+        log_dir_abspath = os.path.abspath(cfg.log_dir)
+        snapshots_dir = os.path.join(cfg.log_dir, "snapshots")
+        snapshots_total_mb = 0.0
+        try:
+            total_bytes = 0
+            for root, _dirs, files in os.walk(snapshots_dir):
+                for name in files:
+                    try:
+                        total_bytes += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+            snapshots_total_mb = total_bytes / (1024 * 1024)
+        except OSError:
+            snapshots_total_mb = 0.0
+        return PreflightFacts(
+            marker_real_count=marker_real_count,
+            chill_ref_count=chill_ref_count,
+            rare_ores_json_age_days=age_days,
+            ores_all_present=ores_all_present,
+            d4_cooldown_present=d4_cooldown_present,
+            discord_token_set=discord_token_set,
+            tesserocr_ok=tesserocr_ok,
+            rapidocr_ok=rapidocr_ok,
+            log_dir_abspath=log_dir_abspath,
+            snapshots_total_mb=snapshots_total_mb,
+            audio_decimate=cfg.audio_match_decimate,
+            audio_interval_s=cfg.audio_score_interval_s,
+        )
+
+    def _run_preflight(self) -> list[str]:
+        """跑 preflight 檢查、記 log，回傳 WARN 訊息清單（供啟動 Discord 通知併入）。
+        任何環節失敗都吞掉、不擋啟動——preflight 是輔助可見度，不是啟動關卡。"""
+        try:
+            facts = self._collect_preflight_facts()
+            results = run_checks(facts)
+        except Exception as e:
+            self.logger.warning("preflight 自檢失敗（不影響啟動）: %r", e)
+            return []
+        warn_msgs = []
+        for lv, m in results:
+            if lv == "WARN":
+                self.logger.warning("[preflight] %s", m)
+                warn_msgs.append(m)
+            else:
+                self.logger.info("[preflight] %s", m)
+        return warn_msgs
 
     def _boost_needs_refresh(self, frame) -> bool:
         """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
@@ -708,12 +782,23 @@ class Bot:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
         self.logger.info("初始化完成，開始挖礦")
-        # 啟動時 Discord 通知目前保留的事件清單（讓使用者一目了然不用 !list）
+        # 啟動自檢（preflight）：背景執行緒——它依賴 rapidocr_available()（可能仍在暖機中，
+        # 冪等等鎖不搶跑），且 markers/chill_refs/檔案 mtime 這些 I/O 沒必要卡住主迴圈啟動。
+        # 跑完把 WARN 併入啟動 Discord 通知（與既有的保留事件清單同一則訊息）。
+        def _preflight_and_notify():
+            warn_msgs = self._run_preflight()
+            if cfg.discord_bot_token and cfg.discord_channel_id:
+                from . import notify
+                kept = game_data.format_keep_by_world(self._keep_ores)
+                text = f"🤖 Bot 已啟動\n目前保留事件：\n{kept}"
+                if warn_msgs:
+                    text += "\n\n⚠ 啟動自檢警告：\n" + "\n".join(f"- {m}" for m in warn_msgs)
+                notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
         if cfg.discord_bot_token and cfg.discord_channel_id:
             from . import notify
-            kept = game_data.format_keep_by_world(self._keep_ores)
-            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
-                                f"🤖 Bot 已啟動\n目前保留事件：\n{kept}")
+            threading.Thread(target=_preflight_and_notify, daemon=True).start()
+        else:
+            threading.Thread(target=self._run_preflight, daemon=True).start()
         try:
             while self._running:
                 if self.paused:
