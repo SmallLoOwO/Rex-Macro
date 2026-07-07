@@ -161,6 +161,22 @@ def restore_actions(net_rotations: int) -> list:
     return []
 
 
+def rotation_looks_eaten(mean_diff, changed_frac, mean_thresh: float, frac_thresh: float) -> bool:
+    """旋轉鍵前後幀「幾乎沒變」＝按鍵被吃掉（純函式，2026-07-05 視角回歸 45° 偏移對策）。
+
+    視角回歸靠 net_rotations 計數反轉，前提是每個 ,/. 都真的生效——被吃一次就差 45°
+    （pickup 動畫/焦點被搶都會吃鍵；挖礦視角是 90° 倍數對齊，差 45° 直接影響效率）。
+    旋轉 45° 讓中央場景劇變、被吃則幾乎逐位元相同（覆蓋 UI 不轉、角色 idle 只微幅變化）。
+    誤判方向的取捨：實際轉了卻誤判被吃而重送＝直接製造 45° 偏移，比漏判（退回舊行為）
+    更糟 → 兩訊號（平均差＋有感變化像素佔比）都近零才判被吃；近全黑礦坑旋轉的平均差
+    可能低於門檻，但變化像素佔比仍高，AND 條件擋住這種誤重送。無從比較（None）一律
+    當已生效（寧信不重送）。
+    """
+    if mean_diff is None or changed_frac is None:
+        return False
+    return mean_diff <= mean_thresh and changed_frac <= frac_thresh
+
+
 def format_rotation_hint(net_rotations: int) -> str:
     """把淨轉動轉成給人工看的 Discord 提示文字（純函式）。
 
@@ -264,10 +280,18 @@ def start_scan():
 def fire_d3():
     ic.key_press("3")
 
-def restore_view(net_rotations: int):
-    """實際送鍵把視角轉回原角度（挖完成功後呼叫）。"""
+def restore_view(net_rotations: int, rotate=None):
+    """實際送鍵把視角轉回原角度（挖完成功後呼叫）。
+
+    rotate：可注入的單步旋轉 callable(direction)->bool（+1 右轉 .、-1 左轉 ,）；
+    main 傳 Bot._rotate_verified 讓每步都以前後幀驗證「真的轉了」、被吃就重送
+    （視角回歸差 45° 的根治點）。預設 None 直接送鍵（無驗證，測試/降級用）。
+    """
     for action in restore_actions(net_rotations):
-        if action == "ROTATE_LEFT":
+        d = -1 if action == "ROTATE_LEFT" else 1
+        if rotate is not None:
+            rotate(d)
+        elif d < 0:
             ic.rotate_left()
         else:
             ic.rotate_right()

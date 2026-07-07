@@ -34,17 +34,24 @@ def cooldown_ready(icon_present: bool, since_last_press: float, grace_s: float) 
         return False
     return since_last_press > grace_s
 
-def init_mining_sequence(log=None):
+def init_mining_sequence(log=None, rotate=None):
     """初始化（只在啟動/失焦復原做一次）：放開→. , 視角→雙 Shift→（沒拿鎬子才按 D1）→挖礦。
 
     視角(., )與置中只做一次（之後視角不變）。D1 **只在槽位像素顯示沒拿鎬子時才按**，
     對照原巨集 IF PIXEL FOUND 2302755；已拿著又按一下反而會把十字鎬收起來。
     log：傳 callable 時每步驟記錄（採集後 W 不按住的 root cause 追蹤用）。
+    rotate：可注入的驗證式單步旋轉 callable(direction)->bool（main 傳 Bot._rotate_verified）。
+    ., 成對淨 0 的前提是兩鍵都生效——吃掉半對就歪 45°（挖礦視角 90° 倍數對齊）；
+    注入時右轉沒轉成就不左轉（否則反歪 45°）、左轉被吃由 callable 自行重送。
     """
     if log: log("init_mining_sequence: 開始")
     ic.key_up("w"); ic.mouse_up()
     if log: log("init_mining_sequence: key_up('w')+mouse_up() done")
-    ic.rotate_right(); ic.rotate_left()    # ., 設定視角（一次即可）
+    if rotate is not None:
+        if rotate(+1):                     # ., 設定視角（一次即可），成對淨 0
+            rotate(-1)
+    else:
+        ic.rotate_right(); ic.rotate_left()
     if log: log("init_mining_sequence: rotate(.,) done")
     ic.center_crosshair()                  # 連按兩次 Shift：準心置中
     if log: log("init_mining_sequence: center_crosshair done")
@@ -104,9 +111,15 @@ def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→
     ic.mouse_up(); ic.key_press("2"); ic.mouse_click(); ic.key_press("z")
     ic.key_press("5"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()
 
-def handle_cave():         # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
+def handle_cave(rotate=None):  # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
     import time
     ic.key_press("f"); time.sleep(3.0)
-    ic.rotate_right(); ic.rotate_right(); ic.key_press("x"); time.sleep(1.0)
-    ic.rotate_left(); ic.rotate_left()
+    if rotate is not None:     # 驗證式：只回轉「確認轉成」的次數，成對淨 0 不歪 45°
+        done = sum(1 for _ in range(2) if rotate(+1))
+        ic.key_press("x"); time.sleep(1.0)
+        for _ in range(done):
+            rotate(-1)
+    else:
+        ic.rotate_right(); ic.rotate_right(); ic.key_press("x"); time.sleep(1.0)
+        ic.rotate_left(); ic.rotate_left()
     ic.key_down("w"); ic.mouse_down()

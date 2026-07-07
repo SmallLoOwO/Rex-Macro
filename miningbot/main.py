@@ -13,6 +13,12 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import input_control as ic
 
+# Discord 命令清單（小寫）。第一個詞比對此集合才觸發——讓一般聊天訊息不致誤判為命令。
+# 不需 ! 前綴：使用者直接打 `status` 即觸發（打 `!status` 也相容，見 _handle_discord_command）。
+_DISCORD_COMMANDS = frozenset({
+    "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
+})
+
 
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
@@ -450,7 +456,7 @@ class Bot:
                 pass                                     # 輪詢失敗不中斷主迴圈
 
     def _poll_discord(self):
-        """讀 Discord 新訊息，處理 ! 命令；並輪詢 !list 表情分頁點擊。"""
+        """讀 Discord 新訊息，處理命令；並輪詢 list 表情分頁點擊。"""
         from . import notify
         # 1. 表情分頁輪詢（獨立於新訊息；沒新訊息時也要檢查表情點擊 → 切換分頁）
         if self._list_message_id:
@@ -472,21 +478,28 @@ class Bot:
             if msg.get("author", {}).get("bot"):
                 continue                                 # 跳過 bot 自己發的訊息
             content = msg.get("content", "").strip()
-            if content.startswith("!"):
+            # 命令不需 ! 前綴：第一個詞（不分大小寫）比對已知命令即觸發。
+            # lstrip("!") 保留舊 ! 前綴相容；空白/空字串 = 一般聊天，忽略。
+            first = content.split()[0].lower() if content else ""
+            if first.lstrip("!") in _DISCORD_COMMANDS:
                 self._handle_discord_command(content)
 
     def _poll_list_reactions(self):
-        """輪詢 !list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
+        """輪詢 list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
 
         每個表情維護「已見使用者 ID」集合；本次輪詢出現、但不在集合內 = 新點擊 → 切換。
-        機器人自己貼表情時已在 !list 基線記錄（含自己 ID），故首輪不會誤觸發。
+        機器人自己貼表情時已在 list 基線記錄（含自己 ID），故首輪不會誤觸發。
         一次輪詢最多切一頁（避免連續 PATCH）；點到「目前頁」的同行表情為 no-op。
+
+        注意：WORLD_EMOJI = {世界名: 表情}，items() 解包成 (world, emoji)——
+        早期版本寫成 ``for emoji, world``（變數對調），導致 get_reactions 傳入世界名
+        而非表情 → Discord 永遠查無此反應 → 點表情永遠不翻頁（2026-07-05 修復）。
         """
         from . import notify
         token = cfg.discord_bot_token
         ch = cfg.discord_channel_id
         mid = self._list_message_id
-        for emoji, world in game_data.WORLD_EMOJI.items():
+        for world, emoji in game_data.WORLD_EMOJI.items():   # key=世界名, value=表情
             users = notify.get_reactions(token, ch, mid, emoji)
             if not users:
                 continue
@@ -504,16 +517,19 @@ class Bot:
                 return                              # 一次輪詢只切一頁
 
     def _handle_discord_command(self, content: str):
-        """解析並執行 Discord ! 命令，更新 _keep_ores 並回覆結果。"""
+        """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。
+
+        命令不需 ! 前綴（`status` 即觸發）；打 `!status` 仍相容——cmd 會 lstrip("!")。
+        """
         from . import notify
         token = cfg.discord_bot_token
         ch = cfg.discord_channel_id
         parts = content.split()
-        cmd = parts[0].lower()
+        cmd = parts[0].lower().lstrip("!")               # 接受 list 或 !list
         args = parts[1:]
 
-        if cmd == "!list":
-            # !list [世界]：指定分頁；無指定 → 預設 = 偵測到的世界（未偵測 = 全世界聯集）。
+        if cmd == "list":
+            # list [世界]：指定分頁；無指定 → 預設 = 偵測到的世界（未偵測 = 全世界聯集）。
             # 送出後貼表情按鈕，之後使用者點表情即可切換分頁（編輯同一則訊息）。
             world: str | None = None
             if args:
@@ -536,9 +552,9 @@ class Bot:
                 for em in game_data.WORLD_EMOJI.values():
                     users = notify.get_reactions(token, ch, mid, em)
                     self._list_reactions_seen[em] = {u.get("id") for u in users if u.get("id")}
-            self.log_discord.info("CMD !list -> world=%s mid=%s (%s)", world, mid, detail)
+            self.log_discord.info("CMD list -> world=%s mid=%s (%s)", world, mid, detail)
 
-        elif cmd == "!keep":
+        elif cmd == "keep":
             added, not_found = [], []
             for a in args:
                 ore = game_data.fuzzy_match_ore(a)
@@ -550,12 +566,12 @@ class Bot:
             kept = game_data.format_keep_by_world(self._keep_ores)
             msg = f"✅ 新增保留：{', '.join(added) or '（無）'}\n目前保留：\n{kept}"
             if not_found:
-                msg += f"\n⚠️ 找不到：{', '.join(not_found)}（用 `!list` 看 礦物名）"
+                msg += f"\n⚠️ 找不到：{', '.join(not_found)}（用 `list` 看 礦物名）"
             notify.send_message(token, ch, msg)
             self._save_keep_ores()
-            self.log_discord.info("CMD !keep %s -> added=%s keep=%s", args, added, self._keep_ores)
+            self.log_discord.info("CMD keep %s -> added=%s keep=%s", args, added, self._keep_ores)
 
-        elif cmd == "!unkeep":
+        elif cmd == "unkeep":
             removed = []
             for a in args:
                 ore = game_data.fuzzy_match_ore(a)
@@ -566,15 +582,15 @@ class Bot:
             notify.send_message(token, ch,
                 f"❌ 取消保留：{', '.join(removed) or '（無）'}\n目前保留：\n{kept}")
             self._save_keep_ores()
-            self.log_discord.info("CMD !unkeep %s -> removed=%s keep=%s", args, removed, self._keep_ores)
+            self.log_discord.info("CMD unkeep %s -> removed=%s keep=%s", args, removed, self._keep_ores)
 
-        elif cmd == "!clear":
+        elif cmd == "clear":
             self._keep_ores.clear()
             self._save_keep_ores()
             notify.send_message(token, ch, "🗑️ 保留清單已清空（所有事件都會刷新）")
-            self.log_discord.info("CMD !clear -> keep set cleared")
+            self.log_discord.info("CMD clear -> keep set cleared")
 
-        elif cmd == "!pause":
+        elif cmd == "pause":
             # 遠距暫停：等同在電腦前按 Ctrl+Q（只暫停，不繼續；繼續走 !resume）。
             # _pause() idempotent 且會設 _antiafk_last，主迴圈暫停分支（run() 內）每輪
             # 呼叫 _antiafk_tick("暫停") → 防掛機在暫停期間照常保活，無需這裡額外處理。
@@ -583,13 +599,13 @@ class Bot:
             notify.send_message(token, ch,
                 f"{'ℹ️ 已在暫停中' if already else '⏸ 已暫停'}（狀態: {self.state.value}）\n"
                 f"防掛機保持開啟，每 {cfg.antiafk_interval_s / 60:.0f} 分鐘自動保活一次\n"
-                f"→ 用 `!resume` 恢復挖礦（等同按 Q）")
-            self.log_discord.info("CMD !pause -> state=%s paused=%s", self.state.value, self.paused)
+                f"→ 用 `resume` 恢復挖礦（等同按 Q）")
+            self.log_discord.info("CMD pause -> state=%s paused=%s", self.state.value, self.paused)
 
-        elif cmd == "!resume":
+        elif cmd == "resume":
             # 遠距恢復採礦：等同在電腦前按 Q。設 human_cleared=True，主迴圈下個 tick
             # decide_transition 就會從 NEEDS_HUMAN/RESET_WAIT 跳 MINING（_on_enter(MINING)
-            # 會 _focus_roblox；失敗自動降級回 NEEDS_HUMAN，使用者再 !resume 一次）。
+            # 會 _focus_roblox；失敗自動降級回 NEEDS_HUMAN，使用者再 resume 一次）。
             # 在 MINING 暫停中（paused=True）也能用——同時 un pause 讓它能動。
             # 注意：執行緒安全——simple boolean assignment 在 Python GIL 下為原子，
             # 與既有 _toggle_pause 從熱鍵執行緒寫 human_cleared 同模式。
@@ -608,10 +624,10 @@ class Bot:
                 notify.send_message(token, ch,
                     f"ℹ️ 目前狀態 {self.state.value}（非 NEEDS_HUMAN/RESET_WAIT/暫停），"
                     f"不需要恢復；last_action={self.last_action}")
-            self.log_discord.info("CMD !resume -> state=%s paused=False human_cleared=True",
+            self.log_discord.info("CMD resume -> state=%s paused=False human_cleared=True",
                                   self.state.value)
 
-        elif cmd == "!status":
+        elif cmd == "status":
             s = self.stats
             up = int(time.time() - self._started)
             kept = ", ".join(sorted(self._keep_ores)) or "（空）"
@@ -625,21 +641,38 @@ class Bot:
                 f"⏱ 運行 {up // 60}m{up % 60:02d}s    🔊 音訊 {audio_score:.2f}\n"
                 f"📈 boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}\n"
                 f"📝 保留：{kept}")
-            self.log_discord.info("CMD !status -> state=%s", self.state.value)
+            self.log_discord.info("CMD status -> state=%s", self.state.value)
 
-        elif cmd == "!help":
+        elif cmd == "shot":
+            # 遠端截圖：抓全螢幕傳到 Discord，供遠距檢查當下畫面。
+            # grab() 用 threading.local 持有各自的 mss 實例，此處在 discord 輪詢執行緒
+            # 呼叫安全（非主迴圈執行緒）；DPI-aware 已全程式層級設好。
+            # save_snapshot 同步 imwrite（單次命令不在熱迴圈，可接受）。
+            try:
+                frame = capture.grab()
+                path = diagnostics.save_snapshot(frame, cfg.log_dir, "remote_check")
+                ok, detail = notify.send_images_message(token, ch,
+                    f"📸 遠端截圖（狀態: {self.state.value}）", [path])
+                if not ok:
+                    notify.send_message(token, ch, f"⚠️ 截圖傳送失敗：{detail}")
+            except Exception as e:
+                notify.send_message(token, ch, f"⚠️ 截圖失敗：{type(e).__name__}: {e}")
+            self.log_discord.info("CMD shot -> state=%s", self.state.value)
+
+        elif cmd == "help":
             notify.send_message(token, ch,
-                "**MiningBot 指令**\n"
-                "`!pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `!resume` 恢復）\n"
-                "`!resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
-                "`!status` — 查詢目前狀態、統計、保留清單\n"
-                "`!list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
+                "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
+                "`pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `resume` 恢復）\n"
+                "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
+                "`status` — 查詢目前狀態、統計、保留清單\n"
+                "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
+                "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
-                "`!keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
-                "`!unkeep <礦物名>` — 取消保留\n"
-                "`!clear` — 清空保留清單\n"
-                "`!help` — 顯示此說明")
-            self.log_discord.info("CMD !help -> sent")
+                "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
+                "`unkeep <礦物名>` — 取消保留\n"
+                "`clear` — 清空保留清單\n"
+                "`help` — 顯示此說明")
+            self.log_discord.info("CMD help -> sent")
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
@@ -664,7 +697,7 @@ class Bot:
             else:
                 self.logger.warning("無法取得視窗基準（found=%s fg=%s）— 跑位偵測停用",
                                     base.found, base.foreground)
-        miner.init_mining_sequence()
+        miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
         # RapidOCR 預熱（實測 init 6~7s）：lazy init 會落在第一次採集的基準 OCR 前、
@@ -930,7 +963,7 @@ class Bot:
             # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
             # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
             self._mine_resetting = False
-            miner.init_mining_sequence()             # 從其他狀態回來，重新握住 W + 左鍵
+            miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（H001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
             # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
@@ -1035,7 +1068,7 @@ class Bot:
                 self.state = State.NEEDS_HUMAN
                 self._on_enter(State.NEEDS_HUMAN, frame)
                 return
-            miner.init_mining_sequence()
+            miner.init_mining_sequence(rotate=self._rotate_verified)
             # 重聚焦後給它時間穩定，先別馬上再判定，避免連續搶焦點
             self._window_bad = False
             self._last_window_check = time.time()
@@ -1132,6 +1165,48 @@ class Bot:
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score)
 
+    def _rotate_verified(self, direction: int) -> bool:
+        """送一次視角鍵（+1=右轉 .、-1=左轉 ,）並以前後幀驗證「真的轉了 45°」。
+
+        視角回歸差 45° 的根治點（2026-07-05）：回歸靠 net_rotations 計數反轉，前提是
+        每個 ,/. 都真的生效——pickup 動畫（1-2s 吃鍵）/焦點被搶都會吃掉旋轉鍵，被吃
+        一次視角就停在 45° 斜角（挖礦視角 90° 倍數對齊，斜角直接影響效率）。
+        驗證：旋轉讓中央場景帶劇變、被吃則幾乎逐位元相同 → rotation_looks_eaten 兩訊號
+        （平均差＋有感變化像素佔比）都近零才判被吃（實際轉了卻重送＝直接製造 45° 偏移，
+        比漏判更糟）→ 重新聚焦後重送（上限 rotation_max_retries）。回 False＝重試用盡
+        仍沒轉，呼叫端**不可計入 net_rotations**——計數與實際角度保持一致，restore 才回
+        得到原角。settle 已含在內（rotation_settle_s），呼叫端不需再 sleep。
+        """
+        key = "." if direction > 0 else ","
+        for attempt in range(cfg.rotation_max_retries + 1):
+            before = capture.crop(capture.grab(), cfg.rotation_verify_region)
+            if direction > 0:
+                ic.rotate_right()
+            else:
+                ic.rotate_left()
+            time.sleep(cfg.rotation_settle_s)
+            after = capture.crop(capture.grab(), cfg.rotation_verify_region)
+            mean_diff = vision.frames_mean_diff(before, after)
+            changed = vision.frames_changed_frac(
+                before, after, cfg.rotation_changed_pixel_thresh)
+            if not harvester.rotation_looks_eaten(
+                    mean_diff, changed,
+                    cfg.rotation_eaten_mean_diff, cfg.rotation_eaten_changed_frac):
+                if attempt:
+                    self.logger.info("旋轉鍵 %s 第 %d 次重送後確認生效（mean=%s frac=%s）",
+                                     key, attempt, mean_diff, changed)
+                else:
+                    self.log_harvest.debug("旋轉 %s 確認生效 mean=%s frac=%s",
+                                           key, mean_diff, changed)
+                return True
+            self.logger.warning("旋轉鍵 %s 疑似被吃（mean_diff=%s changed_frac=%s，"
+                                "attempt %d/%d）→ 重新聚焦後重送",
+                                key, mean_diff, changed,
+                                attempt + 1, cfg.rotation_max_retries + 1)
+            self._focus_roblox()
+        self.logger.warning("旋轉鍵 %s 重試用盡仍未生效——不計入 net_rotations（視角未轉）", key)
+        return False
+
     def _sweep_for_tracker(self, excl, ref):
         """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
         回傳 (最佳追蹤框螢幕座標 (cx, cy) | None, 掃描過程是否看過穩定候選)。
@@ -1176,9 +1251,10 @@ class Bot:
             else:
                 self.log_harvest.info("[%s] sweep dir=%d: 未偵測到追蹤框", hid, i)
             if i < NUM_DIRS - 1:
-                ic.rotate_right()
-                self.harvest.net_rotations += 1
-                time.sleep(0.35)
+                # 驗證式旋轉：settle 含在內；沒轉成不計數（計數＝實際角度，restore 才準）。
+                # 沒轉成時 dir 索引會與實際方位錯一格——頂多重看同方位，偵測不受影響。
+                if self._rotate_verified(+1):
+                    self.harvest.net_rotations += 1
 
         if not candidates:
             self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
@@ -1196,13 +1272,11 @@ class Bot:
         self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往%s轉 %d 次對齊（最短路徑）",
                               hid, best_dir, best_pos, "右" if delta > 0 else "左", abs(delta))
         for _ in range(abs(delta)):
-            if delta > 0:
-                ic.rotate_right()
-                self.harvest.net_rotations += 1
-            else:
-                ic.rotate_left()
-                self.harvest.net_rotations -= 1
-            time.sleep(0.35)
+            d = 1 if delta > 0 else -1
+            # 驗證式旋轉（settle 含在內）；沒轉成不計數。轉不到 best_dir 時下方 verify
+            # 會失敗 → 走既有「看過框但 verify 失敗」重掃分流，不會誤射。
+            if self._rotate_verified(d):
+                self.harvest.net_rotations += d
 
         # 對齊後驗證追蹤框仍在
         time.sleep(0.2)
@@ -1242,7 +1316,7 @@ class Bot:
         if plan.restore_view and self.harvest.net_rotations:
             self.logger.info("[%s] 採集放棄 -> 轉回原方位 net=%d",
                              self.harvest.harvest_id, self.harvest.net_rotations)
-            harvester.restore_view(self.harvest.net_rotations)
+            harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
             self.harvest.net_rotations = 0
 
         self._human_reason = reason
@@ -1572,27 +1646,28 @@ class Bot:
             self.logger.warning("採集成功但無法重新聚焦 Roblox -> 交人工（已採到，僅回正+續挖失敗）")
             self._harvest_giveup("採集成功但無法重新聚焦 Roblox，請處理後按 Q")
             return
-        self.logger.info("採集成功（gone=%s rare=%s->%s special=%s）-> 轉回原方位 net=%d",
+        self.logger.info("採集成功（gone=%s rare=%s->%s special=%s）net=%d -> 等 pickup 動畫後轉回原方位",
                          gone, rare_before, rare_after, special, self.harvest.net_rotations)
-        harvester.restore_view(self.harvest.net_rotations)
+        # 採集後遊戲有 pickup 動畫（1-2s），期間送鍵被吃掉（keyDown/center/D1 皆實測中招）。
+        # 舊版 restore_view 的旋轉鍵就在這窗口內送出＝「視角偶爾停在 45° 斜角」的直接根因
+        # （2026-07-05）→ 動畫等待挪到 restore 之前，回轉/init 都在動畫結束後跑。
+        self._log_w_state("採集成功→動畫等待前")
+        time.sleep(1.0)                  # 等 pickup 動畫結束
+        harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
-        # 採集後遊戲有 pickup 動畫（1-2s），期間 keyDown 被吃掉；動畫結束後遊戲
-        # 認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。Q-恢復能用是
-        # 因為暫停期間有自然 gap。這裡模擬：init 後等動畫結束 → release+re-press W。
-        self._log_w_state("採集成功→init 前")
-        miner.init_mining_sequence(log=self.logger.info)
-        self._log_w_state("採集成功→init 後（等動畫）")
-        time.sleep(1.0)                  # 等 pickup 動畫結束
-        # 動畫結束後重新置中 + re-press W（init 裡的 center_crosshair / keyDown 都被動畫吃掉）
+        miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
+        # init 已在動畫後執行；仍保留 release→置中→鎬子→re-press 保險：動畫偶爾拖過 1s，
+        # 且遊戲會認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。
+        self._log_w_state("採集成功→init 後")
         ic.key_up("w"); ic.mouse_up()
         time.sleep(0.15)
         ic.center_crosshair()            # 重新雙擊 Shift 置中（遊戲已 settle）
         time.sleep(0.2)
-        # 動畫結束後再確認鎬子：init 期的切換常被 pickup 動畫吃掉，導致 D3 沒切回 D1
+        # 再確認鎬子：pickup 動畫拖過 1s 時 init 期的切換仍可能被吃，導致 D3 沒切回 D1
         # → 按住 W 卻拿著 D3 無法前進（使用者實機回報）。settle 後條件式補按 D1。
         if miner.ensure_pickaxe():
-            self.logger.info("採集後動畫結束：補按 D1 切回鎬子（init 期被 pickup 動畫吃掉）")
+            self.logger.info("採集後補按 D1 切回鎬子（init 期切換被吃）")
         ic.key_down("w"); ic.mouse_down()
         self._log_w_state("採集成功→置中+鎬子+W重按後")
 
@@ -1814,7 +1889,7 @@ class Bot:
             # 先重新聚焦 Roblox。失敗不交人工——使用者正在按 Q 注視著，下次 mining
             # tick 的視窗跑位偵測會接手（REFOCUS action；那條路徑失敗才交人工）。
             self._focus_roblox()
-            miner.init_mining_sequence()
+            miner.init_mining_sequence(rotate=self._rotate_verified)
 
     def _toggle_pause(self):
         """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動）。

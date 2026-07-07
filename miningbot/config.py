@@ -100,6 +100,17 @@ class Config:
     harvest_verify_poll_interval_s: float = 0.5  # 輪詢間隔（每輪本身含 find_tracker ~2s，這只是喘息 sleep）
     chat_change_mean_diff: float = 2.0           # 聊天裁圖平均像素差超過此值才重跑 OCR（角色靜止時無新訊息＝近乎逐位元相同）
 
+    # 驗證式旋轉（2026-07-05 視角回歸 45° 偏移對策）：每次 ,/. 送鍵後以前後幀確認「真的轉了」。
+    # 被吃（pickup 動畫/焦點被搶）→ 重新聚焦後重送；重試用盡不計入 net_rotations——計數＝實際
+    # 角度，restore 才必回原角（挖礦視角 90° 倍數對齊，差 45° 直接影響效率）。
+    # 「被吃」判定保守（兩訊號都近零才重送，見 harvester.rotation_looks_eaten）。
+    rotation_verify_region: Region = field(default_factory=lambda: Region(560, 160, 800, 320))  # 中央偏上場景帶：避開左側聊天/頂部事件列等覆蓋 UI（不隨旋轉動）、少吃角色 idle 晃動
+    rotation_settle_s: float = 0.35              # 送鍵後等畫面轉完再截 after 幀（沿用 sweep 既有節奏）
+    rotation_eaten_mean_diff: float = 2.0        # 平均差 ≤ 此值（與 stuck/chat 同尺度＝「近乎沒變」）
+    rotation_eaten_changed_frac: float = 0.02    # 且有感變化像素佔比 ≤ 此值才判被吃（角色 idle 實測遠低於旋轉的大面積變化）
+    rotation_changed_pixel_thresh: int = 12      # 單像素任一 channel 差 > 此值才算「有感變化」
+    rotation_max_retries: int = 2                # 被吃後重送上限（每次重送前先 _focus_roblox）
+
     # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
     stuck_timeout_s: float = 60.0
     stuck_frame_diff_threshold: float = 2.0      # 平均像素差低於此視為無變化

@@ -45,6 +45,24 @@ def frames_mean_diff(baseline_bgr, current_bgr) -> float | None:
         return None
     return float(np.mean(cv2.absdiff(baseline_bgr, current_bgr)))
 
+
+def frames_changed_frac(baseline_bgr, current_bgr, pixel_thresh: int = 12) -> float | None:
+    """有感變化像素的佔比（任一 channel 絕對差 > pixel_thresh 才算變化）；無從比較回 None。
+
+    驗證式旋轉的第二訊號（2026-07-05）：近全黑礦坑旋轉 45° 的「平均差」可能低於門檻
+    （像素值本來就低），但有感變化像素的佔比仍高；被吃的按鍵只剩角色 idle 微幅變化、
+    佔比近零。與 frames_mean_diff 搭配讓 rotation_looks_eaten 的「被吃」判定保守
+    （兩訊號都近零才重送——實際轉了卻重送＝直接製造 45° 偏移）。
+    """
+    if baseline_bgr is None or current_bgr is None:
+        return None
+    if baseline_bgr.shape != current_bgr.shape:
+        return None
+    d = cv2.absdiff(baseline_bgr, current_bgr)
+    per_pixel = d.max(axis=2) if d.ndim == 3 else d
+    return float(np.mean(per_pixel > pixel_thresh))
+
+
 def _canny(img_bgr):
     return cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
 

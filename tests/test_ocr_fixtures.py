@@ -108,6 +108,36 @@ def test_rapidocr_h014_confirms_diamorite():
 
 
 @rapid_skip
+def test_rapidocr_h039_confirms_sweetheart_enigmatic():
+    # H039 實況（2026-07-04 22:12，首例 Enigmatic 1/65M 成功樣本）：before 聊天淡出全空、
+    # after 亮粉 Amourite 背景滿版 11 行（新訊息喚醒重顯示的舊被動行＋D3 採到的
+    # has found Sweetheart）。Sweetheart 在 rare_ores 白名單 → 差分必須 confirmed。
+    # 夾雜的被動舊行（an ionized Heartstone/Heartbeet、Diamantine×3…）全在排除清單
+    # → 排除後真信號仍在（證明 Heartstone 入列不會殺掉 Sweetheart）。
+    before = ocr.read_text_multi(_load("h039_before_empty.png"), cfg.tesseract_path,
+                                 engine="rapidocr")
+    after = ocr.read_text_multi(_load("h039_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    assert any("sweetheart" in t.lower() for t in after)
+    common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
+    assert ocr.any_new_rare_found(before, after, common, KW) is True
+
+
+@rapid_skip
+def test_rapidocr_h039_passive_ionized_master_not_special():
+    # H039 的 an ionized Heartstone（Master）是被動舊行；Heartstone 入排除清單後
+    # special 判定（綁 found 行＋base 不在排除清單）不得再被它觸發——當時實錄
+    # special=True 是清單缺列的假 special（幸運同窗口有真採到的 Sweetheart 撐著）。
+    before = ocr.read_text_multi(_load("h039_before_empty.png"), cfg.tesseract_path,
+                                 engine="rapidocr")
+    after = ocr.read_text_multi(_load("h039_after_pink_bg.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    common = tuple(o["ore"] for o in game_data.LUCERNIA.common_ores)
+    assert ocr.any_new_special_found(before, after, common, KW,
+                                     cfg.special_keywords) is False
+
+
+@rapid_skip
 def test_rapidocr_no_hallucinated_found_on_faded_chat():
     texts = ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
                                 engine="rapidocr")

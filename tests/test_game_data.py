@@ -276,8 +276,9 @@ def test_lucernia_common_ores_have_required_fields():
         assert isinstance(o["rarity"], int) and o["rarity"] > 0
 
 def test_lucernia_common_ores_count():
-    # 原六圖層 17 Surreal + 15 Mythic = 32；2026 春季更新四圖層 +19、洞穴限定 +7 = 58
-    assert len(LUCERNIA.common_ores) == 58
+    # 原六圖層 17 Surreal + 15 Mythic = 32；2026 春季更新四圖層 +19、洞穴限定 +7 = 58；
+    # H039 Master 底名 Heartstone +1 = 59（ionized/spectral 變體會被動進聊天）
+    assert len(LUCERNIA.common_ores) == 59
 
 def test_lucernia_common_ores_cover_surreal_and_mythic_tiers():
     tiers = {o["tier"] for o in LUCERNIA.common_ores}
@@ -321,6 +322,24 @@ def test_emoji_to_world_roundtrip():
 def test_emoji_to_world_unknown_returns_none():
     assert emoji_to_world("🦑") is None
     assert emoji_to_world("") is None
+
+
+# ---- 多世界註冊（2026-07-05：World 0/1/2、Subworld 1/2 加入）----
+# 這五個新世界的事件＋ 礦物皆從 wiki 匯入；鎖住「已註冊就有完整資料、
+# 且每個事件的 match 片段不與其他世界撞名（detect_world 才不會模稜兩可回 None）」。
+
+def test_all_worlds_have_events_and_common_ores():
+    for name, world in WORLDS.items():
+        assert world.events, f"{name} events 為空"
+        assert world.common_ores, f"{name} common_ores 為空"
+
+def test_each_event_match_phrase_detects_only_its_world():
+    # 餵每個事件的 match 片段給 detect_world：必須唯一鎖到該事件所屬世界
+    # （撞名會讓 hit 集合 >1 → detect_world 回 None → 測試失敗）。
+    for name, world in WORLDS.items():
+        for ev in world.events:
+            assert detect_world(ev["match"]) == name, (
+                f"{name} 事件 match={ev['match']!r} 偵測模稜兩可或撞其他世界")
 
 
 # ---- 保留清單依世界分組（ore_world / format_keep_by_world）----
@@ -384,9 +403,30 @@ def test_lucernia_excludes_d3_targets_of_spring_layers():
     assert names.isdisjoint({"Diamorite", "Saerylium", "Essentium", "Valytium",
                              "Everbloom", "Clovara", "Dolce", "Cupid", "Sweetheart"})
 
-def test_lucernia_common_ores_all_surreal_or_mythic():
-    # 排除清單的角色＝「會被動進聊天的低階」；REX 只有 Surreal/Mythic 兩階會被動進聊天
-    assert {o["tier"] for o in LUCERNIA.common_ores} == {"Surreal", "Mythic"}
+def test_lucernia_common_ores_tiers_all_below_exotic():
+    # 排除清單的角色＝「會被動進聊天的低階」：Surreal/Mythic 全變體都會被動進聊天；
+    # Rare/Master 的變體也會（wiki 證實 spectral、H039 2026-07-04 實錄 ionized Heartstone）
+    # → Rare/Master 底名可入列。Exotic+ 是 D3 目標、絕不可入列（由排除測試另鎖）。
+    assert {o["tier"] for o in LUCERNIA.common_ores} <= {"Rare", "Master", "Surreal", "Mythic"}
+
+
+# ---- H039（2026-07-04 22:12）實錄：Master 變體也會被動進聊天 ----
+# 聊天出現被動舊行「has found an ionized Heartstone」（Master、Amourite、ionized 1/4M；
+# 聊天淡出→新訊息喚醒重顯示）。Heartstone 當時不在排除清單 → 被計入 rare count 且
+# 標 special＋未知礦名（幸運真陽性：同窗口真有 D3 採到的 Sweetheart；若 D3 miss 就是
+# 假成功）。fetch_ores 沒收它是設計使然（只收 Surreal+），wiki Lucernia 頁有列
+# （Master 1/50,000）。Master 遠低於 Exotic、chill 不會為它觸發 → 排除零假陰性風險。
+
+def test_lucernia_excludes_heartstone_master_h039():
+    names = {o["ore"] for o in LUCERNIA.common_ores}
+    assert "Heartstone" in names
+
+def test_classify_ionized_heartstone_is_common_h039():
+    gd.set_world("Lucernia")
+    try:
+        assert gd.classify_found_ore("an ionized heartstone")[0] == "common"
+    finally:
+        gd.clear_world()
 
 
 # ---- 三態分類（classify_found_ore）：排除清單→common、白名單→rare、都不在→unknown ----

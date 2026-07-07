@@ -625,3 +625,32 @@ def test_frames_mean_diff_value_and_none_cases():
     assert abs(frames_mean_diff(a, b) - 6.0) < 1e-6
     assert frames_mean_diff(None, a) is None
     assert frames_mean_diff(a, np.zeros((10, 30, 3), dtype=np.uint8)) is None
+
+
+# --- frames_changed_frac：驗證式旋轉的第二訊號（2026-07-05）---
+# 旋轉 45° 在近全黑礦坑「平均差」可能很低（像素值本來就低），但「有感變化像素的
+# 佔比」仍高；被吃的按鍵只剩角色 idle 微幅變化、佔比近零。與 frames_mean_diff 搭配
+# 讓「被吃」判定保守（兩訊號都近零才重送——實際轉了卻重送＝直接製造 45° 偏移）。
+
+def test_frames_changed_frac_zero_for_identical():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((40, 60, 3), 80, dtype=np.uint8)
+    assert frames_changed_frac(a, a.copy(), pixel_thresh=12) == 0.0
+
+def test_frames_changed_frac_ignores_subthreshold_noise():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((10, 10, 3), 80, dtype=np.uint8)
+    b = a + 5                                        # 全圖微幅雜訊（低於 pixel_thresh）
+    assert frames_changed_frac(a, b, pixel_thresh=12) == 0.0
+
+def test_frames_changed_frac_counts_perceptible_region():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((10, 10, 3), 80, dtype=np.uint8)
+    c = a.copy(); c[:5, :, 0] = 200                  # 上半僅單一 channel 大變（仍算有感）
+    assert abs(frames_changed_frac(a, c, pixel_thresh=12) - 0.5) < 1e-6
+
+def test_frames_changed_frac_none_when_uncomparable():
+    from miningbot.vision import frames_changed_frac
+    a = np.zeros((10, 10, 3), dtype=np.uint8)
+    assert frames_changed_frac(None, a, pixel_thresh=12) is None
+    assert frames_changed_frac(a, np.zeros((5, 5, 3), dtype=np.uint8), pixel_thresh=12) is None

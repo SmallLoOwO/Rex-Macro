@@ -5,7 +5,8 @@ from miningbot.harvester import (next_harvest_step, HarvestState, restore_action
                                  format_harvest_id,
                                  normalize_rotations, plan_return_rotations,
                                  plan_giveup, GiveupPlan, GiveupCrop,
-                                 giveup_send_groups)
+                                 giveup_send_groups,
+                                 rotation_looks_eaten, restore_view)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -71,6 +72,56 @@ def test_restore_actions_takes_shortest_path():
     assert restore_actions(7) == ["ROTATE_RIGHT"]
     assert restore_actions(-7) == ["ROTATE_LEFT"]
     assert restore_actions(8) == []
+
+
+# --- rotation_looks_eaten：驗證式旋轉的「按鍵被吃」判定（純函式，2026-07-05）---
+# 視角回歸靠 net_rotations 計數反轉，前提是每個 ,/. 都真的生效——被吃一次就差 45°
+# （挖礦視角是 90° 倍數對齊，差 45° 直接影響挖礦效率）。旋轉 45° 會讓中央場景劇變、
+# 被吃則幾乎逐位元相同 → 前後幀「平均差 + 有感變化像素佔比」兩訊號都近零才判被吃。
+# 誤判方向的取捨：實際轉了卻誤判被吃而重送＝直接製造 45° 偏移，比漏判（退回舊行為）
+# 更糟 → 判「被吃」要保守（AND 兩訊號）、無從比較一律當已生效。
+
+def test_rotation_eaten_when_scene_nearly_identical():
+    # 被吃的按鍵：畫面只剩角色 idle 微幅變化，兩訊號都近零
+    assert rotation_looks_eaten(0.3, 0.002, mean_thresh=2.0, frac_thresh=0.02) is True
+
+def test_rotation_applied_when_scene_changed():
+    assert rotation_looks_eaten(25.0, 0.6, mean_thresh=2.0, frac_thresh=0.02) is False
+
+def test_rotation_dark_cave_low_mean_but_wide_change_is_applied():
+    # 近全黑礦坑旋轉：像素值低 → 平均差可能低於門檻，但變化像素佔比高 → 不可誤判被吃
+    assert rotation_looks_eaten(1.2, 0.30, mean_thresh=2.0, frac_thresh=0.02) is False
+
+def test_rotation_uncomparable_treated_as_applied():
+    # 基準缺/尺寸不合＝無從比較 → 當作已生效（重送有過轉風險，寧信）
+    assert rotation_looks_eaten(None, None, mean_thresh=2.0, frac_thresh=0.02) is False
+    assert rotation_looks_eaten(0.1, None, mean_thresh=2.0, frac_thresh=0.02) is False
+    assert rotation_looks_eaten(None, 0.001, mean_thresh=2.0, frac_thresh=0.02) is False
+
+
+# --- restore_view 可注入 rotate callable（驗證式旋轉接入點）---
+# main 傳 Bot._rotate_verified 讓回歸的每一步都驗證「真的轉了」；注入時不得碰
+# input_control（測試用 fake 收集呼叫序列即可驗證方向與步數、含最短路徑 wrap）。
+
+def test_restore_view_injected_rotate_left_for_net_right():
+    calls = []
+    restore_view(3, rotate=lambda d: calls.append(d) or True)
+    assert calls == [-1, -1, -1]
+
+def test_restore_view_injected_rotate_right_for_net_left():
+    calls = []
+    restore_view(-2, rotate=lambda d: calls.append(d) or True)
+    assert calls == [1, 1]
+
+def test_restore_view_injected_wraps_shortest_path():
+    calls = []
+    restore_view(7, rotate=lambda d: calls.append(d) or True)
+    assert calls == [1]        # 淨右轉 7 → 右轉 1 次 wrap 360°，不左轉 7 次
+
+def test_restore_view_injected_noop_for_full_circle():
+    calls = []
+    restore_view(8, rotate=lambda d: calls.append(d) or True)
+    assert calls == []
 
 
 # --- plan_return_rotations：sweep 完成後轉回最佳方位走最短方向（純函式）---
