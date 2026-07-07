@@ -698,3 +698,24 @@ def test_resolve_tessdata_prefers_path_derived_over_defaults(tmp_path):
     exe = tmp_path / "tesseract.exe"
     exe.write_text("")
     assert _resolve_tessdata(str(exe)) == os.path.join(str(tmp_path), "tessdata")
+
+
+# --- read_text_boxes：RapidOCR 文字框中心（reentry 層級按鈕點擊用）---
+from miningbot import ocr
+
+
+class TestParseRapidBoxes:
+    def test_basic(self):
+        boxes = [[(100, 200), (200, 200), (200, 240), (100, 240)]]
+        recs = ocr.parse_rapid_boxes(boxes, ["Mantle Layer"], [0.95])
+        assert recs == [{"text": "Mantle Layer", "score": 0.95,
+                         "center": (150, 220)}]
+
+    def test_none_inputs_empty(self):
+        # rapid 對空圖可能回 None 欄位（與 _read_text_rapid 同款防禦）
+        assert ocr.parse_rapid_boxes(None, None, None) == []
+
+    def test_missing_scores_default_zero(self):
+        boxes = [[(0, 0), (10, 0), (10, 10), (0, 10)]]
+        recs = ocr.parse_rapid_boxes(boxes, ["x"], None)
+        assert recs[0]["score"] == 0.0

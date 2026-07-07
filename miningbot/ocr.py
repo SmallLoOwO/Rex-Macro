@@ -788,3 +788,38 @@ def read_text_multi(image_bgr: np.ndarray, tesseract_path: str | None = None,
         return [_read_text_rapid(image_bgr)]
     return [read_text(image_bgr, tesseract_path, preprocess=p, psm=psm)
             for p in preprocesses]
+
+
+def parse_rapid_boxes(boxes, txts, scores) -> list:
+    """RapidOCR 輸出三陣列 → [{'text','score','center'}]（純函式，可單測）。
+
+    center＝四點多邊形頂點平均（int）。給 reentry.pick_layer_button 挑層級按鈕用：
+    文字框中心＝可直接點擊的螢幕座標（再加 region 偏移）。
+    """
+    boxes = list(boxes) if boxes is not None else []
+    txts = list(txts) if txts else []
+    scores = list(scores) if scores else [0.0] * len(txts)
+    recs = []
+    for b, t, s in zip(boxes, txts, scores):
+        xs = [int(p[0]) for p in b]
+        ys = [int(p[1]) for p in b]
+        recs.append({"text": t, "score": float(s),
+                     "center": (sum(xs) // len(xs), sum(ys) // len(ys))})
+    return recs
+
+
+def read_text_boxes(image_bgr: np.ndarray, region_offset=(0, 0)) -> list:
+    """OCR 並回每行文字的框中心（螢幕座標＝crop 座標＋region_offset）。
+
+    只有 rapidocr 路徑有框資訊；不可用回 []——呼叫端（reentry）據此走
+    遮擋階梯/reroll，不做 tesseract 後備（無框＝無從點擊，硬湊必亂點）。
+    """
+    eng = _get_rapid_engine()
+    if eng is None:
+        return []
+    out = eng(image_bgr, use_cls=False)
+    recs = parse_rapid_boxes(out.boxes, out.txts, out.scores)
+    ox, oy = region_offset
+    for r in recs:
+        r["center"] = (r["center"][0] + ox, r["center"][1] + oy)
+    return recs
