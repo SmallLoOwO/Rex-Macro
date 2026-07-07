@@ -74,11 +74,52 @@ def get_logger(subsystem: str) -> logging.Logger:
     return logging.getLogger(f"{LOGGER_NAME}.{subsystem}")
 
 
+def snapshot_subdir(label: str) -> str:
+    """依 label 決定快照分類子資料夾，讓事後篩選只需讀相關資料夾（不必全部載入）。
+
+    trackers — sweep_confirmed 真追蹤框（建模板的金礦）；
+    review   — needs_human/d3_fire/d3_miss/stuck（誤射/漏抓/卡住，要人眼看）；
+    events   — chill/rare_found/audio_no_text（chill 與稀有偵測）；
+    trace    — 其餘暫態敘事（d3_chat、harvest_success、mine_reset…）。
+    """
+    if "sweep_confirmed" in label:
+        return "trackers"
+    if any(k in label for k in ("needs_human", "d3_fire", "d3_miss", "stuck")):
+        return "review"
+    if any(k in label for k in ("chill", "rare_found", "audio")):
+        return "events"
+    return "trace"
+
+
+def snapshot_path(log_dir: str, label: str, ts: str = None):
+    """算快照分流路徑（不寫檔），回傳 (資料夾, 完整路徑)。
+
+    給非同步存圖用：主線即時拿到路徑（事件 log 用），實際 imwrite 丟背景執行緒。
+    """
+    snap_dir = os.path.join(log_dir, "snapshots", snapshot_subdir(label))
+    ts = ts or time.strftime("%Y%m%d_%H%M%S")
+    return snap_dir, os.path.join(snap_dir, f"{ts}_{label}.png")
+
+
+def tmp_snapshot_path(path: str) -> str:
+    """原子寫入用的暫存檔路徑：在最後副檔名前插 .part（**保留副檔名**）。
+
+    cv2.imwrite 依「檔名最後一個副檔名」挑編碼器；若暫存檔取 ``path + ".part"``，
+    副檔名會變 ``.part`` → cv2 拋「could not find a writer for the specified
+    extension」→ 檔案沒寫出 → Discord sink 的 _wait_for_file 必逾時 → 每則通知
+    退回純文字（2026-06-30 回歸：discord.log 全 NOIMG(wait-timeout)）。
+    ``foo.png`` → ``foo.part.png``（cv2 認得 .png）；``os.replace`` 後仍為 ``foo.png``。
+    """
+    root, ext = os.path.splitext(path)
+    return f"{root}.part{ext}"
+
+
 def save_snapshot(frame, log_dir: str, label: str) -> str:
-    """把當下畫面存成 log_dir/snapshots/<時間>_<label>.png，回傳路徑。"""
-    snap_dir = os.path.join(log_dir, "snapshots")
+    """把當下畫面存成 log_dir/snapshots/<分類>/<時間>_<label>.png，回傳路徑。
+
+    依 label 自動分流到分類子資料夾（見 snapshot_subdir）——事後只需讀相關資料夾。
+    """
+    snap_dir, path = snapshot_path(log_dir, label)
     os.makedirs(snap_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(snap_dir, f"{ts}_{label}.png")
     cv2.imwrite(path, frame)
     return path

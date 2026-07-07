@@ -49,7 +49,7 @@ class StatusHUD:
             pass
         self.root.geometry(f"+{x}+{y}")
         self.lbl = tk.Label(self.root, justify="left", anchor="w",
-                            font=("Consolas", 11), fg="#00ff88", bg="#0b0b0b",
+                            font=("Consolas", 14), fg="#00ff88", bg="#0b0b0b",
                             padx=12, pady=8)
         self.lbl.pack()
         self._hidden = False
@@ -105,13 +105,11 @@ class StatusHUD:
         except Exception:
             audio = 0.0
         up = int(time.time() - b._started)
-        s = b.stats
         tag = _STATE_ZH.get(state, state) + ("（暫停）" if b.paused else "")
         self.lbl.config(text=(
             f"● {tag}\n"
             f"動作: {b.last_action}\n"
-            f"音訊: {audio:.2f}    運行: {up // 60}m{up % 60:02d}s\n"
-            f"boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}"
+            f"音訊: {audio:.2f}    運行: {up // 3600}h{(up % 3600) // 60:02d}m{up % 60:02d}s"
         ))
         if not self._hidden and self._hwnd:
             # 重新確保置頂，但不搶焦點（SWP_NOACTIVATE）

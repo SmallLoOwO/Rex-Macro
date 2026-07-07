@@ -4,6 +4,16 @@ numpy==2.1.2
 pyaudiowpatch==0.2.12.7
 scipy==1.14.1
 pytesseract==0.3.13
+# tesserocr：快速 in-process OCR（Tesseract C++ API 綁定），取代 pytesseract 每次 spawn
+# tesseract.exe 的 ~2.5s 固定開銷（實測 banner OCR 3062ms→~400ms）。ocr.read_text 優先用它、
+# 缺它時自動退回 pytesseract。非 PyPI wheel — Windows/py311 用預編 wheel 安裝（自帶 Tesseract 5.5.2）：
+#   pip install https://github.com/simonflueckiger/tesserocr-windows_build/releases/download/tesserocr-v2.10.0-tesseract-5.5.2/tesserocr-2.10.0-cp311-cp311-win_amd64.whl
+# rapidocr：聊天框 verify 的首選 OCR 引擎（2026-07-04）。PaddleOCR 官方模型轉 ONNX、
+# onnxruntime CPU 推理，對彩色遊戲背景的 UI 文字拼字精準（H014/H020 兩類「Tesseract
+# 讀歪→假陰性」從源頭消滅）。首次使用自動下載模型（~20MB 到套件內 models/）。
+# 未裝/init 失敗時 ocr.read_text_multi 自動退回 tesseract 三前處理融合（行為同舊版）。
+rapidocr==3.9.1
+onnxruntime==1.27.0
 pydirectinput==1.0.4
 keyboard==0.13.5
 python-dotenv==1.0.1

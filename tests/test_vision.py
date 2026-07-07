@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from miningbot.vision import (find_template, template_present, find_template_edges,
                               find_tracker, find_marker, best_outline_score,
-                              template_outline_edges)
+                              template_outline_edges, frames_differ)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -19,6 +19,23 @@ def _draw_tracker(scene, cx, cy, size=30, color=(0, 255, 0)):
     cv2.rectangle(scene, (cx-h, cy-h), (cx+h, cy+h), color, -1)               # 指定顏色外框
     cv2.rectangle(scene, (cx-h+6, cy-h+6), (cx+h-6, cy+h-6), (0, 0, 0), -1)   # 黑方環
     cv2.rectangle(scene, (cx-4, cy-4), (cx+4, cy+4), (255, 0, 255), -1)       # 彩色中心（隨礦物變）
+
+
+def test_find_tracker_with_score_returns_triple():
+    """with_score=True 回傳 (x, y, score)，供 sweep 早停判斷高吻合度。
+
+    純 HSV（無模板）時 score=colored_frac；有模板且 confirmed 時 score=edge。
+    乾淨的合成 tracker 純 HSV 應有高 colored_frac。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)
+    r = find_tracker(scene, with_score=True)
+    assert r is not None and len(r) == 3
+    x, y, score = r
+    assert abs(x - 955) < 40 and abs(y - 300) < 40
+    assert 0.0 <= score <= 1.0 and score > 0.25         # 回傳有意義的分數（此合成圖 colored_frac≈0.3）
+    # 找不到時 with_score 仍回 None（非 tuple）
+    assert find_tracker(np.zeros((1080, 1920, 3), np.uint8), with_score=True) is None
 
 
 def test_find_tracker_detects_green_black_marker():
@@ -71,13 +88,111 @@ def test_find_tracker_inner_color_independent():
 
 
 def test_find_tracker_ignores_dark_panel_without_colored_center():
-    # UI 面板誤判候選：彩色外框 + 暗色內部（高 dark）但「沒有彩色中心」(colored≈0)
-    # → accept 必須排除。模擬 logs/rot_3.png 中 (257,933) 的左側 UI 面板誤判。
+    # UI 面板誤判候選：「細彩色外框 + 暗色內部」→ 整框彩色佔比低（實測 0.33）→ 排除。
+    # 模擬 logs/rot_3.png 中 (257,933) 的左側 UI 面板誤判（實機面板更低、≈0.16）。
+    # 注意：判斷專注「外框彩色佔比」，不再要求中心有顏色——真追蹤框中心會變色甚至純黑空心
+    # （見 test_find_tracker_detects_black_center_marker），但其厚實外框佔比遠高於細框面板。
     scene = np.zeros((1080, 1920, 3), np.uint8)
     cx, cy = 257, 933
     cv2.rectangle(scene, (cx-25, cy-25), (cx+25, cy+25), (0, 255, 0), 3)  # 綠色細外框
     cv2.rectangle(scene, (cx-22, cy-22), (cx+22, cy+22), (25, 25, 25), -1)  # 暗色內部、無彩色中心
     assert find_tracker(scene) is None
+
+
+def test_find_tracker_detects_black_center_marker():
+    """回歸 2026-06-29：厚實綠外框 + 純黑空心中心（無彩色中心）仍要偵測到。
+
+    追蹤框中心顏色每次會變（礦色/粉紅/純黑空心 BGR[0,0,0]），只有外框不變。
+    舊版 accept 要求中心 2/3 ROI 有彩色像素（colored_frac>0.04），遇黑心框
+    colored=0.00 → 被當暗色 UI 面板拒掉 → 漏抓、稀有沒採到。改成「專注外框彩色佔比」後
+    黑心厚框（佔比≈0.62）應通過，細框暗面板（≈0.33）仍排除。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    cx, cy = 955, 300
+    cv2.rectangle(scene, (cx-15, cy-15), (cx+15, cy+15), (0, 255, 0), -1)   # 厚實綠外框
+    cv2.rectangle(scene, (cx-10, cy-10), (cx+10, cy+10), (0, 0, 0), -1)     # 純黑中心填滿中央 2/3（無彩色）
+    loc = find_tracker(scene)
+    assert loc is not None, "黑心（純黑中心）追蹤框不應被漏抓——判斷應專注外框"
+    assert abs(loc[0] - cx) < 10 and abs(loc[1] - cy) < 10
+
+
+def test_find_tracker_hybrid_detects_black_center_real_scene():
+    """真實資料：assets/black_center_scene.png（綠框 + 純黑中心的 exquisite 階追蹤框）。
+
+    回歸 2026-06-29 RobloxScreenShot20260629_225228619：中心純黑（BGR 0,0,0）。
+    舊版於 HSV accept 因 colored_frac(中心)=0.00 被拒（當成暗色 UI 面板）→ 整圖回 None
+    → 機器人沒進 D3、稀有沒採到。混合偵測（HSV 專注外框佔比 0.56 + 形狀 edge 0.64）應命中
+    框中心 (~1108,442)，且不被角色紅光/左側面板等假陽性蓋過。"""
+    img_path = "assets/black_center_scene.png"
+    tmpl_path = "assets/markers/exquisite_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exq": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None and abs(loc[0] - 1108) < 40 and abs(loc[1] - 442) < 40
+
+
+def test_find_tracker_hybrid_detects_green_solid_center_scene():
+    """真實資料：assets/green_center_scene.png（H13, RobloxScreenShot20260702_153209768）。
+
+    綠框 + 黑環 + **亮綠實心中心**的追蹤框（右上 ~1365,277）。綠 HSV mask 同時吃到外框與
+    中心 → 整框 fill≈1.00、ring≈0.00 → 舊版 HSV 前置關卡 rej(not_ring)（且 fill≥0.85 一併擋），
+    在形狀確認前就被否決 → 整圖回 None、機器人沒進 D3、稀有沒採到（H13 漏抓根因）。
+    但外框形狀 edge≈0.64（≫0.45 門檻）→ 混合模式應由形狀確認命中；ring/fill 結構關卡不得硬拒真框。"""
+    img_path = "assets/green_center_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None, "綠實心中心追蹤框不應被 ring/fill 關卡漏抓（形狀 edge≈0.64 應命中）"
+    assert abs(loc[0] - 1365) < 40 and abs(loc[1] - 277) < 40
+
+
+def test_find_tracker_hybrid_detects_occluded_green_tracker_near_threshold():
+    """真實資料：assets/occluded_green_tracker_scene.png（173709，綠框被角色帽子擋到角）。
+
+    真綠框（角色頭上 ~982,434、colored≈0.93）但外框被帽子冠飾切到 → 形狀 edge≈0.43，
+    差舊門檻 0.45 一點點、又是實心中心（非 survivor）→ 舊版漏抓、你手動截圖回報。
+    實測「裝備假陽性 edge≤0.30、真框 edge≥0.43」中間有 gap → 門檻降到 0.42（DEFAULT）後應命中。
+    用 DEFAULT.tracker_shape_threshold 鎖意圖：門檻若被調回 ≥0.44 這測試會紅、提醒別回退。"""
+    img_path = "assets/occluded_green_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None, "被帽子擋到角的綠框（edge≈0.43）應在門檻 0.42 下命中"
+    assert 900 < loc[0] < 1060 and 400 < loc[1] < 500, f"應命中角色頭上綠框區，實得 {loc}"
 
 
 def test_find_tracker_prefers_higher_colored_over_larger_area():
@@ -273,17 +388,33 @@ def test_find_tracker_no_shape_templates_is_pure_hsv():
 
 
 def test_find_tracker_hybrid_shape_soft_filter_falls_back_to_hsv():
-    """HSV 接受的候選，但形狀對不上模板 → soft filter 退回純 HSV（不硬拒）。
+    """HSV 接受 + 形狀落在 [hard_floor, threshold) → survivor → soft filter 退回純 HSV。
 
-    對應 2026-06-28 改動：shape 確認從硬門檻改為軟篩——全部不過時退回 HSV，
-    確保未見過的階級外框（模板配不到）不會被漏抓。
+    對應三區判定：edge≥threshold 確認、hard_floor≤edge<threshold 保留為 survivor
+    （容忍未見階級外框配不到模板）、edge<hard_floor 硬拒。square_outline_30 對
+    _draw_tracker 實測 ≈0.36，落在 survivor 區（舊版 circle≈0.18 現會被硬拒）。
+    """
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    _draw_tracker(scene, 955, 300)                                  # HSV 會接受
+    square_tmpl = np.full((40, 40, 3), 30, np.uint8)
+    cv2.rectangle(square_tmpl, (5, 5), (35, 35), (220, 220, 220), 2)  # 方框（實測 edge≈0.36）
+    loc = find_tracker(scene, shape_templates={"sq": square_tmpl}, shape_threshold=0.7)
+    assert loc is not None, "borderline edge（survivor）應退回純 HSV，不應 return None"
+
+
+def test_find_tracker_hybrid_hard_floor_rejects_wrong_shape():
+    """HSV 接受 + 形狀全錯（edge < hard_floor）→ 硬拒，不 soft-filter。
+
+    回歸 015044 裝備誤射根因：裝備 colored=0.84（HSV 強）但 edge≈0.16（形狀全錯），
+    舊版 soft filter 救回來 → 誤判。加 hard_floor 後直接 return None。
+    circle 對 _draw_tracker 實測 ≈0.18，低於預設 hard_floor 0.25。
     """
     scene = np.zeros((1080, 1920, 3), np.uint8)
     _draw_tracker(scene, 955, 300)                                  # HSV 會接受
     circle = np.full((40, 40, 3), 30, np.uint8)
-    cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環模板（形狀不符方框）
+    cv2.circle(circle, (20, 20), 14, (220, 220, 220), 2)           # 圓環（實測 edge≈0.18 < 0.25）
     loc = find_tracker(scene, shape_templates={"circle": circle}, shape_threshold=0.7)
-    assert loc is not None, "形狀對不上時應退回純 HSV（soft filter），不應 return None"
+    assert loc is None, "edge < hard_floor 的候選應被硬拒，不應 soft-filter 救回"
 
 
 def test_find_tracker_hybrid_detects_real_marker():
@@ -300,6 +431,65 @@ def test_find_tracker_hybrid_detects_real_marker():
                        shape_scales=(0.7, 1.0, 1.4), shape_threshold=0.45)
     assert loc is not None
     assert abs(loc[0] - 1230) < 40 and abs(loc[1] - 643) < 40
+
+
+def test_find_tracker_hybrid_rejects_equipment_false_positive():
+    """真實資料：015044 sweep_confirmed（裝備誤射 @(990,665)）→ hard_floor 應擋下。
+
+    回歸 2026-06-28 根因：shape-confirm 正確判 edge=0.16→rej，但舊版 soft filter
+    翻盤退回 HSV → 誤判裝備為追蹤框。加 hard_floor=0.25 後應 return None。
+    """
+    img_path = "assets/false_positive_equipment.png"
+    tmpl_path = "assets/markers/exotic_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exotic": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is None, "裝備誤射（edge≈0.16 < hard_floor 0.25）應被硬拒，不 soft-filter"
+
+
+def test_find_tracker_hybrid_detects_exquisite_green_marker():
+    """真實資料：exquisite（綠）追蹤框 = 方框 + 四角綠芒（非純方框）。
+
+    2026-06-29 補 exquisite_tracker_real.png 後，綠階真框應被命中 (918,305)。
+    補模板前此框 best_outline_score≈0.42-0.53（部分卡 survivor）；補後綠階群均 ≥0.45 confirmed。
+    """
+    img_path = "assets/exquisite_scene.png"
+    tmpl_path = "assets/markers/exquisite_tracker_real.png"
+    if not (os.path.exists(img_path) and os.path.exists(tmpl_path)):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    tmpl = cv2.imread(tmpl_path, cv2.IMREAD_UNCHANGED)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, shape_templates={"exq": tmpl},
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert loc is not None and abs(loc[0] - 918) < 40 and abs(loc[1] - 305) < 40
+
+
+def test_hard_floor_separates_equipment_band_from_real_trackers():
+    """回歸 2026-06-28 夜間兩次裝備誤射（borderline edge 翻盤）。
+
+    實機證據（harvest.log）：
+      - 真追蹤框 edge≥0.44（19:38=0.44 colored=1.00、20:21=0.57-0.63）
+      - 裝備誤射 edge≤0.26（20:50=0.25、22:42=0.26，均射在角色自身橘紅裝備上）
+    兩次誤射都落在舊 hard_floor 0.25 的正上方 → 判 survivor → soft filter 救回 → 開火。
+    hard_floor 必須 > 0.26（擋下裝備帶）且 ≤ 0.358（保留未見階級外框代理
+    square_outline_30=0.358，見上面 soft_filter 測試），落在 0.26 與 0.44 的大空隙中。
+    """
+    from miningbot.config import DEFAULT as cfg
+    assert cfg.tracker_shape_hard_floor > 0.26, "須擋下 22:42 裝備誤射的 edge=0.26"
+    assert cfg.tracker_shape_hard_floor <= 0.358, "不可誤殺未見階級外框代理(edge≈0.358)"
 
 
 # --- find_marker（全幀形狀偵測，顏色無關）與輔助 ---
@@ -339,3 +529,128 @@ def test_best_outline_score_high_for_matching_shape_low_for_blank():
     assert best_outline_score(scene, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) >= 0.4
     blank = np.full((200, 200, 3), 30, np.uint8)
     assert best_outline_score(blank, {"t": tmpl}, scales=(0.8, 1.0, 1.2)) < 0.4
+
+
+# --- frames_differ：聊天輪詢的省 OCR 閘（H015 對策）---
+# D3 後輪詢驗證每 ~1s 抓幀；聊天全區 3-pass OCR 實測 ~10s（滿版文字），不能每輪都跑。
+# 聊天是螢幕覆蓋層、角色靜止時裁圖近乎逐位元相同 → 只有像素變了（新訊息/淡出）才值得 OCR。
+def test_frames_differ_false_for_identical_crops():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    assert frames_differ(a, a.copy()) is False
+
+
+def test_frames_differ_true_when_text_like_change_appears():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    b = a.copy()
+    cv2.putText(b, "has found X", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    assert frames_differ(a, b) is True
+
+
+def test_frames_differ_true_when_baseline_missing_or_shape_mismatch():
+    a = np.full((80, 200, 3), 120, np.uint8)
+    assert frames_differ(None, a) is True          # 尚無基準 → 必須 OCR
+    assert frames_differ(a[:40], a) is True        # 尺寸不同（區域改了）→ 必須 OCR
+
+
+def test_find_tracker_edge_clipped_scene_documents_margin_rejection():
+    """真實資料：assets/edge_clipped_tracker_scene.png（H019, RobloxScreenShot20260703_172635259）。
+
+    追蹤框被 D5 到期的 FOV 收縮推到畫面右緣 (~1862,418)、部分裁切。預設 margin_frac=0.1
+    的邊緣排除帶會拒收（in_area=False）→ 整圖回 None——這正是 H019 verify 失敗、誤判
+    「未找到」交人工的機制。margin=0 時同一顆框 edge≈0.57（≫0.42 門檻）可正常命中。
+    此測試釘住兩個事實：邊緣框對預設偵測不可見（上游靠 pick_sweep_candidate 選居中候選
+    ＋verify 失敗重掃一次補救），以及框本身形狀完好可辨（margin 是唯一擋它的關卡）。"""
+    img_path = "assets/edge_clipped_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    kw = dict(exclude=excl, shape_templates=tmpls,
+              shape_threshold=cfg.tracker_shape_threshold,
+              shape_scales=cfg.tracker_shape_scales,
+              shape_roi_px=cfg.tracker_shape_roi_px,
+              shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert find_tracker(img, margin_frac=0.1, **kw) is None       # H019 失敗機制
+    loc = find_tracker(img, margin_frac=0.0, **kw)                # 框本身完好可辨
+    assert loc is not None and abs(loc[0] - 1862) < 40 and abs(loc[1] - 418) < 40
+    # H026 後 margin 收窄進 config：實戰預設值也必須收得回這顆右緣框
+    loc2 = find_tracker(img, margin_frac=cfg.tracker_margin_frac, **kw)
+    assert loc2 is not None and abs(loc2[0] - 1862) < 40 and abs(loc2[1] - 418) < 40
+
+
+def test_find_tracker_bottom_edge_scene_h026_recovered_by_config_margin():
+    """真實資料：assets/bottom_edge_tracker_scene.png（H026, RobloxScreenShot20260704_005233867）。
+
+    D5 到期的 FOV 收縮是以畫面中心為錨的 ~2.6x 縮放：sweep 早停確認過的框 (1084,744)
+    被推到底緣 (1288,1020)。舊 margin_frac=0.1 的底部排除帶（y>972 全拒）在全部 8 個
+    方位都擋掉它——yaw 旋轉只改 x 不改 y，框永遠在帶內 → 重掃全空、誤交人工（H026）。
+    實戰預設 cfg.tracker_margin_frac=0.02（y≤1058）收得回；邊緣雜訊仍有
+    preexist 差分／colored_frac／形狀確認三道閘擋著（0.02 對全 fixture 集無新假陽性）。"""
+    img_path = "assets/bottom_edge_tracker_scene.png"
+    tmpls = {}
+    for n in ("exotic_tracker_real", "exquisite_tracker_real", "transcendent_tracker_real"):
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    kw = dict(exclude=excl, shape_templates=tmpls,
+              shape_threshold=cfg.tracker_shape_threshold,
+              shape_scales=cfg.tracker_shape_scales,
+              shape_roi_px=cfg.tracker_shape_roi_px,
+              shape_hard_floor=cfg.tracker_shape_hard_floor)
+    assert find_tracker(img, margin_frac=0.1, **kw) is None       # H026 失敗機制（舊帶擋真框）
+    loc = find_tracker(img, margin_frac=cfg.tracker_margin_frac, **kw)
+    assert loc is not None and abs(loc[0] - 1288) < 40 and abs(loc[1] - 1020) < 40
+    assert cfg.tracker_margin_frac <= 0.02   # H026 框 y=1020 需 margin ≤ (1-1020/1080)=0.055；留餘裕釘 0.02
+
+
+def test_frames_mean_diff_value_and_none_cases():
+    # 詳細 log 用：回傳實際平均差值；基準缺/尺寸不合 → None（無從比較）
+    from miningbot.vision import frames_mean_diff
+    a = np.zeros((20, 30, 3), dtype=np.uint8)
+    b = a.copy(); b[:, :, :] = 6
+    assert frames_mean_diff(a, a.copy()) == 0.0
+    assert abs(frames_mean_diff(a, b) - 6.0) < 1e-6
+    assert frames_mean_diff(None, a) is None
+    assert frames_mean_diff(a, np.zeros((10, 30, 3), dtype=np.uint8)) is None
+
+
+# --- frames_changed_frac：驗證式旋轉的第二訊號（2026-07-05）---
+# 旋轉 45° 在近全黑礦坑「平均差」可能很低（像素值本來就低），但「有感變化像素的
+# 佔比」仍高；被吃的按鍵只剩角色 idle 微幅變化、佔比近零。與 frames_mean_diff 搭配
+# 讓「被吃」判定保守（兩訊號都近零才重送——實際轉了卻重送＝直接製造 45° 偏移）。
+
+def test_frames_changed_frac_zero_for_identical():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((40, 60, 3), 80, dtype=np.uint8)
+    assert frames_changed_frac(a, a.copy(), pixel_thresh=12) == 0.0
+
+def test_frames_changed_frac_ignores_subthreshold_noise():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((10, 10, 3), 80, dtype=np.uint8)
+    b = a + 5                                        # 全圖微幅雜訊（低於 pixel_thresh）
+    assert frames_changed_frac(a, b, pixel_thresh=12) == 0.0
+
+def test_frames_changed_frac_counts_perceptible_region():
+    from miningbot.vision import frames_changed_frac
+    a = np.full((10, 10, 3), 80, dtype=np.uint8)
+    c = a.copy(); c[:5, :, 0] = 200                  # 上半僅單一 channel 大變（仍算有感）
+    assert abs(frames_changed_frac(a, c, pixel_thresh=12) - 0.5) < 1e-6
+
+def test_frames_changed_frac_none_when_uncomparable():
+    from miningbot.vision import frames_changed_frac
+    a = np.zeros((10, 10, 3), dtype=np.uint8)
+    assert frames_changed_frac(None, a, pixel_thresh=12) is None
+    assert frames_changed_frac(a, np.zeros((5, 5, 3), dtype=np.uint8), pixel_thresh=12) is None

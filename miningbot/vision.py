@@ -21,6 +21,48 @@ def find_template(scene_bgr, template_bgr, threshold: float):
 def template_present(scene_bgr, template_bgr, threshold: float) -> bool:
     return find_template(scene_bgr, template_bgr, threshold) is not None
 
+def frames_differ(baseline_bgr, current_bgr, mean_diff_threshold: float = 2.0) -> bool:
+    """兩張同尺寸裁圖是否有肉眼可見變化（平均絕對差 > 門檻）——聊天輪詢的省 OCR 閘。
+
+    D3 後輪詢驗證（H015 對策）每 ~1s 檢查聊天，但聊天全區 3-pass OCR 實測 ~10s
+    （滿版文字），不能每輪都跑。聊天是螢幕覆蓋層、輪詢期間角色靜止 → 沒新訊息時
+    裁圖近乎逐位元相同（實測連 PNG 位元組數都一樣）；新訊息出現或聊天淡出都會
+    大幅改變像素 → 只在變化時才 OCR。基準缺失或尺寸不合＝無從比較 → 當作有變化。
+    """
+    d = frames_mean_diff(baseline_bgr, current_bgr)
+    return True if d is None else d > mean_diff_threshold
+
+
+def frames_mean_diff(baseline_bgr, current_bgr) -> float | None:
+    """兩張裁圖的平均絕對差；基準缺/尺寸不合回 None（無從比較＝frames_differ 視為有變）。
+
+    拆出數值版是給詳細 log 用（H020 事後排錯）：光看 frames_differ 的 bool 無法回答
+    「為什麼那輪沒觸發 OCR」——差值多少、離門檻多遠，要留在 harvest.log 裡。
+    """
+    if baseline_bgr is None or current_bgr is None:
+        return None
+    if baseline_bgr.shape != current_bgr.shape:
+        return None
+    return float(np.mean(cv2.absdiff(baseline_bgr, current_bgr)))
+
+
+def frames_changed_frac(baseline_bgr, current_bgr, pixel_thresh: int = 12) -> float | None:
+    """有感變化像素的佔比（任一 channel 絕對差 > pixel_thresh 才算變化）；無從比較回 None。
+
+    驗證式旋轉的第二訊號（2026-07-05）：近全黑礦坑旋轉 45° 的「平均差」可能低於門檻
+    （像素值本來就低），但有感變化像素的佔比仍高；被吃的按鍵只剩角色 idle 微幅變化、
+    佔比近零。與 frames_mean_diff 搭配讓 rotation_looks_eaten 的「被吃」判定保守
+    （兩訊號都近零才重送——實際轉了卻重送＝直接製造 45° 偏移）。
+    """
+    if baseline_bgr is None or current_bgr is None:
+        return None
+    if baseline_bgr.shape != current_bgr.shape:
+        return None
+    d = cv2.absdiff(baseline_bgr, current_bgr)
+    per_pixel = d.max(axis=2) if d.ndim == 3 else d
+    return float(np.mean(per_pixel > pixel_thresh))
+
+
 def _canny(img_bgr):
     return cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
 
@@ -235,8 +277,9 @@ def best_outline_score(scene_bgr, templates, scales=(1.0,), min_px=12) -> float:
 def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  reference_bgr=None, shape_templates=None,
                  shape_threshold: float = 0.45,
+                 shape_hard_floor: float = 0.25,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
-                 shape_roi_px: int = 160):
+                 shape_roi_px: int = 160, with_score: bool = False):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
@@ -251,13 +294,17 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     再在每個候選周圍的小 ROI 跑外框形狀比對確認，拒掉「有顏色但不是追蹤框形狀」的
     假陽性（如角色裝備）。空/None → 純 HSV（向後相容）。形狀比對只在小 ROI 上跑，
     比全幀模板比對快上百倍。
+
+    shape_hard_floor：edge 低於此值的候選直接拒（連 soft filter 也不救）——擋「HSV
+    很強但形狀完全錯」的裝備誤判（實測 edge≈0.16）。只有 survivor（floor≤edge<
+    threshold）才退回 HSV，保留「未見階級外框配不到模板」的安全網。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     ref_hsv = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2HSV) if reference_bgr is not None else None
     mx0, my0 = w * margin_frac, h * margin_frac
     mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
-    candidates = []   # [(colored_frac, cx, cy)] 通過 HSV 確認的候選
+    candidates = []   # [(colored_frac, cx, cy, ring_ok)] 通過 HSV 收集的候選
     for lo, hi in _TRACKER_COLORS:
         color_mask = cv2.inRange(hsv, lo, hi)
         ref_mask = cv2.inRange(ref_hsv, lo, hi) if ref_hsv is not None else None
@@ -276,17 +323,12 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
             in_exclude = any(x0 <= cx <= x1 and y0 <= cy <= y1 for (x0, y0, x1, y1) in exclude)
             # 空心率：只算「當前這個顏色的 mask」——避免礦坑背景同色系的 H 范圍干擾
             frame_fill = float(np.mean(color_mask[y:y+bh, x:x+bw] > 0))
-            # 環形結構：tracker 外框的顏色只分佈在邊緣；cave wall/實心 blob 中心也有顏色
-            # ring_score = frame_fill - inner_fill（縮 30% 取中心區）；tracker ≈ 0.5，blob ≈ 0
+            # 環形結構：tracker 外框的顏色多分佈在邊緣；cave wall/實心 blob 中心也有顏色
+            # ring_score = frame_fill - inner_fill（縮 30% 取中心區）；空心框 ≈ 0.5，實心 blob ≈ 0
             _mx = max(1, int(bw * 0.30)); _my = max(1, int(bh * 0.30))
             _inner = color_mask[y+_my:y+bh-_my, x+_mx:x+bw-_mx]
             _inner_fill = float(np.mean(_inner > 0)) if _inner.size > 0 else frame_fill
             ring_score = frame_fill - _inner_fill
-            if ring_score < 0.15:
-                if log is not None:
-                    log("tracker候選 (%d,%d) area=%d fill=%.2f ring=%.2f -> rej(not_ring)"
-                        % (cx, cy, int(area), frame_fill, ring_score))
-                continue
             # 差分過濾：掃描前就已存在的彩色物件（礦石本體/角色裝備）→ 排除
             if ref_mask is not None:
                 ref_fill = float(np.mean(ref_mask[y:y+bh, x:x+bw] > 0))
@@ -295,50 +337,75 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                         log("tracker候選 (%d,%d) area=%d fill=%.2f ref_fill=%.2f -> rej(preexist)"
                             % (cx, cy, int(area), frame_fill, ref_fill))
                     continue
-            roi = frame_bgr[max(0, cy - bh // 3):cy + bh // 3,
-                            max(0, cx - bw // 3):cx + bw // 3]
-            if roi.size == 0:
-                continue
-            dark = float(np.mean(np.all(roi < 60, axis=2)))
-            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            S, V = roi_hsv[:, :, 1], roi_hsv[:, :, 2]
-            # 色相無關：任何階級的中心礦色都算（修：原本 (H<35)|(H>95) 排除黃綠 H35-95，
-            # 害「黃綠中心礦」如 Ionized 的 colored=0 而漏抓——實機 very_rare.png 踩到的根因）。
-            colored = (S > 90) & (V > 90)
+            # 專注外框：量「整個 bbox」的彩色佔比（色相無關 S>90&V>90），不再只看中心。
+            # 為何不看中心：追蹤框中心顏色每次會變（不同礦色/粉紅/甚至純黑空心 BGR[0,0,0]），
+            # 中心非不變特徵；舊版要求中心 2/3 有彩色像素，遇黑心框 colored=0 → 被當暗色 UI
+            # 面板拒掉而漏抓（2026-06-29 黑心綠框 black_center_scene.png 踩坑根因）。
+            # 真追蹤框有「厚實彩色外框」→ 整框彩色佔比高（實測黑心 0.51-0.62、彩心 0.7-1.0）；
+            # 細框暗色 UI 面板佔比低（合成 0.33、實機 ≈0.16）→ 用佔比門檻區隔，形狀確認再精篩。
+            bb_hsv = hsv[y:y+bh, x:x+bw]
+            colored = (bb_hsv[:, :, 1] > 90) & (bb_hsv[:, :, 2] > 90)
             colored_frac = float(colored.mean())
-            # accept 條件：彩色中心要夠明顯（colored_frac>0.50，真實 tracker≈1.00），
-            # 或同時有黑環+部分彩色（合成 tracker dark≈0.65 colored≈0.16）。
-            # 排除「暗色 UI 面板」：dark 高但 colored≈0（左側面板誤判）。
-            accept = (in_area and not in_exclude and frame_fill < 0.85
-                      and ((dark > 0.10 and colored_frac > 0.04) or colored_frac > 0.50))
+            # ring_ok：環形/空心「結構」訊號。**在混合模式下不再當硬門檻**——真追蹤框的中心
+            # 可能是亮礦色實心（H13 綠實心中心 fill≈1.00、ring≈0.00）或彩色圖示，會讓 ring≈0/負、
+            # fill≥0.85，被舊版 rej(not_ring)/fill 關卡在「形狀確認前」誤殺（H13 漏抓根因；
+            # 同 2026-06-29 黑心框那類「中心非不變特徵」的坑）。改由形狀（edge）當精準仲裁：
+            # ring/fill 只保留為 (a) 純 HSV 後備（無形狀模板時的唯一結構過濾）、(b) survivor 防線
+            # （borderline edge 才需 ring_ok，擋非環形假陽性被拉上來），confirmed 一律不看 ring_ok。
+            ring_ok = (ring_score >= 0.15 and frame_fill < 0.85)
+            accept = (in_area and not in_exclude and colored_frac > 0.40)
             if log is not None:
-                log("tracker候選 (%d,%d) area=%d fill=%.2f dark=%.2f colored=%.2f in_area=%s -> %s"
-                    % (cx, cy, int(area), frame_fill, dark, colored_frac, in_area, "OK" if accept else "rej"))
+                log("tracker候選 (%d,%d) area=%d fill=%.2f ring=%.2f colored=%.2f ring_ok=%s in_area=%s -> %s"
+                    % (cx, cy, int(area), frame_fill, ring_score, colored_frac, ring_ok, in_area,
+                       "OK" if accept else "rej"))
             if accept:
-                candidates.append((colored_frac, cx, cy))
+                candidates.append((colored_frac, cx, cy, ring_ok))
 
     # ---- 形狀確認（混合方案）：HSV 候選 → 小 ROI 外框比對，拒假陽性 ----
+    # 三區判定：edge ≥ threshold → confirmed（不看 ring_ok，救回實心/彩心真框）；
+    # hard_floor ≤ edge < threshold **且 ring_ok** → survivor（退回 HSV，容忍未見階級、
+    # 但要求環形以免非環形假陽性翻盤）；其餘 → 拒。
     if shape_templates:
         confirmed = []
-        for cf, cx, cy in candidates:
+        survivors = []      # borderline：保留給 HSV fallback（未見階級安全網）
+        for cf, cx, cy, ring_ok in candidates:
             r = shape_roi_px // 2
             roi = frame_bgr[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
             score = best_outline_score(roi, shape_templates, shape_scales)
+            verdict = ("OK" if score >= shape_threshold
+                       else "soft" if (score >= shape_hard_floor and ring_ok)
+                       else "hard_rej")
             if log is not None:
-                log("shape確認 (%d,%d) colored=%.2f edge=%.2f -> %s"
-                    % (cx, cy, cf, score, "OK" if score >= shape_threshold else "rej"))
+                log("shape確認 (%d,%d) colored=%.2f edge=%.2f ring_ok=%s floor=%.2f thr=%.2f -> %s"
+                    % (cx, cy, cf, score, ring_ok, shape_hard_floor, shape_threshold, verdict))
             if score >= shape_threshold:
-                confirmed.append((score, cx, cy))
+                confirmed.append((score, cx, cy))       # 形狀夠像＝真框，中心實心與否都收
+            elif score >= shape_hard_floor and ring_ok:
+                survivors.append((score, cx, cy))       # 存 edge 分數（供 with_score / 早停）
+            # else：hard_rej（形狀太錯）或「borderline 但非環形」→ 完全移除
         if confirmed:
             confirmed.sort(reverse=True)        # 形狀分數最高者勝
-            return (confirmed[0][1], confirmed[0][2])
-        # Soft filter：shape 全部不過但 HSV 有強候選 → 退回純 HSV
-        # （可能是未見過的階級外框，現有模板配不到）
-        if log is not None:
-            log("shape全部不過，退回純 HSV（可能是未見階級，candidates=%d）" % len(candidates))
+            s, cx, cy = confirmed[0]
+            return (cx, cy, s) if with_score else (cx, cy)
+        if survivors:
+            # Soft filter：borderline 環形候選（可能是未見階級外框）→ 退回純 HSV
+            if log is not None:
+                log("shape未確認但 edge≥%.2f 且環形，退回純 HSV（survivors=%d）"
+                    % (shape_hard_floor, len(survivors)))
+            candidates = survivors               # (edge, cx, cy) 3-tuple
+        else:
+            # 無 confirmed、無環形 survivor → 判定無追蹤框（拒裝備/非環形誤判）
+            if log is not None:
+                log("shape無 confirmed 亦無環形 survivor，判定無追蹤框（候選=%d）" % len(candidates))
+            return None
+    else:
+        # 純 HSV（無形狀模板，未見階級安全網）：形狀無法仲裁 → 環形結構是唯一過濾，只留 ring_ok
+        candidates = [(cf, cx, cy) for cf, cx, cy, ring_ok in candidates if ring_ok]
 
-    # 純 HSV：排名用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88）
+    # 排名：survivor 用 edge、純 HSV 用 colored_frac（真 tracker≈1.00 > 裝備誤判≈0.75-0.88），
+    # 兩者皆「分數高者勝」語意一致；元素統一為 (score, cx, cy) 3-tuple。
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return (candidates[0][1], candidates[0][2])
+    s, cx, cy = candidates[0]
+    return (cx, cy, s) if with_score else (cx, cy)

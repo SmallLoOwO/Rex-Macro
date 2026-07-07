@@ -34,28 +34,40 @@ def cooldown_ready(icon_present: bool, since_last_press: float, grace_s: float) 
         return False
     return since_last_press > grace_s
 
-def init_mining_sequence():
+def init_mining_sequence(log=None, rotate=None):
     """初始化（只在啟動/失焦復原做一次）：放開→. , 視角→雙 Shift→（沒拿鎬子才按 D1）→挖礦。
 
     視角(., )與置中只做一次（之後視角不變）。D1 **只在槽位像素顯示沒拿鎬子時才按**，
     對照原巨集 IF PIXEL FOUND 2302755；已拿著又按一下反而會把十字鎬收起來。
+    log：傳 callable 時每步驟記錄（採集後 W 不按住的 root cause 追蹤用）。
+    rotate：可注入的驗證式單步旋轉 callable(direction)->bool（main 傳 Bot._rotate_verified）。
+    ., 成對淨 0 的前提是兩鍵都生效——吃掉半對就歪 45°（挖礦視角 90° 倍數對齊）；
+    注入時右轉沒轉成就不左轉（否則反歪 45°）、左轉被吃由 callable 自行重送。
     """
+    if log: log("init_mining_sequence: 開始")
     ic.key_up("w"); ic.mouse_up()
-    ic.rotate_right(); ic.rotate_left()    # ., 設定視角（一次即可）
+    if log: log("init_mining_sequence: key_up('w')+mouse_up() done")
+    if rotate is not None:
+        if rotate(+1):                     # ., 設定視角（一次即可），成對淨 0
+            rotate(-1)
+    else:
+        ic.rotate_right(); ic.rotate_left()
+    if log: log("init_mining_sequence: rotate(.,) done")
     ic.center_crosshair()                  # 連按兩次 Shift：準心置中
-    _ensure_pickaxe()                      # 沒拿鎬子才按 D1
+    if log: log("init_mining_sequence: center_crosshair done")
+    pressed = _ensure_pickaxe()            # 沒拿鎬子才按 D1
+    if log: log("init_mining_sequence: _ensure_pickaxe pressed=%s" % pressed)
     ic.key_down("w"); ic.mouse_down()
+    if log: log("init_mining_sequence: key_down('w')+mouse_down() done — complete")
 
-def resume_mining():
-    """採集成功後恢復挖礦：D1 切回鎬子 + 等 + 按 W + 按左鍵。
+def ensure_pickaxe() -> bool:
+    """公開入口：條件式切回鎬子（槽位顯示沒拿鎬子才按 D1，安全不會 toggle 掉已裝備的）。
 
-    比 init_mining_sequence 精簡——不重設視角/置中（restore_view 已處理），
-    也不靠 _ensure_pickaxe pixel check（採集後確定剛用 D3，直接按 1 是安全切換非 toggle）。
+    採集成功後 pickup 動畫（1-2s）會吃掉 init 期的 D1，導致 D3 沒切回 → 按住 W 卻拿 D3
+    無法前進。故動畫結束 settle 後需再呼叫本函式補確認一次（見 main 採集成功路徑）。
     """
-    ic.key_press("1")        # D3 → D1（採集後確定不是鎬子）
-    ic.settle(0.4)           # 等鎬子裝備動畫（太早按 W 會被吃掉）
-    ic.key_down("w")
-    ic.mouse_down()
+    return _ensure_pickaxe()
+
 
 def _ensure_pickaxe() -> bool:
     """槽位像素顯示「沒拿鎬子」時才按 D1（對照原巨集；避免已拿著又按反而收起）。
@@ -81,6 +93,10 @@ def use_boost():           # 對照原巨集：放左鍵 → D5 → 點擊 → D
     ic.key_press("5"); ic.mouse_click(hold=0.08)
     ic.key_press("1"); ic.mouse_down()
 
+def use_boost_harvest():   # 採集中補 D5（H026 FOV 守門）：喝完不切回鎬子、不按住左鍵——採集不挖礦，
+    ic.mouse_up(); ic.settle()  # D3 序列自己按 2→3 處理裝備、回 D1 交給採集收尾的 init_mining_sequence
+    ic.key_press("5"); ic.mouse_click(hold=0.08)
+
 def use_activity():        # 對照原巨集：放左鍵 → D4 → 點擊 → D1 → 按住左鍵
     ic.mouse_up(); ic.settle()
     ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（使用者確認；加強事件之後再做）
@@ -95,9 +111,15 @@ def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→
     ic.mouse_up(); ic.key_press("2"); ic.mouse_click(); ic.key_press("z")
     ic.key_press("5"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()
 
-def handle_cave():         # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
+def handle_cave(rotate=None):  # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
     import time
     ic.key_press("f"); time.sleep(3.0)
-    ic.rotate_right(); ic.rotate_right(); ic.key_press("x"); time.sleep(1.0)
-    ic.rotate_left(); ic.rotate_left()
+    if rotate is not None:     # 驗證式：只回轉「確認轉成」的次數，成對淨 0 不歪 45°
+        done = sum(1 for _ in range(2) if rotate(+1))
+        ic.key_press("x"); time.sleep(1.0)
+        for _ in range(done):
+            rotate(-1)
+    else:
+        ic.rotate_right(); ic.rotate_right(); ic.key_press("x"); time.sleep(1.0)
+        ic.rotate_left(); ic.rotate_left()
     ic.key_down("w"); ic.mouse_down()

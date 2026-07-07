@@ -1,0 +1,5857 @@
+{
+ "source": "https://rex-reincarnated.fandom.com/api.php",
+ "worlds": {
+  "Aesteria": [
+   {
+    "ore": "Vermillion",
+    "tier": "Surreal",
+    "rarity": 230000,
+    "layer": "?"
+   },
+   {
+    "ore": "Eyeballium",
+    "tier": "Surreal",
+    "rarity": 390200,
+    "layer": "?"
+   },
+   {
+    "ore": "Heldis",
+    "tier": "Mythic",
+    "rarity": 570900,
+    "layer": "?"
+   },
+   {
+    "ore": "Vermedictum",
+    "tier": "Mythic",
+    "rarity": 720000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lovelocket",
+    "tier": "Surreal",
+    "rarity": 155000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Bandeau",
+    "tier": "Surreal",
+    "rarity": 190400,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Cordis Gemma",
+    "tier": "Mythic",
+    "rarity": 750000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Passionblaze",
+    "tier": "Mythic",
+    "rarity": 810000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Deltium",
+    "tier": "Surreal",
+    "rarity": 130000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Viripendage",
+    "tier": "Surreal",
+    "rarity": 432000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Vialite",
+    "tier": "Mythic",
+    "rarity": 640200,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Cucurbite",
+    "tier": "Mythic",
+    "rarity": 778000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Spiritcage",
+    "tier": "Surreal",
+    "rarity": 333334,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Spelsine",
+    "tier": "Surreal",
+    "rarity": 343333,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Infrapolus",
+    "tier": "Mythic",
+    "rarity": 640460,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Fettersine",
+    "tier": "Mythic",
+    "rarity": 780300,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Snowfall",
+    "tier": "Surreal",
+    "rarity": 101500,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Sub-Zero",
+    "tier": "Surreal",
+    "rarity": 281000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Compact Snow",
+    "tier": "Surreal",
+    "rarity": 359210,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Blizzardine",
+    "tier": "Mythic",
+    "rarity": 603500,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Astralisium",
+    "tier": "Mythic",
+    "rarity": 841100,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Peppermist",
+    "tier": "Surreal",
+    "rarity": 190600,
+    "layer": "?"
+   },
+   {
+    "ore": "Mistletide",
+    "tier": "Surreal",
+    "rarity": 312000,
+    "layer": "?"
+   },
+   {
+    "ore": "Peppernite",
+    "tier": "Surreal",
+    "rarity": 400300,
+    "layer": "?"
+   },
+   {
+    "ore": "Frigishard",
+    "tier": "Mythic",
+    "rarity": 554000,
+    "layer": "?"
+   },
+   {
+    "ore": "Jollinyte",
+    "tier": "Mythic",
+    "rarity": 750000,
+    "layer": "?"
+   },
+   {
+    "ore": "Incandescine",
+    "tier": "Surreal",
+    "rarity": 211500,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Illumite",
+    "tier": "Surreal",
+    "rarity": 490120,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Pool Noodle",
+    "tier": "Mythic",
+    "rarity": 620100,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Solar Haze",
+    "tier": "Mythic",
+    "rarity": 777776,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Breezeflow",
+    "tier": "Surreal",
+    "rarity": 341000,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Pobble",
+    "tier": "Surreal",
+    "rarity": 420000,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Fragfall",
+    "tier": "Mythic",
+    "rarity": 777777,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Mystifall",
+    "tier": "Mythic",
+    "rarity": 991999,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Pyrinal",
+    "tier": "Surreal",
+    "rarity": 182330,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Dusksekkar",
+    "tier": "Surreal",
+    "rarity": 372050,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Doomsekkar",
+    "tier": "Surreal",
+    "rarity": 411845,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Candy Bucket",
+    "tier": "Mythic",
+    "rarity": 744200,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Vapudric",
+    "tier": "Surreal",
+    "rarity": 230190,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Darkseed",
+    "tier": "Surreal",
+    "rarity": 312940,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Ghostdeerium",
+    "tier": "Surreal",
+    "rarity": 443210,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Nightwatcher",
+    "tier": "Mythic",
+    "rarity": 832770,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Peppermint Core",
+    "tier": "Surreal",
+    "rarity": 99000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Frostarian",
+    "tier": "Surreal",
+    "rarity": 205000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Frostenice",
+    "tier": "Surreal",
+    "rarity": 340000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Candensium",
+    "tier": "Surreal",
+    "rarity": 450000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Crystallized Solarite",
+    "tier": "Mythic",
+    "rarity": 500000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Candied Nocturnite",
+    "tier": "Mythic",
+    "rarity": 670000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Candy Vortex",
+    "tier": "Mythic",
+    "rarity": 720000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Demonizine",
+    "tier": "Exotic",
+    "rarity": 3600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Agoraphore",
+    "tier": "Exotic",
+    "rarity": 6230001,
+    "layer": "?"
+   },
+   {
+    "ore": "Confined Cataclysm",
+    "tier": "Exquisite",
+    "rarity": 12200200,
+    "layer": "?"
+   },
+   {
+    "ore": "Plasmitan",
+    "tier": "Transcendent",
+    "rarity": 24800000,
+    "layer": "?"
+   },
+   {
+    "ore": "Panselinos",
+    "tier": "Transcendent",
+    "rarity": 30140000,
+    "layer": "?"
+   },
+   {
+    "ore": "Puppet Master",
+    "tier": "Transcendent",
+    "rarity": 37845000,
+    "layer": "?"
+   },
+   {
+    "ore": "Thalassus",
+    "tier": "Enigmatic",
+    "rarity": 58200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Phantomalgamation",
+    "tier": "Enigmatic",
+    "rarity": 77600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Scourge",
+    "tier": "Unfathomable",
+    "rarity": 175430000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lilaverine",
+    "tier": "Exotic",
+    "rarity": 2300000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Rosarium",
+    "tier": "Exotic",
+    "rarity": 5555555,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Mythical Hive",
+    "tier": "Exquisite",
+    "rarity": 12121212,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Valentinyl",
+    "tier": "Exquisite",
+    "rarity": 12222222,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Lovessence",
+    "tier": "Transcendent",
+    "rarity": 22222222,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Sentimentium",
+    "tier": "Transcendent",
+    "rarity": 31300000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Amare",
+    "tier": "Enigmatic",
+    "rarity": 52300000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Albuca Spiralis",
+    "tier": "Enigmatic",
+    "rarity": 70100000,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Aphrodite's Ring",
+    "tier": "Unfathomable",
+    "rarity": 214000496,
+    "layer": "Affement"
+   },
+   {
+    "ore": "Silence",
+    "tier": "Exotic",
+    "rarity": 3260100,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Clotivein",
+    "tier": "Exotic",
+    "rarity": 7191000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Hallowed Cage",
+    "tier": "Exquisite",
+    "rarity": 9050000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Flamakern",
+    "tier": "Exquisite",
+    "rarity": 9050000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Vitalium",
+    "tier": "Exquisite",
+    "rarity": 14880000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Exsanguinatia",
+    "tier": "Transcendent",
+    "rarity": 23893000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Arachnoxium",
+    "tier": "Transcendent",
+    "rarity": 28800880,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Oculatum",
+    "tier": "Transcendent",
+    "rarity": 32950000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Exospinel",
+    "tier": "Enigmatic",
+    "rarity": 76763400,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Ectoplasmado",
+    "tier": "Enigmatic",
+    "rarity": 90770000,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "CHTOTOZYOLE",
+    "tier": "Unfathomable",
+    "rarity": 162901200,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Venemence",
+    "tier": "Unfathomable",
+    "rarity": 475300660,
+    "layer": "Withered Sand"
+   },
+   {
+    "ore": "Ghouleum",
+    "tier": "Exotic",
+    "rarity": 2801900,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Candlelight",
+    "tier": "Exotic",
+    "rarity": 6670000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Vexareign",
+    "tier": "Exquisite",
+    "rarity": 8839100,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Necrocrysta",
+    "tier": "Exquisite",
+    "rarity": 10235000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Antipathy",
+    "tier": "Exquisite",
+    "rarity": 11700000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Spiritbound Tomb",
+    "tier": "Transcendent",
+    "rarity": 30000000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "The All-Seeing",
+    "tier": "Transcendent",
+    "rarity": 32222222,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Nightmare Complex",
+    "tier": "Transcendent",
+    "rarity": 36667500,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Feux Follets",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Soulshade",
+    "tier": "Enigmatic",
+    "rarity": 60928950,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Poltergeist",
+    "tier": "Enigmatic",
+    "rarity": 89562220,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Austiori",
+    "tier": "Unfathomable",
+    "rarity": 165390000,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Hallownest",
+    "tier": "Unfathomable",
+    "rarity": 312200300,
+    "layer": "Hexafite"
+   },
+   {
+    "ore": "Snowsled",
+    "tier": "Exotic",
+    "rarity": 4400000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Glacius",
+    "tier": "Exquisite",
+    "rarity": 9750000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Frostica",
+    "tier": "Exquisite",
+    "rarity": 13000000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Glacial Monolith",
+    "tier": "Transcendent",
+    "rarity": 25000000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Glaceiaflux",
+    "tier": "Transcendent",
+    "rarity": 38800000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Cryonstelar",
+    "tier": "Enigmatic",
+    "rarity": 53200000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Divinis",
+    "tier": "Enigmatic",
+    "rarity": 65318000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Ephemryst",
+    "tier": "Unfathomable",
+    "rarity": 275320000,
+    "layer": "Deepfrost"
+   },
+   {
+    "ore": "Snowglobe II",
+    "tier": "Exotic",
+    "rarity": 4230000,
+    "layer": "?"
+   },
+   {
+    "ore": "Pentaurunel",
+    "tier": "Exquisite",
+    "rarity": 14500000,
+    "layer": "?"
+   },
+   {
+    "ore": "The Express",
+    "tier": "Transcendent",
+    "rarity": 25260000,
+    "layer": "?"
+   },
+   {
+    "ore": "Toyblast",
+    "tier": "Transcendent",
+    "rarity": 32190000,
+    "layer": "?"
+   },
+   {
+    "ore": "Luxe",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Gelidoluar",
+    "tier": "Enigmatic",
+    "rarity": 78416000,
+    "layer": "?"
+   },
+   {
+    "ore": "Yuletide Star",
+    "tier": "Enigmatic",
+    "rarity": 93580000,
+    "layer": "?"
+   },
+   {
+    "ore": "Coruscentia",
+    "tier": "Unfathomable",
+    "rarity": 240800000,
+    "layer": "?"
+   },
+   {
+    "ore": "Beachball",
+    "tier": "Exotic",
+    "rarity": 2240000,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Sol",
+    "tier": "Exotic",
+    "rarity": 7110000,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Sunshade",
+    "tier": "Exquisite",
+    "rarity": 8444000,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Dunestride",
+    "tier": "Exquisite",
+    "rarity": 12938404,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Sandstorm",
+    "tier": "Transcendent",
+    "rarity": 27355200,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Sunlypse",
+    "tier": "Transcendent",
+    "rarity": 39292929,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Sunflower",
+    "tier": "Enigmatic",
+    "rarity": 59204000,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Lux Aestiva",
+    "tier": "Enigmatic",
+    "rarity": 75524905,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Perihelion",
+    "tier": "Unfathomable",
+    "rarity": 436000000,
+    "layer": "Maculite"
+   },
+   {
+    "ore": "Floativite",
+    "tier": "Exotic",
+    "rarity": 3720880,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Abyssium",
+    "tier": "Exotic",
+    "rarity": 5554555,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Victide",
+    "tier": "Exquisite",
+    "rarity": 10000200,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Sunsurf",
+    "tier": "Exquisite",
+    "rarity": 14250000,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Nautitan",
+    "tier": "Transcendent",
+    "rarity": 28424300,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Swirlpool",
+    "tier": "Transcendent",
+    "rarity": 44134560,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "The Odyssey",
+    "tier": "Enigmatic",
+    "rarity": 61905731,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Frutiflux",
+    "tier": "Enigmatic",
+    "rarity": 90222015,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Subliminaire",
+    "tier": "Unfathomable",
+    "rarity": 505505505,
+    "layer": "Surmilum"
+   },
+   {
+    "ore": "Witchbroom",
+    "tier": "Exotic",
+    "rarity": 3335000,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Bloodshot",
+    "tier": "Exotic",
+    "rarity": 6302204,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Spectrasoul",
+    "tier": "Exquisite",
+    "rarity": 9103204,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Venurbite",
+    "tier": "Exquisite",
+    "rarity": 12250000,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Spectrus",
+    "tier": "Transcendent",
+    "rarity": 22185000,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Praefectus",
+    "tier": "Transcendent",
+    "rarity": 29292900,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Hollowed",
+    "tier": "Transcendent",
+    "rarity": 45554555,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Velrathis",
+    "tier": "Enigmatic",
+    "rarity": 50100000,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Celestival",
+    "tier": "Enigmatic",
+    "rarity": 76767767,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "The Flying Dutchman",
+    "tier": "Enigmatic",
+    "rarity": 92210000,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "UNFUN",
+    "tier": "Unfathomable",
+    "rarity": 188235155,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Vocarus",
+    "tier": "Unfathomable",
+    "rarity": 335191400,
+    "layer": "Sugarstone"
+   },
+   {
+    "ore": "Tombstone",
+    "tier": "Exotic",
+    "rarity": 2111111,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Eyemalgam",
+    "tier": "Exotic",
+    "rarity": 6246575,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Soulsnare",
+    "tier": "Exquisite",
+    "rarity": 11230050,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Silverthorn",
+    "tier": "Exquisite",
+    "rarity": 14343235,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Trudgium",
+    "tier": "Transcendent",
+    "rarity": 28750450,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Corerupted",
+    "tier": "Transcendent",
+    "rarity": 35300250,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Aphantasia",
+    "tier": "Transcendent",
+    "rarity": 41200000,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Apparition",
+    "tier": "Transcendent",
+    "rarity": 48900000,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Lucifyx",
+    "tier": "Enigmatic",
+    "rarity": 66666666,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Umbrasnare",
+    "tier": "Enigmatic",
+    "rarity": 89945000,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Grimonolith",
+    "tier": "Unfathomable",
+    "rarity": 385765000,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Sombermoor",
+    "tier": "Unfathomable",
+    "rarity": 516734005,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Overseer",
+    "tier": "Otherworldly",
+    "rarity": 977737207,
+    "layer": "Delucemite"
+   },
+   {
+    "ore": "Nixalis",
+    "tier": "Exotic",
+    "rarity": 2000000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Boreas",
+    "tier": "Exotic",
+    "rarity": 4300000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Noctilucite",
+    "tier": "Exquisite",
+    "rarity": 7700000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Festivian",
+    "tier": "Exquisite",
+    "rarity": 13500000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "North Star",
+    "tier": "Transcendent",
+    "rarity": 21980000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Behemoth Snowflake",
+    "tier": "Transcendent",
+    "rarity": 30000000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Dynafrost",
+    "tier": "Transcendent",
+    "rarity": 42000000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Aurora Polaris",
+    "tier": "Enigmatic",
+    "rarity": 15000000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Noxilenciosa",
+    "tier": "Enigmatic",
+    "rarity": 55000000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "The North Pole",
+    "tier": "Enigmatic",
+    "rarity": 90135000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Frostblossom",
+    "tier": "Unfathomable",
+    "rarity": 183640000,
+    "layer": "Frost"
+   },
+   {
+    "ore": "Cursed Flesh",
+    "tier": "Transcendent",
+    "rarity": 843000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Bathophobia",
+    "tier": "Transcendent",
+    "rarity": 1000000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Lovestruck",
+    "tier": "Exquisite",
+    "rarity": 1010101,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Vigilance",
+    "tier": "Transcendent",
+    "rarity": 1320495,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Blood Lunarian",
+    "tier": "Exquisite",
+    "rarity": 1606636,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Amalton",
+    "tier": "Transcendent",
+    "rarity": 2529420,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Heretic's Cage",
+    "tier": "Enigmatic",
+    "rarity": 7425240,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Amorisene",
+    "tier": "Enigmatic",
+    "rarity": 9285714,
+    "layer": "Cave Exclusives"
+   }
+  ],
+  "Lucernia": [
+   {
+    "ore": "Tinsel",
+    "tier": "Surreal",
+    "rarity": 177825,
+    "layer": "?"
+   },
+   {
+    "ore": "Asternigh",
+    "tier": "Surreal",
+    "rarity": 229322,
+    "layer": "?"
+   },
+   {
+    "ore": "Starseeker",
+    "tier": "Surreal",
+    "rarity": 326643,
+    "layer": "?"
+   },
+   {
+    "ore": "Luminescence",
+    "tier": "Surreal",
+    "rarity": 400400,
+    "layer": "?"
+   },
+   {
+    "ore": "Shattered Amulet",
+    "tier": "Mythic",
+    "rarity": 640100,
+    "layer": "?"
+   },
+   {
+    "ore": "Zerocite",
+    "tier": "Mythic",
+    "rarity": 980999,
+    "layer": "?"
+   },
+   {
+    "ore": "Fannolair",
+    "tier": "Surreal",
+    "rarity": 196499,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Frostfeeb",
+    "tier": "Surreal",
+    "rarity": 242730,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Kelvine",
+    "tier": "Surreal",
+    "rarity": 273150,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Nivaorum",
+    "tier": "Mythic",
+    "rarity": 510202,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Glacialyst",
+    "tier": "Mythic",
+    "rarity": 680102,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Presentine",
+    "tier": "Surreal",
+    "rarity": 100293,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Polanorth",
+    "tier": "Surreal",
+    "rarity": 277777,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Beanie",
+    "tier": "Surreal",
+    "rarity": 330010,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Yuleflare",
+    "tier": "Surreal",
+    "rarity": 490100,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Warmthion",
+    "tier": "Mythic",
+    "rarity": 679010,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Stockingstone",
+    "tier": "Mythic",
+    "rarity": 710200,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Jollycane",
+    "tier": "Mythic",
+    "rarity": 960000,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Gup",
+    "tier": "Surreal",
+    "rarity": 202204,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Syrooze",
+    "tier": "Surreal",
+    "rarity": 430000,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Memoramber",
+    "tier": "Mythic",
+    "rarity": 533126,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Plaidore",
+    "tier": "Mythic",
+    "rarity": 850400,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Vitiscus",
+    "tier": "Surreal",
+    "rarity": 194067,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Hexaburst",
+    "tier": "Surreal",
+    "rarity": 360420,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Magician",
+    "tier": "Mythic",
+    "rarity": 616603,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Moonstruck",
+    "tier": "Mythic",
+    "rarity": 724564,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Bonium",
+    "tier": "Mythic",
+    "rarity": 803259,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Darkfeeb",
+    "tier": "Surreal",
+    "rarity": 266666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Lucifite",
+    "tier": "Surreal",
+    "rarity": 466666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Crescendo",
+    "tier": "Mythic",
+    "rarity": 666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Vampirite",
+    "tier": "Mythic",
+    "rarity": 766666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Contemptus Gemma",
+    "tier": "Mythic",
+    "rarity": 866666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Diamantine",
+    "tier": "Surreal",
+    "rarity": 100000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Ladyfeeb",
+    "tier": "Surreal",
+    "rarity": 300000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Dulcinette",
+    "tier": "Mythic",
+    "rarity": 500000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Loveletter",
+    "tier": "Mythic",
+    "rarity": 600000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Heartbeet",
+    "tier": "Mythic",
+    "rarity": 900000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Siogyne",
+    "tier": "Surreal",
+    "rarity": 232109,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Weevil",
+    "tier": "Surreal",
+    "rarity": 323456,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Riches",
+    "tier": "Mythic",
+    "rarity": 543456,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Cleavelite",
+    "tier": "Mythic",
+    "rarity": 767676,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Toppatrick",
+    "tier": "Mythic",
+    "rarity": 901210,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Polkegg",
+    "tier": "Surreal",
+    "rarity": 129129,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Cracked Egg",
+    "tier": "Surreal",
+    "rarity": 231231,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Yolkfeeb",
+    "tier": "Surreal",
+    "rarity": 439439,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Ovacuum",
+    "tier": "Mythic",
+    "rarity": 617617,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Baggsket",
+    "tier": "Mythic",
+    "rarity": 888888,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Synthesite",
+    "tier": "Surreal",
+    "rarity": 222222,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Melodium",
+    "tier": "Surreal",
+    "rarity": 444444,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Echonox",
+    "tier": "Mythic",
+    "rarity": 555555,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Cirfith",
+    "tier": "Mythic",
+    "rarity": 777777,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Bungy",
+    "tier": "Surreal",
+    "rarity": 7478,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Yolkbang",
+    "tier": "Surreal",
+    "rarity": 7478,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Halcylite",
+    "tier": "Surreal",
+    "rarity": 21234,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Weesp",
+    "tier": "Surreal",
+    "rarity": 41250,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Beehive",
+    "tier": "Mythic",
+    "rarity": 36520,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Rotatrim",
+    "tier": "Mythic",
+    "rarity": 46455,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Duskgravite",
+    "tier": "Mythic",
+    "rarity": 63836,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Charliment",
+    "tier": "Exotic",
+    "rarity": 2700100,
+    "layer": "?"
+   },
+   {
+    "ore": "Luna",
+    "tier": "Exotic",
+    "rarity": 5000005,
+    "layer": "?"
+   },
+   {
+    "ore": "Gelisol",
+    "tier": "Exquisite",
+    "rarity": 9100999,
+    "layer": "?"
+   },
+   {
+    "ore": "Lyricarol",
+    "tier": "Exquisite",
+    "rarity": 12030000,
+    "layer": "?"
+   },
+   {
+    "ore": "Xuě",
+    "tier": "Transcendent",
+    "rarity": 22000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Snowglobe III",
+    "tier": "Transcendent",
+    "rarity": 37000073,
+    "layer": "?"
+   },
+   {
+    "ore": "Crystalia",
+    "tier": "Enigmatic",
+    "rarity": 61100160,
+    "layer": "?"
+   },
+   {
+    "ore": "Tsukilunica",
+    "tier": "Enigmatic",
+    "rarity": 74503550,
+    "layer": "?"
+   },
+   {
+    "ore": "Borealiheim",
+    "tier": "Enigmatic",
+    "rarity": 91000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Wishtree",
+    "tier": "Unfathomable",
+    "rarity": 403320250,
+    "layer": "?"
+   },
+   {
+    "ore": "Yuki Onna",
+    "tier": "Unfathomable",
+    "rarity": 532100335,
+    "layer": "?"
+   },
+   {
+    "ore": "Winterlark",
+    "tier": "Exotic",
+    "rarity": 3000000,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Mr. Frosty",
+    "tier": "Exotic",
+    "rarity": 4000000,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Glaciamoria",
+    "tier": "Exotic",
+    "rarity": 5000000,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Aesrith",
+    "tier": "Exquisite",
+    "rarity": 11029000,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Frostbite",
+    "tier": "Exquisite",
+    "rarity": 14442444,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Froidure",
+    "tier": "Transcendent",
+    "rarity": 28200911,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Antlerice",
+    "tier": "Transcendent",
+    "rarity": 30100200,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Frostress",
+    "tier": "Enigmatic",
+    "rarity": 55192555,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Polaris",
+    "tier": "Enigmatic",
+    "rarity": 62626626,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Stellarscope",
+    "tier": "Enigmatic",
+    "rarity": 84100299,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Cocytus",
+    "tier": "Unfathomable",
+    "rarity": 233114000,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Polarctica",
+    "tier": "Unfathomable",
+    "rarity": 686019200,
+    "layer": "Cicallite"
+   },
+   {
+    "ore": "Twinkle Star",
+    "tier": "Exotic",
+    "rarity": 2500000,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Jinglelyn",
+    "tier": "Exotic",
+    "rarity": 3200000,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Kindleflame",
+    "tier": "Exotic",
+    "rarity": 6000200,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Festivatia",
+    "tier": "Exquisite",
+    "rarity": 8100200,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Luminaria",
+    "tier": "Exquisite",
+    "rarity": 10020020,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Chandelabra",
+    "tier": "Transcendent",
+    "rarity": 24029990,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Ornaswirl",
+    "tier": "Transcendent",
+    "rarity": 41888888,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Algifica",
+    "tier": "Enigmatic",
+    "rarity": 52000000,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Angelicus",
+    "tier": "Enigmatic",
+    "rarity": 66100204,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Verdafrost",
+    "tier": "Enigmatic",
+    "rarity": 77777777,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Asminthia",
+    "tier": "Unfathomable",
+    "rarity": 355200400,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Wintburg",
+    "tier": "Unfathomable",
+    "rarity": 732349090,
+    "layer": "Confectent"
+   },
+   {
+    "ore": "Leaffall",
+    "tier": "Exotic",
+    "rarity": 3300000,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Acore",
+    "tier": "Exotic",
+    "rarity": 6500200,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Clementium",
+    "tier": "Exquisite",
+    "rarity": 9700120,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Harvestine",
+    "tier": "Exquisite",
+    "rarity": 13400200,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Harvest Moon",
+    "tier": "Transcendent",
+    "rarity": 19500300,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Herbst",
+    "tier": "Transcendent",
+    "rarity": 29600100,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Wanwood",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Maplefall",
+    "tier": "Enigmatic",
+    "rarity": 62001290,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Cobbore",
+    "tier": "Enigmatic",
+    "rarity": 83200200,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Autumnus",
+    "tier": "Unfathomable",
+    "rarity": 240100000,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Reminiscence",
+    "tier": "Unfathomable",
+    "rarity": 390100600,
+    "layer": "Foligrass"
+   },
+   {
+    "ore": "Wraith",
+    "tier": "Exotic",
+    "rarity": 3724561,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Rot Monolith",
+    "tier": "Exotic",
+    "rarity": 7264513,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Itomidori",
+    "tier": "Exquisite",
+    "rarity": 7500001,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Whirliwisp",
+    "tier": "Exquisite",
+    "rarity": 14999999,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Pale Love",
+    "tier": "Transcendent",
+    "rarity": 22304999,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Soulswirl",
+    "tier": "Transcendent",
+    "rarity": 36443000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Morichronica",
+    "tier": "Transcendent",
+    "rarity": 47250000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "The Sludge",
+    "tier": "Enigmatic",
+    "rarity": 52000000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "It.",
+    "tier": "Enigmatic",
+    "rarity": 76000000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Keres",
+    "tier": "Enigmatic",
+    "rarity": 94000000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Midnight",
+    "tier": "Unfathomable",
+    "rarity": 490001200,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "Derelictum",
+    "tier": "Unfathomable",
+    "rarity": 710000000,
+    "layer": "Sepulcrum"
+   },
+   {
+    "ore": "SMILE",
+    "tier": "Exotic",
+    "rarity": 3666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Sigilite",
+    "tier": "Exotic",
+    "rarity": 6666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Ritualismium",
+    "tier": "Exquisite",
+    "rarity": 8666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Diavitura",
+    "tier": "Exquisite",
+    "rarity": 12666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Vlasovale",
+    "tier": "Transcendent",
+    "rarity": 26666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Moon Fragment",
+    "tier": "Transcendent",
+    "rarity": 36666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Sinstar",
+    "tier": "Enigmatic",
+    "rarity": 56666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Praecantatus",
+    "tier": "Enigmatic",
+    "rarity": 66666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Sacrilege",
+    "tier": "Enigmatic",
+    "rarity": 86666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Underworld",
+    "tier": "Unfathomable",
+    "rarity": 666666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "IBLIS",
+    "tier": "Otherworldly",
+    "rarity": 1666666666,
+    "layer": "Wickrock"
+   },
+   {
+    "ore": "Saerylium",
+    "tier": "Exotic",
+    "rarity": 3000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Valytium",
+    "tier": "Exotic",
+    "rarity": 5000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Essentium",
+    "tier": "Exquisite",
+    "rarity": 8000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Diamorite",
+    "tier": "Exquisite",
+    "rarity": 12000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Cupid",
+    "tier": "Transcendent",
+    "rarity": 26000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Valentide",
+    "tier": "Transcendent",
+    "rarity": 35000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Kardiá",
+    "tier": "Transcendent",
+    "rarity": 45000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Lyutila",
+    "tier": "Enigmatic",
+    "rarity": 56000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Sweetheart",
+    "tier": "Enigmatic",
+    "rarity": 65000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Enamourite",
+    "tier": "Unfathomable",
+    "rarity": 360000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Symphium",
+    "tier": "Unfathomable",
+    "rarity": 520000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Fairytale",
+    "tier": "Otherworldly",
+    "rarity": 2750000000,
+    "layer": "Amourite"
+   },
+   {
+    "ore": "Feebrechaun",
+    "tier": "Exotic",
+    "rarity": 3232323,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Clovara",
+    "tier": "Exotic",
+    "rarity": 5456545,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Leprechaun",
+    "tier": "Exquisite",
+    "rarity": 7656789,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Faedrine",
+    "tier": "Exquisite",
+    "rarity": 9012323,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Fortuitous",
+    "tier": "Exquisite",
+    "rarity": 12109098,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Coinstorm",
+    "tier": "Transcendent",
+    "rarity": 23454321,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Starstride",
+    "tier": "Transcendent",
+    "rarity": 43456789,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Evergreen",
+    "tier": "Enigmatic",
+    "rarity": 76545654,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Luckant",
+    "tier": "Enigmatic",
+    "rarity": 90121212,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Celinity",
+    "tier": "Unfathomable",
+    "rarity": 210987654,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Capellista",
+    "tier": "Unfathomable",
+    "rarity": 343234323,
+    "layer": "Shamrock"
+   },
+   {
+    "ore": "Egg-X",
+    "tier": "Exotic",
+    "rarity": 4190419,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Bonnegg The Meggician",
+    "tier": "Exotic",
+    "rarity": 7451745,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eggsplosion",
+    "tier": "Exquisite",
+    "rarity": 9132913,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eleggmental",
+    "tier": "Exquisite",
+    "rarity": 12981298,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eggsquisite",
+    "tier": "Exquisite",
+    "rarity": 15001500,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eg",
+    "tier": "Transcendent",
+    "rarity": 22782278,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Miles/egg",
+    "tier": "Transcendent",
+    "rarity": 47147717,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eggception",
+    "tier": "Enigmatic",
+    "rarity": 65256525,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Eggvrything",
+    "tier": "Enigmatic",
+    "rarity": 81818181,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Celeggstial",
+    "tier": "Unfathomable",
+    "rarity": 620620620,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Leggend",
+    "tier": "Otherworldly",
+    "rarity": 820820820,
+    "layer": "Brittlestone"
+   },
+   {
+    "ore": "Dolce",
+    "tier": "Exotic",
+    "rarity": 3278723,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Machromasia",
+    "tier": "Exotic",
+    "rarity": 7209027,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Audiocore",
+    "tier": "Exquisite",
+    "rarity": 9123219,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "V1B3_C0R3",
+    "tier": "Exquisite",
+    "rarity": 14722741,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Vibresthesia",
+    "tier": "Transcendent",
+    "rarity": 29922922,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Raverora",
+    "tier": "Transcendent",
+    "rarity": 45911954,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Metramotia",
+    "tier": "Enigmatic",
+    "rarity": 58300385,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Heart.bit",
+    "tier": "Enigmatic",
+    "rarity": 87111178,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Rotomania",
+    "tier": "Unfathomable",
+    "rarity": 276919672,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "JαSMINΣ",
+    "tier": "Unfathomable",
+    "rarity": 629343926,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Niosha",
+    "tier": "Otherworldly",
+    "rarity": 935000539,
+    "layer": "Harmonine"
+   },
+   {
+    "ore": "Celebration",
+    "tier": "Exotic",
+    "rarity": 265957,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Everbloom",
+    "tier": "Exotic",
+    "rarity": 638298,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Eleggtricity",
+    "tier": "Exquisite",
+    "rarity": 317103,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Trifolium",
+    "tier": "Exquisite",
+    "rarity": 561466,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Solemn Lamentine",
+    "tier": "Exquisite",
+    "rarity": 877699,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Arachnophyte",
+    "tier": "Exquisite",
+    "rarity": 1748683,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Cl0ver",
+    "tier": "Transcendent",
+    "rarity": 1329787,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Faberge of Mining",
+    "tier": "Transcendent",
+    "rarity": 2148118,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Aurovelle",
+    "tier": "Transcendent",
+    "rarity": 2792550,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Darkhelm",
+    "tier": "Transcendent",
+    "rarity": 4341815,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Shortcake",
+    "tier": "Enigmatic",
+    "rarity": 5553191,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Egerarilia",
+    "tier": "Enigmatic",
+    "rarity": 6342062,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Jubilyte",
+    "tier": "Enigmatic",
+    "rarity": 9574470,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Illumina",
+    "tier": "Enigmatic",
+    "rarity": 9986748,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Resonance",
+    "tier": "Enigmatic",
+    "rarity": 10744680,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Prosperity",
+    "tier": "Unfathomable",
+    "rarity": 16615147,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Retroscade",
+    "tier": "Unfathomable",
+    "rarity": 19396280,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Ghostwalker",
+    "tier": "Unfathomable",
+    "rarity": 35917573,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Evanessence",
+    "tier": "Otherworldly",
+    "rarity": 82446810,
+    "layer": "Cave Exclusives"
+   }
+  ],
+  "Subworld 1": [
+   {
+    "ore": "EDMium",
+    "tier": "Surreal",
+    "rarity": 145000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Promethium",
+    "tier": "Surreal",
+    "rarity": 310000,
+    "layer": "?"
+   },
+   {
+    "ore": "Hyperstone",
+    "tier": "Mythic",
+    "rarity": 870000,
+    "layer": "?"
+   },
+   {
+    "ore": "Electrolium",
+    "tier": "Surreal",
+    "rarity": 145000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Newtonium",
+    "tier": "Surreal",
+    "rarity": 286000,
+    "layer": "?"
+   },
+   {
+    "ore": "Unobtainium",
+    "tier": "Mythic",
+    "rarity": 631000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Dyronsinite",
+    "tier": "Mythic",
+    "rarity": 730000,
+    "layer": "?"
+   },
+   {
+    "ore": "Deathinium",
+    "tier": "Surreal",
+    "rarity": 145000,
+    "layer": "?"
+   },
+   {
+    "ore": "Frostical",
+    "tier": "Surreal",
+    "rarity": 290000,
+    "layer": "?"
+   },
+   {
+    "ore": "Uldarite",
+    "tier": "Surreal",
+    "rarity": 325000,
+    "layer": "?"
+   },
+   {
+    "ore": "Vortennial",
+    "tier": "Mythic",
+    "rarity": 600000,
+    "layer": "?"
+   },
+   {
+    "ore": "SFoRE",
+    "tier": "Mythic",
+    "rarity": 650000,
+    "layer": "?"
+   },
+   {
+    "ore": "WOOD GRAIN",
+    "tier": "Mythic",
+    "rarity": 710000,
+    "layer": "?"
+   },
+   {
+    "ore": "Actinium",
+    "tier": "Mythic",
+    "rarity": 120000,
+    "layer": "?"
+   },
+   {
+    "ore": "Inktite",
+    "tier": "Exotic",
+    "rarity": 2250000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Freon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Codex",
+    "tier": "Exotic",
+    "rarity": 6500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Neomandelite",
+    "tier": "Transcendent",
+    "rarity": 25450000,
+    "layer": "?"
+   },
+   {
+    "ore": "Soundstrocity",
+    "tier": "Transcendent",
+    "rarity": 31000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Aurora",
+    "tier": "Transcendent",
+    "rarity": 47000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Flare of Transcendence",
+    "tier": "Enigmatic",
+    "rarity": 63000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Vitriol",
+    "tier": "Enigmatic",
+    "rarity": 63800000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Voidirinite",
+    "tier": "Unfathomable",
+    "rarity": 750000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lutetium",
+    "tier": "Exotic",
+    "rarity": 2517497,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Flaeon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "?"
+   },
+   {
+    "ore": "Sagittarius Quasar",
+    "tier": "Exquisite",
+    "rarity": 8200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Protoflare",
+    "tier": "Exquisite",
+    "rarity": 6000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Electrolyx",
+    "tier": "Exquisite",
+    "rarity": 15000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Trinitium",
+    "tier": "Transcendent",
+    "rarity": 33333333,
+    "layer": "?"
+   },
+   {
+    "ore": "Illuminyx",
+    "tier": "Transcendent",
+    "rarity": 36000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Ω",
+    "tier": "Enigmatic",
+    "rarity": 50000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Surrenial",
+    "tier": "Enigmatic",
+    "rarity": 52500000,
+    "layer": "?"
+   },
+   {
+    "ore": "RGB Pulsar",
+    "tier": "Enigmatic",
+    "rarity": 70000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Armageddium",
+    "tier": "Unfathomable",
+    "rarity": 375000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Poiseon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Halcyon Emission",
+    "tier": "Exotic",
+    "rarity": 3400000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Malachite",
+    "tier": "Exquisite",
+    "rarity": 11500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Astatine",
+    "tier": "Exquisite",
+    "rarity": 14000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Vaporwave Pulsar",
+    "tier": "Transcendent",
+    "rarity": 19500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Orb of Discontent",
+    "tier": "Transcendent",
+    "rarity": 25000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Σ",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Quasar V",
+    "tier": "Enigmatic",
+    "rarity": 52340000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Aether",
+    "tier": "Enigmatic",
+    "rarity": 58000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Quasar 618",
+    "tier": "Unfathomable",
+    "rarity": 618000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Epinephrine",
+    "tier": "Otherworldly",
+    "rarity": 999999999,
+    "layer": "?"
+   },
+   {
+    "ore": "WATERMELON ORE",
+    "tier": "Exotic",
+    "rarity": 4500000,
+    "layer": "?"
+   },
+   {
+    "ore": "BANANORE",
+    "tier": "Exotic",
+    "rarity": 6000000,
+    "layer": "?"
+   },
+   {
+    "ore": "COCONUT ORE",
+    "tier": "Exquisite",
+    "rarity": 8000000,
+    "layer": "?"
+   },
+   {
+    "ore": "the unfunny",
+    "tier": "Transcendent",
+    "rarity": 20000000,
+    "layer": "?"
+   },
+   {
+    "ore": "waffle crystal",
+    "tier": "Transcendent",
+    "rarity": 20000000,
+    "layer": "?"
+   },
+   {
+    "ore": "CHICKEN Crystal",
+    "tier": "Transcendent",
+    "rarity": 30000000,
+    "layer": "?"
+   },
+   {
+    "ore": "the funny",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "?"
+   },
+   {
+    "ore": "SHOWER CRYSTAL",
+    "tier": "Enigmatic",
+    "rarity": 51500000,
+    "layer": "?"
+   },
+   {
+    "ore": "garlic bread crystal",
+    "tier": "Enigmatic",
+    "rarity": 54500000,
+    "layer": "?"
+   },
+   {
+    "ore": "tycoon crystal",
+    "tier": "Enigmatic",
+    "rarity": 54500000,
+    "layer": "?"
+   },
+   {
+    "ore": "a flare v2",
+    "tier": "Unfathomable",
+    "rarity": 160000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Corroplat Pulsar",
+    "tier": "Unfathomable",
+    "rarity": 444444444,
+    "layer": "?"
+   },
+   {
+    "ore": "Corrodine Pulsar",
+    "tier": "Unfathomable",
+    "rarity": 444444444,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Coronium",
+    "tier": "Exotic",
+    "rarity": 600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Neptunium",
+    "tier": "Exotic",
+    "rarity": 800000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Pulsar Crystal",
+    "tier": "Exotic",
+    "rarity": 850000,
+    "layer": "?"
+   },
+   {
+    "ore": "Ambrosia",
+    "tier": "Exquisite",
+    "rarity": 111112,
+    "layer": "?"
+   },
+   {
+    "ore": "Surgium",
+    "tier": "Exquisite",
+    "rarity": 975000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Andromidium",
+    "tier": "Transcendent",
+    "rarity": 3000000,
+    "layer": "?"
+   },
+   {
+    "ore": "R136a1",
+    "tier": "Transcendent",
+    "rarity": 5300000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Lawrencium",
+    "tier": "Transcendent",
+    "rarity": 6000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Ascended Flare",
+    "tier": "Transcendent",
+    "rarity": 6000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Gargantium",
+    "tier": "Transcendent",
+    "rarity": 6500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Accesinite",
+    "tier": "Enigmatic",
+    "rarity": 3000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Genuinium",
+    "tier": "Enigmatic",
+    "rarity": 3200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Fire Crystal",
+    "tier": "Enigmatic",
+    "rarity": 3300000,
+    "layer": "?"
+   },
+   {
+    "ore": "Pandorite",
+    "tier": "Enigmatic",
+    "rarity": 3400000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar HR 5171 A",
+    "tier": "Enigmatic",
+    "rarity": 9000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Oganesson",
+    "tier": "Enigmatic",
+    "rarity": 12400000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lunar Coronal Flare",
+    "tier": "Enigmatic",
+    "rarity": 13150000,
+    "layer": "?"
+   },
+   {
+    "ore": "HD 160529",
+    "tier": "Enigmatic",
+    "rarity": 16000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Laniakea Supercluster",
+    "tier": "Unfathomable",
+    "rarity": 50000000,
+    "layer": "?"
+   },
+   {
+    "ore": "NILNAL",
+    "tier": "Otherworldly",
+    "rarity": 40000000,
+    "layer": "?"
+   }
+  ],
+  "Subworld 2": [
+   {
+    "ore": "Ulexite",
+    "tier": "Surreal",
+    "rarity": 122245,
+    "layer": "?"
+   },
+   {
+    "ore": "Enigmasteri",
+    "tier": "Surreal",
+    "rarity": 332305,
+    "layer": "?"
+   },
+   {
+    "ore": "Accerite",
+    "tier": "Surreal",
+    "rarity": 441133,
+    "layer": "?"
+   },
+   {
+    "ore": "Frost Gem",
+    "tier": "Mythic",
+    "rarity": 567890,
+    "layer": "?"
+   },
+   {
+    "ore": "Water Gem",
+    "tier": "Mythic",
+    "rarity": 987654,
+    "layer": "?"
+   },
+   {
+    "ore": "Illuminite",
+    "tier": "Surreal",
+    "rarity": 99999,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Ultra Neutronite",
+    "tier": "Surreal",
+    "rarity": 255505,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Galactic Gem",
+    "tier": "Mythic",
+    "rarity": 656339,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Celestial Gem",
+    "tier": "Mythic",
+    "rarity": 756345,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Neo Cretium",
+    "tier": "Surreal",
+    "rarity": 222281,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Neutronite",
+    "tier": "Surreal",
+    "rarity": 444411,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Spectral Gem",
+    "tier": "Mythic",
+    "rarity": 577343,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Corrupt Adamantium",
+    "tier": "Surreal",
+    "rarity": 191440,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Void Neutronite",
+    "tier": "Surreal",
+    "rarity": 222555,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Corrupt Beryl",
+    "tier": "Surreal",
+    "rarity": 411060,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Void Heliotrope",
+    "tier": "Surreal",
+    "rarity": 454545,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Corrupt Soul Matter",
+    "tier": "Surreal",
+    "rarity": 455554,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Abyssal Gem",
+    "tier": "Mythic",
+    "rarity": 999999,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Pulsarite",
+    "tier": "Surreal",
+    "rarity": 300004,
+    "layer": "?"
+   },
+   {
+    "ore": "Joey Crystal",
+    "tier": "Mythic",
+    "rarity": 600004,
+    "layer": "?"
+   },
+   {
+    "ore": "Splendidium Crystal",
+    "tier": "Mythic",
+    "rarity": 900004,
+    "layer": "?"
+   },
+   {
+    "ore": "Shadow Neutronite",
+    "tier": "Surreal",
+    "rarity": 10229,
+    "layer": "?"
+   },
+   {
+    "ore": "Protonite",
+    "tier": "Surreal",
+    "rarity": 12131,
+    "layer": "?"
+   },
+   {
+    "ore": "Fire Neutronite",
+    "tier": "Surreal",
+    "rarity": 14287,
+    "layer": "?"
+   },
+   {
+    "ore": "Agspernite",
+    "tier": "Surreal",
+    "rarity": 18288,
+    "layer": "?"
+   },
+   {
+    "ore": "Taaffeite",
+    "tier": "Surreal",
+    "rarity": 20002,
+    "layer": "?"
+   },
+   {
+    "ore": "Adamantium",
+    "tier": "Surreal",
+    "rarity": 30229,
+    "layer": "?"
+   },
+   {
+    "ore": "Ethereal Gem",
+    "tier": "Mythic",
+    "rarity": 34000,
+    "layer": "?"
+   },
+   {
+    "ore": "Luminous Gem",
+    "tier": "Mythic",
+    "rarity": 44004,
+    "layer": "?"
+   },
+   {
+    "ore": "Magma Gem",
+    "tier": "Mythic",
+    "rarity": 98998,
+    "layer": "?"
+   },
+   {
+    "ore": "Fire Gem",
+    "tier": "Mythic",
+    "rarity": 121212,
+    "layer": "?"
+   },
+   {
+    "ore": "Akabe Crystal",
+    "tier": "Exotic",
+    "rarity": 4000004,
+    "layer": "?"
+   },
+   {
+    "ore": "Y",
+    "tier": "Exquisite",
+    "rarity": 9000009,
+    "layer": "?"
+   },
+   {
+    "ore": "Agsper Crystal",
+    "tier": "Exquisite",
+    "rarity": 13272491,
+    "layer": "?"
+   },
+   {
+    "ore": "Radiolite",
+    "tier": "Transcendent",
+    "rarity": 30000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Tevverial",
+    "tier": "Transcendent",
+    "rarity": 44000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Ultra Danilium",
+    "tier": "Enigmatic",
+    "rarity": 68052200,
+    "layer": "?"
+   },
+   {
+    "ore": "Troylezian",
+    "tier": "Unfathomable",
+    "rarity": 333666999,
+    "layer": "?"
+   },
+   {
+    "ore": "Sinistral",
+    "tier": "Otherworldly",
+    "rarity": 860000666,
+    "layer": "?"
+   },
+   {
+    "ore": "Fiction",
+    "tier": "Imaginary",
+    "rarity": 50000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Nebula Crystal",
+    "tier": "Exotic",
+    "rarity": 2800200,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Solar Crystal",
+    "tier": "Exotic",
+    "rarity": 5200201,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Vortex Crystal",
+    "tier": "Exquisite",
+    "rarity": 7600000,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Galaxy Crystal",
+    "tier": "Exquisite",
+    "rarity": 13000022,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Null Crystal",
+    "tier": "Transcendent",
+    "rarity": 16000000,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "SGR_A",
+    "tier": "Transcendent",
+    "rarity": 26996033,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Lynx",
+    "tier": "Enigmatic",
+    "rarity": 62100293,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Hyperstar",
+    "tier": "Enigmatic",
+    "rarity": 89100200,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Vela Pulsar",
+    "tier": "Unfathomable",
+    "rarity": 451000835,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Fiction",
+    "tier": "Imaginary",
+    "rarity": 50000000000,
+    "layer": "Outer Space"
+   },
+   {
+    "ore": "Nemesis Crystal",
+    "tier": "Exotic",
+    "rarity": 6666666,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "RGB Crystal",
+    "tier": "Exquisite",
+    "rarity": 7777123,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Anti-Shadow Crystal",
+    "tier": "Exquisite",
+    "rarity": 9503999,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Pulsar Crystal",
+    "tier": "Exquisite",
+    "rarity": 14200100,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Cherkasyl",
+    "tier": "Transcendent",
+    "rarity": 22793882,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Cybernix",
+    "tier": "Transcendent",
+    "rarity": 36200129,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Directriol",
+    "tier": "Enigmatic",
+    "rarity": 52100293,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Shazzyxe",
+    "tier": "Enigmatic",
+    "rarity": 69999999,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Chromablank",
+    "tier": "Unfathomable",
+    "rarity": 550550550,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "God Directriol",
+    "tier": "Unfathomable",
+    "rarity": 699999999,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Fiction",
+    "tier": "Imaginary",
+    "rarity": 50000000000,
+    "layer": "Antimatter"
+   },
+   {
+    "ore": "Corrupt Crystal",
+    "tier": "Exotic",
+    "rarity": 1999999,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Nexus Crystal",
+    "tier": "Exotic",
+    "rarity": 4945908,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Void Crystal",
+    "tier": "Exquisite",
+    "rarity": 13111111,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Cryptical",
+    "tier": "Transcendent",
+    "rarity": 26000000,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Thai's Star",
+    "tier": "Transcendent",
+    "rarity": 44444444,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Void Eye",
+    "tier": "Enigmatic",
+    "rarity": 60120320,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Matterform",
+    "tier": "Enigmatic",
+    "rarity": 76000202,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Corrupt Agsper Crystal",
+    "tier": "Unfathomable",
+    "rarity": 340000250,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Voidirinite",
+    "tier": "Unfathomable",
+    "rarity": 750000000,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Prisma",
+    "tier": "Otherworldly",
+    "rarity": 1640000000,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Fiction",
+    "tier": "Imaginary",
+    "rarity": 50000000000,
+    "layer": "Vacuum"
+   },
+   {
+    "ore": "Legacy Solar Crystal",
+    "tier": "Exotic",
+    "rarity": 2600004,
+    "layer": "?"
+   },
+   {
+    "ore": "Legacy Nebula Crystal",
+    "tier": "Exotic",
+    "rarity": 2850004,
+    "layer": "?"
+   },
+   {
+    "ore": "Legacy Agsper Crystal",
+    "tier": "Exquisite",
+    "rarity": 12698624,
+    "layer": "?"
+   },
+   {
+    "ore": "Legacy Luck Crystal",
+    "tier": "Exquisite",
+    "rarity": 12777774,
+    "layer": "?"
+   },
+   {
+    "ore": "Tycoon Crystal",
+    "tier": "Transcendent",
+    "rarity": 34500004,
+    "layer": "?"
+   },
+   {
+    "ore": "Cyclone Crystal",
+    "tier": "Transcendent",
+    "rarity": 34600004,
+    "layer": "?"
+   },
+   {
+    "ore": "Nova Crystal",
+    "tier": "Enigmatic",
+    "rarity": 89400004,
+    "layer": "?"
+   },
+   {
+    "ore": "X2 Crystal",
+    "tier": "Enigmatic",
+    "rarity": 95200391,
+    "layer": "?"
+   },
+   {
+    "ore": "Serotonin",
+    "tier": "Unfathomable",
+    "rarity": 666666666,
+    "layer": "?"
+   },
+   {
+    "ore": "Ψ",
+    "tier": "Otherworldly",
+    "rarity": 2000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Fiction",
+    "tier": "Imaginary",
+    "rarity": 50000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Shadow Crystal",
+    "tier": "Exotic",
+    "rarity": 480300,
+    "layer": "?"
+   },
+   {
+    "ore": "Blaze Crystal",
+    "tier": "Exquisite",
+    "rarity": 2200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Eggforite",
+    "tier": "Enigmatic",
+    "rarity": 900000,
+    "layer": "?"
+   },
+   {
+    "ore": "Copy Crystal",
+    "tier": "Enigmatic",
+    "rarity": 1000000,
+    "layer": "?"
+   },
+   {
+    "ore": "LatsyrC",
+    "tier": "Enigmatic",
+    "rarity": 1500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Negated Crystal",
+    "tier": "Enigmatic",
+    "rarity": 2000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Daybreak",
+    "tier": "Enigmatic",
+    "rarity": 8000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Cygni",
+    "tier": "Enigmatic",
+    "rarity": 12150000,
+    "layer": "?"
+   },
+   {
+    "ore": "Thumb Crystal",
+    "tier": "Unfathomable",
+    "rarity": 5097518,
+    "layer": "?"
+   },
+   {
+    "ore": "Shadow Cherkasyl",
+    "tier": "Unfathomable",
+    "rarity": 30900100,
+    "layer": "?"
+   },
+   {
+    "ore": "X-Flare",
+    "tier": "Unfathomable",
+    "rarity": 46000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Malix",
+    "tier": "Otherworldly",
+    "rarity": 20000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Ultra Sinistral",
+    "tier": "Otherworldly",
+    "rarity": 80000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Shadow-X",
+    "tier": "Otherworldly",
+    "rarity": 204633553,
+    "layer": "?"
+   }
+  ],
+  "World 0": [
+   {
+    "ore": "Dischargium",
+    "tier": "Surreal",
+    "rarity": 215000,
+    "layer": "?"
+   },
+   {
+    "ore": "Spinvolt",
+    "tier": "Surreal",
+    "rarity": 360630,
+    "layer": "?"
+   },
+   {
+    "ore": "Electroball",
+    "tier": "Surreal",
+    "rarity": 450054,
+    "layer": "?"
+   },
+   {
+    "ore": "Electris",
+    "tier": "Mythic",
+    "rarity": 575550,
+    "layer": "?"
+   },
+   {
+    "ore": "Shockbox",
+    "tier": "Mythic",
+    "rarity": 674220,
+    "layer": "?"
+   },
+   {
+    "ore": "TeeVox B",
+    "tier": "Surreal",
+    "rarity": 188888,
+    "layer": "?"
+   },
+   {
+    "ore": "Mesmegram",
+    "tier": "Surreal",
+    "rarity": 353353,
+    "layer": "?"
+   },
+   {
+    "ore": "Hedron",
+    "tier": "Mythic",
+    "rarity": 512125,
+    "layer": "?"
+   },
+   {
+    "ore": "Cobaltax",
+    "tier": "Mythic",
+    "rarity": 688587,
+    "layer": "?"
+   },
+   {
+    "ore": "Schematan",
+    "tier": "Mythic",
+    "rarity": 740005,
+    "layer": "?"
+   },
+   {
+    "ore": "TeeVox G",
+    "tier": "Surreal",
+    "rarity": 188888,
+    "layer": "?"
+   },
+   {
+    "ore": "Oscillyx",
+    "tier": "Surreal",
+    "rarity": 243700,
+    "layer": "?"
+   },
+   {
+    "ore": "Projectron",
+    "tier": "Surreal",
+    "rarity": 379220,
+    "layer": "?"
+   },
+   {
+    "ore": "Retronium",
+    "tier": "Mythic",
+    "rarity": 744744,
+    "layer": "?"
+   },
+   {
+    "ore": "Turnfire",
+    "tier": "Mythic",
+    "rarity": 939935,
+    "layer": "?"
+   },
+   {
+    "ore": "Gizmonium",
+    "tier": "Surreal",
+    "rarity": 105000,
+    "layer": "?"
+   },
+   {
+    "ore": "Revolvus",
+    "tier": "Surreal",
+    "rarity": 233334,
+    "layer": "?"
+   },
+   {
+    "ore": "Conduit",
+    "tier": "Mythic",
+    "rarity": 525200,
+    "layer": "?"
+   },
+   {
+    "ore": "Candesium",
+    "tier": "Mythic",
+    "rarity": 765400,
+    "layer": "?"
+   },
+   {
+    "ore": "Apparatus",
+    "tier": "Surreal",
+    "rarity": 115000,
+    "layer": "?"
+   },
+   {
+    "ore": "Technetium",
+    "tier": "Surreal",
+    "rarity": 250000,
+    "layer": "?"
+   },
+   {
+    "ore": "Tensegrum",
+    "tier": "Surreal",
+    "rarity": 341056,
+    "layer": "?"
+   },
+   {
+    "ore": "Cogchain",
+    "tier": "Surreal",
+    "rarity": 392400,
+    "layer": "?"
+   },
+   {
+    "ore": "Magneticore",
+    "tier": "Mythic",
+    "rarity": 593070,
+    "layer": "?"
+   },
+   {
+    "ore": "Bronzeprint",
+    "tier": "Mythic",
+    "rarity": 682322,
+    "layer": "?"
+   },
+   {
+    "ore": "RGB",
+    "tier": "Surreal",
+    "rarity": 255255,
+    "layer": "?"
+   },
+   {
+    "ore": "Prismata",
+    "tier": "Surreal",
+    "rarity": 286100,
+    "layer": "?"
+   },
+   {
+    "ore": "Whipstorm",
+    "tier": "Surreal",
+    "rarity": 420840,
+    "layer": "?"
+   },
+   {
+    "ore": "Ammolite",
+    "tier": "Mythic",
+    "rarity": 537000,
+    "layer": "?"
+   },
+   {
+    "ore": "Hyperchrome",
+    "tier": "Mythic",
+    "rarity": 624999,
+    "layer": "?"
+   },
+   {
+    "ore": "Kadabstrum",
+    "tier": "Mythic",
+    "rarity": 974758,
+    "layer": "?"
+   },
+   {
+    "ore": "Annalyte",
+    "tier": "Surreal",
+    "rarity": 130500,
+    "layer": "?"
+   },
+   {
+    "ore": "Fantaisine",
+    "tier": "Surreal",
+    "rarity": 221340,
+    "layer": "?"
+   },
+   {
+    "ore": "Dreamveil",
+    "tier": "Surreal",
+    "rarity": 255700,
+    "layer": "?"
+   },
+   {
+    "ore": "Darkstar",
+    "tier": "Mythic",
+    "rarity": 545545,
+    "layer": "?"
+   },
+   {
+    "ore": "Mystirune",
+    "tier": "Mythic",
+    "rarity": 633633,
+    "layer": "?"
+   },
+   {
+    "ore": "Mooncharm",
+    "tier": "Mythic",
+    "rarity": 875578,
+    "layer": "?"
+   },
+   {
+    "ore": "Planetarium",
+    "tier": "Surreal",
+    "rarity": 144144,
+    "layer": "?"
+   },
+   {
+    "ore": "Nebulaize",
+    "tier": "Surreal",
+    "rarity": 165400,
+    "layer": "?"
+   },
+   {
+    "ore": "Wishmore",
+    "tier": "Surreal",
+    "rarity": 293070,
+    "layer": "?"
+   },
+   {
+    "ore": "Astral Processor",
+    "tier": "Surreal",
+    "rarity": 495000,
+    "layer": "?"
+   },
+   {
+    "ore": "Pocket Galaxy",
+    "tier": "Mythic",
+    "rarity": 597000,
+    "layer": "?"
+   },
+   {
+    "ore": "Cosmalens",
+    "tier": "Mythic",
+    "rarity": 727340,
+    "layer": "?"
+   },
+   {
+    "ore": "Abstractum",
+    "tier": "Surreal",
+    "rarity": 150001,
+    "layer": "?"
+   },
+   {
+    "ore": "subject.greenglitch",
+    "tier": "Surreal",
+    "rarity": 249999,
+    "layer": "?"
+   },
+   {
+    "ore": "Knorus",
+    "tier": "Surreal",
+    "rarity": 360063,
+    "layer": "?"
+   },
+   {
+    "ore": "Gauzian",
+    "tier": "Surreal",
+    "rarity": 490000,
+    "layer": "?"
+   },
+   {
+    "ore": "Stilomite",
+    "tier": "Mythic",
+    "rarity": 620309,
+    "layer": "?"
+   },
+   {
+    "ore": "Axisium",
+    "tier": "Mythic",
+    "rarity": 909090,
+    "layer": "?"
+   },
+   {
+    "ore": "Rendispike",
+    "tier": "Mythic",
+    "rarity": 979595,
+    "layer": "?"
+   },
+   {
+    "ore": "TeeVox R",
+    "tier": "Surreal",
+    "rarity": 188888,
+    "layer": "?"
+   },
+   {
+    "ore": "Crimsonhack",
+    "tier": "Surreal",
+    "rarity": 225255,
+    "layer": "?"
+   },
+   {
+    "ore": "Decimate",
+    "tier": "Surreal",
+    "rarity": 311000,
+    "layer": "?"
+   },
+   {
+    "ore": "Datakill",
+    "tier": "Mythic",
+    "rarity": 765321,
+    "layer": "?"
+   },
+   {
+    "ore": "Zalgrain",
+    "tier": "Mythic",
+    "rarity": 849992,
+    "layer": "?"
+   },
+   {
+    "ore": "Hyposhock",
+    "tier": "Surreal",
+    "rarity": 15051,
+    "layer": "?"
+   },
+   {
+    "ore": "Dualisplite",
+    "tier": "Surreal",
+    "rarity": 18300,
+    "layer": "?"
+   },
+   {
+    "ore": "Constellatrix",
+    "tier": "Surreal",
+    "rarity": 24142,
+    "layer": "?"
+   },
+   {
+    "ore": "Prismator",
+    "tier": "Mythic",
+    "rarity": 39790,
+    "layer": "?"
+   },
+   {
+    "ore": "Decimora",
+    "tier": "Exotic",
+    "rarity": 2302100,
+    "layer": "?"
+   },
+   {
+    "ore": "Auriceph",
+    "tier": "Exotic",
+    "rarity": 7500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Fluxorium",
+    "tier": "Exquisite",
+    "rarity": 10010023,
+    "layer": "?"
+   },
+   {
+    "ore": "Ethyrilem",
+    "tier": "Exquisite",
+    "rarity": 12777777,
+    "layer": "?"
+   },
+   {
+    "ore": "Teslarian",
+    "tier": "Transcendent",
+    "rarity": 25239392,
+    "layer": "?"
+   },
+   {
+    "ore": "Voltiflux",
+    "tier": "Transcendent",
+    "rarity": 35000200,
+    "layer": "?"
+   },
+   {
+    "ore": "Plasverlite",
+    "tier": "Transcendent",
+    "rarity": 40000200,
+    "layer": "?"
+   },
+   {
+    "ore": "Photon Fluxulite",
+    "tier": "Enigmatic",
+    "rarity": 53120000,
+    "layer": "?"
+   },
+   {
+    "ore": "Phastuanyx",
+    "tier": "Enigmatic",
+    "rarity": 61200216,
+    "layer": "?"
+   },
+   {
+    "ore": "Dyvantium",
+    "tier": "Unfathomable",
+    "rarity": 290000000,
+    "layer": "?"
+   },
+   {
+    "ore": "GENESIS",
+    "tier": "Unfathomable",
+    "rarity": 380000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Triginium",
+    "tier": "Exotic",
+    "rarity": 2100101,
+    "layer": "?"
+   },
+   {
+    "ore": "Starbit",
+    "tier": "Exotic",
+    "rarity": 3120100,
+    "layer": "?"
+   },
+   {
+    "ore": "MK2 Sonar",
+    "tier": "Exquisite",
+    "rarity": 8100102,
+    "layer": "?"
+   },
+   {
+    "ore": "WIREFRAME",
+    "tier": "Exquisite",
+    "rarity": 13112101,
+    "layer": "?"
+   },
+   {
+    "ore": "Terascental",
+    "tier": "Transcendent",
+    "rarity": 26000100,
+    "layer": "?"
+   },
+   {
+    "ore": "Cosmonolithius",
+    "tier": "Transcendent",
+    "rarity": 45000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Sustained Axiom",
+    "tier": "Enigmatic",
+    "rarity": 68200100,
+    "layer": "?"
+   },
+   {
+    "ore": "Holovirlux",
+    "tier": "Enigmatic",
+    "rarity": 70320000,
+    "layer": "?"
+   },
+   {
+    "ore": "Aesthetic Reality",
+    "tier": "Enigmatic",
+    "rarity": 90000000,
+    "layer": "?"
+   },
+   {
+    "ore": "404 Gateway",
+    "tier": "Unfathomable",
+    "rarity": 404404404,
+    "layer": "?"
+   },
+   {
+    "ore": "Theon",
+    "tier": "Unfathomable",
+    "rarity": 720000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Icosaformite",
+    "tier": "Exotic",
+    "rarity": 4005000,
+    "layer": "?"
+   },
+   {
+    "ore": "Matrisse",
+    "tier": "Exotic",
+    "rarity": 6000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Limelight",
+    "tier": "Exquisite",
+    "rarity": 9210000,
+    "layer": "?"
+   },
+   {
+    "ore": "Revonet",
+    "tier": "Exquisite",
+    "rarity": 13100310,
+    "layer": "?"
+   },
+   {
+    "ore": "Virtulily",
+    "tier": "Transcendent",
+    "rarity": 22100201,
+    "layer": "?"
+   },
+   {
+    "ore": "Δ",
+    "tier": "Transcendent",
+    "rarity": 33333333,
+    "layer": "?"
+   },
+   {
+    "ore": "M4TR1X",
+    "tier": "Enigmatic",
+    "rarity": 51101101,
+    "layer": "?"
+   },
+   {
+    "ore": "Virtuosity",
+    "tier": "Enigmatic",
+    "rarity": 80200100,
+    "layer": "?"
+   },
+   {
+    "ore": "Equalizosity",
+    "tier": "Unfathomable",
+    "rarity": 300020000,
+    "layer": "?"
+   },
+   {
+    "ore": "CHECKPOINT.0901",
+    "tier": "Unfathomable",
+    "rarity": 500000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Geigite Receptacle",
+    "tier": "Exotic",
+    "rarity": 3520230,
+    "layer": "?"
+   },
+   {
+    "ore": "Mechaspark",
+    "tier": "Exotic",
+    "rarity": 4120101,
+    "layer": "?"
+   },
+   {
+    "ore": "Invalid Apprehension",
+    "tier": "Exquisite",
+    "rarity": 10000011,
+    "layer": "?"
+   },
+   {
+    "ore": "Sardonyx",
+    "tier": "Exquisite",
+    "rarity": 13102103,
+    "layer": "?"
+   },
+   {
+    "ore": "Spherocube",
+    "tier": "Transcendent",
+    "rarity": 18000120,
+    "layer": "?"
+   },
+   {
+    "ore": "Chaotica",
+    "tier": "Transcendent",
+    "rarity": 20000020,
+    "layer": "?"
+   },
+   {
+    "ore": "Cryofantasia",
+    "tier": "Transcendent",
+    "rarity": 24032129,
+    "layer": "?"
+   },
+   {
+    "ore": "Torpensangor",
+    "tier": "Enigmatic",
+    "rarity": 54020010,
+    "layer": "?"
+   },
+   {
+    "ore": "Darkmatter Stabilizer",
+    "tier": "Enigmatic",
+    "rarity": 65201293,
+    "layer": "?"
+   },
+   {
+    "ore": "Vily Narila",
+    "tier": "Unfathomable",
+    "rarity": 232203032,
+    "layer": "?"
+   },
+   {
+    "ore": "Jadefall",
+    "tier": "Otherworldly",
+    "rarity": 810000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Terraformation",
+    "tier": "Exotic",
+    "rarity": 2456294,
+    "layer": "?"
+   },
+   {
+    "ore": "Eye of the Siren",
+    "tier": "Exotic",
+    "rarity": 5120129,
+    "layer": "?"
+   },
+   {
+    "ore": "Statigen",
+    "tier": "Exquisite",
+    "rarity": 13219000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lifeforce Drainer",
+    "tier": "Transcendent",
+    "rarity": 23201120,
+    "layer": "?"
+   },
+   {
+    "ore": "Draesdruvite",
+    "tier": "Transcendent",
+    "rarity": 25109288,
+    "layer": "?"
+   },
+   {
+    "ore": "Pulsō Relicta",
+    "tier": "Transcendent",
+    "rarity": 36120188,
+    "layer": "?"
+   },
+   {
+    "ore": "Chicago",
+    "tier": "Enigmatic",
+    "rarity": 76767767,
+    "layer": "?"
+   },
+   {
+    "ore": "Apexilec",
+    "tier": "Enigmatic",
+    "rarity": 90100990,
+    "layer": "?"
+   },
+   {
+    "ore": "Computer Annihilator 4600 MK. II",
+    "tier": "Unfathomable",
+    "rarity": 150000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Mekanos",
+    "tier": "Unfathomable",
+    "rarity": 635703105,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Paraxenos",
+    "tier": "Exotic",
+    "rarity": 2600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Tetrium",
+    "tier": "Exotic",
+    "rarity": 4321012,
+    "layer": "?"
+   },
+   {
+    "ore": "Chromatechnimar",
+    "tier": "Exquisite",
+    "rarity": 7600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Printorbs",
+    "tier": "Exquisite",
+    "rarity": 13201919,
+    "layer": "?"
+   },
+   {
+    "ore": "Speedulant",
+    "tier": "Transcendent",
+    "rarity": 26100106,
+    "layer": "?"
+   },
+   {
+    "ore": "Pixelated Mass",
+    "tier": "Transcendent",
+    "rarity": 39219101,
+    "layer": "?"
+   },
+   {
+    "ore": "Novurbite",
+    "tier": "Enigmatic",
+    "rarity": 58200100,
+    "layer": "?"
+   },
+   {
+    "ore": "Polaroidium",
+    "tier": "Enigmatic",
+    "rarity": 94444444,
+    "layer": "?"
+   },
+   {
+    "ore": "Vertiglow",
+    "tier": "Unfathomable",
+    "rarity": 610610610,
+    "layer": "?"
+   },
+   {
+    "ore": "VANTABLACK",
+    "tier": "Otherworldly",
+    "rarity": 2500000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "0nian",
+    "tier": "Exotic",
+    "rarity": 4101010,
+    "layer": "?"
+   },
+   {
+    "ore": "Mistirine",
+    "tier": "Exotic",
+    "rarity": 6102399,
+    "layer": "?"
+   },
+   {
+    "ore": "Quantalyx",
+    "tier": "Exquisite",
+    "rarity": 10000100,
+    "layer": "?"
+   },
+   {
+    "ore": "Vys",
+    "tier": "Exquisite",
+    "rarity": 13500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Wisticora",
+    "tier": "Transcendent",
+    "rarity": 19199991,
+    "layer": "?"
+   },
+   {
+    "ore": "Portalium",
+    "tier": "Transcendent",
+    "rarity": 44320000,
+    "layer": "?"
+   },
+   {
+    "ore": "Exopolis",
+    "tier": "Enigmatic",
+    "rarity": 67200099,
+    "layer": "?"
+   },
+   {
+    "ore": "Navigate",
+    "tier": "Enigmatic",
+    "rarity": 88888888,
+    "layer": "?"
+   },
+   {
+    "ore": "Dreamscape",
+    "tier": "Unfathomable",
+    "rarity": 230000000,
+    "layer": "?"
+   },
+   {
+    "ore": "C◊SMIC_SPLIT",
+    "tier": "Otherworldly",
+    "rarity": 1250000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Emberis",
+    "tier": "Exotic",
+    "rarity": 3000003,
+    "layer": "?"
+   },
+   {
+    "ore": "Bipulsidine",
+    "tier": "Exotic",
+    "rarity": 5100203,
+    "layer": "?"
+   },
+   {
+    "ore": "Nebula Nexus",
+    "tier": "Exquisite",
+    "rarity": 9999999,
+    "layer": "?"
+   },
+   {
+    "ore": "Kenospina",
+    "tier": "Exquisite",
+    "rarity": 11000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Star-Zero",
+    "tier": "Transcendent",
+    "rarity": 20000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Cosmilite",
+    "tier": "Transcendent",
+    "rarity": 42100021,
+    "layer": "?"
+   },
+   {
+    "ore": "Galaxia",
+    "tier": "Enigmatic",
+    "rarity": 65001125,
+    "layer": "?"
+   },
+   {
+    "ore": "Nebulova",
+    "tier": "Enigmatic",
+    "rarity": 71000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Duostella",
+    "tier": "Unfathomable",
+    "rarity": 333333333,
+    "layer": "?"
+   },
+   {
+    "ore": "Monolith of Origin",
+    "tier": "Unfathomable",
+    "rarity": 515555595,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Bug",
+    "tier": "Exotic",
+    "rarity": 4004120,
+    "layer": "?"
+   },
+   {
+    "ore": "Poor Connection",
+    "tier": "Exotic",
+    "rarity": 5129100,
+    "layer": "?"
+   },
+   {
+    "ore": "Gravitron",
+    "tier": "Exquisite",
+    "rarity": 8001291,
+    "layer": "?"
+   },
+   {
+    "ore": "Cyberillic",
+    "tier": "Exquisite",
+    "rarity": 14001014,
+    "layer": "?"
+   },
+   {
+    "ore": "CORRUPTELA",
+    "tier": "Transcendent",
+    "rarity": 26910012,
+    "layer": "?"
+   },
+   {
+    "ore": "Matrixalga",
+    "tier": "Transcendent",
+    "rarity": 30001000,
+    "layer": "?"
+   },
+   {
+    "ore": "Monocritica",
+    "tier": "Enigmatic",
+    "rarity": 72001000,
+    "layer": "?"
+   },
+   {
+    "ore": "Hyperfullerene",
+    "tier": "Enigmatic",
+    "rarity": 85000058,
+    "layer": "?"
+   },
+   {
+    "ore": "Achromatopsia",
+    "tier": "Unfathomable",
+    "rarity": 198999999,
+    "layer": "?"
+   },
+   {
+    "ore": "Unstable Megacore",
+    "tier": "Otherworldly",
+    "rarity": 3500000000,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Glitchreax",
+    "tier": "Exotic",
+    "rarity": 4192188,
+    "layer": "?"
+   },
+   {
+    "ore": "Corruptal",
+    "tier": "Exotic",
+    "rarity": 6192174,
+    "layer": "?"
+   },
+   {
+    "ore": "C-0RE ERROR",
+    "tier": "Exquisite",
+    "rarity": 9699991,
+    "layer": "?"
+   },
+   {
+    "ore": "Oscilline",
+    "tier": "Exquisite",
+    "rarity": 12100991,
+    "layer": "?"
+   },
+   {
+    "ore": "Hiderae",
+    "tier": "Transcendent",
+    "rarity": 27000100,
+    "layer": "?"
+   },
+   {
+    "ore": "Mendelevium",
+    "tier": "Transcendent",
+    "rarity": 38000888,
+    "layer": "?"
+   },
+   {
+    "ore": "Luridium",
+    "tier": "Transcendent",
+    "rarity": 47001400,
+    "layer": "?"
+   },
+   {
+    "ore": "32-Bit Integer Limit",
+    "tier": "Enigmatic",
+    "rarity": 67108864,
+    "layer": "?"
+   },
+   {
+    "ore": "Techtrilyx",
+    "tier": "Enigmatic",
+    "rarity": 71117771,
+    "layer": "?"
+   },
+   {
+    "ore": "The Firewall",
+    "tier": "Enigmatic",
+    "rarity": 93000000,
+    "layer": "?"
+   },
+   {
+    "ore": "TR0J4N",
+    "tier": "Unfathomable",
+    "rarity": 589320394,
+    "layer": "?"
+   },
+   {
+    "ore": "SCARLET",
+    "tier": "Otherworldly",
+    "rarity": 910837416,
+    "layer": "?"
+   },
+   {
+    "ore": "∞",
+    "tier": "Imaginary",
+    "rarity": 30000000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Varonela",
+    "tier": "Exotic",
+    "rarity": 180000,
+    "layer": "?"
+   },
+   {
+    "ore": "Anulus",
+    "tier": "Exotic",
+    "rarity": 200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Arcanicium",
+    "tier": "Exotic",
+    "rarity": 246646,
+    "layer": "?"
+   },
+   {
+    "ore": "Electricore",
+    "tier": "Exotic",
+    "rarity": 248254,
+    "layer": "?"
+   },
+   {
+    "ore": "Pariluxem",
+    "tier": "Exotic",
+    "rarity": 331414,
+    "layer": "?"
+   },
+   {
+    "ore": "Magnatoxin",
+    "tier": "Exquisite",
+    "rarity": 393385,
+    "layer": "?"
+   },
+   {
+    "ore": "Hypnosia",
+    "tier": "Exquisite",
+    "rarity": 400000,
+    "layer": "?"
+   },
+   {
+    "ore": "Corruptryx",
+    "tier": "Exotic",
+    "rarity": 468000,
+    "layer": "?"
+   },
+   {
+    "ore": "Synthetyl",
+    "tier": "Exotic",
+    "rarity": 500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Altair",
+    "tier": "Exquisite",
+    "rarity": 506595,
+    "layer": "?"
+   },
+   {
+    "ore": "Heliotropic Fracture",
+    "tier": "Exotic",
+    "rarity": 550000,
+    "layer": "?"
+   },
+   {
+    "ore": "Fulmara",
+    "tier": "Exquisite",
+    "rarity": 573262,
+    "layer": "?"
+   },
+   {
+    "ore": "Iridistar",
+    "tier": "Exquisite",
+    "rarity": 600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Valenarium",
+    "tier": "Exquisite",
+    "rarity": 769336,
+    "layer": "?"
+   },
+   {
+    "ore": "4FA208",
+    "tier": "Exquisite",
+    "rarity": 992907,
+    "layer": "?"
+   },
+   {
+    "ore": "F24D43",
+    "tier": "Exquisite",
+    "rarity": 992907,
+    "layer": "?"
+   },
+   {
+    "ore": "@Combust10n_+_Syst3m",
+    "tier": "Exquisite",
+    "rarity": 1013171,
+    "layer": "?"
+   },
+   {
+    "ore": "Finalitium",
+    "tier": "Transcendent",
+    "rarity": 1100000,
+    "layer": "?"
+   },
+   {
+    "ore": "Archaem",
+    "tier": "Transcendent",
+    "rarity": 1477541,
+    "layer": "?"
+   },
+   {
+    "ore": "Spaceshatter",
+    "tier": "Exquisite",
+    "rarity": 1700000,
+    "layer": "?"
+   },
+   {
+    "ore": "Canivesium",
+    "tier": "Transcendent",
+    "rarity": 1800000,
+    "layer": "?"
+   },
+   {
+    "ore": "Malicioutrite",
+    "tier": "Transcendent",
+    "rarity": 1912312,
+    "layer": "?"
+   },
+   {
+    "ore": "Solace",
+    "tier": "Unfathomable",
+    "rarity": 2332960,
+    "layer": "?"
+   },
+   {
+    "ore": "Fatennial",
+    "tier": "Transcendent",
+    "rarity": 2608915,
+    "layer": "?"
+   },
+   {
+    "ore": "Luminosaic",
+    "tier": "Transcendent",
+    "rarity": 2816020,
+    "layer": "?"
+   },
+   {
+    "ore": "Monojit",
+    "tier": "Enigmatic",
+    "rarity": 2955082,
+    "layer": "?"
+   },
+   {
+    "ore": "Illusorium",
+    "tier": "Enigmatic",
+    "rarity": 3000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Nebula Tempest",
+    "tier": "Transcendent",
+    "rarity": 3000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Amaranthine",
+    "tier": "Transcendent",
+    "rarity": 3310000,
+    "layer": "?"
+   },
+   {
+    "ore": "Roundabout",
+    "tier": "Transcendent",
+    "rarity": 3754693,
+    "layer": "?"
+   },
+   {
+    "ore": "Lumenyl",
+    "tier": "Transcendent",
+    "rarity": 4250000,
+    "layer": "?"
+   },
+   {
+    "ore": "Geometric Quadrant",
+    "tier": "Transcendent",
+    "rarity": 4255319,
+    "layer": "?"
+   },
+   {
+    "ore": "Collapse",
+    "tier": "Enigmatic",
+    "rarity": 5000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Sword Waltz",
+    "tier": "Enigmatic",
+    "rarity": 5628729,
+    "layer": "?"
+   },
+   {
+    "ore": "Geometrix",
+    "tier": "Enigmatic",
+    "rarity": 9219858,
+    "layer": "?"
+   },
+   {
+    "ore": "generic68-B",
+    "tier": "Enigmatic",
+    "rarity": 9386733,
+    "layer": "?"
+   },
+   {
+    "ore": "Astraea",
+    "tier": "Enigmatic",
+    "rarity": 11000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Cataclysmium",
+    "tier": "Unfathomable",
+    "rarity": 12115839,
+    "layer": "?"
+   },
+   {
+    "ore": "Antlerion",
+    "tier": "Unfathomable",
+    "rarity": 19086357,
+    "layer": "?"
+   },
+   {
+    "ore": "Thermazine",
+    "tier": "Unfathomable",
+    "rarity": 19250253,
+    "layer": "?"
+   },
+   {
+    "ore": "Low.HP",
+    "tier": "Unfathomable",
+    "rarity": 20567375,
+    "layer": "?"
+   },
+   {
+    "ore": "Aetherion",
+    "tier": "Enigmatic",
+    "rarity": 23644444,
+    "layer": "?"
+   },
+   {
+    "ore": "Syderea",
+    "tier": "Otherworldly",
+    "rarity": 110000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Universal Collapse",
+    "tier": "Otherworldly",
+    "rarity": 111000000,
+    "layer": "?"
+   }
+  ],
+  "World 1": [
+   {
+    "ore": "Elusium",
+    "tier": "Surreal",
+    "rarity": 155000,
+    "layer": "?"
+   },
+   {
+    "ore": "Antiquite",
+    "tier": "Surreal",
+    "rarity": 355555,
+    "layer": "?"
+   },
+   {
+    "ore": "Unobtainium",
+    "tier": "Mythic",
+    "rarity": 631000,
+    "layer": "?"
+   },
+   {
+    "ore": "Aesthetium",
+    "tier": "Mythic",
+    "rarity": 714925,
+    "layer": "?"
+   },
+   {
+    "ore": "Tanzanite",
+    "tier": "Surreal",
+    "rarity": 95550,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Elysian",
+    "tier": "Surreal",
+    "rarity": 155000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Nocturnite",
+    "tier": "Mythic",
+    "rarity": 670000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Nuummite",
+    "tier": "Mythic",
+    "rarity": 875000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Promethium",
+    "tier": "Surreal",
+    "rarity": 198500,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Eluxant",
+    "tier": "Surreal",
+    "rarity": 317350,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Newtonium",
+    "tier": "Mythic",
+    "rarity": 755050,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Prasiloudis",
+    "tier": "Mythic",
+    "rarity": 883185,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Spatializine",
+    "tier": "Surreal",
+    "rarity": 122500,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Eluryan",
+    "tier": "Surreal",
+    "rarity": 140120,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Lanthanite",
+    "tier": "Mythic",
+    "rarity": 584000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Animyl",
+    "tier": "Mythic",
+    "rarity": 689101,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Purpurite",
+    "tier": "Surreal",
+    "rarity": 130000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Jet",
+    "tier": "Surreal",
+    "rarity": 255000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Erythrite",
+    "tier": "Surreal",
+    "rarity": 310000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Zefendium",
+    "tier": "Mythic",
+    "rarity": 507000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Viscriol",
+    "tier": "Mythic",
+    "rarity": 900100,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Theiograph",
+    "tier": "Surreal",
+    "rarity": 100000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Rainbonite",
+    "tier": "Surreal",
+    "rarity": 150000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Prismatica",
+    "tier": "Surreal",
+    "rarity": 250000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Seraphrite",
+    "tier": "Mythic",
+    "rarity": 560200,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Chromatite",
+    "tier": "Mythic",
+    "rarity": 875000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Rusticog",
+    "tier": "Surreal",
+    "rarity": 210000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Vanadinite",
+    "tier": "Surreal",
+    "rarity": 300000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Alternium",
+    "tier": "Mythic",
+    "rarity": 525000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Viverra",
+    "tier": "Mythic",
+    "rarity": 540000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Heliostra",
+    "tier": "Surreal",
+    "rarity": 240000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Solarite",
+    "tier": "Mythic",
+    "rarity": 500000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Heliostra",
+    "tier": "Surreal",
+    "rarity": 240000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Solarite",
+    "tier": "Mythic",
+    "rarity": 500000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Opal",
+    "tier": "Surreal",
+    "rarity": 16000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Divinessence",
+    "tier": "Surreal",
+    "rarity": 16000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Cryotic",
+    "tier": "Mythic",
+    "rarity": 206000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Aegistone",
+    "tier": "Exotic",
+    "rarity": 2820000,
+    "layer": "?"
+   },
+   {
+    "ore": "Scertanium",
+    "tier": "Exotic",
+    "rarity": 3524000,
+    "layer": "?"
+   },
+   {
+    "ore": "Penumbrosia",
+    "tier": "Exquisite",
+    "rarity": 9125550,
+    "layer": "?"
+   },
+   {
+    "ore": "Pasivium",
+    "tier": "Transcendent",
+    "rarity": 21210000,
+    "layer": "?"
+   },
+   {
+    "ore": "Pastelorium",
+    "tier": "Transcendent",
+    "rarity": 44300000,
+    "layer": "?"
+   },
+   {
+    "ore": "Gradience",
+    "tier": "Enigmatic",
+    "rarity": 61345755,
+    "layer": "?"
+   },
+   {
+    "ore": "Vaporwave Crystal",
+    "tier": "Enigmatic",
+    "rarity": 90000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Endozivite",
+    "tier": "Unfathomable",
+    "rarity": 247010000,
+    "layer": "?"
+   },
+   {
+    "ore": "Freon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Snoblintium",
+    "tier": "Exotic",
+    "rarity": 4220000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Nauticalis",
+    "tier": "Exquisite",
+    "rarity": 12221221,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Azuryl",
+    "tier": "Transcendent",
+    "rarity": 26700000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Glacielle",
+    "tier": "Transcendent",
+    "rarity": 31400000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Cybernetium",
+    "tier": "Enigmatic",
+    "rarity": 52400000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Bulbalescense",
+    "tier": "Enigmatic",
+    "rarity": 81818181,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Inclemetite",
+    "tier": "Unfathomable",
+    "rarity": 386500000,
+    "layer": "Basalt"
+   },
+   {
+    "ore": "Elexinite",
+    "tier": "Exotic",
+    "rarity": 2120000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Astatine",
+    "tier": "Exotic",
+    "rarity": 4200000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Oviridis",
+    "tier": "Exquisite",
+    "rarity": 9239085,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Elegascene",
+    "tier": "Exquisite",
+    "rarity": 13902340,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Spristium",
+    "tier": "Transcendent",
+    "rarity": 21500000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Erodimium",
+    "tier": "Transcendent",
+    "rarity": 35900000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Runealith",
+    "tier": "Enigmatic",
+    "rarity": 55299490,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Candilium",
+    "tier": "Enigmatic",
+    "rarity": 82000000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Terratomere",
+    "tier": "Unfathomable",
+    "rarity": 213200000,
+    "layer": "Granite"
+   },
+   {
+    "ore": "Neptunium",
+    "tier": "Exotic",
+    "rarity": 4390000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Monocage",
+    "tier": "Exotic",
+    "rarity": 5000000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Acceleratium",
+    "tier": "Exquisite",
+    "rarity": 7820000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Quandrium",
+    "tier": "Transcendent",
+    "rarity": 29290000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Lucidium",
+    "tier": "Transcendent",
+    "rarity": 43211234,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Polarium",
+    "tier": "Enigmatic",
+    "rarity": 50000005,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Eclipsicle",
+    "tier": "Enigmatic",
+    "rarity": 53000000,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Illusory Bubblegram",
+    "tier": "Unfathomable",
+    "rarity": 426800050,
+    "layer": "Diorite"
+   },
+   {
+    "ore": "Exolite",
+    "tier": "Exotic",
+    "rarity": 2432100,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Blazuine",
+    "tier": "Exotic",
+    "rarity": 5700000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Obscuralis",
+    "tier": "Exquisite",
+    "rarity": 9230230,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Formidulus",
+    "tier": "Exquisite",
+    "rarity": 12302022,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Speatrium",
+    "tier": "Transcendent",
+    "rarity": 29200000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Sentient Viscera",
+    "tier": "Transcendent",
+    "rarity": 34500000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Inkonium",
+    "tier": "Enigmatic",
+    "rarity": 62700000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Ravenmare",
+    "tier": "Enigmatic",
+    "rarity": 80320000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Nyctophyte",
+    "tier": "Unfathomable",
+    "rarity": 538000000,
+    "layer": "Obsidian"
+   },
+   {
+    "ore": "Photoprisma",
+    "tier": "Exotic",
+    "rarity": 2300000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Temporum",
+    "tier": "Exotic",
+    "rarity": 5555555,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Ornalium",
+    "tier": "Exquisite",
+    "rarity": 9100000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Aether",
+    "tier": "Transcendent",
+    "rarity": 22000000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Trinitium",
+    "tier": "Transcendent",
+    "rarity": 33333333,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Luminatite",
+    "tier": "Transcendent",
+    "rarity": 34350000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Elementium",
+    "tier": "Enigmatic",
+    "rarity": 54000000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Musereign",
+    "tier": "Enigmatic",
+    "rarity": 74102000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Idolium",
+    "tier": "Unfathomable",
+    "rarity": 170000000,
+    "layer": "Marble"
+   },
+   {
+    "ore": "Poiseon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Polonium",
+    "tier": "Exotic",
+    "rarity": 5555555,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Vitrilyx",
+    "tier": "Exquisite",
+    "rarity": 9000000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Euclideum",
+    "tier": "Exquisite",
+    "rarity": 14142135,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Scarfyte",
+    "tier": "Transcendent",
+    "rarity": 25500000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Exoretic",
+    "tier": "Transcendent",
+    "rarity": 40000000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Albinite",
+    "tier": "Transcendent",
+    "rarity": 44444444,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Magnetyx",
+    "tier": "Enigmatic",
+    "rarity": 74500000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Glitzar",
+    "tier": "Enigmatic",
+    "rarity": 92000000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Scribbal",
+    "tier": "Unfathomable",
+    "rarity": 200000000,
+    "layer": "Mantle"
+   },
+   {
+    "ore": "Thundarian",
+    "tier": "Exotic",
+    "rarity": 2400000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Flaeon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Combustal",
+    "tier": "Exotic",
+    "rarity": 5500000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Bonfire",
+    "tier": "Exquisite",
+    "rarity": 12000000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Suncindium",
+    "tier": "Transcendent",
+    "rarity": 20500000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Cleopatrite",
+    "tier": "Transcendent",
+    "rarity": 22500000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Xynarium",
+    "tier": "Transcendent",
+    "rarity": 28000000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Dyronsinite",
+    "tier": "Enigmatic",
+    "rarity": 63000000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Gargantium",
+    "tier": "Enigmatic",
+    "rarity": 71300000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Dynamo of Fate",
+    "tier": "Unfathomable",
+    "rarity": 750000000,
+    "layer": "Outer Core"
+   },
+   {
+    "ore": "Flaeon",
+    "tier": "Exotic",
+    "rarity": 3333333,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Accretium",
+    "tier": "Exotic",
+    "rarity": 3820000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Combustal",
+    "tier": "Exotic",
+    "rarity": 5500000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Emberstyx",
+    "tier": "Exquisite",
+    "rarity": 14000000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Cleopatrite",
+    "tier": "Transcendent",
+    "rarity": 22500000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Vulkavium",
+    "tier": "Transcendent",
+    "rarity": 23100000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Xynarium",
+    "tier": "Transcendent",
+    "rarity": 28000000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Elbrus' Pride",
+    "tier": "Enigmatic",
+    "rarity": 82000000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Chrysalis",
+    "tier": "Otherworldly",
+    "rarity": 800000000,
+    "layer": "Inner Core"
+   },
+   {
+    "ore": "Teslarium",
+    "tier": "Exotic",
+    "rarity": 350000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Drusentyl",
+    "tier": "Exquisite",
+    "rarity": 1100000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Altovite",
+    "tier": "Transcendent",
+    "rarity": 4100000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Hallowed Prism",
+    "tier": "Transcendent",
+    "rarity": 2240000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Ophanim",
+    "tier": "Transcendent",
+    "rarity": 377777,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "π",
+    "tier": "Enigmatic",
+    "rarity": 3141592,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Void Reaver",
+    "tier": "Enigmatic",
+    "rarity": 3210000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Cerlustrium",
+    "tier": "Enigmatic",
+    "rarity": 25600000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Empress of Light",
+    "tier": "Unfathomable",
+    "rarity": 8000000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Machina",
+    "tier": "Otherworldly",
+    "rarity": 37700000,
+    "layer": "Cave Exclusives"
+   }
+  ],
+  "World 2": [
+   {
+    "ore": "Culindrene",
+    "tier": "Surreal",
+    "rarity": 131262,
+    "layer": "?"
+   },
+   {
+    "ore": "Fluorite",
+    "tier": "Surreal",
+    "rarity": 284000,
+    "layer": "?"
+   },
+   {
+    "ore": "Versulium",
+    "tier": "Surreal",
+    "rarity": 416000,
+    "layer": "?"
+   },
+   {
+    "ore": "Plasmal",
+    "tier": "Mythic",
+    "rarity": 575000,
+    "layer": "?"
+   },
+   {
+    "ore": "Nemolite",
+    "tier": "Mythic",
+    "rarity": 765432,
+    "layer": "?"
+   },
+   {
+    "ore": "Quadratus",
+    "tier": "Mythic",
+    "rarity": 888888,
+    "layer": "?"
+   },
+   {
+    "ore": "Condensium",
+    "tier": "Surreal",
+    "rarity": 106000,
+    "layer": "?"
+   },
+   {
+    "ore": "Auroralium",
+    "tier": "Surreal",
+    "rarity": 382000,
+    "layer": "?"
+   },
+   {
+    "ore": "Aquatic Vortex",
+    "tier": "Mythic",
+    "rarity": 515000,
+    "layer": "?"
+   },
+   {
+    "ore": "Coldstorm",
+    "tier": "Mythic",
+    "rarity": 737000,
+    "layer": "?"
+   },
+   {
+    "ore": "Lotivium",
+    "tier": "Surreal",
+    "rarity": 175000,
+    "layer": "?"
+   },
+   {
+    "ore": "Tealine",
+    "tier": "Surreal",
+    "rarity": 208000,
+    "layer": "?"
+   },
+   {
+    "ore": "Calite",
+    "tier": "Surreal",
+    "rarity": 335000,
+    "layer": "?"
+   },
+   {
+    "ore": "Divinushield",
+    "tier": "Mythic",
+    "rarity": 532000,
+    "layer": "?"
+   },
+   {
+    "ore": "The Dream",
+    "tier": "Mythic",
+    "rarity": 780800,
+    "layer": "?"
+   },
+   {
+    "ore": "Nitoril",
+    "tier": "Mythic",
+    "rarity": 794782,
+    "layer": "?"
+   },
+   {
+    "ore": "Exoflame",
+    "tier": "Surreal",
+    "rarity": 138000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Zenflow",
+    "tier": "Surreal",
+    "rarity": 231000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Violixium",
+    "tier": "Surreal",
+    "rarity": 374000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Mycerian",
+    "tier": "Mythic",
+    "rarity": 588000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Chromavitrite",
+    "tier": "Mythic",
+    "rarity": 745000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "The Nightmare",
+    "tier": "Mythic",
+    "rarity": 964250,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Protonium",
+    "tier": "Surreal",
+    "rarity": 228000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Ignacaelum",
+    "tier": "Surreal",
+    "rarity": 419000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Ignisaxum",
+    "tier": "Mythic",
+    "rarity": 517780,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Cometryx",
+    "tier": "Mythic",
+    "rarity": 775000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Ridalite",
+    "tier": "Surreal",
+    "rarity": 181707,
+    "layer": "Void"
+   },
+   {
+    "ore": "Cestilade",
+    "tier": "Surreal",
+    "rarity": 286000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Vexerite",
+    "tier": "Mythic",
+    "rarity": 616000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Void's Iris",
+    "tier": "Mythic",
+    "rarity": 686686,
+    "layer": "Void"
+   },
+   {
+    "ore": "Fracidial",
+    "tier": "Mythic",
+    "rarity": 817000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Matterium",
+    "tier": "Exotic",
+    "rarity": 3125000,
+    "layer": "?"
+   },
+   {
+    "ore": "Atomium",
+    "tier": "Exquisite",
+    "rarity": 9091929,
+    "layer": "?"
+   },
+   {
+    "ore": "Cognicite",
+    "tier": "Exquisite",
+    "rarity": 14000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Plasmonium",
+    "tier": "Transcendent",
+    "rarity": 24000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Stazenium",
+    "tier": "Transcendent",
+    "rarity": 39550000,
+    "layer": "?"
+   },
+   {
+    "ore": "Continuum Rift",
+    "tier": "Enigmatic",
+    "rarity": 66200000,
+    "layer": "?"
+   },
+   {
+    "ore": "Terminus",
+    "tier": "Enigmatic",
+    "rarity": 73150000,
+    "layer": "?"
+   },
+   {
+    "ore": "The Cylinder",
+    "tier": "Unfathomable",
+    "rarity": 201061929,
+    "layer": "?"
+   },
+   {
+    "ore": "Covellite",
+    "tier": "Exotic",
+    "rarity": 4400400,
+    "layer": "?"
+   },
+   {
+    "ore": "Hexagelite",
+    "tier": "Exquisite",
+    "rarity": 11000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Laivertine",
+    "tier": "Exquisite",
+    "rarity": 14000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Coselnix",
+    "tier": "Transcendent",
+    "rarity": 22000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Heart of the Frosted",
+    "tier": "Transcendent",
+    "rarity": 37280000,
+    "layer": "?"
+   },
+   {
+    "ore": "Placongela",
+    "tier": "Enigmatic",
+    "rarity": 79408000,
+    "layer": "?"
+   },
+   {
+    "ore": "Frostrainium",
+    "tier": "Enigmatic",
+    "rarity": 87290000,
+    "layer": "?"
+   },
+   {
+    "ore": "Caelarius",
+    "tier": "Unfathomable",
+    "rarity": 583000000,
+    "layer": "?"
+   },
+   {
+    "ore": "Accretite",
+    "tier": "Exotic",
+    "rarity": 6500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Entiniol",
+    "tier": "Exotic",
+    "rarity": 7020000,
+    "layer": "?"
+   },
+   {
+    "ore": "Optimivium",
+    "tier": "Exquisite",
+    "rarity": 9280090,
+    "layer": "?"
+   },
+   {
+    "ore": "Catastormite",
+    "tier": "Transcendent",
+    "rarity": 28600000,
+    "layer": "?"
+   },
+   {
+    "ore": "Contravexium",
+    "tier": "Transcendent",
+    "rarity": 39500000,
+    "layer": "?"
+   },
+   {
+    "ore": "Neomandelite",
+    "tier": "Enigmatic",
+    "rarity": 68100490,
+    "layer": "?"
+   },
+   {
+    "ore": "Vitriol",
+    "tier": "Enigmatic",
+    "rarity": 94000280,
+    "layer": "?"
+   },
+   {
+    "ore": "Acrimony",
+    "tier": "Unfathomable",
+    "rarity": 257280000,
+    "layer": "?"
+   },
+   {
+    "ore": "Crystal Oculite",
+    "tier": "Exotic",
+    "rarity": 3478290,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Enchantium",
+    "tier": "Exotic",
+    "rarity": 7138000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Torilite",
+    "tier": "Exquisite",
+    "rarity": 11250000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Spiritian",
+    "tier": "Transcendent",
+    "rarity": 24800900,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Twilight Mist",
+    "tier": "Transcendent",
+    "rarity": 28580045,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Unsteady Filaments",
+    "tier": "Transcendent",
+    "rarity": 33480000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Celestivian",
+    "tier": "Enigmatic",
+    "rarity": 56000000,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Unearthly Cubes",
+    "tier": "Enigmatic",
+    "rarity": 64778939,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "NOO P α",
+    "tier": "Unfathomable",
+    "rarity": 709000750,
+    "layer": "Riftrock"
+   },
+   {
+    "ore": "Aurantial",
+    "tier": "Exotic",
+    "rarity": 4411920,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Arcaleus",
+    "tier": "Exotic",
+    "rarity": 6180980,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Cosmic Treasure",
+    "tier": "Exquisite",
+    "rarity": 8000800,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Circeterra",
+    "tier": "Exquisite",
+    "rarity": 12500000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Rigel",
+    "tier": "Transcendent",
+    "rarity": 20565000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Galactic Rupture",
+    "tier": "Transcendent",
+    "rarity": 24480000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Icarus",
+    "tier": "Transcendent",
+    "rarity": 38190000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Coronal Flare",
+    "tier": "Enigmatic",
+    "rarity": 65000000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Gravitaticor",
+    "tier": "Enigmatic",
+    "rarity": 71120000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Quasar 618",
+    "tier": "Unfathomable",
+    "rarity": 618000000,
+    "layer": "Darkmatter"
+   },
+   {
+    "ore": "Phobetor",
+    "tier": "Exotic",
+    "rarity": 3890000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Voidflower",
+    "tier": "Exotic",
+    "rarity": 5826000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Kaleidium",
+    "tier": "Exquisite",
+    "rarity": 7878000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Estrela",
+    "tier": "Exquisite",
+    "rarity": 13200000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Andromidium",
+    "tier": "Transcendent",
+    "rarity": 21780000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Magicis Floreat",
+    "tier": "Transcendent",
+    "rarity": 28123000,
+    "layer": "Void"
+   },
+   {
+    "ore": "NOO S-Sing. T1",
+    "tier": "Transcendent",
+    "rarity": 38449000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Voyanesia",
+    "tier": "Enigmatic",
+    "rarity": 61780000,
+    "layer": "Void"
+   },
+   {
+    "ore": "Obliveracy Endmost",
+    "tier": "Enigmatic",
+    "rarity": 88620900,
+    "layer": "Void"
+   },
+   {
+    "ore": "Sirius-X10",
+    "tier": "Unfathomable",
+    "rarity": 580000001,
+    "layer": "Void"
+   },
+   {
+    "ore": "Retina",
+    "tier": "Otherworldly",
+    "rarity": 955200890,
+    "layer": "Void"
+   },
+   {
+    "ore": "Asterium",
+    "tier": "Exotic",
+    "rarity": 361000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Lunarian",
+    "tier": "Exquisite",
+    "rarity": 411000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Lavortia",
+    "tier": "Transcendent",
+    "rarity": 1347290,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Hyperheated Quasar",
+    "tier": "Enigmatic",
+    "rarity": 810000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Cygnus",
+    "tier": "Enigmatic",
+    "rarity": 10480900,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Exdeus",
+    "tier": "Unfathomable",
+    "rarity": 32372000,
+    "layer": "Cave Exclusives"
+   },
+   {
+    "ore": "Observatorium",
+    "tier": "Otherworldly",
+    "rarity": 63245790,
+    "layer": "Cave Exclusives"
+   }
+  ]
+ }
+}
