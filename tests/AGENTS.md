@@ -1,29 +1,33 @@
 # tests/ — pure-logic TDD suite
 
-Conventions for the 131-test pytest suite. Read `../AGENTS.md` for project commands, `../miningbot/AGENTS.md` for what each module does. This file is the test-writing guide.
+Conventions for the 401-test pytest suite. Read `../AGENTS.md` for project commands, `../miningbot/AGENTS.md` for what each module does. This file is the test-writing guide.
 
 ## OVERVIEW
 
-123 pytest tests covering **pure logic only** — no Roblox, no audio device, no screen. All green (2026-06-28). Runs in ~15s.
+401 pytest tests covering **pure logic only** — no Roblox, no audio device, no screen. All green (2026-07-07). Runs in ~15s.
 
 ## STRUCTURE
 
 ```
 tests/
 ├── __init__.py            # package marker (empty)
-├── test_states.py     (9) # decide_transition — full 4-state FSM
-├── test_geometry.py   (5) # aim_decision — FIRE/ROTATE/MOUSE_AIM/HUMAN
-├── test_miner.py      (8) # dispatch_event priority + cooldown_ready
-├── test_harvester.py  (8) # next_harvest_step + restore_actions
-├── test_events.py     (2) # EventLog sink fan-out
-├── test_ocr.py       (16) # contains/count/has_new_found (diff semantics)
-├── test_vision.py    (33) # find_tracker hybrid (HSV+shape), find_marker, outline/alpha, real-frame
-├── test_window.py     (9) # displacement_reason priority + WindowState
-├── test_audio.py      (6) # match_score + loudest_window (synthetic signals)
-├── test_notify.py     (7) # format_message (Chinese templates)
-├── test_game_data.py (18) # event/ore tables + fuzzy_match_ore + keep-list
-├── test_hotkeys.py    (7) # _HotkeyController edge-trigger (Ctrl+Q / Q / F12)
-└── test_diagnostics.py(3) # setup_logging + save_snapshot (tmp_path)
+├── test_states.py     (21) # decide_transition — full 4-state FSM
+├── test_geometry.py    (5) # aim_decision — FIRE/ROTATE/MOUSE_AIM/HUMAN
+├── test_miner.py      (10) # dispatch_event priority + cooldown_ready
+├── test_harvester.py  (53) # next_harvest_step + restore_actions + sweep/verify decisions
+├── test_events.py      (2) # EventLog sink fan-out
+├── test_ocr.py        (85) # contains/count/has_new_found + ChatLedger (diff semantics)
+├── test_ocr_fixtures.py(14) # real-crop chat OCR across 3 backgrounds (H014/H020/H032/H039)
+├── test_vision.py     (52) # find_tracker hybrid (HSV+shape), find_marker, outline/alpha, real-frame
+├── test_window.py      (9) # displacement_reason priority + WindowState
+├── test_audio.py      (15) # match_score + loudest_window (synthetic signals)
+├── test_add_chill_ref.py(6) # chill reference-set expansion (--scan confirmed-only)
+├── test_notify.py     (20) # format_message + group messages (Chinese templates)
+├── test_game_data.py  (79) # event/ore tables + fuzzy_match_ore + World/keep-list + classify
+├── test_fetch_ores.py (14) # wiki ore-list sync: world discovery + exclusion diff
+├── test_capture.py     (2) # crop region math
+├── test_hotkeys.py    (10) # _HotkeyController edge-trigger (Ctrl+Q / Q / F12)
+└── test_diagnostics.py (4) # setup_logging + save_snapshot (tmp_path)
 ```
 
 ## WHERE TO LOOK

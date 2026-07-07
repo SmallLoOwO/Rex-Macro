@@ -11,7 +11,7 @@
 |---|---|
 | 穩定挖礦 / 補 boost / D4 事件保留 / Discord 通知 / 重置等人工 | ✅ 正常 |
 | 全 8 方位掃描採集 稀有 礦（HARVESTING 流程） | ✅ 實機驗證成功 |
-| find_tracker 混合偵測（HSV 定位 + 實機裁圖形狀確認 + hard_floor 三區判定） | ✅ 133 測試綠 |
+| find_tracker 混合偵測（HSV 定位 + 實機裁圖形狀確認 + hard_floor 三區判定） | ✅ 全套 401 測試綠 |
 | chill 音訊偵測（節流 + FFT 加速，延遲 ~1s） | ✅ 修復（原 6s 延遲） |
 | heartbeat log（rms=%.6f + peak 追蹤，不再漏 chill 尖峰） | ✅ 修復（原 rms=%.0f 把所有音量殺成 0） |
 | 採集後恢復挖礦統一走 init_mining_sequence（修漏按住 W） | ✅ 修復 |
@@ -49,7 +49,7 @@ _tick_harvest — 階段一：sweep（sweep_timeout_s=30s）
     │
     ▼ （sweep 完成，重置 _harvest_start 計時器）
     │
-_tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
+_tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=45s；一次 D3 嘗試實測 ~20s，見 docs/incidents.md H015）
     ├─ key_press("2") → sleep(0.15) → key_press("3") → sleep(0.3)
     ├─ click_at(cx, cy, hold=0.4) → sleep(0.5)
     ├─ 驗證：find_tracker(after) is None + 聊天差分
@@ -90,9 +90,9 @@ _tick_harvest — 階段二：D3 開火（harvest_verify_timeout_s=15s）
 舊版 soft filter 兩區（edge≥threshold=確認，否則全退回 HSV）會把「HSV 強但形狀全錯」的裝備誤判救回來（015044 實測 edge=0.16 被 soft filter 翻盤）。改成三區：
 
 ```
-edge ≥ threshold (0.45)         → confirmed（返回此候選）
-hard_floor (0.25) ≤ edge < thr  → survivor → 退回純 HSV（容忍未見階級外框配不到模板）
-edge < hard_floor (0.25)        → hard_rej（完全移除，soft filter 不救）
+edge ≥ threshold (0.42)         → confirmed（返回此候選；0.45→0.42 見 docs/incidents.md H019/H026）
+hard_floor (0.30) ≤ edge < thr  → survivor → 退回純 HSV（容忍未見階級外框配不到模板）
+edge < hard_floor (0.30)        → hard_rej（完全移除，soft filter 不救）
 ```
 
 實測分離：裝備誤判 edge≈0.16（擋下）、真追蹤框 edge≈0.81（不受影響）、borderline（square outline vs synth tracker ≈0.36 → survivor 仍退回 HSV）。`cfg.tracker_shape_hard_floor` 控制。
@@ -311,6 +311,14 @@ python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify im
 - **NEEDS_HUMAN 裁圖**：原存全螢幕看不到重點 → 改跑 find_tracker 找最佳 edge score 候選 → 裁 240×240 + 黃框標註 + 分數 → 存檔 + Discord。
 - **_tracker_log 路由**：sweep 的 3 個 find_tracker call 全接 log=（per-candidate→DEBUG、soft-filter/全數硬拒摘要→INFO），預設 level 可診斷。
 - **logs/ 清理**：刪 175 張開發測試圖；`_diag_tracker.py` 升級為可帶路徑參數 + 自動載模板的事後診斷工具。
+
+### ✅ 已解決（2026-07-07 更新——完整敘事見 `docs/incidents.md`）
+
+- **遠距控制已完備**：`pause`/`resume`/`status`/`shot`/`keep` 系列 Discord 命令均已實作（本文件舊版只記到 keep）。
+- **邊緣排除帶收窄 margin 0.02**：H019 右緣 / H026 底緣真框被 0.10 帶擋掉 → main 傳入 `tracker_margin_frac=0.02`，回歸 fixture 已鎖。
+- **A 缺其他階級裁圖（部分）**：H039 的 enigmatic 尖刺太陽框已補進 `assets/markers`（首個新框形案例）；仍缺的階級照 A 的解法從 snapshots 補。
+- **驗證式旋轉 / episode 聊天帳本＋晚到確認 / boost 守門 / RapidOCR 首選 / banner OCR 背景化 / 最短路徑旋回**：均已落地（見 `docs/incidents.md`）。
+- **F D2 掃描成功確認**：2026-07-07 roadmap Phase 2 立案處理（`scan_succeeded` + 觀察期）。
 
 ### 🔴 偵測可靠性（直接影響採集成功率）
 
