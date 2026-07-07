@@ -39,6 +39,8 @@ _TEMPLATES = {
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "STUCK":           lambda m: f"⚠️ 腳本可能卡住：{m.get('reason', '無進度')}",
     "MINE_RESET":      lambda m: "🔄 礦坑重置，已停下等待重新定位（按 Q 繼續）",
+    "REENTRY_START":   lambda m: "⛏️ 礦坑已重置，開始自動回礦…",
+    "REENTRY_SUCCESS": lambda m: f"✅ 自動回礦成功（第 {m.get('attempts', '?')} 輪），恢復挖礦",
 }
 
 

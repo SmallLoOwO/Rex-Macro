@@ -8,7 +8,8 @@ import time
 import tkinter as tk
 
 _STATE_ZH = {"MINING": "挖礦中", "HARVESTING": "採集稀有礦",
-             "NEEDS_HUMAN": "需要人工", "RESET_WAIT": "礦坑重置·待定位"}
+             "NEEDS_HUMAN": "需要人工", "RESET_WAIT": "礦坑重置·待定位",
+             "REENTRY": "重置·自動回礦"}
 
 # Win32：做成「不搶焦點的置頂浮層」，才不會把焦點從 Roblox 偷走（偷走輸入就停）
 _GWL_EXSTYLE = -20

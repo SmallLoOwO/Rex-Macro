@@ -6,12 +6,14 @@ import threading
 import queue
 import winsound
 
+import numpy as np
+
 from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
-from . import sampler
+from . import sampler, reentry
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
 
@@ -149,6 +151,15 @@ class Bot:
         self._needs_human_extra_meta: dict = {}
         self._last_reset_check = 0.0
         self._mine_resetting = False
+        # 重置自動回礦（REENTRY）：reset banner 消失起算的沉澱計時＋單輪執行狀態
+        self._reset_clear_since = 0.0            # 0=banner 還在（或不在 RESET_WAIT）
+        self._reentry = None                     # reentry.ReentryState（進 REENTRY 時建立）
+        self._reentry_ref = None                 # 傳送前參考幀（幀差判傳送完成）
+        self._reentry_done = False
+        self._reentry_failed = False
+        self._reentry_panel_xy = None            # sweep 選定的面板螢幕座標
+        self._move_diffs = []                    # NAVIGATE 途中連續幀差（movement_status 用）
+        self._last_nav_frame = None
         # 頂部事件列 OCR 快取（背景 worker _banner_ocr_loop 寫、主迴圈讀）：
         # tesserocr 單次 ~400ms 若同步跑會把 MINING tick 從 ~0.15s 撐到 ~0.6s，
         # boost 到期偵測（0.2s 高頻）跟著被拖慢——移出主迴圈後 tick 穩定。
@@ -204,6 +215,27 @@ class Bot:
             else:
                 self.logger.warning("形狀確認已開但無實機裁圖（assets/markers 內需有無 alpha 的裁圖）"
                                     "— 暫退回純 HSV，之後從 log 收集各階實機框補上")
+        # re-entry 傳送面板模板（assets/surface/*.png；calibrate_surface --import 產出）。
+        # 開了 auto_reenter 但沒模板＝掃不到面板必然全 reroll → 視同關閉並警告，不空轉。
+        self._panel_templates = self._load_panel_templates()
+
+    def _load_panel_templates(self) -> list:
+        import glob
+        tmpls = [vision.load_template(p)
+                 for p in sorted(glob.glob(os.path.join(cfg.reentry_panel_dir, "*.png")))]
+        if cfg.auto_reenter:
+            if tmpls:
+                self.logger.info("auto_reenter 啟用，面板模板 %d 張（%s）",
+                                 len(tmpls), cfg.reentry_panel_dir)
+            else:
+                self.logger.warning("auto_reenter 開著但 %s 無面板模板——自動回礦視同關閉；"
+                                    "先用 R 鍵截圖＋calibrate_surface --import 裁模板",
+                                    cfg.reentry_panel_dir)
+        return tmpls
+
+    def _auto_reenter_active(self) -> bool:
+        """auto_reenter 的有效值：config 開關＋面板模板存在（缺模板視同關閉）。"""
+        return cfg.auto_reenter and bool(self._panel_templates)
 
     def _load_marker_templates(self) -> dict:
         import glob
@@ -501,7 +533,29 @@ class Bot:
         return Observation(chill_audio=chill_audio, chill_text=chill_text,
                            harvest_done=False, harvest_failed=False,
                            human_cleared=self.human_cleared,
-                           mine_resetting=mine_resetting)
+                           mine_resetting=mine_resetting,
+                           reset_complete=self._update_reset_complete(),
+                           reentry_done=self._reentry_done,
+                           reentry_failed=self._reentry_failed,
+                           auto_reenter=self._auto_reenter_active())
+
+    def _update_reset_complete(self) -> bool:
+        """RESET_WAIT 中追蹤「banner reset 字樣已消失＋沉澱夠久」（REENTRY 觸發條件）。
+
+        banner 快取由背景 worker 更新（auto_reenter 下 RESET_WAIT 也跑）；字樣一回來
+        計時歸零重來——重置訊息可能閃爍，沉澱期就是為了吃掉這種抖動。
+        """
+        if self.state is not State.RESET_WAIT or not self._auto_reenter_active():
+            self._reset_clear_since = 0.0
+            return False
+        if self._mine_resetting:
+            self._reset_clear_since = 0.0
+            return False
+        now = time.time()
+        if self._reset_clear_since == 0.0:
+            self._reset_clear_since = now
+            return False
+        return now - self._reset_clear_since >= cfg.reentry_reset_settle_s
 
     def _maybe_detect_world(self, event_text: str):
         """用 OCR 到的事件文字推斷目前世界（事件分世界）；鎖定後採集確認的低階排除清單
@@ -553,7 +607,12 @@ class Bot:
             time.sleep(0.1)
             try:
                 frame = self._latest_frame
-                if frame is None or self.paused or self.state is not State.MINING:
+                # auto_reenter 下 RESET_WAIT 也要跑：REENTRY 的觸發條件是「reset 字樣
+                # 消失＋沉澱」，worker 不跑快取凍在 True、reset_complete 永遠不成立。
+                allowed = (self.state is State.MINING
+                           or (self._auto_reenter_active()
+                               and self.state is State.RESET_WAIT))
+                if frame is None or self.paused or not allowed:
                     continue
                 now = time.time()
                 if now - self._last_reset_check < cfg.reset_check_interval_s:
@@ -1311,6 +1370,28 @@ class Bot:
             self._chat_baseline_crop = capture.crop(gf, cfg.chat_region)
             self._chat_last_crop = self._chat_baseline_crop
             self._chat_ledger = None            # episode 帳本（ocr.ChatLedger）：基準 OCR 完成時建立
+        if s is State.REENTRY:
+            # 入口聚焦失敗 → 降級 NEEDS_HUMAN（比照 MINING 入口）：REENTRY 全程都在
+            # 送鍵/點擊，焦點不在 Roblox 上會全部送錯視窗、白白燒光 reroll 次數。
+            if not self._focus_roblox():
+                self.logger.warning("進入 REENTRY 但無法聚焦 Roblox -> 降級 NEEDS_HUMAN")
+                self._human_reason = "無法聚焦 Roblox（自動回礦前），請確認遊戲視窗後按 Q"
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return State.NEEDS_HUMAN
+            now = time.time()
+            self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
+            self._reentry_done = False
+            self._reentry_failed = False
+            self._reentry_ref = None
+            self._reentry_panel_xy = None
+            self._move_diffs = []
+            self._last_nav_frame = None
+            ic.key_up("w"); ic.mouse_up()            # RESET_WAIT 本已放開，保險再放一次
+            ic.click_at(*cfg.reentry_surface_button_xy)   # 按「回到地表」
+            self.last_action = "重置完成，自動回礦中"
+            self.log.log("REENTRY_START")
+            self.logger.info("REENTRY：已按回到地表，開始自動回礦（上限 %d 輪）",
+                             cfg.reentry_max_attempts)
         if s is State.NEEDS_HUMAN:
             # extra 先取出：採集放棄會帶 harvest_id（+ image_paths 前後兩張 / rotation_hint）；
             # 非採集 NEEDS_HUMAN（重新聚焦失敗等）extra 為空 → tag="" 不前綴。
@@ -1350,6 +1431,8 @@ class Bot:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
             self._tick_harvest(frame)
+        elif self.state is State.REENTRY:
+            self._tick_reentry(frame)
         # NEEDS_HUMAN / RESET_WAIT: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
     def _tick_mining(self, frame):
@@ -2052,6 +2135,144 @@ class Bot:
             rare_before=rare_before, rare_after=rare_after,
             chat_after_path=self._hsnap_crop(frame, cfg.chat_region, "late_chat_after"))
         return True
+
+    # ---- REENTRY：重置後自動回礦 --------------------------------------------
+    def _tick_reentry(self, frame):
+        """REENTRY 每 tick 一步。決策純函式在 reentry.py，這裡只做 I/O。
+
+        任一步失敗統一走 _reentry_reroll（按回到地表換重生點）；
+        attempts 用盡 → _reentry_failed=True（decide_transition → NEEDS_HUMAN）。
+        """
+        st = self._reentry
+        now = time.time()
+        if now - st.attempt_started > cfg.reentry_attempt_timeout_s:
+            self._reentry_reroll("attempt timeout"); return
+
+        if st.phase == reentry.SURFACE_WAIT:
+            # 等傳送完成：與按下瞬間的參考幀比，大變化＝到地表了
+            if self._reentry_ref is None:
+                self._reentry_ref = frame.copy(); return
+            if vision.frame_mean_diff(self._reentry_ref, frame) >= cfg.reentry_teleport_diff:
+                self._set_reentry_phase(reentry.PITCH_RESET)
+            elif now - st.phase_started > cfg.reentry_teleport_wait_s:
+                self._reentry_reroll("teleport not detected")
+            return
+
+        if st.phase == reentry.PITCH_RESET:
+            ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px)
+            self._pitch_offset_px = cfg.reentry_pitch_back_px
+            self._set_reentry_phase(reentry.SWEEP)
+            return
+
+        if st.phase == reentry.SWEEP:
+            # 8 方位一次掃完（同 _sweep_for_tracker 的旋轉節奏，非逐 tick）
+            scores = []
+            for i in range(8):
+                f = capture.grab()
+                v, loc = vision.best_template_match_scored(
+                    f, self._panel_templates, cfg.reentry_panel_scales)
+                scores.append((i, v, loc))
+                self.log_act.debug("reentry sweep dir=%d score=%.3f", i, v)
+                if i < 7:
+                    self._rotate_verified(+1)
+            self._rotate_verified(+1)      # 第 8 轉回原位（8×45°=360°）
+            best = reentry.pick_panel_direction(scores, cfg.reentry_panel_threshold)
+            if best is None:
+                top = max((s[1] for s in scores), default=-1.0)
+                self._reentry_reroll(f"panel not found in sweep (best={top:.3f})")
+                return
+            # plan_return_rotations 回帶號步數（正=右轉、負=左轉）——不可直接 range()
+            # （負數 range 為空＝根本不轉，落點方位就錯了）
+            n = harvester.plan_return_rotations(0, best[0])
+            for _ in range(abs(n)):
+                self._rotate_verified(+1 if n > 0 else -1)
+            self.log_act.info("reentry sweep 選定 dir=%d score=%.3f center=%s",
+                              best[0], best[1], best[2])
+            self._reentry_panel_xy = best[2]
+            self._set_reentry_phase(reentry.NAVIGATE)
+            self._reentry_nav_click()
+            return
+
+        if st.phase == reentry.NAVIGATE:
+            self._move_diffs.append(
+                vision.frame_mean_diff(self._last_nav_frame, frame)
+                if self._last_nav_frame is not None else 99.0)
+            self._last_nav_frame = frame.copy()
+            status = reentry.movement_status(
+                self._move_diffs, cfg.reentry_move_diff, cfg.reentry_move_stable_ticks)
+            if status == "stopped":
+                self._set_reentry_phase(reentry.READ_PANEL)
+            elif now - st.phase_started > cfg.reentry_nav_timeout_s:
+                self._set_reentry_phase(reentry.READ_PANEL)   # 超時也去讀——可能早就到了
+            return
+
+        if st.phase == reentry.READ_PANEL:
+            recs = ocr.read_text_boxes(frame)
+            target = reentry.pick_layer_button(
+                recs, cfg.reentry_target_layer, cfg.reentry_decoy_buttons,
+                cfg.reentry_button_min_ratio)
+            if target is not None:
+                self._snapshot(frame, "reentry_click")
+                self._reentry_ref = frame.copy()
+                ic.click_at(*target)
+                self.log_act.info("reentry 點擊層按鈕 %s @%s", cfg.reentry_target_layer, target)
+                self._set_reentry_phase(reentry.CLICK_VERIFY)
+                return
+            act = reentry.next_occlusion_action(st.occlusion_tried)
+            st.occlusion_tried += (act,)
+            self.log_act.info("reentry 遮擋階梯: %s（OCR %d 行無目標）", act, len(recs))
+            if act == "orbit":
+                self._rotate_verified(-1)
+            elif act == "renavigate":
+                self._reentry_nav_click()
+                self._set_reentry_phase(reentry.NAVIGATE)
+            else:
+                self._reentry_reroll("panel text unreadable")
+            return
+
+        if st.phase == reentry.CLICK_VERIFY:
+            if vision.frame_mean_diff(self._reentry_ref, frame) >= cfg.reentry_teleport_diff:
+                r = cfg.stuck_region
+                crop = frame[r.y:r.y + r.h, r.x:r.x + r.w]
+                if float(np.mean(crop)) <= cfg.reentry_mine_max_brightness:
+                    self._reentry_done = True
+                    self._snapshot(frame, "reentry_success")
+                    self.log.log("REENTRY_SUCCESS", attempts=st.attempts + 1)
+                    self.logger.info("REENTRY 成功（第 %d 輪）→ 恢復挖礦", st.attempts + 1)
+                    return
+            if now - st.phase_started > cfg.reentry_teleport_wait_s:
+                self._reentry_reroll("click did not teleport into mine")
+
+    def _set_reentry_phase(self, phase):
+        self._reentry.phase = phase
+        self._reentry.phase_started = time.time()
+        self._move_diffs = []
+        self._last_nav_frame = None
+
+    def _reentry_nav_click(self):
+        ic.click_at(*self._reentry_panel_xy, button="right")   # click-to-move
+
+    def _reentry_reroll(self, reason: str):
+        """單輪失敗：再按「回到地表」換重生點重來；attempts 用盡交人工。
+
+        用盡時只設旗標＋_human_reason——NEEDS_HUMAN 的 event log／Discord alert
+        統一由 _on_enter(NEEDS_HUMAN) 發（比照採集放棄），這裡再發一次會重複通知。
+        """
+        st = self._reentry
+        st.attempts += 1
+        self.log_act.info("reentry reroll #%d：%s", st.attempts, reason)
+        if reentry.should_giveup(st.attempts, cfg.reentry_max_attempts):
+            self._reentry_failed = True
+            self._human_reason = f"自動回礦失敗×{st.attempts}（{reason}），請手動回礦後按 Q"
+            self._needs_human_extra_image = self._snapshot(capture.grab(), "reentry_giveup")
+            return
+        self._reentry = reentry.ReentryState(
+            attempts=st.attempts, phase_started=time.time(), attempt_started=time.time())
+        self._reentry_ref = None
+        self._move_diffs = []
+        self._last_nav_frame = None
+        self._focus_roblox()
+        ic.click_at(*cfg.reentry_surface_button_xy)             # 再按回到地表
 
     def _confirm_scan(self, where: str) -> bool:
         """D2 掃描確認（scan_confirm_mode 控制）。回傳 False 表示 enforce 模式下已重試仍失敗。"""

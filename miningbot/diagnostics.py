@@ -78,10 +78,13 @@ def snapshot_subdir(label: str) -> str:
     """依 label 決定快照分類子資料夾，讓事後篩選只需讀相關資料夾（不必全部載入）。
 
     trackers — sweep_confirmed 真追蹤框（建模板的金礦）；
+    reentry  — 自動回礦（reentry_click/success/giveup，查傳錯層/回礦失敗）；
     review   — needs_human/d3_fire/d3_miss/stuck（誤射/漏抓/卡住，要人眼看）；
     events   — chill/rare_found/audio_no_text（chill 與稀有偵測）；
     trace    — 其餘暫態敘事（d3_chat、harvest_success、mine_reset…）。
     """
+    if label.startswith("reentry"):
+        return "reentry"
     if "sweep_confirmed" in label:
         return "trackers"
     if any(k in label for k in ("needs_human", "d3_fire", "d3_miss", "stuck")):
