@@ -11,6 +11,7 @@ from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
+from . import sampler
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
 
@@ -30,13 +31,15 @@ _REMOTE_PAUSE_EMOJI = "⏸️"
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
 
-    def __init__(self, down_fn, on_stop, on_toggle, on_quit):
+    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None):
         self._down = down_fn
         self._on_stop = on_stop
         self._on_toggle = on_toggle
         self._on_quit = on_quit
+        self._on_sample = on_sample        # 'R' 手動取樣視窗（未掛＝功能停用）
         self._prev_ctrlq = False
         self._prev_q = False
+        self._prev_r = False
 
     def tick(self):
         ctrl = self._down(0x11)
@@ -55,6 +58,10 @@ class _HotkeyController:
             self._prev_q = True
         else:
             self._prev_q = False
+        r = self._down(0x52)               # 'R'：手動取樣視窗
+        if r and not self._prev_r and self._on_sample:
+            self._on_sample()
+        self._prev_r = r
         if f12:
             self._on_quit()
 
@@ -160,7 +167,10 @@ class Bot:
             self._pause,            # Ctrl+Q：只暫停（不繼續）
             self._toggle_pause,     # Q：開關 暫停↔繼續
             self._quit,
+            on_sample=self._toggle_sampler,   # R：手動取樣視窗（校準素材收集）
         )
+        self._sampler = None                  # SamplerWindow（開著時非 None）
+        self._pitch_offset_px = 0             # 目前俯仰距夾限偏移（歸位後＝reentry_pitch_back_px）
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -2269,6 +2279,47 @@ class Bot:
     def _quit(self):
         self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)
         self._running = False
+
+    # ---- R 鍵手動取樣（校準素材收集；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）--
+    def _toggle_sampler(self):
+        """R：開/關取樣視窗。開啟時若正在挖礦先自動暫停——取樣的俯仰拖曳/截圖
+        不能跟挖礦的 W+左鍵互搶輸入。關閉不自動 resume（使用者取樣完自己按 Q，
+        視角多半已被拖歪，直接恢復挖礦反而糟）。"""
+        if self._sampler is not None and self._sampler.alive:
+            self._sampler.close()
+            self._sampler = None
+            self.logger.info("取樣視窗關閉 (R)")
+            return
+        if not self.paused and self.state not in (State.NEEDS_HUMAN, State.RESET_WAIT):
+            self._pause()
+        self._sampler = sampler.SamplerWindow(
+            on_capture=self._sampler_capture,
+            on_pitch_reset=self._sampler_pitch_reset,
+            on_pitch_nudge=self._sampler_pitch_nudge,
+            step_px=cfg.sample_pitch_step_px,
+            initial_offset=self._pitch_offset_px)
+        self.logger.info("取樣視窗開啟 (R)：俯仰歸位/微調＋編號截圖")
+
+    def _sampler_pitch_reset(self) -> int:
+        """俯仰歸位（Tk 執行緒進來）：點按鈕當下焦點在小視窗上，先聚焦再拖。"""
+        self._focus_roblox()
+        ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px)
+        self._pitch_offset_px = cfg.reentry_pitch_back_px
+        return self._pitch_offset_px
+
+    def _sampler_pitch_nudge(self, dy: int) -> int:
+        """微調一步。dy>0 向下拖＝靠近夾限→偏移量減少（偏移＝距夾限的回拉量）。"""
+        self._focus_roblox()
+        ic.pitch_nudge(dy)
+        self._pitch_offset_px -= dy
+        return self._pitch_offset_px
+
+    def _sampler_capture(self) -> str:
+        frame = capture.grab()
+        stem = sampler.save_sample(frame, cfg.manual_snapshot_dir, self._pitch_offset_px)
+        self.logger.info("📸 手動截圖 #%s pitch=%d", stem, self._pitch_offset_px)
+        self.last_action = f"📸 手動截圖 #{stem}"
+        return stem
 
 
 def _set_dpi_aware():
