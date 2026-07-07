@@ -575,6 +575,23 @@ def _get_tess_api(tesseract_path: str | None):
     return api
 
 
+def tesserocr_available(tesseract_path: str | None = None) -> bool:
+    """主動探測 tesserocr 是否真的可用（鏡射 rapidocr_available 的模式）。
+
+    `_tesserocr_unavailable` 原本是 lazy 旗標——只有真的跑過一次 read_text 且走到
+    tesserocr 分支失敗，才會翻成 True；啟動 preflight 在任何 OCR 呼叫之前取樣，
+    永遠讀到樂觀初值 False，即使 tesserocr 根本沒裝也回報「可用」（H_preflight
+    對策）。這裡呼叫與 read_text 相同的 `_get_tess_api`（同一個 init 路徑、同一顆
+    thread-local 持久 API、同一面 `_tesserocr_unavailable` 旗標）做一次真實探測，
+    冪等（已裝好只是回傳快取的 api、不重複 init；已判定不可用直接回 False，不重試）、
+    絕不拋例外。不影響 read_text 既有的 fallback 行為。
+    """
+    try:
+        return _get_tess_api(tesseract_path) is not None
+    except Exception:
+        return False
+
+
 _DARK_MASK_V_THRESHOLD = 120   # HSV V 低於此視為「文字深色外框」；背景亮（如粉紅礦壁）時分得開
 
 

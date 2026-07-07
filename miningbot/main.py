@@ -219,14 +219,17 @@ class Bot:
         ores_all_present = os.path.exists(os.path.join("assets", "ores_all.json"))
         d4_cooldown_present = os.path.exists(cfg.activity_cooldown_template)
         discord_token_set = bool(cfg.discord_bot_token and cfg.discord_channel_id)
-        # 引擎可用性：沿用 ocr 模組既有的 init 成敗旗標，不自行重新 import/init。
-        # rapidocr_available() 呼叫既有的單例 getter（冪等、有鎖）；tesserocr 無對應公開函式，
-        # 只有私有旗標 _tesserocr_unavailable（lazy，尚未跑過 OCR 時仍是 False=樂觀預設）。
+        # 引擎可用性：rapidocr_available()／tesserocr_available() 都是冪等、有鎖的主動探測
+        # （鏡射同一套模式），不是取樣 lazy 旗標——避免 preflight 在任何 OCR 呼叫之前取樣到
+        # 樂觀初值（旗標只在真的跑過一次失敗的 OCR 後才會翻正確）。
         try:
             rapidocr_ok = ocr.rapidocr_available()
         except Exception:
             rapidocr_ok = False
-        tesserocr_ok = not getattr(ocr, "_tesserocr_unavailable", False)
+        try:
+            tesserocr_ok = ocr.tesserocr_available(cfg.tesseract_path)
+        except Exception:
+            tesserocr_ok = False
         log_dir_abspath = os.path.abspath(cfg.log_dir)
         snapshots_dir = os.path.join(cfg.log_dir, "snapshots")
         snapshots_total_mb = 0.0
@@ -778,6 +781,10 @@ class Bot:
         # 白吃掉大半個 verify 窗口（H032/H033 實錄 14:12/16:24 init 都在採集中）。
         # _get_rapid_engine 有鎖、冪等；未裝時這條執行緒只是快速失敗一次。
         threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
+        # tesserocr 探測同理背景預熱（成本遠低於 rapidocr，但避免 preflight 首次冷探測）：
+        # tesserocr_available 一樣冪等（沿用 _get_tess_api 的 thread-local 持久 API）。
+        threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,),
+                         daemon=True).start()
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
