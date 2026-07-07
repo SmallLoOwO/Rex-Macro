@@ -22,6 +22,7 @@
 | pythonw 無 console 啟動 + HUD 倒數合併 | ✅ 正常 |
 | Log 分檔分流（heartbeat/actions/harvest/discord） | ✅ 正常 |
 | chill 觸發自動錄音（累積訓練樣本） | ✅ 正常 |
+| 重置自動回礦（REENTRY；`auto_reenter` 預設關） | 🔧 程式碼完成，待實機校準（見 §10） |
 
 ---
 
@@ -399,3 +400,26 @@ python -c "from miningbot.config import DEFAULT as cfg; from miningbot.notify im
 | Repo 2 | tier 優先序 supernatural→common | ✅ 可參考 | 若加 礦物優先級排序 |
 | Repo 2 | 自動賣 礦（tierNum 門檻） | 🔜 可參考 | 需 game UI 互動 |
 | Repo 2 | 5 世界支援 | 🔜 可參考 | 各世界座標 profile |
+
+---
+
+## 10. 重置自動回礦（REENTRY）校準參數（2026-07-08）
+
+設計全文：`docs/superpowers/specs/2026-07-08-mine-reentry-design.md`（先讀「已確認的事實」與「明確不做的事」）。
+`auto_reenter` 預設 **False**；開啟前必須逐項校準下列 config（全部在 `miningbot/config.py`）：
+
+| 參數 | 怎麼量 |
+|---|---|
+| `reentry_surface_button_xy` | 截圖量右下「回到地表」按鈕座標（1920×1080 最大化） |
+| `reentry_pitch_back_px` | R 鍵視窗：俯仰歸位後上/下微調到「面板入畫的仰角」，讀視窗顯示的偏移量寫回 |
+| `reentry_pitch_clamp_px` | 預設 1500（過量無妨，拖到夾限飽和即可）；若方向相反（拖下=抬頭）對調正負驗證 |
+| `assets/surface/*.png` | R 鍵收 5–10 張不同重生點截圖 → `calibrate_surface --import NNN` 裁 2–3 張面板模板 |
+| `reentry_panel_threshold` | 拿上述截圖離線跑 `vision.best_template_match_scored`，確認「有面板 vs 無面板」分數有 gap |
+| `reentry_mine_max_brightness` | `calibrate_surface --brightness NNN` 收礦內/地表各 3 張，取中間值 |
+| `reentry_teleport_diff` | 傳送前後幀差遠大於原地站立幀差即可（預設 25，通常不用動） |
+| `reentry_target_layer`／`reentry_decoy_buttons` | 照面板實際按鈕文字拼字（含目標層全名）；點按鈕有無確認彈窗、扣費行為一併確認 |
+
+工作流：R 鍵取樣視窗（自動暫停挖礦）→ 編號截圖存 `logs/snapshots/manual/NNN.png`＋sidecar json（俯仰偏移）
+→ `calibrate_surface` 裁模板/量亮度 → 乾跑 `auto_reenter=True` 全程盯梢（Q 隨時接手）→ 成功 2–3 次才留開。
+失敗模式有界：任一步低信心→reroll（再按回到地表）；`reentry_max_attempts` 用盡→NEEDS_HUMAN（＝今日現狀）。
+快照分流：`logs/snapshots/reentry/`（點擊前/成功/放棄畫面，查傳錯層用）。

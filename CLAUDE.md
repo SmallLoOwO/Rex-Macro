@@ -10,9 +10,10 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - 同步 wiki 礦物清單：`python -m miningbot.fetch_ores`（Category:Worlds 動態發現**全部世界**（9 個）→ `assets/rare_ores.json` 高階白名單、`assets/ores_all.json` 聊天相關階級 Surreal+；印排除清單 diff＋跨世界低/高衝突報告；遊戲更新後跑一次。Common~Master 不進聊天、不收）
 - 擷取事件模板：`python -m miningbot.capture_template boost`
 - 校準偵測區：`python -m miningbot.calibrate`
+- 回礦校準：`python -m miningbot.calibrate_surface --import NNN`（R 鍵截圖裁面板模板 → `assets/surface/`）／`--brightness NNN`（礦內/地表亮度簽名）
 
 ## 架構（狀態機）
-主迴圈每 ~50ms 擷取一幀，純函式決定動作。狀態：`MINING / HARVESTING / NEEDS_HUMAN / RESET_WAIT`。
+主迴圈每 ~50ms 擷取一幀，純函式決定動作。狀態：`MINING / HARVESTING / NEEDS_HUMAN / RESET_WAIT / REENTRY`。
 - **I/O 薄封裝**：`capture`(mss 截圖)、`audio`(喇叭 loopback + 交叉相關)、`vision`(OpenCV)、`ocr`(Tesseract)、`input_control`(pydirectinput)
 - **純邏輯（有單元測試）**：`states`(轉換)、`geometry`(瞄準)、`miner`(事件分派)、`harvester`(採集步驟)、`events`
 - `main.Bot` 組裝主迴圈；`status_hud` 置頂狀態窗；**`config.DEFAULT` 集中所有座標/門檻/熱鍵**。
@@ -137,7 +138,15 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
     after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
     （新 has-found 行 / 背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
-  **F12** 結束。焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
+  **F12** 結束、**R** 手動取樣視窗（編號截圖＋俯仰歸位/微調；開啟時自動暫停挖礦）。
+  焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
+- **重置自動回礦（REENTRY，2026-07-08）**：設計全文 `docs/superpowers/specs/2026-07-08-mine-reentry-design.md`。
+  `auto_reenter` 預設 **False**（關＝RESET_WAIT 等人工＝舊行為；且 `assets/surface/` 無面板模板時視同關閉）。
+  流程＝按「回到地表」→ 俯仰歸位（拖到夾限飽和→回拉固定量）→ 八方位掃面板（`best_template_match_scored`）
+  → 右鍵 click-to-move 走近 → RapidOCR 文字框（`ocr.read_text_boxes`）點目標層按鈕 → 幀差+礦內亮度驗證。
+  **寧漏勿誤**：面板分數低於門檻/按鈕文字對 target 沒有嚴格贏過 decoy → 不點、reroll（再按回到地表換重生點）；
+  reroll 用盡（`reentry_max_attempts`）→ NEEDS_HUMAN＝今日現狀。決策純函式在 `reentry.py`（有單元測試），
+  I/O 在 `Bot._tick_reentry`；座標/門檻全在 config `reentry_*`，實機校準（R 鍵取樣＋`calibrate_surface`）完成前勿開。
 
 ## 實機排錯（怎麼看到畫面）
 - 截圖：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → 再 Read `logs/x.png`。
