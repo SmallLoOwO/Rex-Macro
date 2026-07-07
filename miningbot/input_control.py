@@ -74,3 +74,33 @@ def rotate_right():
 
 def rotate_left():
     key_press(",")
+
+def _drag_vertical(total_px: int, chunk: int = 180):
+    """右鍵按住的垂直拖曳，拆 chunk 段送（單次過大會被遊戲的滑鼠加速/取樣吃掉）。"""
+    sign = 1 if total_px >= 0 else -1
+    remaining = abs(total_px)
+    pydirectinput.mouseDown(button="right")
+    time.sleep(0.04)
+    while remaining > 0:
+        step = min(chunk, remaining)
+        pydirectinput.moveRel(0, sign * step, relative=True)
+        time.sleep(0.03)
+        remaining -= step
+    pydirectinput.mouseUp(button="right")
+    time.sleep(_STEP)
+
+def pitch_reset(down_px: int, back_px: int):
+    """俯仰歸位：先向下拖到夾限（飽和，量多無妨）、再回拉固定量。
+
+    俯仰角沒有絕對讀數（挖礦中途人工抬頭後回不去），但夾限是硬邊界——
+    飽和之後「回拉多少」就是可重現的絕對角度。down/back 方向若與遊戲相反
+    （拖下=抬頭），校準時把兩個參數對調正負驗證，勿改此函式。
+    """
+    _drag_vertical(down_px)
+    settle()
+    _drag_vertical(-back_px)
+    settle()
+
+def pitch_nudge(dy: int):
+    """俯仰微調一步（R 取樣視窗的上/下鈕用）。dy>0 向下拖。"""
+    _drag_vertical(dy)

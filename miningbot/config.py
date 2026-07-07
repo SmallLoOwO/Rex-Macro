@@ -157,6 +157,32 @@ class Config:
     snapshot_max_age_days: int = 30              # 快照保留天數（trace/review 排錯過了熱度就不會再看）
     snapshot_max_total_mb: int = 2048            # snapshots 總量上限，超過從最舊開始刪
 
+    # 重置自動回礦（auto re-entry；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）
+    auto_reenter: bool = False                  # 校準完成前預設關：關＝RESET_WAIT 等人工（今日行為）
+    reentry_surface_button_xy: tuple = (0, 0)   # 右下「回到地表」UI 按鈕座標（實機校準後填）
+    reentry_reset_settle_s: float = 5.0         # banner reset 字樣消失後沉澱多久才開始
+    reentry_max_attempts: int = 5               # reroll 上限，用盡 → NEEDS_HUMAN
+    reentry_attempt_timeout_s: float = 60.0     # 單輪（按回到地表→點擊驗證）時限
+    reentry_teleport_wait_s: float = 6.0        # 按回到地表/層按鈕後等場景切換上限
+    reentry_teleport_diff: float = 25.0         # 幀平均差超過此值＝傳送發生（校準時調）
+    reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
+    reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
+    reentry_panel_dir: str = "assets/surface"   # 面板偵測模板資料夾（實機裁圖）
+    reentry_panel_threshold: float = 0.45       # 面板邊緣比對門檻（高信心才進下一步）
+    reentry_panel_scales: tuple = (0.5, 0.7, 1.0, 1.4, 2.0)  # 距離變化大→尺度比 marker 寬
+    reentry_target_layer: str = "Mantle Layer"  # 目標層按鈕文字（校準時依實際要挖的層改）
+    reentry_decoy_buttons: tuple = ("Back to pre-reset location", "Basalt Layer",
+                                    "Diorite Layer", "Obsidian Layer", "Core Layer")
+    reentry_button_min_ratio: float = 0.75      # 層按鈕模糊比對下限（且須嚴格贏過 decoy）
+    reentry_nav_timeout_s: float = 15.0         # click-to-move 單段到位上限
+    reentry_move_stable_ticks: int = 3          # 連續 N tick 幀差近零＝角色停下
+    reentry_move_diff: float = 2.0              # 「近零」門檻（與 stuck/chat 同尺度）
+    reentry_mine_max_brightness: float = 60.0   # 礦內判定：stuck_region 平均亮度上限（校準時定）
+    # R 鍵手動取樣（校準素材收集；也可用於裁追蹤框模板/補 OCR fixture）
+    hotkey_sample: str = "r"
+    manual_snapshot_dir: str = "logs/snapshots/manual"
+    sample_pitch_step_px: int = 40              # R 視窗上/下微調一次的拖曳量
+
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
     hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟）
