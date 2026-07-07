@@ -45,7 +45,7 @@ _TEMPLATES = {
 def format_message(rec) -> str | None:
     """把事件轉成要送出的訊息；不需要通知的事件回 None。
 
-    meta 帶 harvest_id（如 "H007"）時統一前綴 [H007]，讓使用者從 Discord 看到就能回報
+    meta 帶 harvest_id（如 "007"）時統一前綴 [007]，讓使用者從 Discord 看到就能回報
     「哪個編號似乎誤判」——該編號同時出現在 harvest.log 與快照檔名，一鍵就能搜出全部證據。
     """
     tmpl = _TEMPLATES.get(rec.type)

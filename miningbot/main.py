@@ -98,7 +98,7 @@ class Bot:
             self.logger.error("音訊擷取啟動失敗，chill 偵測停用: %s", e)
         self.harvest = harvester.HarvestState(rotations=0, elapsed_s=0.0)
         self._harvest_start = 0.0
-        self._harvest_seq = self._load_harvest_seq()  # 採集流水號（持久化跨 session；每進一次 HARVESTING +1）；格式化成 H001 貫穿 log/快照/Discord
+        self._harvest_seq = self._load_harvest_seq()  # 採集流水號（持久化跨 session；每進一次 HARVESTING +1）；格式化成 001 貫穿 log/快照/Discord
         # 非同步快照：主線只丟佇列（即時拿路徑），背景執行緒做 PNG 編碼+寫檔（不卡 aim→D3）
         self._snap_q: queue.Queue = queue.Queue(maxsize=64)
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
@@ -975,7 +975,7 @@ class Bot:
         比存全螢幕更能當參考：直接看到「bot 認為最像外框的東西在哪、shape score 多少」。
         無候選時退回存全螢幕。回傳存檔路徑（或 None）。
 
-        tag：採集編號（如 "H007"），由採集放棄路徑傳入 → 檔名前綴與該輪其他截圖串連；
+        tag：採集編號（如 "007"），由採集放棄路徑傳入 → 檔名前綴與該輪其他截圖串連；
         非採集的 NEEDS_HUMAN（如重新聚焦失敗）傳空字串 → 不前綴（避免沿用上一輪殘留編號）。
         """
         import re, cv2
@@ -1093,8 +1093,8 @@ class Bot:
     def _load_harvest_seq(self) -> int:
         """啟動時載入上次最後用的採集編號（跨 session 不重複）。
 
-        檔案不存在/損壞/非正整數 → 回 0（首輪 H001）。比照 _load_keep_ores 容錯。
-        修 2026-06-30：原 _harvest_seq 每次啟動歸 0，重啟後 H001 重複，無法用編號
+        檔案不存在/損壞/非正整數 → 回 0（首輪 001）。比照 _load_keep_ores 容錯。
+        修 2026-06-30：原 _harvest_seq 每次啟動歸 0，重啟後 001 重複，無法用編號
         一鍵搜出「該輪」證據（橫跨多次執行的截圖/log/Discord 會撞號）。
         """
         import json
@@ -1147,7 +1147,7 @@ class Bot:
             self._mine_resetting = False
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
-            # 本輪採集配一個編號（H001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
+            # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
             # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
             self._harvest_seq += 1
             self._save_harvest_seq()              # 持久化：重啟後從這號繼續，不重複

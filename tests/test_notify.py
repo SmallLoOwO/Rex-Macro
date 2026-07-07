@@ -41,21 +41,21 @@ def test_needs_human_appends_rotation_hint_when_present():
 
 
 def test_harvest_id_prefixes_message_when_present():
-    """採集編號出現在 meta 時，訊息要前綴 [Hxxx]，讓 Discord 看到就能回報「哪個編號誤判」。"""
-    m = format_message(rec("RARE_FOUND", harvest_id="H001"))
-    assert m is not None and m.startswith("[H001]")
+    """採集編號出現在 meta 時，訊息要前綴 [xxx]，讓 Discord 看到就能回報「哪個編號誤判」。"""
+    m = format_message(rec("RARE_FOUND", harvest_id="001"))
+    assert m is not None and m.startswith("[001]")
 
 
 def test_harvest_success_keeps_id_and_mineral():
-    m = format_message(rec("HARVEST_SUCCESS", harvest_id="H007", mineral="Spectral 4FA208"))
-    assert m is not None and m.startswith("[H007]") and "Spectral 4FA208" in m
+    m = format_message(rec("HARVEST_SUCCESS", harvest_id="007", mineral="Spectral 4FA208"))
+    assert m is not None and m.startswith("[007]") and "Spectral 4FA208" in m
 
 
 def test_needs_human_keeps_id_reason_and_hint():
-    m = format_message(rec("NEEDS_HUMAN", harvest_id="H003", reason="D3 失敗",
+    m = format_message(rec("NEEDS_HUMAN", harvest_id="003", reason="D3 失敗",
                            rotation_hint="（面對追蹤框：按 . 3 次 ≈ 135°）"))
     assert m is not None
-    assert m.startswith("[H003]") and "D3 失敗" in m and "按 . 3 次" in m
+    assert m.startswith("[003]") and "D3 失敗" in m and "按 . 3 次" in m
 
 
 def test_no_harvest_id_means_no_prefix():
