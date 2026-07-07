@@ -545,12 +545,42 @@ _tess_local = threading.local()
 _tesserocr_unavailable = False   # import/init 失敗一次即全程退回 pytesseract（不再每次重試拋例外）
 
 
+_DEFAULT_TESSDATA_DIRS = (
+    r"C:\Program Files\Tesseract-OCR\tessdata",
+    r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+)
+
+
 def _tessdata_dir(tesseract_path: str | None) -> str | None:
     """由 tesseract.exe 路徑推得 tessdata（語言模型）目錄——tesserocr 需要它。"""
     if not tesseract_path:
         return None
     d = os.path.join(os.path.dirname(tesseract_path), "tessdata")
     return d if os.path.isdir(d) else None
+
+
+def _resolve_tessdata(tesseract_path: str | None) -> str | None:
+    """盡力找出可用的 tessdata 目錄：tesseract.exe 旁 → TESSDATA_PREFIX → 已知預設安裝路徑。
+
+    關鍵（2026-07-07）：`PyTessBaseAPI()` 不帶 path 時預設用 `./`，TESSDATA_PREFIX 未設時
+    必 init 失敗（"invalid tessdata path: ./"）。而 read_text 的 tesseract_path 預設是 None
+    → 任何漏傳 path 的呼叫都會踩到 → 舊版還把它 latch 成「tesserocr 全程不可用」（見
+    _get_tess_api）→ 整支退回 pytesseract、boost 被餓死。故這裡即使沒給 path 也主動找出
+    系統 tessdata，讓漏傳 path 的呼叫仍能用 tesserocr。"""
+    d = _tessdata_dir(tesseract_path)
+    if d:
+        return d
+    env = os.environ.get("TESSDATA_PREFIX")
+    if env:
+        if os.path.isdir(env):
+            return env
+        cand = os.path.join(env, "tessdata")
+        if os.path.isdir(cand):
+            return cand
+    for cand in _DEFAULT_TESSDATA_DIRS:
+        if os.path.isdir(cand):
+            return cand
+    return None
 
 
 def _get_tess_api(tesseract_path: str | None):
@@ -563,13 +593,19 @@ def _get_tess_api(tesseract_path: str | None):
         return api
     try:
         import tesserocr
-        kw = {}
-        d = _tessdata_dir(tesseract_path)
-        if d:
-            kw["path"] = d          # 指向系統 tessdata（wheel 自帶 libtesseract，但用系統語言模型）
-        api = tesserocr.PyTessBaseAPI(**kw)
     except Exception:
-        _tesserocr_unavailable = True   # 一次失敗即全程退回，行為與舊版 pytesseract 完全一致
+        _tesserocr_unavailable = True   # 真的沒裝 → 永久退回 pytesseract（正確；import 失敗才 latch）
+        return None
+    d = _resolve_tessdata(tesseract_path)
+    try:
+        api = tesserocr.PyTessBaseAPI(path=d) if d else tesserocr.PyTessBaseAPI()
+    except Exception:
+        # ★ 不再對「init 失敗」永久 latch（2026-07-07 對策）：init 失敗多半是「這次沒給對
+        #   tessdata path」而非 tesserocr 壞掉——舊版一次 pathless 呼叫就把 tesserocr 全程停用、
+        #   之後連帶正確 path 的呼叫也回 None（實測：available() 無參數→latch→available(path) 也 False）。
+        #   只有「找到了合法 tessdata 卻仍 init 失敗」＝安裝真的壞了，才永久退回避免每次拋例外。
+        if d is not None:
+            _tesserocr_unavailable = True
         return None
     _tess_local.api = api
     return api

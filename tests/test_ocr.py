@@ -1,8 +1,10 @@
+import os
 from miningbot.ocr import (contains_phrase, contains_any, count_found,
                            has_new_found, has_new_found_last_line,
                            count_rare_found, has_new_rare_found,
                            has_new_rare_found_last_line,
-                           extract_new_found_lines)
+                           extract_new_found_lines,
+                           _tessdata_dir, _resolve_tessdata)
 
 def test_contains_phrase_case_insensitive_and_fuzzy():
     text = "A CHILL goes  down your spine..."
@@ -674,3 +676,25 @@ def test_ledger_duplicate_rare_line_is_guarded_but_count_diff_backstops():
     assert led.update([after], LG_COMMON, KW) == []
     assert led.new_lines == []
     assert any_new_rare_found([base], [after], LG_COMMON, KW) is True
+
+
+# --- tessdata 路徑解析（2026-07-07：pathless init 會 latch 全程停用 tesserocr 的對策）---
+# 關鍵前提：PyTessBaseAPI() 不帶 path 時預設 './' 必 init 失敗（TESSDATA_PREFIX 未設時），
+# read_text 的 tesseract_path 預設又是 None → 漏傳 path 的呼叫會踩到。_resolve_tessdata 即使
+# 沒 path 也主動找系統 tessdata，讓漏傳 path 的呼叫仍能用 tesserocr（不誤退 pytesseract）。
+def test_tessdata_dir_finds_sibling_tessdata(tmp_path):
+    (tmp_path / "tessdata").mkdir()
+    exe = tmp_path / "tesseract.exe"
+    exe.write_text("")
+    assert _tessdata_dir(str(exe)) == os.path.join(str(tmp_path), "tessdata")
+
+def test_tessdata_dir_none_when_missing_or_no_path(tmp_path):
+    assert _tessdata_dir(None) is None
+    assert _tessdata_dir(str(tmp_path / "tesseract.exe")) is None   # 無 sibling tessdata
+
+def test_resolve_tessdata_prefers_path_derived_over_defaults(tmp_path):
+    # 給了合法 tesseract_path（旁有 tessdata）→ 一律優先用它，不落到 env/預設安裝路徑
+    (tmp_path / "tessdata").mkdir()
+    exe = tmp_path / "tesseract.exe"
+    exe.write_text("")
+    assert _resolve_tessdata(str(exe)) == os.path.join(str(tmp_path), "tessdata")
