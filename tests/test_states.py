@@ -103,3 +103,38 @@ def test_not_blocked_when_mining_and_not_paused():
 def test_not_blocked_when_harvesting():
     # HARVESTING 中 !resume 不該介入（正在採集，別打擾）
     assert is_blocked_from_mining(State.HARVESTING, paused=False) is False
+
+
+# --- REENTRY：重置後自動回礦（docs/superpowers/specs/2026-07-08-mine-reentry-design.md）---
+
+class TestReentryTransitions:
+    def test_reset_wait_auto_reenter_off_stays(self):
+        # auto_reenter 關 ＝ 今日行為：RESET_WAIT 等人工，reset_complete 也不自動走
+        o = obs(reset_complete=True, auto_reenter=False)
+        assert decide_transition(State.RESET_WAIT, o) is State.RESET_WAIT
+
+    def test_reset_wait_enters_reentry_when_reset_complete(self):
+        o = obs(reset_complete=True, auto_reenter=True)
+        assert decide_transition(State.RESET_WAIT, o) is State.REENTRY
+
+    def test_reset_wait_human_q_wins_over_auto(self):
+        # 使用者按 Q＝明確接手，優先於自動路徑
+        o = obs(reset_complete=True, auto_reenter=True, human_cleared=True)
+        assert decide_transition(State.RESET_WAIT, o) is State.MINING
+
+    def test_reset_wait_not_complete_waits(self):
+        o = obs(auto_reenter=True)
+        assert decide_transition(State.RESET_WAIT, o) is State.RESET_WAIT
+
+    def test_reentry_done_to_mining(self):
+        assert decide_transition(State.REENTRY, obs(reentry_done=True)) is State.MINING
+
+    def test_reentry_failed_to_needs_human(self):
+        assert decide_transition(State.REENTRY, obs(reentry_failed=True)) is State.NEEDS_HUMAN
+
+    def test_reentry_failed_wins_over_done(self):
+        o = obs(reentry_done=True, reentry_failed=True)
+        assert decide_transition(State.REENTRY, o) is State.NEEDS_HUMAN
+
+    def test_reentry_otherwise_stays(self):
+        assert decide_transition(State.REENTRY, obs()) is State.REENTRY
