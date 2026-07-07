@@ -148,6 +148,10 @@ class Config:
     log_dir: str = "logs"
     log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）
     save_snapshots: bool = True                  # 關鍵事件（chill/失敗/卡住/成功）自動存畫面截圖以利除錯
+    sweep_empty_snapshot: bool = True            # sweep 全 8 方位皆空→交人工時，存每個方位的全幀（診斷用）：
+                                                 # 這類交人工的真框常是薄/暗/被遮、shape-edge 低到被 hard_rej
+                                                 # （2026-07-07 harvest 044-064 實錄），但過去只存觸發幀、看不到
+                                                 # sweep 各方位實況→無從判斷是真漏抓還是礦已被挖走、也無法裁模板補救
     heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
     snapshot_retention_enabled: bool = True      # 啟動時清理過舊/過量快照（實測 632MB 且在 OneDrive 同步夾）
     snapshot_max_age_days: int = 30              # 快照保留天數（trace/review 排錯過了熱度就不會再看）

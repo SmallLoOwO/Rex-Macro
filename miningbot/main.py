@@ -20,6 +20,12 @@ _DISCORD_COMMANDS = frozenset({
     "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
 })
 
+# 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
+# 用 emoji 而非 Discord Components 按鈕：本專案全程 stdlib urllib，無 Websocket/interaction 基礎建設；
+# 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
+_REMOTE_RESUME_EMOJI = "▶️"
+_REMOTE_PAUSE_EMOJI = "⏸️"
+
 
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
@@ -120,6 +126,10 @@ class Bot:
         self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
         self._list_current_world: str | None = None     # 該訊息目前顯示的世界（None=全世界聯集）
         self._list_reactions_seen: dict[str, set[str]] = {}  # 每表情已見使用者 ID（偵測「新點擊」）
+        # 遙控器（永久釘底的控制訊息）：每次頻道有新訊息擠上來就刪舊的、貼新的到頻道底，
+        # 確保使用者滑到最新一則就是搖控器。反應 ▶️/⏸️ 由 _poll_remote_reactions 偵測新點擊。
+        self._remote_message_id: str | None = None
+        self._remote_reactions_seen: dict[str, set[str]] = {}
         # 狀態小窗用的即時資訊
         self._started = time.time()
         self.last_action = "—"
@@ -685,6 +695,101 @@ class Bot:
                 self._list_current_world = world
                 self.log_discord.info("list 分頁切換 -> %s（%d 個新點擊）", world, len(new_clickers))
                 return                              # 一次輪詢只切一頁
+
+    # ---- 遙控器（釘底控制訊息 + 反應按鈕）-------------------------------------
+    def _build_remote_embed(self) -> dict:
+        """組遙控器 embed。狀態欄同步顯示當前挖 礦狀態 + 暫停旗標，每次 refresh 都更新。"""
+        running = not self.paused
+        status_text = (f"{'🟢 挖礦中' if running else '🔴 已暫停'}"
+                       f"　{self.state.value}"
+                       + (f"（{self.last_action}）" if self.last_action and self.last_action != "—" else ""))
+        return {
+            "title": "🎮 挖 礦機器人遙控器",
+            "description": (
+                f"**狀態**：{status_text}\n"
+                f"\n"
+                f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
+                f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
+                f"\n"
+                f"_按鈕反應後會自動重建遙控器到頻道底_"
+            ),
+            "color": 0x57F287 if running else 0xED4245,
+            "footer": {"text": "遙控器會自動維持在最新訊息位置"},
+        }
+
+    def _post_remote_control(self):
+        """貼一則新的遙控器到頻道底，貼 ▶️/⏸️ 反應，記基線。失敗靜默（下輪重試）。
+
+        成功時更新 _remote_message_id 與 _remote_reactions_seen 基線（含機器人自己），
+        避免首輪把自己的反應當成新點擊。沿用 !list 已驗證的 send_embed + add_reaction 模式。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        embed = self._build_remote_embed()
+        ok, detail, mid = notify.send_embed(token, ch, embed)
+        if not (ok and mid):
+            self.log_discord.info("remote post FAIL -> %s", detail)
+            return
+        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI):
+            notify.add_reaction(token, ch, mid, em)
+        # 基線：機器人自己貼的反應記成「已見」，避免首輪誤觸發
+        seen = {}
+        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI):
+            users = notify.get_reactions(token, ch, mid, em)
+            seen[em] = {u.get("id") for u in users if u.get("id")}
+        self._remote_message_id = mid
+        self._remote_reactions_seen = seen
+        self.log_discord.info("remote posted -> mid=%s (state=%s paused=%s)",
+                              mid, self.state.value, self.paused)
+
+    def _refresh_remote_control(self):
+        """刪掉舊遙控器、貼新的到頻道底。遙控器狀態變更或被擠上去時呼叫。
+
+        刪除失敗（缺權限、已被刪）不擋重新張貼——新遙控器仍可用，舊的會殘留為靜態訊息。
+        """
+        from . import notify
+        old = self._remote_message_id
+        if old:
+            notify.delete_message(cfg.discord_bot_token, cfg.discord_channel_id, old)
+        self._post_remote_control()
+
+    def _poll_remote_reactions(self):
+        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並重建遙控器。
+
+        沿用 _poll_list_reactions 的「已見使用者集合差集 = 新點擊」模式。任何動作觸發後
+        都 _refresh_remote_control（重建到頻道底、清掉使用者反應以便再點、刷新狀態顯示）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        mid = self._remote_message_id
+        action_taken = None
+        for emoji, action in ((_REMOTE_RESUME_EMOJI, "resume"),
+                              (_REMOTE_PAUSE_EMOJI, "pause")):
+            users = notify.get_reactions(token, ch, mid, emoji)
+            user_ids = {u.get("id") for u in users if u.get("id")}
+            seen = self._remote_reactions_seen.setdefault(emoji, set())
+            new_clickers = user_ids - seen
+            if not new_clickers:
+                continue
+            seen.update(user_ids)            # 標記本次所有按過者為已見
+            action_taken = action
+            if action == "resume":
+                # 等同 !resume：清人工旗標 + 解暫停；非阻塞狀態下也是 no-op 安全
+                was_blocked = is_blocked_from_mining(self.state, self.paused)
+                self.human_cleared = True
+                if self.paused:
+                    self._resume()
+                self.log_discord.info("remote ▶️ resume by %s（was_blocked=%s）",
+                                      ",".join(sorted(new_clickers)), was_blocked)
+            else:  # pause
+                already = self.paused
+                self._pause()
+                self.log_discord.info("remote ⏸️ pause by %s（already=%s）",
+                                      ",".join(sorted(new_clickers)), already)
+            break                              # 一次輪詢只處理一個動作
+        if action_taken:
+            # 動作觸發後重建遙控器：刷新狀態文字 + 把遙控器推回頻道底 + 清掉使用者反應（重建基線）
+            self._refresh_remote_control()
 
     def _handle_discord_command(self, content: str):
         """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。
@@ -1415,12 +1520,15 @@ class Bot:
         hid = self.harvest.harvest_id   # 本輪編號；sweep 偵測敘事行前綴 [Hxxx]（誤判常源於此階段）
         NUM_DIRS = 8
         candidates = []  # [(dir_idx, position)]
+        sweep_frames = []  # 各方位全幀（.copy——grab buffer 會被下一幀覆寫）；全空→交人工時落盤診斷
         for i in range(NUM_DIRS):
             f = capture.grab()
             # ★ boost 守門（H026）：sweep 一輪 ~10-19s，D5 常在中段到期。到期即補則各方位
             #   都在同一（有 buff）FOV 下偵測，候選座標彼此一致、也與稍後開火時一致。
             if self._harvest_boost_guard(f):
                 f = capture.grab()
+            if cfg.sweep_empty_snapshot:
+                sweep_frames.append((i, f.copy()))
             r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
             if r1:
                 m1 = (r1[0], r1[1])
@@ -1453,6 +1561,14 @@ class Bot:
 
         if not candidates:
             self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
+            if cfg.sweep_empty_snapshot and sweep_frames:
+                # 每個方位落盤全幀：這類交人工的真框常薄/暗/被遮、shape-edge 低到 hard_rej，
+                # 過去只有觸發幀可查（看不到 sweep 各方位實況）→ 存下來供事後跑 find_tracker
+                # 診斷、或裁成模板補進 assets/markers（見 project_sweep_all_empty_giveups）。
+                for di, fr in sweep_frames:
+                    self._hsnap(fr, "sweep_empty_dir%d" % di)
+                self.log_harvest.info("[%s] sweep 全空：已存 %d 張各方位全幀供診斷",
+                                      hid, len(sweep_frames))
             return None, False
 
         # 同一顆框常橫跨相鄰 2~3 個方位（45° 視野重疊）→ 選 x 最居中者（H019 對策）：
