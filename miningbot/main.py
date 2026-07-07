@@ -1165,6 +1165,18 @@ class Bot:
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score)
 
+    def _find_tracker_near(self, frame, center, exclude, reference_bgr=None):
+        """verify 輪詢快路徑：只搜開火座標周圍 ROI（參數組與 _find_tracker 一致）。"""
+        return vision.find_tracker_near(
+            frame, center, cfg.verify_roi_radius_px,
+            frame_margin_frac=cfg.tracker_margin_frac,
+            exclude=exclude, reference_bgr=reference_bgr,
+            shape_templates=self._shape_templates,
+            shape_threshold=cfg.tracker_shape_threshold,
+            shape_hard_floor=cfg.tracker_shape_hard_floor,
+            shape_scales=cfg.tracker_shape_scales,
+            shape_roi_px=cfg.tracker_shape_roi_px)
+
     def _rotate_verified(self, direction: int) -> bool:
         """送一次視角鍵（+1=右轉 .、-1=左轉 ,）並以前後幀驗證「真的轉了 45°」。
 
@@ -1497,7 +1509,15 @@ class Bot:
         first_poll = True
         after = None
         chat_after = chat_before
+        roi_center = (cx, cy)   # ROI 快路徑起點＝開火座標；命中即漂移吸收，miss 才落全幀後備
         while True:
+            if not self._running or self.paused:
+                # 協作式中斷（HANDOFF §7 已知限制）：F12/Ctrl+Q/Q 期間不再困在
+                # 最長 ~8s 輪詢＋~10s final-check 裡；鍵盤已由 _pause/_quit 清掉，
+                # 直接棄本輪驗證，run() 的暫停/結束分支接手。
+                self.log_harvest.info("[%s] verify 輪詢中斷（%s）", hid,
+                                      "quit" if not self._running else "pause")
+                return
             after = capture.grab()
             if self._harvest_boost_guard(after):   # H026：到期即補，gone 檢查才在正確 FOV 下跑
                 after = capture.grab()
@@ -1505,7 +1525,17 @@ class Bot:
                 self._hsnap(after, "d3_after")   # 首輪全幀診斷截圖（與 d3_fire 對比，事後追蹤是否命中）
                 first_poll = False
             if not gone:
-                gone = self._find_tracker(after, _excl, reference_bgr=_ref) is None
+                # ★ ROI 快路徑（Task 1.1/1.2）：開火座標已知，全幀掃描（~2s）浪費九成——
+                #   只搜 verify_roi_radius_px 內（~0.3s）。miss 不等於 gone（H026：FOV 位移
+                #   可能超出 ROI）→ 全幀後備確認一次，維持與舊版「全幀每輪」等價的判定。
+                hit = self._find_tracker_near(after, roi_center, _excl, reference_bgr=_ref)
+                if hit is not None:
+                    roi_center = hit[:2]           # 微漂移吸收，下一輪仍走快路徑
+                else:
+                    full = self._find_tracker(after, _excl, reference_bgr=_ref)
+                    if full is not None:
+                        roi_center = full           # 大漂移：更新中心回快路徑
+                    gone = full is None
             cur_crop = capture.crop(after, cfg.chat_region)
             mean_diff = vision.frames_mean_diff(self._chat_last_crop, cur_crop)
             # 每輪都留一行 DEBUG（H020 事後排錯需求）：沒觸發 OCR 的輪也要能回答
