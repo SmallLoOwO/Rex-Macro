@@ -260,8 +260,13 @@ class Bot:
         )
 
     def _run_preflight(self) -> list[str]:
-        """跑 preflight 檢查、記 log，回傳 WARN 訊息清單（供啟動 Discord 通知併入）。
-        任何環節失敗都吞掉、不擋啟動——preflight 是輔助可見度，不是啟動關卡。"""
+        """跑 preflight 檢查、記 log、寫警訊檔，回傳 WARN 訊息清單。
+
+        WARN 是「環境/資產降級」診斷（tesserocr 沒裝、snapshots 太大…），是給
+        「之後的 AI agent 去修」的待辦，不是掛機者要即時看的東西——所以**不進即時
+        Discord 通知**（使用者回饋 2026-07-07），改寫進 logs/preflight_alerts.md 供
+        後續 agent 巡檢修復。任何環節失敗都吞掉、不擋啟動——preflight 是輔助可見度，
+        不是啟動關卡。"""
         try:
             facts = self._collect_preflight_facts()
             results = run_checks(facts)
@@ -275,7 +280,34 @@ class Bot:
                 warn_msgs.append(m)
             else:
                 self.logger.info("[preflight] %s", m)
+        self._write_preflight_alerts(warn_msgs)
         return warn_msgs
+
+    def _write_preflight_alerts(self, warn_msgs):
+        """把 preflight WARN 寫進 logs/preflight_alerts.md（每次啟動覆寫＝當前狀態快照，
+        修好的項目自然消失、不累積雜訊）。這是給後續 AI agent 巡檢修復的警訊清單，
+        刻意與即時 Discord 通知分流（使用者回饋：診斷降級訊息不該洗掉要即時閱讀的訊息）。
+        無 WARN 時也覆寫成「無警訊」，讓 agent 一眼看出已清乾淨。絕不可擋啟動。"""
+        try:
+            path = os.path.join(cfg.log_dir, "preflight_alerts.md")
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            lines = [
+                "# Preflight 警訊（供後續 AI agent 巡檢修復）",
+                "",
+                f"> 最後更新：{ts}（每次 bot 啟動覆寫＝當前環境/資產降級快照）。",
+                "> 這些是靜默降級診斷，不是即時 Discord 通知。修好對應項目後此檔會自動變乾淨。",
+                "",
+            ]
+            if warn_msgs:
+                lines.append(f"## 待修 {len(warn_msgs)} 項")
+                lines += [f"- [ ] {m}" for m in warn_msgs]
+            else:
+                lines.append("## 無警訊 ✅")
+            os.makedirs(cfg.log_dir, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            self.logger.warning("寫 preflight 警訊檔失敗（不影響啟動）: %r", e)
 
     def _snapshot_cleanup_once(self):
         """啟動時清理過舊/過量快照（Phase 3.2）：632MB 且在 OneDrive 同步夾的實測痛點對策。
@@ -853,21 +885,17 @@ class Bot:
         self.logger.info("初始化完成，開始挖礦")
         # 啟動自檢（preflight）：背景執行緒——它依賴 rapidocr_available()（可能仍在暖機中，
         # 冪等等鎖不搶跑），且 markers/chill_refs/檔案 mtime 這些 I/O 沒必要卡住主迴圈啟動。
-        # 跑完把 WARN 併入啟動 Discord 通知（與既有的保留事件清單同一則訊息）。
+        # WARN 診斷寫進 logs/preflight_alerts.md 供後續 agent 巡檢，**不進即時 Discord 通知**
+        # （使用者回饋 2026-07-07：降級診斷不該洗掉要即時閱讀的訊息）。啟動 Discord 通知
+        # 只保留「已啟動＋保留事件」這種掛機者當下需要看的內容。
         def _preflight_and_notify():
-            warn_msgs = self._run_preflight()
+            self._run_preflight()
             if cfg.discord_bot_token and cfg.discord_channel_id:
                 from . import notify
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = f"🤖 Bot 已啟動\n目前保留事件：\n{kept}"
-                if warn_msgs:
-                    text += "\n\n⚠ 啟動自檢警告：\n" + "\n".join(f"- {m}" for m in warn_msgs)
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
-        if cfg.discord_bot_token and cfg.discord_channel_id:
-            from . import notify
-            threading.Thread(target=_preflight_and_notify, daemon=True).start()
-        else:
-            threading.Thread(target=self._run_preflight, daemon=True).start()
+        threading.Thread(target=_preflight_and_notify, daemon=True).start()
         try:
             while self._running:
                 if self.paused:
