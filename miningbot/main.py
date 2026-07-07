@@ -277,6 +277,46 @@ class Bot:
                 self.logger.info("[preflight] %s", m)
         return warn_msgs
 
+    def _snapshot_cleanup_once(self):
+        """啟動時清理過舊/過量快照（Phase 3.2）：632MB 且在 OneDrive 同步夾的實測痛點對策。
+
+        純決策交給 diagnostics.plan_snapshot_cleanup（有測試）；這裡只做 I/O：
+        scandir 收集 logs/snapshots 底下所有檔案 → 純函式決定該刪誰 → os.remove。
+        **安全邊界：只掃/只刪 `cfg.log_dir/snapshots` 底下**，絕不碰其他路徑（不誤刪
+        OneDrive Pictures/Roblox 的手動 ground-truth 截圖、也不碰 log_dir 下其他 *.log）。
+        任何環節失敗都吞掉、不擋啟動或主迴圈——這是背景清理，不是關鍵路徑。
+        """
+        if not cfg.snapshot_retention_enabled:
+            return
+        try:
+            snap_dir = os.path.join(cfg.log_dir, "snapshots")
+            if not os.path.isdir(snap_dir):
+                return
+            entries = []
+            for root, _dirs, files in os.walk(snap_dir):
+                for name in files:
+                    path = os.path.join(root, name)
+                    try:
+                        st = os.stat(path)
+                    except OSError:
+                        continue
+                    entries.append((path, st.st_mtime, st.st_size))
+            doomed = diagnostics.plan_snapshot_cleanup(
+                entries, time.time(), cfg.snapshot_max_age_days, cfg.snapshot_max_total_mb)
+            freed_bytes = 0
+            deleted = 0
+            for path in doomed:
+                try:
+                    size = os.path.getsize(path)
+                    os.remove(path)
+                    freed_bytes += size
+                    deleted += 1
+                except OSError:
+                    pass
+            self.logger.info("快照清理：刪 %d 檔、釋出 %.0fMB", deleted, freed_bytes / (1024 * 1024))
+        except Exception as e:
+            self.logger.warning("快照清理失敗（不影響啟動）: %r", e)
+
     def _boost_needs_refresh(self, frame) -> bool:
         """boost 邏輯：瓶子（buff）消失 → 該重上 D5。
 
@@ -777,6 +817,7 @@ class Bot:
         miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
+        threading.Thread(target=self._snapshot_cleanup_once, daemon=True).start()
         # RapidOCR 預熱（實測 init 6~7s）：lazy init 會落在第一次採集的基準 OCR 前、
         # 白吃掉大半個 verify 窗口（H032/H033 實錄 14:12/16:24 init 都在採集中）。
         # _get_rapid_engine 有鎖、冪等；未裝時這條執行緒只是快速失敗一次。

@@ -149,6 +149,9 @@ class Config:
     log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）
     save_snapshots: bool = True                  # 關鍵事件（chill/失敗/卡住/成功）自動存畫面截圖以利除錯
     heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
+    snapshot_retention_enabled: bool = True      # 啟動時清理過舊/過量快照（實測 632MB 且在 OneDrive 同步夾）
+    snapshot_max_age_days: int = 30              # 快照保留天數（trace/review 排錯過了熱度就不會再看）
+    snapshot_max_total_mb: int = 2048            # snapshots 總量上限，超過從最舊開始刪
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續

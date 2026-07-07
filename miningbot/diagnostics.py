@@ -123,3 +123,21 @@ def save_snapshot(frame, log_dir: str, label: str) -> str:
     os.makedirs(snap_dir, exist_ok=True)
     cv2.imwrite(path, frame)
     return path
+
+
+def plan_snapshot_cleanup(entries, now_ts, max_age_days, max_total_mb):
+    """快照保留決策：先刪過期，仍超容量上限就從最舊開始刪到達標。
+
+    純函式（entries 由呼叫端 os.scandir 收集）；632MB/OneDrive 同步夾的實測痛點對策。
+    """
+    cutoff = now_ts - max_age_days * 86400.0
+    doomed = [p for p, m, _ in entries if m < cutoff]
+    keep = sorted(((p, m, s) for p, m, s in entries if m >= cutoff), key=lambda e: e[1])
+    total = sum(s for _, _, s in keep)
+    cap = max_total_mb * 1024 * 1024
+    i = 0
+    while total > cap and i < len(keep):
+        doomed.append(keep[i][0])
+        total -= keep[i][2]
+        i += 1
+    return doomed
