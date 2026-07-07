@@ -995,6 +995,7 @@ class Bot:
             # → 送人工的 before/after 兩張一模一樣、對比失去鑑別力）
             self._harvest_origin_ref = self._pre_scan_ref
             harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
+            self._confirm_scan("enter")
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
             # ★ 聊天基準提升到 episode 級（2026-07-04 H032 延伸對策）：進場拍一次、
@@ -1736,6 +1737,23 @@ class Bot:
             chat_after_path=self._hsnap_crop(frame, cfg.chat_region, "late_chat_after"))
         return True
 
+    def _confirm_scan(self, where: str) -> bool:
+        """D2 掃描確認（scan_confirm_mode 控制）。回傳 False 表示 enforce 模式下已重試仍失敗。"""
+        if cfg.scan_confirm_mode == "off":
+            return True
+        crop = capture.crop(capture.grab(), cfg.scan_confirm_region)
+        ok = harvester.scan_succeeded([ocr.read_text(crop, cfg.tesseract_path)])
+        self.log_harvest.info("[scan-confirm] %s ok=%s mode=%s", where, ok, cfg.scan_confirm_mode)
+        if ok or cfg.scan_confirm_mode == "observe":
+            return True
+        self.logger.warning("[scan-confirm] %s 未見 Local → 重新聚焦＋重掃一次", where)
+        self._focus_roblox()
+        harvester.execute_scan()
+        crop = capture.crop(capture.grab(), cfg.scan_confirm_region)
+        ok = harvester.scan_succeeded([ocr.read_text(crop, cfg.tesseract_path)])
+        self.log_harvest.info("[scan-confirm] %s retry ok=%s", where, ok)
+        return True   # 重試後不論成敗都繼續 sweep（寧多掃勿誤棄；失敗已留 WARNING）
+
     def _reharvest_sweep(self):
         """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""
         self.harvest.d3_attempts = 0
@@ -1752,6 +1770,7 @@ class Bot:
         if getattr(self, "_pre_scan_ref", None) is None:
             self._pre_scan_ref = capture.grab()  # 防禦：理論上進 HARVESTING 必已拍
         harvester.execute_scan()
+        self._confirm_scan("resweep")
         # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
         self._harvest_start = time.time()
         self.harvest.elapsed_s = 0.0
