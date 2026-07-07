@@ -701,3 +701,21 @@ def test_find_tracker_near_keeps_h026_bottom_edge_tracker_visible():
     assert loc is not None and abs(loc[0] - 1288) < 40 and abs(loc[1] - 1020) < 40
     assert find_tracker_near(img, (1288, 1020), 180,
                              frame_margin_frac=0.10, **kw) is None
+
+
+# --- best_template_match_scored：reentry sweep 跨 8 方位比分數用 ---
+from miningbot import vision
+
+
+def test_best_template_match_scored_finds_rect():
+    scene = np.zeros((300, 400, 3), dtype=np.uint8)
+    cv2.rectangle(scene, (160, 125), (240, 175), (200, 80, 200), 3)
+    tmpl = scene[115:185, 150:250].copy()
+    score, center = vision.best_template_match_scored(scene, [tmpl], scales=(1.0,))
+    assert score > 0.8
+    assert abs(center[0] - 200) < 10 and abs(center[1] - 150) < 10
+
+
+def test_best_template_match_scored_empty_templates():
+    scene = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert vision.best_template_match_scored(scene, [], scales=(1.0,)) == (-1.0, None)

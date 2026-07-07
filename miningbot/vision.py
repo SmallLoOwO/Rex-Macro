@@ -112,6 +112,21 @@ def find_best_marker(scene_bgr, templates: dict, threshold: float, scales=(1.0,)
         return None
     return (best_name, best_loc)
 
+def best_template_match_scored(scene_bgr, templates: list, scales=(1.0,)):
+    """多模板取最佳 (score, center)；找不到回 (-1.0, None)。
+
+    與 find_template_edges 的差別：回分數不設門檻——reentry sweep 要跨 8 方位
+    比大小、由呼叫端用 config 門檻決定「夠不夠信心」（寧漏勿誤在決策層做）。
+    """
+    scene_e = _canny(scene_bgr)
+    sh, sw = scene_e.shape[:2]
+    best_val, best_loc = -1.0, None
+    for t in templates:
+        v, loc = _best_edge_match(scene_e, sh, sw, t, scales)
+        if loc is not None and v > best_val:
+            best_val, best_loc = v, loc
+    return best_val, best_loc
+
 def load_template(path: str):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
