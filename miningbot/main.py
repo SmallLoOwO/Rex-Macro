@@ -459,16 +459,18 @@ class Bot:
         if world and world != prev:
             self.logger.info("偵測到世界: %s（依事件 %r）", world, event_text.strip()[:40])
 
-    def _maybe_detect_world_from_ore_lines(self, rare_lines):
+    def _maybe_detect_world_from_ore_lines(self, new_lines):
         """礦名反推世界（Task 4.1）：7/9 世界 events 空、事件式偵測永遠鎖不了它們；
-        帳本新增的稀有 found 行（被動聊天 Surreal/Mythic 礦名）是更高頻的世界信號，
-        且 verify OCR 已經在讀這些行——零額外 OCR 成本。只在世界尚未鎖定時嘗試
-        （已鎖定就不需要、也避免和事件式偵測的結果互相覆蓋）。只掛在 HARVESTING
-        的 verify/帳本路徑，MINING 期間的聊天輪詢不做（會加 OCR 成本，見 t4.1-brief）。
+        帳本新增行裡的被動聊天 Surreal/Mythic 礦名（其名在 common_ores，才是
+        detect_world_from_ore 的比對來源）是更高頻的世界信號，且 verify OCR 已經在讀
+        這些行——零額外 OCR 成本。餵「全部新增行」（ledger.new_lines）而非只餵稀有行
+        （稀有礦依定義不在 common_ores、永遠對不上）。只在世界尚未鎖定時嘗試（已鎖定
+        就不需要、也避免和事件式偵測的結果互相覆蓋）。只掛在 HARVESTING 的 verify/帳本
+        路徑，MINING 期間的聊天輪詢不做（會加 OCR 成本，見 t4.1-brief）。
         """
         if game_data.current_world_name() is not None:
             return
-        for line in rare_lines:
+        for line in new_lines:
             ore_name = ocr.found_ore_name(line, cfg.found_keywords)
             if not ore_name:
                 continue
@@ -1949,7 +1951,10 @@ class Bot:
             got = ledger.update(chat_after, common, cfg.found_keywords, rare_names=rare_names)
             if got:
                 self.log_harvest.info("[%s] 帳本入帳新稀有行: %s", hid, got)
-                self._maybe_detect_world_from_ore_lines(got)
+            # 世界偵測餵「全部新增行」（ledger.new_lines，含被動 Surreal/Mythic 低階礦）——
+            # 那些礦名才在 common_ores 裡、才是 detect_world_from_ore 的比對來源。got 只有
+            # 稀有行（依定義不在 common_ores）永遠對不上、且只在稀有入帳時觸發＝原本形同不生效。
+            self._maybe_detect_world_from_ore_lines(ledger.new_lines)
             confirmed = confirmed or ledger.confirmed
         counts = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         self.log_harvest.info("[%s] verify OCR(%s) %.1fs rare/pass=%s confirmed=%s special=%s",
