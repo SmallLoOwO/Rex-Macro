@@ -1,5 +1,6 @@
 import time
 import pydirectinput
+import ctypes
 
 # 之前輸入太快、遊戲來不及讀，導致 W 沒按下、Shift 沒置中等。整體放慢。
 pydirectinput.PAUSE = 0.04                 # 每個 pydirectinput 動作後的間隔
@@ -45,6 +46,25 @@ def mouse_click(button: str = "left", hold: float = 0.0):
 def mouse_move_rel(dx: int, dy: int):
     pydirectinput.moveRel(dx, dy, relative=True)
     time.sleep(_STEP)
+
+_MOUSEEVENTF_WHEEL = 0x0800
+_WHEEL_DELTA = 120           # Windows 滾輪一格的標準單位
+
+def scroll(clicks: int):
+    """滑鼠滾輪捲動：clicks 正值向上捲、負值向下捲（Windows WHEEL_DELTA=120/格）。
+
+    本機安裝的 pydirectinput 版本沒有 scroll()（2026-07-08 確認：dir(pydirectinput)
+    只有 moveTo/moveRel/click/keyDown/keyUp 等，無 scroll），改走 win32 mouse_event
+    直接送 MOUSEEVENTF_WHEEL——與 main.py 既有用 ctypes.windll.user32 做視窗操作同模式。
+    呼叫前應先用 move_to() 把游標移到要捲動的區域上方（Windows 滾輪事件作用於游標所在視窗/控制項）。
+    """
+    ctypes.windll.user32.mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, clicks * _WHEEL_DELTA, 0)
+    time.sleep(_STEP)
+
+def move_to(x: int, y: int):
+    """移動滑鼠到絕對座標（不點擊）。給選單捲動/略過點擊的場景用。"""
+    pydirectinput.moveTo(x, y)
+    time.sleep(0.05)
 
 def click_at(x: int, y: int, button: str = "left", hold: float = 0.0):
     """移到絕對座標再點一下。hold>0 時改成按住再放開（D3 採集需要 hold=0.4 才觸發）。"""
