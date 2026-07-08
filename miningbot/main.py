@@ -1167,6 +1167,12 @@ class Bot:
             else:
                 self.logger.warning("無法取得視窗基準（found=%s fg=%s）— 跑位偵測停用",
                                     base.found, base.foreground)
+        # 啟動 UI 前置檢查（spec 2026-07-08-menu-preflight-boost-design.md 第 3 節）：
+        # 聊天框關著會讓整條 verify OCR 鏈瞎眼；Movement Mode 不對會讓 W+左鍵挖礦序列失效。
+        self._ensure_chat_open()
+        if not self._set_movement_mode(cfg.movement_mode_mining):
+            self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
+            self.last_action = "⚠ Movement Mode 切換失敗，請手動確認"
         miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
