@@ -13,7 +13,7 @@ from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining, should_notify_spawn_chill)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
-from . import sampler, reentry
+from . import sampler, reentry, roblox_menu
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
 
@@ -708,6 +708,85 @@ class Bot:
         if not got:
             self.logger.warning("Roblox 未取得前景焦點 — 輸入不會進遊戲；請點一下遊戲視窗再啟動")
         return got
+
+    def _set_movement_mode(self, target: str) -> bool:
+        """把 Roblox 設定 Movement Mode 切到 target（三值之一）。
+
+        決策純函式在 roblox_menu.py，這裡只做 I/O（Esc/點擊/捲動/OCR）。冪等：已是
+        目標值時不點任何箭頭直接收工。任一步不確定 → Esc 回中性 → 整鏈重試
+        cfg.menu_retry_max 次 → 仍失敗回 False（呼叫端依情境分流 NEEDS_HUMAN 或記警告）。
+        """
+        others = tuple(o for o in cfg.movement_mode_options if o != target)
+        for attempt in range(cfg.menu_retry_max + 1):
+            if self._set_movement_mode_once(target, others):
+                return True
+            self.log_act.warning("Movement Mode 切換失敗（第 %d 次），Esc 回中性後重試",
+                                 attempt + 1)
+            ic.key_press("esc")
+            time.sleep(cfg.menu_close_settle_s)
+        return False
+
+    def _set_movement_mode_once(self, target: str, others: tuple) -> bool:
+        """單次嘗試：開選單→找 Settings→找 Movement Mode 列→比對值→不符則點右箭頭。"""
+        ic.key_press("esc")
+        time.sleep(cfg.menu_open_settle_s)
+        records = self._menu_ocr()
+        if not roblox_menu.menu_open(records, cfg.menu_fuzzy_min_ratio):
+            self.log_act.warning("Movement Mode 切換：Esc 後未偵測到選單開啟")
+            return False
+
+        tab_xy = roblox_menu.find_tab_center(records, "Settings", cfg.menu_fuzzy_min_ratio)
+        if tab_xy is None:
+            self.log_act.warning("Movement Mode 切換：找不到 Settings 分頁")
+            return False
+        ic.click_at(*tab_xy)
+        time.sleep(cfg.menu_open_settle_s)
+
+        row_y = None
+        records = []
+        for _ in range(cfg.menu_scroll_max_screens):
+            records = self._menu_ocr()
+            row_y = roblox_menu.find_label_row_y(records, "Movement Mode", cfg.menu_fuzzy_min_ratio)
+            if row_y is not None:
+                break
+            ic.move_to(*cfg.menu_scroll_xy)
+            ic.scroll(cfg.menu_scroll_amount)
+            time.sleep(cfg.menu_open_settle_s)
+        if row_y is None:
+            self.log_act.warning("Movement Mode 切換：捲動 %d 屏仍找不到標籤",
+                                 cfg.menu_scroll_max_screens)
+            return False
+
+        value_text = roblox_menu.read_row_value(
+            records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
+        if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
+            self.log_act.info("Movement Mode 已是目標值 %s，收工", target)
+            ic.key_press("esc")
+            time.sleep(cfg.menu_close_settle_s)
+            return True
+
+        for click_i in range(cfg.menu_arrow_click_max):
+            ic.click_at(cfg.menu_arrow_right_x, row_y)
+            time.sleep(cfg.menu_arrow_settle_s)
+            records = self._menu_ocr()
+            value_text = roblox_menu.read_row_value(
+                records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
+            if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
+                self.log_act.info("Movement Mode 切到 %s（點了 %d 次右箭頭）", target, click_i + 1)
+                ic.key_press("esc")
+                time.sleep(cfg.menu_close_settle_s)
+                return True
+
+        self.log_act.warning("Movement Mode 切換：點滿 %d 次右箭頭仍未到目標 %s（現讀值=%r）",
+                             cfg.menu_arrow_click_max, target, value_text)
+        return False
+
+    def _menu_ocr(self):
+        """截圖＋裁 menu_panel_region＋OCR 文字框（回傳座標已還原成全螢幕座標）。"""
+        frame = capture.grab()
+        crop = capture.crop(frame, cfg.menu_panel_region)
+        r = cfg.menu_panel_region
+        return ocr.read_text_boxes(crop, region_offset=(r.x, r.y))
 
     def _hotkey_loop(self):
         """背景執行緒：每 50ms 輪詢一次熱鍵，不受主迴圈阻塞影響。"""
