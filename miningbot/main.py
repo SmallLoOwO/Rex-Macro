@@ -715,97 +715,173 @@ class Bot:
         決策純函式在 roblox_menu.py，這裡只做 I/O（Esc/點擊/捲動/OCR）。冪等：已是
         目標值時不點任何箭頭直接收工。任一步不確定 → Esc 回中性 → 整鏈重試
         cfg.menu_retry_max 次 → 仍失敗回 False（呼叫端依情境分流 NEEDS_HUMAN 或記警告）。
+
+        優化候選（先靠本方法的 log 收數據，再決定做不做）：
+        - 座標快取直點：Settings 分頁 / Movement Mode 列 / 右箭頭座標若每次都穩定不變，
+          可跳過部分 OCR 直接點擊（見 log_act 的「MM座標記錄（快取候選）」一行）。
+        - 滑條直拉到底（2026-07-09 使用者實測）：捲軸拉到最底就能看到 Movement Mode；
+          若 log 顯示逐屏滾輪捲動找標籤是耗時大宗，可改成一步拖到底取代逐屏捲動。
+        - 現行每次 `_menu_ocr` 是 RapidOCR 全面板辨識（~1-3s），是主要耗時來源的假設，
+          待 log（`menu OCR[...]` 的 grab/ocr 耗時拆分）證實。
         """
+        t_start = time.perf_counter()
         others = tuple(o for o in cfg.movement_mode_options if o != target)
         for attempt in range(cfg.menu_retry_max + 1):
             if self._set_movement_mode_once(target, others):
+                self.log_act.info(
+                    "Movement Mode 切換鏈成功：target=%s 嘗試次數=%d 總耗時 %.1fs",
+                    target, attempt + 1, time.perf_counter() - t_start)
                 return True
             self.log_act.warning("Movement Mode 切換失敗（第 %d 次），Esc 回中性後重試",
                                  attempt + 1)
             ic.key_press("esc")
             time.sleep(cfg.menu_close_settle_s)
+        self.log_act.info(
+            "Movement Mode 切換鏈失敗：target=%s 共 %d 次嘗試，總耗時 %.1fs",
+            target, cfg.menu_retry_max + 1, time.perf_counter() - t_start)
         return False
 
     def _set_movement_mode_once(self, target: str, others: tuple) -> bool:
         """單次嘗試：開選單→找 Settings→找 Movement Mode 列→比對值→不符則點右箭頭。"""
+        t_start = time.perf_counter()
+
+        t0 = time.perf_counter()
         ic.key_press("esc")
         time.sleep(cfg.menu_open_settle_s)
-        records = self._menu_ocr()
+        esc_s = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        records = self._menu_ocr("open-check")
+        ocr_open_s = time.perf_counter() - t0
         if not roblox_menu.menu_open(records, cfg.menu_fuzzy_min_ratio):
             self.log_act.warning("Movement Mode 切換：Esc 後未偵測到選單開啟")
+            self.log_act.info(
+                "MM切換總結 target=%s 失敗於=未偵測到選單開啟：總耗時 %.1fs（esc %.1f + OCR(open) %.1f）",
+                target, time.perf_counter() - t_start, esc_s, ocr_open_s)
             return False
 
         tab_xy = roblox_menu.find_tab_center(records, "Settings", cfg.menu_fuzzy_min_ratio)
         if tab_xy is None:
             self.log_act.warning("Movement Mode 切換：找不到 Settings 分頁")
+            self.log_act.info(
+                "MM切換總結 target=%s 失敗於=找不到 Settings 分頁：總耗時 %.1fs（esc %.1f + OCR(open) %.1f）",
+                target, time.perf_counter() - t_start, esc_s, ocr_open_s)
             return False
+        t0 = time.perf_counter()
         ic.click_at(*tab_xy)
         time.sleep(cfg.menu_open_settle_s)
+        tab_s = time.perf_counter() - t0
 
         row_y = None
         records = []
-        for _ in range(cfg.menu_scroll_max_screens):
-            records = self._menu_ocr()
+        scroll_count = 0
+        t0 = time.perf_counter()
+        for i in range(cfg.menu_scroll_max_screens):
+            records = self._menu_ocr(f"scroll-{i + 1}")
             row_y = roblox_menu.find_label_row_y(records, "Movement Mode", cfg.menu_fuzzy_min_ratio)
             if row_y is not None:
                 break
             ic.move_to(*cfg.menu_scroll_xy)
             ic.scroll(cfg.menu_scroll_amount)
             time.sleep(cfg.menu_open_settle_s)
+            scroll_count += 1
+        scroll_s = time.perf_counter() - t0
         if row_y is None:
             self.log_act.warning("Movement Mode 切換：捲動 %d 屏仍找不到標籤",
                                  cfg.menu_scroll_max_screens)
+            self.log_act.info(
+                "MM切換總結 target=%s 失敗於=捲動仍找不到標籤：總耗時 %.1fs"
+                "（esc %.1f + OCR(open) %.1f + tab %.1f + 找標籤 %.1fs/捲%d屏）",
+                target, time.perf_counter() - t_start, esc_s, ocr_open_s, tab_s,
+                scroll_s, scroll_count)
             return False
 
+        t0 = time.perf_counter()
         value_text = roblox_menu.read_row_value(
             records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
+        read_s = time.perf_counter() - t0
         if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
             self.log_act.info("Movement Mode 已是目標值 %s，收工", target)
+            self.log_act.info(
+                "MM座標記錄（快取候選）：Settings=%s row_y=%d arrow=(%d,%d)",
+                tab_xy, row_y, cfg.menu_arrow_right_x, row_y)
+            self.log_act.info(
+                "MM切換總結 target=%s 成功（已是目標值）：總耗時 %.1fs"
+                "（esc %.1f + OCR(open) %.1f + tab %.1f + 找標籤 %.1fs/捲%d屏 + 讀值 %.1f）",
+                target, time.perf_counter() - t_start, esc_s, ocr_open_s, tab_s,
+                scroll_s, scroll_count, read_s)
             ic.key_press("esc")
             time.sleep(cfg.menu_close_settle_s)
             return True
 
+        t0 = time.perf_counter()
         for click_i in range(cfg.menu_arrow_click_max):
             ic.click_at(cfg.menu_arrow_right_x, row_y)
             time.sleep(cfg.menu_arrow_settle_s)
-            records = self._menu_ocr()
+            records = self._menu_ocr(f"arrow-{click_i + 1}")
             value_text = roblox_menu.read_row_value(
                 records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
             if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
+                arrow_s = time.perf_counter() - t0
                 self.log_act.info("Movement Mode 切到 %s（點了 %d 次右箭頭）", target, click_i + 1)
+                self.log_act.info(
+                    "MM座標記錄（快取候選）：Settings=%s row_y=%d arrow=(%d,%d)",
+                    tab_xy, row_y, cfg.menu_arrow_right_x, row_y)
+                self.log_act.info(
+                    "MM切換總結 target=%s 成功：總耗時 %.1fs"
+                    "（esc %.1f + OCR(open) %.1f + tab %.1f + 找標籤 %.1fs/捲%d屏 + 箭頭×%d %.1f）",
+                    target, time.perf_counter() - t_start, esc_s, ocr_open_s, tab_s,
+                    scroll_s, scroll_count, click_i + 1, arrow_s)
                 ic.key_press("esc")
                 time.sleep(cfg.menu_close_settle_s)
                 return True
+        arrow_s = time.perf_counter() - t0
 
         self.log_act.warning("Movement Mode 切換：點滿 %d 次右箭頭仍未到目標 %s（現讀值=%r）",
                              cfg.menu_arrow_click_max, target, value_text)
+        self.log_act.info(
+            "MM切換總結 target=%s 失敗於=點滿右箭頭仍未到目標：總耗時 %.1fs"
+            "（esc %.1f + OCR(open) %.1f + tab %.1f + 找標籤 %.1fs/捲%d屏 + 箭頭×%d %.1f）",
+            target, time.perf_counter() - t_start, esc_s, ocr_open_s, tab_s,
+            scroll_s, scroll_count, cfg.menu_arrow_click_max, arrow_s)
         return False
 
-    def _menu_ocr(self):
+    def _menu_ocr(self, label: str = ""):
         """截圖＋裁 menu_panel_region＋OCR 文字框（回傳座標已還原成全螢幕座標）。"""
+        t0 = time.perf_counter()
         frame = capture.grab()
         crop = capture.crop(frame, cfg.menu_panel_region)
         r = cfg.menu_panel_region
-        return ocr.read_text_boxes(crop, region_offset=(r.x, r.y))
+        t1 = time.perf_counter()
+        records = ocr.read_text_boxes(crop, region_offset=(r.x, r.y))
+        t2 = time.perf_counter()
+        self.log_act.debug("menu OCR[%s]：%d 框，grab %.0fms + ocr %.0fms",
+                           label, len(records), (t1 - t0) * 1000, (t2 - t1) * 1000)
+        return records
 
     def _ensure_chat_open(self):
         """啟動 UI 前置檢查：聊天框關著就點圖示開啟；仍關只記警告＋HUD，照常啟動
         （不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，見 CLAUDE.md）。
         """
+        t0 = time.perf_counter()
         frame = capture.grab()
         text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
+        ocr1_ms = (time.perf_counter() - t0) * 1000
         if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟")
+            self.logger.info("UI 前置檢查：聊天框已開啟（OCR %.0fms）", ocr1_ms)
             return
-        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟")
+        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr1_ms)
         ic.click_at(*cfg.chat_icon_xy)
         time.sleep(cfg.menu_open_settle_s)
+        t0 = time.perf_counter()
         frame = capture.grab()
         text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
+        ocr2_ms = (time.perf_counter() - t0) * 1000
         if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認）")
+            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認，OCR %.0fms）", ocr2_ms)
             return
-        self.logger.warning("UI 前置檢查：聊天框仍未開啟，可能影響採集確認；請手動開啟")
+        self.logger.warning("UI 前置檢查：聊天框仍未開啟，可能影響採集確認；請手動開啟（OCR %.0fms）",
+                            ocr2_ms)
         self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
 
     def _hotkey_loop(self):
