@@ -74,6 +74,11 @@ def test_mine_reset_message():
     assert m is not None and "重置" in m
 
 
+def test_spawn_chill_message_includes_state():
+    m = format_message(rec("SPAWN_CHILL", state="NEEDS_HUMAN"))
+    assert m is not None and "spawn chill" in m and "NEEDS_HUMAN" in m
+
+
 def test_noise_events_are_not_sent():
     # 狀態切換、暫停/恢復、心跳等不該洗版 Discord
     assert format_message(rec("STATE_CHANGE", from_="MINING", to="HARVESTING")) is None

@@ -1,6 +1,7 @@
 from miningbot.states import (State, Observation, decide_transition,
                               resolve_state_transition,
-                              toggle_pause_action, is_blocked_from_mining)
+                              toggle_pause_action, is_blocked_from_mining,
+                              should_notify_spawn_chill)
 
 def obs(**kw):
     base = dict(chill_audio=False, chill_text=False, harvest_done=False,
@@ -138,3 +139,38 @@ class TestReentryTransitions:
 
     def test_reentry_otherwise_stays(self):
         assert decide_transition(State.REENTRY, obs()) is State.REENTRY
+
+
+# --- should_notify_spawn_chill：spawn chill 通知決策（純函式）---
+# spawn chill = 礦坑刷新時稀有礦生在預設方塊。bot 處於挖不到的狀態（NEEDS_HUMAN/
+# REENTRY）時 chill 響 → 只通知主人，不嘗試採集。RESET_WAIT 不算（它會直接強採）。
+
+class TestSpawnChillNotify:
+    def test_needs_human_with_chill_notifies(self):
+        assert should_notify_spawn_chill(State.NEEDS_HUMAN, True, True, False) is True
+
+    def test_reentry_with_chill_notifies(self):
+        assert should_notify_spawn_chill(State.REENTRY, True, True, False) is True
+
+    def test_mining_with_chill_does_not_notify(self):
+        # MINING chill 走正常採集流程，不需 spawn chill 通知
+        assert should_notify_spawn_chill(State.MINING, True, True, False) is False
+
+    def test_reset_wait_with_chill_does_not_notify(self):
+        # RESET_WAIT chill 直接轉 HARVESTING 強採，不是 spawn chill
+        assert should_notify_spawn_chill(State.RESET_WAIT, True, True, False) is False
+
+    def test_harvesting_does_not_notify(self):
+        assert should_notify_spawn_chill(State.HARVESTING, True, True, False) is False
+
+    def test_audio_only_without_text_does_not_notify(self):
+        # 只有音訊、OCR 沒確認 → 防誤判，不通知
+        assert should_notify_spawn_chill(State.NEEDS_HUMAN, True, False, False) is False
+
+    def test_no_chill_does_not_notify(self):
+        assert should_notify_spawn_chill(State.NEEDS_HUMAN, False, False, False) is False
+
+    def test_already_notified_does_not_notify_again(self):
+        # 去抖動：同一波 chill 已通知過 → 不重複
+        assert should_notify_spawn_chill(State.NEEDS_HUMAN, True, True, True) is False
+        assert should_notify_spawn_chill(State.REENTRY, True, True, True) is False

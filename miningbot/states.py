@@ -53,6 +53,28 @@ def decide_transition(state: State, o: Observation) -> State:
     return state
 
 
+def should_notify_spawn_chill(state: State, chill_audio: bool, chill_text: bool,
+                              already_notified: bool) -> bool:
+    """spawn chill 通知決策（純函式）：chill 確認 + 處於挖不到的狀態 → 該通知。
+
+    「spawn chill」＝礦坑刷新時稀有礦生在預設方塊中。此時 chill 音效照樣響，
+    但 bot 一定處於挖不到該 礦的狀態：
+    - NEEDS_HUMAN：等人工（可能在王座/地表），不在 礦坑可挖區；
+    - REENTRY：傳送回礦途中，鏡頭/裝備都還沒就位。
+    這兩個狀態 decide_transition 不會因 chill 轉 HARVESTING（挖了也白挖），
+    故只發 Discord 通知請主人手動處理。
+
+    already_notified 由呼叫端做 episode 去抖動：同一波 chill（chill_audio 持續為真）
+    只通知一次；chill_audio 回落時呼叫端重置旗標，下一波再觸發可再通知。
+    RESET_WAIT 不算 spawn chill——它 chill 會直接轉 HARVESTING 強採（見上）。
+    """
+    if not chill_audio or not chill_text:
+        return False
+    if already_notified:
+        return False
+    return state in (State.NEEDS_HUMAN, State.REENTRY)
+
+
 def resolve_state_transition(current: State, decided: State,
                              entered: "State | None") -> State:
     """主迴圈的 state-commit 決策（純函式，給測試鎖定）。

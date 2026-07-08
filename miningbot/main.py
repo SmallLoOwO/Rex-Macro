@@ -11,7 +11,7 @@ import numpy as np
 from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
-                     toggle_pause_action, is_blocked_from_mining)
+                     toggle_pause_action, is_blocked_from_mining, should_notify_spawn_chill)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import sampler, reentry
 from . import input_control as ic
@@ -120,6 +120,7 @@ class Bot:
         self._prev_frame = None
         self._last_progress = time.time()
         self._stuck_notified = False
+        self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
         self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
         self._antiafk_last = 0.0                   # 防掛機：上次按 Space 的時間（0=未在計時；暫停中才啟用）
@@ -591,6 +592,27 @@ class Bot:
         if self.state is not State.MINING:
             return False
         return self._mine_resetting
+
+    def _check_spawn_chill(self, obs, frame):
+        """spawn chill 通知：chill 響但 bot 在挖不到的狀態（NEEDS_HUMAN/REENTRY）→ 通知一次。
+
+        礦坑刷新時偶爾稀有礦直接生在預設方塊（spawn chill），chill 音效照響但 bot 不在
+        可挖區域、無法自動採集。決策走純函式 should_notify_spawn_chill；這裡只管
+        episode 去抖動（chill_audio 回落時重置旗標）＋副作用（截圖/事件/Discord/本機提醒）。
+        """
+        if not obs.chill_audio:
+            self._spawn_chill_notified = False       # chill 結束 → 重新武裝，下次可再通知
+            return
+        if not should_notify_spawn_chill(self.state, obs.chill_audio, obs.chill_text,
+                                         self._spawn_chill_notified):
+            return
+        self._spawn_chill_notified = True
+        path = self._snapshot(frame, "spawn_chill")
+        self.log.log("SPAWN_CHILL", state=self.state.value,
+                     audio=round(self.listener.latest_score(), 2), image_path=path)
+        self.logger.warning("spawn chill：chill 觸發（音訊 %.2f）但處於 %s（挖不到），已通知",
+                            self.listener.latest_score(), self.state.value)
+        self._alert("spawn chill！稀有 礦在刷新預設方塊，bot 挖不到")
 
     def _banner_ocr_loop(self):
         """背景執行緒：頂部事件列 OCR（重置偵測＋世界推斷）移出主迴圈。
@@ -1104,6 +1126,7 @@ class Bot:
                 else:
                     new_state = decided
                 self.state = new_state
+                self._check_spawn_chill(obs, frame)
                 self._tick(frame)
                 self._heartbeat()
                 # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工

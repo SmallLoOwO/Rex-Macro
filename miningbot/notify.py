@@ -37,6 +37,8 @@ _TEMPLATES = {
                                  + (f"\n🆕 新增：\n" + "\n".join(m["new_found_lines"])
                                     if m.get("new_found_lines") else ""),
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
+    "SPAWN_CHILL":     lambda m: (f"💎 spawn chill！稀有礦可能生在 礦坑刷新的預設方塊，"
+                                  f"bot 處於 {m.get('state', '?')} 挖不到，請手動處理"),
     "STUCK":           lambda m: f"⚠️ 腳本可能卡住：{m.get('reason', '無進度')}",
     "MINE_RESET":      lambda m: "🔄 礦坑重置，已停下等待重新定位（按 Q 繼續）",
     "REENTRY_START":   lambda m: "⛏️ 礦坑已重置，開始自動回礦…",
