@@ -788,6 +788,26 @@ class Bot:
         r = cfg.menu_panel_region
         return ocr.read_text_boxes(crop, region_offset=(r.x, r.y))
 
+    def _ensure_chat_open(self):
+        """啟動 UI 前置檢查：聊天框關著就點圖示開啟；仍關只記警告＋HUD，照常啟動
+        （不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，見 CLAUDE.md）。
+        """
+        frame = capture.grab()
+        text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
+        if ocr.contains_any(text, cfg.chat_input_phrases):
+            self.logger.info("UI 前置檢查：聊天框已開啟")
+            return
+        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟")
+        ic.click_at(*cfg.chat_icon_xy)
+        time.sleep(cfg.menu_open_settle_s)
+        frame = capture.grab()
+        text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
+        if ocr.contains_any(text, cfg.chat_input_phrases):
+            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認）")
+            return
+        self.logger.warning("UI 前置檢查：聊天框仍未開啟，可能影響採集確認；請手動開啟")
+        self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
+
     def _hotkey_loop(self):
         """背景執行緒：每 50ms 輪詢一次熱鍵，不受主迴圈阻塞影響。"""
         while self._running:
