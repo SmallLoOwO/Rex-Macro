@@ -1480,6 +1480,13 @@ class Bot:
                 self._human_reason = "無法聚焦 Roblox（自動回礦前），請確認遊戲視窗後按 Q"
                 self._on_enter(State.NEEDS_HUMAN, frame)
                 return State.NEEDS_HUMAN
+            # click-to-move 導航依賴 Movement Mode=Click to Move；切不過去導航無意義，
+            # reroll 也救不了 → 直接降級 NEEDS_HUMAN（比照聚焦失敗的既定模式）。
+            if not self._set_movement_mode(cfg.movement_mode_reentry):
+                self.logger.warning("進入 REENTRY 但無法切換 Movement Mode -> 降級 NEEDS_HUMAN")
+                self._human_reason = "無法切換至 Click to Move（自動回礦前），請手動確認設定後按 Q"
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return State.NEEDS_HUMAN
             now = time.time()
             self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
             self._reentry_done = False
@@ -2337,6 +2344,15 @@ class Bot:
                 r = cfg.stuck_region
                 crop = frame[r.y:r.y + r.h, r.x:r.x + r.w]
                 if float(np.mean(crop)) <= cfg.reentry_mine_max_brightness:
+                    # 進礦已驗證成功——切回 Default (Keyboard) 才能安全 init_mining_sequence
+                    # （Click to Move 模式下按住 W+左鍵的挖礦序列不可信）。切失敗不可帶病開挖，
+                    # 直接交人工（比照 _harvest_giveup：此刻在 tick 內，不走 decide_transition）。
+                    if not self._set_movement_mode(cfg.movement_mode_mining):
+                        self.logger.warning("REENTRY 進礦成功但切回 Movement Mode 失敗 -> NEEDS_HUMAN")
+                        self._human_reason = "自動回礦成功但無法切回 Default (Keyboard)，請手動確認設定後按 Q"
+                        self.state = State.NEEDS_HUMAN
+                        self._on_enter(State.NEEDS_HUMAN, frame)
+                        return
                     self._reentry_done = True
                     self._snapshot(frame, "reentry_success")
                     self.log.log("REENTRY_SUCCESS", attempts=st.attempts + 1)
@@ -2367,6 +2383,10 @@ class Bot:
             self._reentry_failed = True
             self._human_reason = f"自動回礦失敗×{st.attempts}（{reason}），請手動回礦後按 Q"
             self._needs_human_extra_image = self._snapshot(capture.grab(), "reentry_giveup")
+            # best-effort 切回 Default (Keyboard)：人工接手時鍵鼠模式對才好操作，
+            # 但失敗不擋 NEEDS_HUMAN 通知（人工本來就會检查/修正設定）。
+            if not self._set_movement_mode(cfg.movement_mode_mining):
+                self.log_act.warning("REENTRY 放棄時切回 Movement Mode 失敗（best-effort，不擋通知）")
             return
         self._reentry = reentry.ReentryState(
             attempts=st.attempts, phase_started=time.time(), attempt_started=time.time())
