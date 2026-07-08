@@ -31,7 +31,9 @@ class Config:
     chat_review_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))     # 左上 has-found 聊天（= chat_region；最新行在底部，勿縮短高度否則漏掉最新 has-found）
     backpack_review_region: Region = field(default_factory=lambda: Region(0, 395, 226, 335)) # 左下 NORMAL 背包「上半」：面板依稀有度排序（Exquisite→Mythic→Surreal→Master→Rare），新採到的礦（count=1）浮最上面；h335 涵蓋到 Surreal 帶 1-2 行 Master，Discord 縮圖才夠大（2026-07-03 需求：舊 h670 全清單縮圖看不清、下半 Rare 橙黃區無關採集比對）
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
-    boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 665, 135))
+    # 右緣縮到永久計數圖示左緣(x=1740)、下緣延到 1080（2026-07-08 遊戲更新新增常駐計數圖示，
+    # 舊區涵蓋到它 → 舊「瓶子在=生效中」邏輯永遠判生效、永遠不補 D5；見 boost_active.png 說明）
+    boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 590, 145))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     boost_check_interval_s: float = 0.2          # boost 高頻偵測「不空轉」：boost 到期→立刻補，越快偵測瓶子消失越好（提早補無意義且浪費換道具時間，見 2026-07-02 spec #4 方案 A）
@@ -194,5 +196,35 @@ class Config:
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
     discord_poll_interval_s: float = 3.0        # Discord 命令輪詢間隔（秒；2026-07-07 10→3 加快遙控器/命令回應）
+
+    # 選單前置切換（Movement Mode）＋聊天框前置檢查
+    # docs/superpowers/specs/2026-07-08-menu-preflight-boost-design.md
+    movement_mode_options: tuple = ("Default (Keyboard)", "Keyboard + Mouse", "Click to Move")
+    movement_mode_mining: str = "Default (Keyboard)"    # 挖礦用（兩個鍵鼠模式皆可，使用者確認取此值）
+    movement_mode_reentry: str = "Click to Move"        # REENTRY 導航用（click-to-move 依賴此模式）
+    menu_panel_region: Region = field(default_factory=lambda: Region(460, 130, 1000, 880))
+        # Esc 選單面板整塊（分頁列 People/Settings/... ＋ 內容列表），OCR 找標籤/值/箭頭都在此裁圖裡做
+        # （2026-07-08 實機驗證：People(576,156) Settings(774,156) Gallery(976,156) 等分頁文字，
+        # Movement Mode 標籤(571,503)／值(1153,503) 皆落在此區內）
+    menu_arrow_right_x: int = 1425       # 值列右箭頭 x（y 用該列 label 的 y；2026-07-08 實測 1423~1425）
+    menu_value_column_x_range: tuple = (1000, 1350)   # 值文字欄 x 範圍（中心約 1153，三個值都置中對齊）
+    menu_row_y_tolerance_px: int = 18    # 同一列判定的 y 容差（label 與 value 實測同列時 y 差 0~1px）
+    menu_scroll_xy: tuple = (960, 500)   # 捲動前滑鼠停駐座標（面板中央）
+    menu_scroll_amount: int = -3         # 每次捲動的滾輪格數（負=向下捲；WHEEL_DELTA=120/格）。
+        # 方向依 Windows 滾輪慣例推斷、未經真實遊戲驗證——實機校準時若捲反了對調正負（見最後 Task）。
+    menu_scroll_max_screens: int = 8     # 捲動找標籤上限（屏數）；Movement Mode 實測不捲動就找得到，
+        # 此上限只是「遊戲改版把它挪到更下面」的防呆餘裕
+    menu_arrow_click_max: int = 3        # 右箭頭最多點幾次（三值循環，最多 3 次必回到任意目標值）
+    menu_arrow_settle_s: float = 0.3     # 點右箭頭後等值更新
+    menu_open_settle_s: float = 0.3      # Esc/點分頁/點圖示後等畫面反應
+    menu_close_settle_s: float = 0.3     # Esc 關閉後等選單收合
+    menu_fuzzy_min_ratio: float = 0.6    # 標籤/值模糊比對下限（比照 reentry_button_min_ratio 精神）
+    menu_retry_max: int = 1              # 整鏈失敗後重試次數（不含首次嘗試）
+
+    chat_icon_xy: tuple = (174, 71)      # 左上聊天圖示（收合時點它展開；2026-07-08 實測座標）
+    chat_input_region: Region = field(default_factory=lambda: Region(0, 355, 620, 55))
+        # 展開後固定位置的輸入列「To chat click here or press / key」（2026-07-08 實機截圖量測＋
+        # 真實 tesseract OCR 驗證過：開啟時讀到 "press / key"、收合時讀到雜訊不誤判）
+    chat_input_phrases: tuple = ("to chat click here", "press / key")
 
 DEFAULT = Config()
