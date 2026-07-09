@@ -70,6 +70,116 @@ class RisingEdgeDetector:
         return False
 
 
+class AdaptiveSpikeDetector:
+    """安靜基準線上的「相對響度尖峰」偵測：不需事先知道目標音的絕對音量。
+
+    每次 update() 餵一個 chunk 的 RMS：維護一條 EMA 基準線，當 rms/baseline 達
+    spike_factor 時以上升緣語意回報一次（高檔不重複，回落到 release 才 re-arm）。
+    專治「一段安靜之後一記清脆鈴聲」——重置完成音效正是這型。純邏輯，有單元測試。
+
+    兩個必防的坑：
+      1. 暖機：前 warmup_samples 次只建基準線、一律回 False（否則無基準會誤觸）。
+      2. 基準線不被鈴聲自己拉高：ratio 處於高檔（>= release）時凍結 EMA 更新，
+         回落才續更——否則鈴聲會把基準線推高、自我抑制或漏掉接連兩聲。
+    min_floor 是絕對 RMS 下限，防純靜音時基準線趨近 0、除出假尖峰。
+    """
+    def __init__(self, spike_factor: float, baseline_alpha: float, min_floor: float,
+                 warmup_samples: int, release_factor: float = 0.5):
+        self.spike_factor = spike_factor
+        self.baseline_alpha = baseline_alpha
+        self.min_floor = min_floor
+        self.warmup_samples = warmup_samples
+        self.release_ratio = spike_factor * release_factor
+        self.reset()
+
+    def reset(self) -> None:
+        self._baseline = 0.0
+        self._count = 0
+        self._armed = True
+
+    @property
+    def baseline(self) -> float:
+        return self._baseline
+
+    def _update_baseline(self, rms: float) -> None:
+        if self._count == 1:
+            self._baseline = rms                      # 第一個樣本直接當種子
+        else:
+            a = self.baseline_alpha
+            self._baseline = a * self._baseline + (1.0 - a) * rms
+
+    def update(self, rms: float) -> bool:
+        self._count += 1
+        if self._count <= self.warmup_samples:        # 暖機：只建基準線
+            self._update_baseline(rms)
+            return False
+        ratio = rms / max(self._baseline, self.min_floor)
+        if ratio < self.release_ratio:                # 只在低檔更新基準線（凍結防自我抑制）
+            self._update_baseline(rms)
+        fired = False
+        if self._armed and ratio >= self.spike_factor:
+            self._armed = False
+            fired = True
+        elif not self._armed and ratio < self.release_ratio:
+            self._armed = True
+        return fired
+
+
+class ResetChimeRecorder:
+    """RESET_WAIT 期間錄「重置完成鈴聲」候選片段（第一階段：只錄不比對）。
+
+    維護 window_s 滾動緩衝；detector 觸發後不立即存，改設 post_roll 倒數、繼續收
+    chunk，倒數歸零才把整條緩衝存檔——存下的片段是「觸發前一段 + 觸發後 post_roll」，
+    鈴聲完整落在中段，方便裁 1s 參考。倒數期間再觸發則延長（不把一串鈴聲切兩半）。
+    存檔在音訊執行緒 inline 跑（~5ms，比照 _on_audio_event）。
+    """
+    def __init__(self, sample_rate, window_s, post_roll_s, chunk_seconds, detector,
+                 out_dir, max_clips, save_fn=None, log=None, diag=None):
+        self.sample_rate = sample_rate
+        self.window = int(sample_rate * window_s)
+        self.post_roll_chunks = max(1, round(post_roll_s / chunk_seconds))
+        self.detector = detector
+        self.out_dir = out_dir
+        self.max_clips = max_clips
+        self._save = save_fn or save_wav
+        self._log = log
+        self._diag = diag
+        self.reset()
+
+    def reset(self):
+        self._buf = np.zeros(self.window, np.float32)
+        self._countdown = 0
+        self._pending_rms = 0.0
+        self._clips = 0
+        self.detector.reset()
+
+    def feed(self, chunk):
+        chunk = np.asarray(chunk, np.float32)
+        self._buf = np.concatenate([self._buf, chunk])[-self.window:]   # 滾動窗
+        rms = float(np.sqrt(np.mean(chunk ** 2))) if len(chunk) else 0.0
+        fired = self.detector.update(rms)
+        if self._diag is not None:
+            self._diag(rms, self.detector.baseline)
+        if fired and self._clips < self.max_clips:
+            self._countdown = self.post_roll_chunks    # (重)啟動 post-roll＝延長
+            self._pending_rms = rms
+        if self._countdown > 0:
+            self._countdown -= 1
+            if self._countdown == 0:
+                self._flush()
+
+    def _flush(self):
+        import os, time
+        os.makedirs(self.out_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self.out_dir,
+                            f"resetchime_{ts}_rms{int(round(self._pending_rms)):04d}.wav")
+        self._save(path, self._buf.copy(), self.sample_rate)
+        self._clips += 1
+        if self._log is not None:
+            self._log(path, self._pending_rms)
+
+
 def save_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
     """把樣本忠實存成 16-bit WAV。samples 已是 int16 值域的 float（loopback int16→float32），
     故**直接轉 int16，不可再乘 32767**（乘了會溢位繞回成雜訊——舊 save_buffer_wav 的 bug）。
