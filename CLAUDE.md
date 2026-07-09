@@ -160,6 +160,17 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 ## 工作慣例
 - 純邏輯改動走 TDD（先寫失敗測試）。
 - 在預設分支先開 feature 分支再 commit；commit 訊息結尾加 `Co-Authored-By: Claude ...`。
+- **寫 code 交給 opencode subagent（使用者要求 2026-07-09，首例＝玩家列表前置檢查 0c7b779）**：
+  程式實作預設委派 `opencode run`（模型 GLM 5.2，**無視覺能力**）；Claude 負責視覺與驗證。分工：
+  1. **Claude（有視覺）先做**：實機/歷史截圖量測座標、裁 fixtures、用真實引擎驗證偵測配方
+     （哪個 OCR/前處理可靠要「實測過」不是猜）、抓座標陷阱（如 Roblox 內建截圖＝client area
+     1920×1051，實機 grab＝1080，差 ~30px）。
+  2. **寫自足規格書**（存 scratchpad）：列「先讀哪些檔案」（要模仿的樣板、config 格式、測試樣板）、
+     「已驗證的視覺/OCR 事實照用勿重推」、明講 **GLM 不要嘗試讀任何圖片**、實作規格含安全細節
+     （寧漏勿誤等）、TDD、完成標準＝`python -m pytest -q` 全綠、**不要 commit**（留人工審）。
+  3. **背景執行**：`cd <專案> && opencode run "$(cat 規格.md)" --title <名>`（Bash `run_in_background`；
+     輸出接 tail 會等到結束才吐，中途檔案為空是正常）。
+  4. **Claude 事後驗證**：親自審 diff、獨立重跑新測試、可行就做實機端到端驗證，全過才 commit。
 
 ## 延伸文件（不在此重複）
 - **實機事故錄（H 系列完整敘事）：`docs/incidents.md`**——症狀/根因/對策/fixture/commit，改門檻前必讀
