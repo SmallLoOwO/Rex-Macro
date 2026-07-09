@@ -75,6 +75,17 @@ class Config:
     # 音訊變動記錄器：score 越過此觀察門檻（低於觸發門檻）就存音訊+記一筆，供診斷沒觸發的 chill / 累積樣本
     audio_event_record: bool = True              # 是否啟用「音訊明顯變動就記錄」
     audio_event_threshold: float = 0.15          # 觀察門檻（> 雜訊 0.01、< 觸發 0.25）；上升緣才記，不重複洗檔
+    # 重置完成鈴聲擷取（第一階段：RESET_WAIT 期間只錄候選片段、不比對）
+    # 設計：docs/superpowers/specs/2026-07-09-reset-chime-capture-design.md
+    reset_chime_capture: bool = True             # 總開關；校準拿到樣本後可關
+    reset_chime_arm_delay_s: float = 30.0        # 進 RESET_WAIT 多久後才開始錄（跳過重置開始的雜音）
+    reset_chime_spike_factor: float = 3.0        # rms/baseline 達此倍數即觸發（安靜後一記鈴聲＝相對尖峰）
+    reset_chime_baseline_alpha: float = 0.9      # 基準線 EMA 係數（越大越慢跟隨；實機再調）
+    reset_chime_min_floor: float = 50.0          # 絕對 RMS 下限，防純靜音除以極小值誤觸（int16 值域，實機看 heartbeat log 校）
+    reset_chime_window_s: float = 4.0            # 存檔片段總長（秒）
+    reset_chime_post_roll_s: float = 1.5         # 觸發後再收多久才存（讓鈴聲落片段中段）
+    reset_chime_warmup_s: float = 2.0            # 暖機：頭幾秒只建基準線不觸發
+    reset_chime_max_clips: int = 20              # 單輪 RESET_WAIT 存檔上限（防洗版）
 
     # 採集
     marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
