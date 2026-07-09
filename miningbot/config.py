@@ -227,4 +227,10 @@ class Config:
         # 真實 tesseract OCR 驗證過：開啟時讀到 "press / key"、收合時讀到雜訊不誤判）
     chat_input_phrases: tuple = ("to chat click here", "press / key")
 
+    player_list_region: Region = field(default_factory=lambda: Region(1490, 110, 425, 150))
+        # 右上角玩家列表（Tab toggle）標題列＋第一列。2026-07-09 由實機截圖量測：
+        # client 座標 header y≈118-145；grab 全螢幕比 client area 低 ~29px → 區域開高吸收偏移。
+        # fixtures: tests/fixtures/player_list/（open/open2/closed）
+    player_list_phrases: tuple = ("players", "blocks mined")
+
 DEFAULT = Config()

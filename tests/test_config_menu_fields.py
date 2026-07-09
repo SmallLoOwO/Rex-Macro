@@ -40,3 +40,8 @@ def test_menu_numeric_fields_present_and_sane():
 def test_chat_input_region_and_phrases():
     assert isinstance(cfg.chat_input_region, Region)
     assert len(cfg.chat_input_phrases) >= 1
+
+
+def test_player_list_region_and_phrases():
+    assert isinstance(cfg.player_list_region, Region)
+    assert len(cfg.player_list_phrases) >= 1

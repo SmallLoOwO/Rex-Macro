@@ -884,6 +884,40 @@ class Bot:
                             ocr2_ms)
         self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
 
+    def _ensure_player_list_closed(self):
+        """啟動 UI 前置檢查：右上角玩家列表（Tab toggle）開著就按 Tab 關閉，避免遮擋右側點擊。
+
+        Tab 是 toggle，列表沒開時按 Tab 反而打開 → 只有確實偵測到列表才可以按 Tab。
+        偵測引擎用 RapidOCR（read_text_boxes）：實測 tesseract read_text 漏開啟樣本（單一前處理
+        必有背景盲區，見 CLAUDE.md H014 精神）。rapidocr 不可用就整個跳過——寧漏勿誤，絕不盲按 Tab。
+        """
+        if not ocr.rapidocr_available():
+            self.logger.warning("UI 前置檢查：rapidocr 不可用，跳過玩家列表檢查（寧漏勿誤，不盲按 Tab）")
+            return
+        t0 = time.perf_counter()
+        frame = capture.grab()
+        recs = ocr.read_text_boxes(capture.crop(frame, cfg.player_list_region))
+        ocr1_ms = (time.perf_counter() - t0) * 1000
+        joined = " ".join(r["text"] for r in recs)
+        if not ocr.contains_any(joined, cfg.player_list_phrases):
+            self.logger.info("UI 前置檢查：玩家列表已關閉（OCR %.0fms，%d 框）", ocr1_ms, len(recs))
+            return
+        self.logger.info("UI 前置檢查：玩家列表開啟，按 Tab 關閉（OCR %.0fms，%d 框）", ocr1_ms, len(recs))
+        ic.key_press("tab")
+        time.sleep(cfg.menu_open_settle_s)
+        t0 = time.perf_counter()
+        frame = capture.grab()
+        recs = ocr.read_text_boxes(capture.crop(frame, cfg.player_list_region))
+        ocr2_ms = (time.perf_counter() - t0) * 1000
+        joined = " ".join(r["text"] for r in recs)
+        if not ocr.contains_any(joined, cfg.player_list_phrases):
+            self.logger.info("UI 前置檢查：玩家列表已關閉（按 Tab 後確認，OCR %.0fms）", ocr2_ms)
+            return
+        # 絕不按第二次 Tab：若第二次偵測是誤判，再按會把已關的列表重新打開。
+        self.logger.warning("UI 前置檢查：玩家列表仍未關閉，可能遮擋點擊；請手動確認（OCR %.0fms）",
+                            ocr2_ms)
+        self.last_action = "⚠ 玩家列表未關閉，可能遮擋點擊"
+
     def _hotkey_loop(self):
         """背景執行緒：每 50ms 輪詢一次熱鍵，不受主迴圈阻塞影響。"""
         while self._running:
@@ -1244,7 +1278,9 @@ class Bot:
                 self.logger.warning("無法取得視窗基準（found=%s fg=%s）— 跑位偵測停用",
                                     base.found, base.foreground)
         # 啟動 UI 前置檢查（spec 2026-07-08-menu-preflight-boost-design.md 第 3 節）：
-        # 聊天框關著會讓整條 verify OCR 鏈瞎眼；Movement Mode 不對會讓 W+左鍵挖礦序列失效。
+        # 先關右上角玩家列表（Tab toggle，遮右側點擊視線）→ 再確認聊天框（關著會讓整條 verify
+        # OCR 鏈瞎眼）→ Movement Mode（不對會讓 W+左鍵挖礦序列失效）。
+        self._ensure_player_list_closed()
         self._ensure_chat_open()
         if not self._set_movement_mode(cfg.movement_mode_mining):
             self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
