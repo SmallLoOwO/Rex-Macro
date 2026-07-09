@@ -1,6 +1,7 @@
 import threading
 import time
-from miningbot.notify import format_message, make_async_sink, format_group_messages
+from miningbot.notify import (format_message, make_async_sink, format_group_messages,
+                              find_remote_messages)
 from miningbot.events import EventRecord
 
 
@@ -162,3 +163,84 @@ def test_format_group_messages_tracker_group_has_caption():
     # tracker 群也要有人看得懂的標題（不能印裸 region 名）。
     msgs = format_group_messages("X", [("tracker", ["t.png"]), ("chat", ["a.png"])])
     assert "追蹤框" in msgs[0][0]
+
+
+# --- find_remote_messages：遙控器「認領」純函式 ---------------------------
+# 根因（2026-07-09）：舊遙控器刪舊貼新設計跨重啟殘留——_remote_message_id 只在記憶體，
+# 重啟後掃不出上一輪的遙控器。改「單一持久訊息＋原地編輯」後，啟動時要先掃頻道近期
+# 訊息認領既有遙控器（並清掉多餘殘留）。此函式負責「找出所有匹配、回 newest 與 stale」。
+
+_TITLE = "🎮 挖 礦機器人遙控器"
+
+
+def _msg(mid, bot=True, title=_TITLE):
+    """造一則 Discord 訊息 dict（模擬 fetch_messages 回傳元素）。"""
+    m = {"id": mid, "author": {"bot": bot}}
+    if title is not None:
+        m["embeds"] = [{"title": title}]
+    return m
+
+
+def test_find_remote_messages_empty_list():
+    """空頻道（或 fetch 失敗回空）→ 沒得認領，回 (None, [])。"""
+    assert find_remote_messages([], _TITLE) == (None, [])
+
+
+def test_find_remote_messages_single_match():
+    """頻道只有一則遙控器 → 認領它，無 stale。"""
+    msgs = [_msg("111")]
+    assert find_remote_messages(msgs, _TITLE) == ("111", [])
+
+
+def test_find_remote_messages_multiple_match_newest_first():
+    """跨重啟殘留：多則遙控器（newest-first）→ newest 認領，其餘全列 stale 待刪。"""
+    msgs = [_msg("333"), _msg("222"), _msg("111")]
+    newest, stale = find_remote_messages(msgs, _TITLE)
+    assert newest == "333"
+    assert stale == ["222", "111"]          # 保持原順序（newest-first）
+
+
+def test_find_remote_messages_ignores_non_bot_author():
+    """人類發的訊息就算 embed 標題相同也不能被當遙控器認領（會誤刪使用者訊息）。"""
+    msgs = [_msg("999", bot=False)]
+    assert find_remote_messages(msgs, _TITLE) == (None, [])
+
+
+def test_find_remote_messages_mixed_picks_only_bot_matches():
+    """夾雜人類訊息與無關 bot 訊息：只認領 bot 遙控器，其餘不動。"""
+    msgs = [_msg("555"), {"id": "444", "author": {"bot": False}},
+            _msg("333", title="別的標題"), _msg("222")]
+    newest, stale = find_remote_messages(msgs, _TITLE)
+    assert newest == "555"
+    assert stale == ["222"]                 # 444(人)、333(標題不同)都不入列
+
+
+def test_find_remote_messages_missing_author_key_no_exception():
+    """缺 author 鍵的畸形訊息不可丟例外（fetch 回的資料不可信）→ 視為不匹配。"""
+    msgs = [{"id": "1", "embeds": [{"title": _TITLE}]}]   # 無 author
+    assert find_remote_messages(msgs, _TITLE) == (None, [])
+
+
+def test_find_remote_messages_missing_embeds_no_exception():
+    """bot 訊息但沒 embeds（如純文字 bot 通知）→ 不匹配、不丟例外。"""
+    msgs = [{"id": "2", "author": {"bot": True}}]          # 無 embeds
+    assert find_remote_messages(msgs, _TITLE) == (None, [])
+
+
+def test_find_remote_messages_embed_without_title_no_exception():
+    """embed 缺 title 鍵 → 不匹配、不丟例外（所有 key 都要防禦性取值）。"""
+    msgs = [{"id": "3", "author": {"bot": True}, "embeds": [{}]}]
+    assert find_remote_messages(msgs, _TITLE) == (None, [])
+
+
+def test_find_remote_messages_embed_title_mismatch_no_match():
+    """embed title 與遙控器標題不同（如 !list 分頁訊息）→ 不匹配。"""
+    msgs = [_msg("4", title="🗺️ 礦物清單")]
+    assert find_remote_messages(msgs, _TITLE) == (None, [])
+
+
+def test_find_remote_messages_multiple_embeds_one_matches():
+    """一則訊息多個 embed，任一 title 符合即匹配（認領訊息本身，非單一 embed）。"""
+    msgs = [{"id": "5", "author": {"bot": True},
+             "embeds": [{"title": "X"}, {"title": _TITLE}]}]
+    assert find_remote_messages(msgs, _TITLE) == ("5", [])

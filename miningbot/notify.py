@@ -26,6 +26,8 @@ MESSAGE_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{messa
 REACTION_SELF_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me"
 # 表情：列出按過此表情的使用者（含機器人自己）
 REACTIONS_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}"
+# 表情：移除指定使用者的反應（需 Manage Messages 才能移除他人）— {user_id} 或 @me
+REACTION_USER_API = "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}"
 
 # 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停/繼續、心跳…）不送，避免洗版。
 # PAUSED/RESUMED 不送——會手動暫停的人一定在畫面前，不需要 Discord 提醒。
@@ -202,6 +204,28 @@ def fetch_messages(token: str, channel_id: str, after: str | None = None,
         return []
 
 
+def find_remote_messages(msgs: list[dict], title: str):
+    """從 fetch_messages 回傳（newest-first）中認領既有遙控器訊息。回 (newest_id | None, stale_ids)。
+
+    匹配條件：author.bot 為 True **且** 任一 embed 的 title 等於 title。第一個匹配者為 newest
+    （認領），其餘全列 stale（啟動時逐一刪除，清跨重啟殘留）。所有 key 防禦性 .get 取值，
+    缺 author/embeds/title 的訊息一律不匹配、不丟例外（fetch 回的資料不可信）。
+    """
+    matches = []
+    for m in msgs:
+        if m.get("author", {}).get("bot") is not True:
+            continue
+        embeds = m.get("embeds") or []
+        if not any((e.get("title") == title) for e in embeds):
+            continue
+        mid = m.get("id")
+        if mid is not None:
+            matches.append(mid)
+    if not matches:
+        return None, []
+    return matches[0], matches[1:]
+
+
 def send_embed(token: str, channel_id: str, embed: dict,
                content: str | None = None, timeout: float = 10.0):
     """送含 embed 的訊息到 Discord 頻道。回 (ok: bool, detail: str, message_id: str | None)。
@@ -286,6 +310,37 @@ def get_reactions(token: str, channel_id: str, message_id: str,
             return json.loads(resp.read())
     except Exception:
         return []
+
+
+def remove_reaction(token: str, channel_id: str, message_id: str,
+                    emoji: str, user_id: str, timeout: float = 10.0):
+    """移除指定使用者對訊息的反應。DELETE /reactions/{emoji}/{user_id}。回 (ok, detail)。
+
+    emoji 同 add_reaction（unicode 表情，內部 percent-encode）。**需要 Manage Messages 權限**
+    才能移除「他人」的反應（移除自己的不需要）。缺權限時呼叫端應靜默降級（只記 log）——
+    遙控器改用「seen 集合同步語意」後，使用者自己取消反應再點也能再次觸發，故 remove 失敗
+    不影響功能正確性，只是同一顆按鈕得手動取消才能再按。
+    """
+    if not token or not channel_id or not message_id or not user_id:
+        return False, "缺少 token / channel_id / message_id / user_id"
+    url = REACTION_USER_API.format(
+        channel_id=channel_id, message_id=message_id,
+        emoji=urllib.parse.quote(emoji, safe=""), user_id=user_id)
+    req = urllib.request.Request(
+        url, method="DELETE",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def delete_message(token: str, channel_id: str, message_id: str,

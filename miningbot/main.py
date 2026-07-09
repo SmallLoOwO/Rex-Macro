@@ -28,6 +28,9 @@ _DISCORD_COMMANDS = frozenset({
 # 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
+# 遙控器 embed 標題——啟動時靠它掃頻道「認領」跨重啟殘留的遙控器（find_remote_messages），
+# 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
+_REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
 
 
 class _HotkeyController:
@@ -136,10 +139,14 @@ class Bot:
         self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
         self._list_current_world: str | None = None     # 該訊息目前顯示的世界（None=全世界聯集）
         self._list_reactions_seen: dict[str, set[str]] = {}  # 每表情已見使用者 ID（偵測「新點擊」）
-        # 遙控器（永久釘底的控制訊息）：每次頻道有新訊息擠上來就刪舊的、貼新的到頻道底，
-        # 確保使用者滑到最新一則就是搖控器。反應 ▶️/⏸️ 由 _poll_remote_reactions 偵測新點擊。
+        # 遙控器（釘底控制訊息 + 反應按鈕，混合設計 2026-07-09）：狀態變更/按鈕點擊一律
+        # edit_message 原地編輯（不產生新訊息、不推播），**只有**被其他訊息擠上去時才刪舊
+        # 重貼回頻道底（_repost_remote_control）。啟動時 _ensure_remote_control 先清跨重啟
+        # 殘留的舊遙控器（舊設計 id 只在記憶體、重啟後永遠刪不到的根因）再貼新的。
+        # 反應 ▶️/⏸️ 由 _poll_remote_reactions 偵測新點擊（seen 採同步語意：使用者取消可再點）。
         self._remote_message_id: str | None = None
         self._remote_reactions_seen: dict[str, set[str]] = {}
+        self._remote_last_shown: tuple | None = None    # 上次 PATCH 時的 (paused, state)，避免重複 PATCH
         # 狀態小窗用的即時資訊
         self._started = time.time()
         self.last_action = "—"
@@ -942,16 +949,23 @@ class Bot:
         if self._list_message_id:
             self._poll_list_reactions()
         if self._remote_message_id:
-            self._poll_remote_reactions()       # 觸發動作時內部 _refresh_remote_control 會重建
+            self._poll_remote_reactions()       # 觸發動作時內部 _edit_remote_control 會原地更新
+        # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
+        # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
+        # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
+        if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
+            self._edit_remote_control()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
             after=self._last_discord_msg_id, limit=10)
         if not msgs:
             return
-        # 2a. 遙控器釘底：最新訊息若不是遙控器，代表被擠上去 → 刪舊的、貼新的到頻道底
+        # 2a. 釘底（混合設計 2026-07-09）：狀態更新/按鈕點擊都原地編輯（不產生新訊息），
+        # **只有**被其他訊息擠上去時才刪舊重貼回頻道底——重貼次數從「每次狀態變」降到
+        # 「每次頻道有新訊息」，兼顧「滑到最底就是遙控器」與不洗版。
         if self._remote_message_id and msgs[0]["id"] != self._remote_message_id:
-            self._refresh_remote_control()
+            self._repost_remote_control()
         newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
         if self._last_discord_msg_id is None:
             # 首次輪詢：只記基準 ID，不處理歷史命令（避免重跑舊指令）
@@ -1001,25 +1015,25 @@ class Bot:
                 self.log_discord.info("list 分頁切換 -> %s（%d 個新點擊）", world, len(new_clickers))
                 return                              # 一次輪詢只切一頁
 
-    # ---- 遙控器（釘底控制訊息 + 反應按鈕）-------------------------------------
+    # ---- 遙控器（單一持久訊息 + 反應按鈕）--------------------------------------
     def _build_remote_embed(self) -> dict:
-        """組遙控器 embed。狀態欄同步顯示當前挖 礦狀態 + 暫停旗標，每次 refresh 都更新。"""
+        """組遙控器 embed。狀態欄同步顯示當前挖 礦狀態 + 暫停旗標，每次編輯都更新。"""
         running = not self.paused
         status_text = (f"{'🟢 挖礦中' if running else '🔴 已暫停'}"
                        f"　{self.state.value}"
                        + (f"（{self.last_action}）" if self.last_action and self.last_action != "—" else ""))
         return {
-            "title": "🎮 挖 礦機器人遙控器",
+            "title": _REMOTE_TITLE,
             "description": (
                 f"**狀態**：{status_text}\n"
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
                 f"\n"
-                f"_按鈕反應後會自動重建遙控器到頻道底_"
+                f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
             ),
             "color": 0x57F287 if running else 0xED4245,
-            "footer": {"text": "遙控器會自動維持在最新訊息位置"},
+            "footer": {"text": "遙控器會維持在頻道最底部"},
         }
 
     def _post_remote_control(self):
@@ -1044,25 +1058,83 @@ class Bot:
             seen[em] = {u.get("id") for u in users if u.get("id")}
         self._remote_message_id = mid
         self._remote_reactions_seen = seen
+        # 狀態同步基線：剛貼的 embed 已反映當前 (paused, state)，記下避免下輪重複 PATCH
+        self._remote_last_shown = (self.paused, self.state.value)
         self.log_discord.info("remote posted -> mid=%s (state=%s paused=%s)",
                               mid, self.state.value, self.paused)
 
-    def _refresh_remote_control(self):
-        """刪掉舊遙控器、貼新的到頻道底。遙控器狀態變更或被擠上去時呼叫。
+    def _edit_remote_control(self):
+        """原地編輯遙控器 embed（PATCH，不產生新訊息、不推播）。狀態變更或按鈕點擊後呼叫。
 
-        刪除失敗（缺權限、已被刪）不擋重新張貼——新遙控器仍可用，舊的會殘留為靜態訊息。
+        取代舊設計（刪舊貼新）：編輯同一則訊息即更新狀態顯示，不洗版、不觸發通知。
+        失敗處理：訊息被人手動刪掉（HTTP 404 / 10008）→ 視為遙控器遺失，重貼一則；
+        其他失敗（網路、rate limit）→ 只記 log，下輪再試，_remote_message_id 保留。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        mid = self._remote_message_id
+        ok, detail = notify.edit_message(token, ch, mid, embed=self._build_remote_embed())
+        if ok:
+            self.log_discord.debug("remote edited -> mid=%s (%s)", mid, detail)
+            # 成功才更新同步基線：避免下輪重複 PATCH 同一狀態
+            self._remote_last_shown = (self.paused, self.state.value)
+        else:
+            self.log_discord.info("remote edit FAIL -> mid=%s %s", mid, detail)
+            # 訊息被人手動刪掉（HTTP 404 / 10008）→ 視為遙控器遺失，重貼一則取代
+            if "HTTP 404" in detail or "10008" in detail:
+                self.log_discord.info("remote 消失（已刪）-> 重貼一則")
+                self._remote_message_id = None
+                self._post_remote_control()       # _post 內部會設 _remote_last_shown
+                return
+            # 其他失敗（網路、rate limit）：不更新 _remote_last_shown → 下輪 _poll_discord
+            # 的狀態同步條件（last_shown != current）仍成立，會自動重試。
+
+    def _repost_remote_control(self):
+        """刪舊遙控器、貼新的到頻道底。**只在被其他訊息擠上去時**呼叫（混合設計）。
+
+        狀態更新/按鈕點擊走 _edit_remote_control（原地 PATCH）；重貼保留給「維持釘底」
+        這一個用途。刪除結果必記 log（舊設計不記，刪除失敗無從診斷）；刪失敗不擋重貼。
         """
         from . import notify
         old = self._remote_message_id
         if old:
-            notify.delete_message(cfg.discord_bot_token, cfg.discord_channel_id, old)
+            ok, detail = notify.delete_message(
+                cfg.discord_bot_token, cfg.discord_channel_id, old)
+            self.log_discord.info("remote repost delete mid=%s -> %s", old, detail)
+        self._post_remote_control()
+
+    def _ensure_remote_control(self):
+        """啟動時清掉跨重啟殘留的舊遙控器，再貼一則新的到頻道底。取代直接 _post_remote_control。
+
+        根因（2026-07-09）：_remote_message_id 只存在記憶體，重啟後不認得上一輪的遙控器
+        → 舊的永遠不會被刪、每次啟動多留一則（logs/discord.log 實錄）。對策：掃頻道近期
+        20 則訊息 → find_remote_messages 找出**所有**遙控器（bot 作者＋embed 標題比對），
+        全部刪除（每筆記 log）後貼新的。不做「認領＋原地編輯」：啟動訊息剛貼完，舊遙控器
+        必不在頻道底，認領後第一輪 _poll_discord 也會立刻重貼（混合設計釘底），白做 PATCH。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        msgs = notify.fetch_messages(token, ch, limit=20)
+        newest, stale = notify.find_remote_messages(msgs, _REMOTE_TITLE)
+        # 清跨重啟殘留：每筆刪除都記 log（舊設計 delete 失敗無 log，無從診斷）
+        for sid in ([newest] if newest else []) + stale:
+            ok, detail = notify.delete_message(token, ch, sid)
+            self.log_discord.info("remote stale delete mid=%s -> %s", sid, detail)
         self._post_remote_control()
 
     def _poll_remote_reactions(self):
-        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並重建遙控器。
+        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並原地編輯遙控器。
 
-        沿用 _poll_list_reactions 的「已見使用者集合差集 = 新點擊」模式。任何動作觸發後
-        都 _refresh_remote_control（重建到頻道底、清掉使用者反應以便再點、刷新狀態顯示）。
+        混合設計（2026-07-09）：動作觸發後用 edit_message（PATCH）原地更新狀態——
+        不產生新訊息、不推播（舊設計每次都刪舊貼新＝洗版）；刪舊重貼只保留給
+        「被其他訊息擠上去」的釘底路徑（_poll_discord 2a → _repost_remote_control）。
+
+        seen 集合採「同步語意」（每輪覆寫成當前反應名單，而非累加 update）：使用者自己取消
+        反應會被移出 seen，下次再點即可再次觸發。這也是 remove_reaction 失敗的降級路徑——
+        缺 Manage Messages 權限時 bot 無法替使用者移除反應，但使用者手動取消再點一樣能再觸發。
+
+        守門 ``if not users: continue`` 不可省：get_reactions 失敗回空 list，若照樣同步會把
+        seen 清空、下一輪把所有既有反應誤判成新點擊（假觸發）。必須 fetch 有結果才同步。
         """
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
@@ -1071,12 +1143,16 @@ class Bot:
         for emoji, action in ((_REMOTE_RESUME_EMOJI, "resume"),
                               (_REMOTE_PAUSE_EMOJI, "pause")):
             users = notify.get_reactions(token, ch, mid, emoji)
+            if not users:
+                continue                            # get_reactions 失敗→不可同步（見 docstring）
             user_ids = {u.get("id") for u in users if u.get("id")}
             seen = self._remote_reactions_seen.setdefault(emoji, set())
             new_clickers = user_ids - seen
+            # 同步成當前名單（取代累加）：使用者取消反應會移出 seen，再點可再次觸發；
+            # 沒有新點擊的輪次也要同步，確保取消狀態即時反映。
+            self._remote_reactions_seen[emoji] = set(user_ids)
             if not new_clickers:
                 continue
-            seen.update(user_ids)            # 標記本次所有按過者為已見
             action_taken = action
             if action == "resume":
                 # 等同 !resume：清人工旗標 + 解暫停；非阻塞狀態下也是 no-op 安全
@@ -1091,10 +1167,24 @@ class Bot:
                 self._pause()
                 self.log_discord.info("remote ⏸️ pause by %s（already=%s）",
                                       ",".join(sorted(new_clickers)), already)
+            # 嘗試移除使用者反應讓他能再點（需 Manage Messages；缺權限則靜默降級——
+            # 使用者自己取消反應再點也能再次觸發，見 docstring seen 同步語意）
+            for uid in sorted(new_clickers):
+                rok, rdetail = notify.remove_reaction(token, ch, mid, emoji, uid)
+                if rok:
+                    # 移除成功即把 uid 踢出 seen：若使用者在下一輪輪詢前就再點，
+                    # seen 若仍含他會把該點擊永久吞掉（反應在名單上、又在 seen 裡
+                    # → 差集永遠為空）。先踢出的代價只是 Discord 移除尚未生效時
+                    # 可能重複觸發一次——resume/pause 皆冪等，無害。
+                    self._remote_reactions_seen[emoji].discard(uid)
+                else:
+                    self.log_discord.info("remote remove_reaction %s %s FAIL -> %s "
+                                          "（可能缺 Manage Messages；改由使用者自行取消）",
+                                          emoji, uid, rdetail)
             break                              # 一次輪詢只處理一個動作
         if action_taken:
-            # 動作觸發後重建遙控器：刷新狀態文字 + 把遙控器推回頻道底 + 清掉使用者反應（重建基線）
-            self._refresh_remote_control()
+            # 動作觸發後原地編輯遙控器：刷新狀態文字（不產生新訊息、不推播）
+            self._edit_remote_control()
 
     def _handle_discord_command(self, content: str):
         """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。
@@ -1313,9 +1403,9 @@ class Bot:
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = f"🤖 Bot 已啟動\n目前保留事件：\n{kept}"
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
-                # 遙控器釘底：啟動訊息貼完後張貼遙控器到頻道底（含 ▶️/⏸️ 反應按鈕）。
-                # 之後每輪 _poll_discord 會自動維持它在最新訊息位置、偵測按鈕點擊。
-                self._post_remote_control()
+                # 遙控器：啟動訊息貼完後清掉跨重啟殘留的舊遙控器、貼新的到頻道底。
+                # 之後每輪 _poll_discord 偵測按鈕點擊、狀態變更原地編輯；被擠上去才重貼。
+                self._ensure_remote_control()
         threading.Thread(target=_preflight_and_notify, daemon=True).start()
         try:
             while self._running:
