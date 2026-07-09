@@ -107,8 +107,30 @@ class Bot:
             refs, sr, cfg.audio_window_seconds, cfg.audio_score_interval_s,
             event_threshold=(cfg.audio_event_threshold if cfg.audio_event_record else None),
             on_event=self._on_audio_event, decimate=cfg.audio_match_decimate)
-        # 啟動喇叭 loopback 擷取，持續餵音訊給 listener（chill 偵測的核心）
-        self._audio_cap = audio.LoopbackCapture(self.listener.feed)
+        # 重置完成鈴聲擷取（第一階段：只錄不比對）——與 ChillListener 隔離
+        self._reset_chime_active = False
+        self._reset_wait_since = 0.0
+        self._last_chime_diag = 0.0
+        self._reset_chime_recorder = None
+        if cfg.reset_chime_capture:
+            chunk_seconds = 4096 / cfg.audio_sample_rate      # LoopbackCapture 預設 chunk_frames
+            detector = audio.AdaptiveSpikeDetector(
+                spike_factor=cfg.reset_chime_spike_factor,
+                baseline_alpha=cfg.reset_chime_baseline_alpha,
+                min_floor=cfg.reset_chime_min_floor,
+                warmup_samples=max(1, round(cfg.reset_chime_warmup_s / chunk_seconds)))
+            self._reset_chime_recorder = audio.ResetChimeRecorder(
+                sample_rate=cfg.audio_sample_rate,
+                window_s=cfg.reset_chime_window_s,
+                post_roll_s=cfg.reset_chime_post_roll_s,
+                chunk_seconds=chunk_seconds,
+                detector=detector,
+                out_dir=f"{cfg.log_dir}/snapshots/audio",
+                max_clips=cfg.reset_chime_max_clips,
+                log=self._on_reset_chime_saved,
+                diag=self._reset_chime_diag)
+        # 啟動喇叭 loopback 擷取，扇出給 listener（chill 核心）＋ reset-chime recorder
+        self._audio_cap = audio.LoopbackCapture(self._on_audio_chunk)
         try:
             self._audio_cap.start()
             self.logger.info("audio loopback capture started (ref sr=%d)", sr)
@@ -1481,6 +1503,26 @@ class Bot:
         except Exception as e:
             self.log_hb.error("音訊變動記錄失敗: %s", e)
 
+    def _on_audio_chunk(self, chunk):
+        """loopback 每 chunk 回呼（音訊執行緒）：餵 chill listener；active 時也餵 reset-chime。"""
+        self.listener.feed(chunk)
+        rec = self._reset_chime_recorder
+        if rec is not None and self._reset_chime_active:
+            rec.feed(chunk)
+
+    def _on_reset_chime_saved(self, path, rms):
+        """存下一個重置鈴聲候選片段時（音訊執行緒）記一筆到主 log。"""
+        self.logger.info("🔔 重置鈴聲候選存檔 rms=%.1f -> %s", rms, path)
+
+    def _reset_chime_diag(self, rms, baseline):
+        """armed 期間每 chunk 回呼（音訊執行緒）：節流把 rms/baseline/ratio 寫 heartbeat，供校門檻。"""
+        now = time.time()
+        if now - self._last_chime_diag < cfg.audio_score_interval_s:
+            return
+        self._last_chime_diag = now
+        ratio = rms / max(baseline, cfg.reset_chime_min_floor)
+        self.log_hb.info("RESET_CHIME rms=%.1f base=%.1f ratio=%.2f", rms, baseline, ratio)
+
     def _save_needs_human_screenshot(self, frame, tag: str = "") -> str | None:
         """NEEDS_HUMAN 時跑 find_tracker 找最佳追蹤框候選，裁出該區域存檔。
 
@@ -1762,8 +1804,10 @@ class Bot:
             self.last_action = "礦坑重置，等待重新定位"
             self._alert("礦坑重置，請重新定位後按 Q 繼續")
             self.human_cleared = False
+            self._reset_wait_since = time.time()     # reset-chime 擷取的 arm 計時起點
 
     def _tick(self, frame):
+        self._update_reset_chime_active()
         if self.state is State.MINING:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
@@ -1771,6 +1815,24 @@ class Bot:
         elif self.state is State.REENTRY:
             self._tick_reentry(frame)
         # NEEDS_HUMAN / RESET_WAIT: 等待熱鍵，不動作（chill 仍由 observe 監聽）
+
+    def _update_reset_chime_active(self):
+        """依 state＋計時決定 reset-chime recorder 是否收音；離開 RESET_WAIT 清空重錄。
+
+        先把旗標設 False 再 reset() recorder，避免音訊執行緒在 reset 當下還餵 chunk
+        （競態最壞＝邊界丟一個 chunk，對校準無害）。"""
+        rec = self._reset_chime_recorder
+        if rec is None:
+            return
+        active = (self.state is State.RESET_WAIT
+                  and self._reset_wait_since > 0.0
+                  and time.time() - self._reset_wait_since >= cfg.reset_chime_arm_delay_s)
+        if active and not self._reset_chime_active:
+            self._reset_chime_active = True
+            self.logger.info("🔔 重置鈴聲擷取啟動（RESET_WAIT 滿 %.0fs）", cfg.reset_chime_arm_delay_s)
+        elif not active and self._reset_chime_active:
+            self._reset_chime_active = False
+            rec.reset()
 
     def _tick_mining(self, frame):
         if getattr(self, '_post_harvest_watch', 0) > 0:
