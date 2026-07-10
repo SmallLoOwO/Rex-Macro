@@ -36,17 +36,15 @@ _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
 
-    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None, on_skip=None):
+    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None):
         self._down = down_fn
         self._on_stop = on_stop
         self._on_toggle = on_toggle
         self._on_quit = on_quit
         self._on_sample = on_sample        # 'R' 手動取樣視窗（未掛＝功能停用）
-        self._on_skip = on_skip            # 'F8' 跳過啟動環境檢查（未掛＝功能停用；單向，非 toggle）
         self._prev_ctrlq = False
         self._prev_q = False
         self._prev_r = False
-        self._prev_f8 = False
 
     def tick(self):
         ctrl = self._down(0x11)
@@ -69,10 +67,8 @@ class _HotkeyController:
         if r and not self._prev_r and self._on_sample:
             self._on_sample()
         self._prev_r = r
-        f8 = self._down(0x77)              # 'F8'：跳過啟動環境檢查
-        if f8 and not self._prev_f8 and self._on_skip:
-            self._on_skip()
-        self._prev_f8 = f8
+        # 跳過環境檢查不設專用鍵：F 系多被 Roblox 內建佔用（F8 實測有遊戲功能、
+        # 會誤觸），改由 Q 在啟動階段語意分派（states.toggle_pause_action 的 skip_env）
         if f12:
             self._on_quit()
 
@@ -150,7 +146,8 @@ class Bot:
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
         self._prev_frame = None
         self._last_progress = time.time()
-        # F8 跳過啟動環境檢查（spec 2026-07-10 第 2 節）：_skip_env_check 由 F8 callback 設定，
+        # Q 跳過啟動環境檢查（spec 2026-07-10 第 2 節；原 F8 與 Roblox 內建功能衝突改 Q）：
+        # _skip_env_check 由啟動階段的 Q（toggle_pause_action='skip_env'）設定，
         # 只在 _startup_phase=True（run() 環境檢查階段）有效；init 完成後 _startup_phase=False。
         self._skip_env_check = threading.Event()
         self._startup_phase = False
@@ -219,7 +216,6 @@ class Bot:
             self._toggle_pause,     # Q：開關 暫停↔繼續
             self._quit,
             on_sample=self._toggle_sampler,   # R：手動取樣視窗（校準素材收集）
-            on_skip=self._skip_env_requested, # F8：跳過啟動環境檢查（單向，只在 _startup_phase 有效）
         )
         self._sampler = None                  # SamplerWindow（無 HUD 後備；開著時非 None）
         self._sampler_want = False            # R 熱鍵請求開/關（HUD Tk 執行緒依此同步建/銷 Toplevel）
@@ -763,7 +759,7 @@ class Bot:
         目標值時不點任何箭頭直接收工。任一步不確定 → Esc 回中性 → 整鏈重試
         cfg.menu_retry_max 次 → 仍失敗回 False（呼叫端依情境分流 NEEDS_HUMAN 或記警告）。
 
-        skip_event：F8 跳過旗標（只啟動呼叫端傳；其餘呼叫端不傳＝只吃時間預算）。
+        skip_event：Q 跳過旗標（只啟動呼叫端傳；其餘呼叫端不傳＝只吃時間預算）。
         時間預算 cfg.menu_budget_s（實測成功 71~82s、失敗曾燒 170s；spec 2026-07-10 第 4 節）：
         起算 deadline，鏈內所有檢查點超時即中止走失敗路徑。
 
@@ -788,7 +784,7 @@ class Bot:
         others = tuple(o for o in cfg.movement_mode_options if o != target)
         for attempt in range(cfg.menu_retry_max + 1):
             if _aborted():   # 此處選單是關的（上一輪失敗後已 Esc），不再按 Esc
-                reason = "F8 跳過" if skip_event is not None and skip_event.is_set() else \
+                reason = "Q 跳過" if skip_event is not None and skip_event.is_set() else \
                          ("程式結束" if not self._running else f"預算 {cfg.menu_budget_s:.0f}s 超時")
                 self.log_act.info("Movement Mode 切換中止（%s）：target=%s 於第 %d 次嘗試前，總耗時 %.1fs",
                                   reason, target, attempt + 1, time.perf_counter() - t_start)
@@ -955,7 +951,7 @@ class Bot:
         self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr1_ms)
         ic.click_at(*cfg.chat_icon_xy)
         time.sleep(cfg.menu_open_settle_s)
-        if self._env_check_skip("聊天框複檢"):   # F8 已按 → 省下 ~2-8s 第二次 OCR
+        if self._env_check_skip("聊天框複檢"):   # Q 已按 → 省下 ~2-8s 第二次 OCR
             return
         t0 = time.perf_counter()
         frame = capture.grab()
@@ -989,7 +985,7 @@ class Bot:
         self.logger.info("UI 前置檢查：玩家列表開啟，按 Tab 關閉（OCR %.0fms，%d 框）", ocr1_ms, len(recs))
         ic.key_press("tab")
         time.sleep(cfg.menu_open_settle_s)
-        if self._env_check_skip("玩家列表複檢"):   # F8 已按 → 省下 ~2-8s 第二次 OCR
+        if self._env_check_skip("玩家列表複檢"):   # Q 已按 → 省下 ~2-8s 第二次 OCR
             return
         t0 = time.perf_counter()
         frame = capture.grab()
@@ -1427,11 +1423,11 @@ class Bot:
     def run(self):
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
-                         "F8 跳過環境檢查, log_level=%s)", cfg.log_level)
+                         "啟動檢查期間 Q=跳過檢查直接開挖, log_level=%s)", cfg.log_level)
         # 熱鍵執行緒提早啟動（spec 2026-07-10 第 1 節）：原本在 init 完成後才啟動，啟動期間
-        # Q/Ctrl+Q/F12 全部無效；移到最前面讓環境檢查期間也能中斷。F8 同此執行緒進來。
-        # _startup_phase 同步在此開啟：聚焦/量基準要 ~2-3s，F8 在這段就按下也要記住
-        # （太晚設 True 會把早按的 F8 丟掉、使用者以為沒生效）。
+        # Q/Ctrl+Q/F12 全部無效；移到最前面讓環境檢查期間也能中斷。
+        # _startup_phase 同步在此開啟：聚焦/量基準要 ~2-3s，跳過鍵（Q）在這段就按下也要記住
+        # （太晚設 True 會把早按的 Q 丟掉、使用者以為沒生效）。
         self._startup_phase = True
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
         # 先確認 Roblox 在、聚焦它，完成初始化定位後才開始
@@ -1455,10 +1451,11 @@ class Bot:
         # 啟動 UI 前置檢查（spec 2026-07-08-menu-preflight-boost-design.md 第 3 節）：
         # 先關右上角玩家列表（Tab toggle，遮右側點擊視線）→ 再確認聊天框（關著會讓整條 verify
         # OCR 鏈瞎眼）→ Movement Mode（不對會讓 W+左鍵挖礦序列失效）。
-        # F8 跳過（spec 2026-07-10 第 2 節）：啟動期間按 F8 設 _skip_env_check，三項檢查各自
-        # 透過 _env_check_skip 判斷是否略過；init 完成後 _startup_phase=False（F8 不再生效）。
-        # （_startup_phase 已在 run() 開頭設 True——聚焦期間按的 F8 也要收。）
-        self.last_action = "環境檢查中…（F8 跳過）"
+        # Q 跳過（spec 2026-07-10 第 2 節；原 F8 與 Roblox 內建功能衝突改 Q）：啟動期間按 Q
+        # 設 _skip_env_check，三項檢查各自透過 _env_check_skip 判斷是否略過；init 完成後
+        # _startup_phase=False（Q 回歸暫停/繼續語意）。
+        # （_startup_phase 已在 run() 開頭設 True——聚焦期間按的 Q 也要收。）
+        self.last_action = "環境檢查中…（按 Q 跳過）"
         if self._env_check_skip("玩家列表檢查"):
             pass
         else:
@@ -1470,7 +1467,7 @@ class Bot:
         if not self._env_check_skip("Movement Mode 切換"):
             ok = self._set_movement_mode(cfg.movement_mode_mining,
                                          skip_event=self._skip_env_check)
-            # F8 中途中止也會回 False——那是主動跳過不是失敗，別發誤導警告
+            # Q 跳過中途中止也會回 False——那是主動跳過不是失敗，別發誤導警告
             if not ok and not self._skip_env_check.is_set():
                 self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
                 self.last_action = "⚠ Movement Mode 切換失敗，請手動確認"
@@ -2966,14 +2963,18 @@ class Bot:
             miner.init_mining_sequence(rotate=self._rotate_verified)
 
     def _toggle_pause(self):
-        """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動）。
+        """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動；
+        啟動環境檢查階段＝跳過剩餘檢查，見 _skip_env_requested）。
 
         Ctrl+Q 已在 _check_hotkeys 分開處理（只會呼叫 _pause），這裡進來的一定是單獨 Q。
         行為分派走純函式 toggle_pause_action（states.py；有測試覆蓋），避免 inline
-        if/elif 條件寫錯（例如漏掉 RESET_WAIT）。
+        if/elif 條件寫錯（例如漏掉 RESET_WAIT 或啟動階段誤觸發暫停）。
         """
-        action = toggle_pause_action(self.paused, self.state)
-        if action == "resume":
+        action = toggle_pause_action(self.paused, self.state,
+                                     startup_phase=self._startup_phase)
+        if action == "skip_env":
+            self._skip_env_requested()
+        elif action == "resume":
             self._resume()
         elif action == "clear_human":
             self.human_cleared = True
@@ -2985,21 +2986,21 @@ class Bot:
         self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)
         self._running = False
 
-    # ---- F8 跳過啟動環境檢查（spec 2026-07-10 第 2 節）------------------------------
+    # ---- Q 跳過啟動環境檢查（spec 2026-07-10 第 2 節；原 F8 與 Roblox 內建功能衝突改 Q）--
     def _skip_env_requested(self):
-        """F8：跳過啟動環境檢查（單向，非 toggle）。只在啟動檢查階段有效。"""
+        """啟動階段按 Q（toggle_pause_action='skip_env' 進來）：跳過環境檢查（單向，非 toggle）。"""
         if not self._startup_phase or self._skip_env_check.is_set():
             return
         self._skip_env_check.set()
-        self.logger.info("F8 — 跳過環境檢查（剩餘 UI 前置檢查將略過，直接開挖）")
-        self.last_action = "F8 跳過環境檢查"
+        self.logger.info("Q — 跳過環境檢查（剩餘 UI 前置檢查將略過，直接開挖）")
+        self.last_action = "Q 跳過環境檢查"
 
     def _env_check_skip(self, name: str) -> bool:
-        """啟動環境檢查的統一跳過判斷：F8 已按或程式要結束 → True（略過該步）。"""
+        """啟動環境檢查的統一跳過判斷：Q（跳過）已按或程式要結束 → True（略過該步）。"""
         if not self._running:
             return True
         if self._skip_env_check.is_set():
-            self.logger.info("環境檢查略過（F8）：%s", name)
+            self.logger.info("環境檢查略過（Q）：%s", name)
             return True
         return False
 

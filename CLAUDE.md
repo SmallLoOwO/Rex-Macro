@@ -138,11 +138,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
     after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
     （新 has-found 行 / 背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
-  **F12** 結束、**R** 手動取樣視窗（編號截圖＋俯仰歸位/微調；開啟時自動暫停挖礦；用法詳 `docs/manual-sampling.md`）、
-  **F8** 啟動環境檢查期間＝跳過剩餘檢查直接開挖（程式重開環境沒變時用；單向非 toggle，
-  init 完成後按無作用；設計見 `docs/superpowers/specs/2026-07-10-fast-startup-skip-design.md`）。
+  **F12** 結束、**R** 手動取樣視窗（編號截圖＋俯仰歸位/微調；開啟時自動暫停挖礦；用法詳 `docs/manual-sampling.md`）。
+  **啟動環境檢查期間按 Q＝跳過剩餘檢查直接開挖**（程式重開環境沒變時用；單向非 toggle，
+  init 完成後 Q 回歸暫停/繼續；語意分派在 `states.toggle_pause_action` 的 `skip_env` 分支。
+  **原 F8 專用鍵與 Roblox 內建功能衝突而廢棄（2026-07-10 實測）——別再掛 F 系專用鍵**；
+  設計見 `docs/superpowers/specs/2026-07-10-fast-startup-skip-design.md`）。
   焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。熱鍵執行緒在 `run()` 開頭就啟動
-  （2026-07-10 起）——環境檢查期間 Q/Ctrl+Q/F12/F8 全部有效；Movement Mode 鏈另有
+  （2026-07-10 起）——環境檢查期間 Q/Ctrl+Q/F12 全部有效；Movement Mode 鏈另有
   `menu_budget_s`(90s) 總預算，超時自動中止走失敗路徑（實測成功 71~82s、失敗曾燒 170s）。
   **R 視窗必須由 HUD 執行緒建（`sampler.SamplerPanel` Toplevel，2026-07-10）**：主執行緒有 HUD 的 Tk
   mainloop 時，背景執行緒開第二個 `tk.Tk()` 的 OS 視窗**永遠不會出現**（執行緒活著、mainloop 有跑、

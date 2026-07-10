@@ -103,18 +103,24 @@ def resolve_state_transition(current: State, decided: State,
     return decided              # 預設：接受 decide_transition 的判斷
 
 
-def toggle_pause_action(paused: bool, state: State) -> str:
+def toggle_pause_action(paused: bool, state: State, startup_phase: bool = False) -> str:
     """Q 鍵的行為決策（純函式）：決定按 Q 時要走哪條路。
 
-    回傳 'resume' / 'clear_human' / 'pause'：
+    回傳 'skip_env' / 'resume' / 'clear_human' / 'pause'：
+    - 啟動環境檢查階段 → 'skip_env'（跳過剩餘 UI 前置檢查直接開挖；程式重開環境沒變時
+      的快速啟動。原 F8 專用鍵與 Roblox 內建功能衝突而廢棄，2026-07-10 改沿用 Q——
+      貼使用者「暫停重新繼續」直覺、零新鍵）
     - 目前暫停中 → 'resume'（解除暫停，重新握住 W+左鍵）
     - 處於 NEEDS_HUMAN / RESET_WAIT → 'clear_human'（清人工旗標，等同「已處理完」）
     - 否則 → 'pause'（標準暫停）
 
-    抽出原因：3 個分支的條件易寫錯（例如把 NEEDS_HUMAN 與 paused 合併判斷、
-    或誤把 RESET_WAIT 漏掉），純函式可直接斷言每個 (paused, state) 組合的行為。
-    分支優先序：paused 先判（即使處於 NEEDS_HUMAN 同時也被暫停，先 resume）。
+    抽出原因：分支條件易寫錯（例如把 NEEDS_HUMAN 與 paused 合併判斷、
+    或誤把 RESET_WAIT 漏掉），純函式可直接斷言每個組合的行為。
+    分支優先序：startup_phase 最先（啟動中按 Q 的唯一合理語意就是跳過；此時
+    paused/state 都還不是穩定值），再 paused（即使處於 NEEDS_HUMAN 同時也被暫停，先 resume）。
     """
+    if startup_phase:
+        return "skip_env"
     if paused:
         return "resume"
     if state in (State.NEEDS_HUMAN, State.RESET_WAIT):

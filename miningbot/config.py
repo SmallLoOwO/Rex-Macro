@@ -198,9 +198,10 @@ class Config:
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
-    hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟）
+    hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟；
+                                                 # 啟動環境檢查期間按 Q＝跳過剩餘檢查直接開挖——原 F8 專用鍵
+                                                 # 與 Roblox 內建功能衝突而廢棄，2026-07-10）
     hotkey_quit: str = "f12"                     # 真正結束程式
-    hotkey_skip_env: str = "f8"                  # 啟動環境檢查期間按 F8＝跳過剩餘檢查直接開挖（VK 0x77 寫死同其他鍵）
     antiafk_interval_s: float = 900.0            # 防掛機踢除：暫停中每 N 秒按一次 Space（預設 15 分鐘）
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼

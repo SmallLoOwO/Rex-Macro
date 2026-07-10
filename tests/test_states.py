@@ -88,6 +88,18 @@ def test_q_pauses_when_running_normally():
     assert toggle_pause_action(paused=False, state=State.MINING) == "pause"
     assert toggle_pause_action(paused=False, state=State.HARVESTING) == "pause"
 
+def test_q_skips_env_check_during_startup():
+    # 啟動環境檢查期間按 Q → 跳過剩餘檢查直接開挖（使用者「暫停重新繼續」直覺；
+    # 原 F8 方案與 Roblox 內建功能衝突而廢棄，2026-07-10）。startup_phase 最優先。
+    assert toggle_pause_action(paused=False, state=State.MINING,
+                               startup_phase=True) == "skip_env"
+    assert toggle_pause_action(paused=True, state=State.MINING,
+                               startup_phase=True) == "skip_env"
+
+def test_q_startup_phase_default_false_keeps_old_behavior():
+    # 未傳 startup_phase＝既有三分支不變（回歸保護）
+    assert toggle_pause_action(paused=False, state=State.MINING) == "pause"
+
 
 # --- is_blocked_from_mining：!resume 命令的阻塞判斷（純函式）---
 def test_blocked_when_in_needs_human_or_reset_wait():
