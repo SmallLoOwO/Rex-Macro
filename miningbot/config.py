@@ -200,6 +200,7 @@ class Config:
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
     hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟）
     hotkey_quit: str = "f12"                     # 真正結束程式
+    hotkey_skip_env: str = "f8"                  # 啟動環境檢查期間按 F8＝跳過剩餘檢查直接開挖（VK 0x77 寫死同其他鍵）
     antiafk_interval_s: float = 900.0            # 防掛機踢除：暫停中每 N 秒按一次 Space（預設 15 分鐘）
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
@@ -231,6 +232,8 @@ class Config:
     menu_close_settle_s: float = 0.3     # Esc 關閉後等選單收合
     menu_fuzzy_min_ratio: float = 0.6    # 標籤/值模糊比對下限（比照 reentry_button_min_ratio 精神）
     menu_retry_max: int = 1              # 整鏈失敗後重試次數（不含首次嘗試）
+    menu_budget_s: float = 90.0          # Movement Mode 整鏈時間預算；超過即中止走失敗路徑
+        # （實測成功 71~82s、失敗曾燒 170s；2026-07-10 spec 第 4 節）
 
     chat_icon_xy: tuple = (174, 71)      # 左上聊天圖示（收合時點它展開；2026-07-08 實測座標）
     chat_input_region: Region = field(default_factory=lambda: Region(0, 355, 620, 55))

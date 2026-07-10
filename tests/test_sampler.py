@@ -37,6 +37,29 @@ class TestHotkeyR:
         hk.tick()   # on_sample 未掛也不能炸（既有呼叫端不傳此參數）
 
 
+class TestHotkeyF8:
+    # F8（VK 0x77）＝跳過啟動環境檢查；邊緣觸發，樣式同 R（spec 2026-07-10 第 1 節）。
+    def _mk(self, down):
+        calls = []
+        hk = _HotkeyController(down, on_stop=lambda: None, on_toggle=lambda: None,
+                               on_quit=lambda: None, on_skip=lambda: calls.append(1))
+        return hk, calls
+
+    def test_f8_edge_triggers_once(self):
+        pressed = {0x77}
+        hk, calls = self._mk(lambda vk: vk in pressed)
+        hk.tick(); hk.tick()          # 按住兩 tick 只觸發一次（邊緣觸發）
+        assert calls == [1]
+        pressed.clear(); hk.tick()
+        pressed.add(0x77); hk.tick()  # 放開再按 → 再觸發
+        assert calls == [1, 1]
+
+    def test_no_callback_no_crash(self):
+        hk = _HotkeyController(lambda vk: vk == 0x77, lambda: None,
+                               lambda: None, lambda: None)
+        hk.tick()   # on_skip 未掛也不能炸（既有呼叫端不傳此參數）
+
+
 class TestSyncAction:
     # sync_action：HUD _poll 用來把「R 熱鍵請求」對齊「取樣視窗實際狀態」的純決策。
     # 對應 2026-07-10 修復：背景執行緒建第二個 tk.Tk() 會靜默失敗（OS 層無窗），

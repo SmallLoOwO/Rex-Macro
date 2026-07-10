@@ -36,15 +36,17 @@ _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
 
-    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None):
+    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None, on_skip=None):
         self._down = down_fn
         self._on_stop = on_stop
         self._on_toggle = on_toggle
         self._on_quit = on_quit
         self._on_sample = on_sample        # 'R' 手動取樣視窗（未掛＝功能停用）
+        self._on_skip = on_skip            # 'F8' 跳過啟動環境檢查（未掛＝功能停用；單向，非 toggle）
         self._prev_ctrlq = False
         self._prev_q = False
         self._prev_r = False
+        self._prev_f8 = False
 
     def tick(self):
         ctrl = self._down(0x11)
@@ -67,6 +69,10 @@ class _HotkeyController:
         if r and not self._prev_r and self._on_sample:
             self._on_sample()
         self._prev_r = r
+        f8 = self._down(0x77)              # 'F8'：跳過啟動環境檢查
+        if f8 and not self._prev_f8 and self._on_skip:
+            self._on_skip()
+        self._prev_f8 = f8
         if f12:
             self._on_quit()
 
@@ -144,6 +150,10 @@ class Bot:
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
         self._prev_frame = None
         self._last_progress = time.time()
+        # F8 跳過啟動環境檢查（spec 2026-07-10 第 2 節）：_skip_env_check 由 F8 callback 設定，
+        # 只在 _startup_phase=True（run() 環境檢查階段）有效；init 完成後 _startup_phase=False。
+        self._skip_env_check = threading.Event()
+        self._startup_phase = False
         self._stuck_notified = False
         self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
@@ -209,6 +219,7 @@ class Bot:
             self._toggle_pause,     # Q：開關 暫停↔繼續
             self._quit,
             on_sample=self._toggle_sampler,   # R：手動取樣視窗（校準素材收集）
+            on_skip=self._skip_env_requested, # F8：跳過啟動環境檢查（單向，只在 _startup_phase 有效）
         )
         self._sampler = None                  # SamplerWindow（無 HUD 後備；開著時非 None）
         self._sampler_want = False            # R 熱鍵請求開/關（HUD Tk 執行緒依此同步建/銷 Toplevel）
@@ -250,6 +261,11 @@ class Bot:
         # re-entry 傳送面板模板（assets/surface/*.png；calibrate_surface --import 產出）。
         # 開了 auto_reenter 但沒模板＝掃不到面板必然全 reroll → 視同關閉並警告，不空轉。
         self._panel_templates = self._load_panel_templates()
+        # RapidOCR／tesserocr 預熱：與音訊載入/HUD 倒數/聚焦重疊，UI 前置檢查不再踩冷 init。
+        # 2026-07-10 移到 __init__（原在 run() 尾，排在 UI 檢查之後才啟動，首個 UI 檢查自己
+        # 踩 6~11s 冷 init；_get_rapid_engine/_get_tess_api 有鎖冪等，未裝時快速失敗一次）。
+        threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
+        threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,), daemon=True).start()
 
     def _load_panel_templates(self) -> list:
         import glob
@@ -740,12 +756,16 @@ class Bot:
             self.logger.warning("Roblox 未取得前景焦點 — 輸入不會進遊戲；請點一下遊戲視窗再啟動")
         return got
 
-    def _set_movement_mode(self, target: str) -> bool:
+    def _set_movement_mode(self, target: str, skip_event=None) -> bool:
         """把 Roblox 設定 Movement Mode 切到 target（三值之一）。
 
         決策純函式在 roblox_menu.py，這裡只做 I/O（Esc/點擊/捲動/OCR）。冪等：已是
         目標值時不點任何箭頭直接收工。任一步不確定 → Esc 回中性 → 整鏈重試
         cfg.menu_retry_max 次 → 仍失敗回 False（呼叫端依情境分流 NEEDS_HUMAN 或記警告）。
+
+        skip_event：F8 跳過旗標（只啟動呼叫端傳；其餘呼叫端不傳＝只吃時間預算）。
+        時間預算 cfg.menu_budget_s（實測成功 71~82s、失敗曾燒 170s；spec 2026-07-10 第 4 節）：
+        起算 deadline，鏈內所有檢查點超時即中止走失敗路徑。
 
         優化候選（先靠本方法的 log 收數據，再決定做不做）：
         - 座標快取直點：Settings 分頁 / Movement Mode 列 / 右箭頭座標若每次都穩定不變，
@@ -756,9 +776,24 @@ class Bot:
           待 log（`menu OCR[...]` 的 grab/ocr 耗時拆分）證實。
         """
         t_start = time.perf_counter()
+        deadline = time.perf_counter() + cfg.menu_budget_s
+
+        def _aborted() -> bool:
+            if not self._running:
+                return True
+            if skip_event is not None and skip_event.is_set():
+                return True
+            return time.perf_counter() > deadline
+
         others = tuple(o for o in cfg.movement_mode_options if o != target)
         for attempt in range(cfg.menu_retry_max + 1):
-            if self._set_movement_mode_once(target, others):
+            if _aborted():   # 此處選單是關的（上一輪失敗後已 Esc），不再按 Esc
+                reason = "F8 跳過" if skip_event is not None and skip_event.is_set() else \
+                         ("程式結束" if not self._running else f"預算 {cfg.menu_budget_s:.0f}s 超時")
+                self.log_act.info("Movement Mode 切換中止（%s）：target=%s 於第 %d 次嘗試前，總耗時 %.1fs",
+                                  reason, target, attempt + 1, time.perf_counter() - t_start)
+                return False
+            if self._set_movement_mode_once(target, others, should_abort=_aborted):
                 self.log_act.info(
                     "Movement Mode 切換鏈成功：target=%s 嘗試次數=%d 總耗時 %.1fs",
                     target, attempt + 1, time.perf_counter() - t_start)
@@ -772,8 +807,13 @@ class Bot:
             target, cfg.menu_retry_max + 1, time.perf_counter() - t_start)
         return False
 
-    def _set_movement_mode_once(self, target: str, others: tuple) -> bool:
-        """單次嘗試：開選單→找 Settings→找 Movement Mode 列→比對值→不符則點右箭頭。"""
+    def _set_movement_mode_once(self, target: str, others: tuple, should_abort=None) -> bool:
+        """單次嘗試：開選單→找 Settings→找 Movement Mode 列→比對值→不符則點右箭頭。
+
+        should_abort：可注入的中止判斷（_aborted 閉包）。在捲屏迴圈與箭頭點擊迴圈每輪頂
+        檢查——中止＝直接 return False，**不自己按 Esc**：外層失敗路徑必按一次 Esc 回中性，
+        這裡再按會變兩下（第二下重開選單、留著吃掉後續挖礦按鍵）（spec 2026-07-10 第 6 節）。
+        """
         t_start = time.perf_counter()
 
         t0 = time.perf_counter()
@@ -808,6 +848,12 @@ class Bot:
         scroll_count = 0
         t0 = time.perf_counter()
         for i in range(cfg.menu_scroll_max_screens):
+            if should_abort and should_abort():
+                # 不在這裡按 Esc：回 False 後外層「失敗→Esc 回中性」必按一次，這裡再按
+                # 會變兩下（第二下把剛收的選單重新打開、留著吃掉後續挖礦按鍵）
+                self.log_act.info("Movement Mode 切換中止：捲屏階段（選單交外層 Esc 收），總耗時 %.1fs",
+                                  time.perf_counter() - t_start)
+                return False
             records = self._menu_ocr(f"scroll-{i + 1}")
             row_y = roblox_menu.find_label_row_y(records, "Movement Mode", cfg.menu_fuzzy_min_ratio)
             if row_y is not None:
@@ -847,6 +893,11 @@ class Bot:
 
         t0 = time.perf_counter()
         for click_i in range(cfg.menu_arrow_click_max):
+            if should_abort and should_abort():
+                # 同捲屏階段：Esc 交外層失敗路徑收，避免按兩下重開選單
+                self.log_act.info("Movement Mode 切換中止：箭頭點擊階段（選單交外層 Esc 收），總耗時 %.1fs",
+                                  time.perf_counter() - t_start)
+                return False
             ic.click_at(cfg.menu_arrow_right_x, row_y)
             time.sleep(cfg.menu_arrow_settle_s)
             records = self._menu_ocr(f"arrow-{click_i + 1}")
@@ -904,6 +955,8 @@ class Bot:
         self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr1_ms)
         ic.click_at(*cfg.chat_icon_xy)
         time.sleep(cfg.menu_open_settle_s)
+        if self._env_check_skip("聊天框複檢"):   # F8 已按 → 省下 ~2-8s 第二次 OCR
+            return
         t0 = time.perf_counter()
         frame = capture.grab()
         text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
@@ -936,6 +989,8 @@ class Bot:
         self.logger.info("UI 前置檢查：玩家列表開啟，按 Tab 關閉（OCR %.0fms，%d 框）", ocr1_ms, len(recs))
         ic.key_press("tab")
         time.sleep(cfg.menu_open_settle_s)
+        if self._env_check_skip("玩家列表複檢"):   # F8 已按 → 省下 ~2-8s 第二次 OCR
+            return
         t0 = time.perf_counter()
         frame = capture.grab()
         recs = ocr.read_text_boxes(capture.crop(frame, cfg.player_list_region))
@@ -1371,8 +1426,14 @@ class Bot:
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         self._running = True
-        self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束, log_level=%s)",
-                         cfg.log_level)
+        self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
+                         "F8 跳過環境檢查, log_level=%s)", cfg.log_level)
+        # 熱鍵執行緒提早啟動（spec 2026-07-10 第 1 節）：原本在 init 完成後才啟動，啟動期間
+        # Q/Ctrl+Q/F12 全部無效；移到最前面讓環境檢查期間也能中斷。F8 同此執行緒進來。
+        # _startup_phase 同步在此開啟：聚焦/量基準要 ~2-3s，F8 在這段就按下也要記住
+        # （太晚設 True 會把早按的 F8 丟掉、使用者以為沒生效）。
+        self._startup_phase = True
+        threading.Thread(target=self._hotkey_loop, daemon=True).start()
         # 先確認 Roblox 在、聚焦它，完成初始化定位後才開始
         if not self._focus_roblox():
             self._alert("找不到/無法聚焦 Roblox，請先開好遊戲再啟動")
@@ -1394,23 +1455,29 @@ class Bot:
         # 啟動 UI 前置檢查（spec 2026-07-08-menu-preflight-boost-design.md 第 3 節）：
         # 先關右上角玩家列表（Tab toggle，遮右側點擊視線）→ 再確認聊天框（關著會讓整條 verify
         # OCR 鏈瞎眼）→ Movement Mode（不對會讓 W+左鍵挖礦序列失效）。
-        self._ensure_player_list_closed()
-        self._ensure_chat_open()
-        if not self._set_movement_mode(cfg.movement_mode_mining):
-            self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
-            self.last_action = "⚠ Movement Mode 切換失敗，請手動確認"
+        # F8 跳過（spec 2026-07-10 第 2 節）：啟動期間按 F8 設 _skip_env_check，三項檢查各自
+        # 透過 _env_check_skip 判斷是否略過；init 完成後 _startup_phase=False（F8 不再生效）。
+        # （_startup_phase 已在 run() 開頭設 True——聚焦期間按的 F8 也要收。）
+        self.last_action = "環境檢查中…（F8 跳過）"
+        if self._env_check_skip("玩家列表檢查"):
+            pass
+        else:
+            self._ensure_player_list_closed()
+        if self._env_check_skip("聊天框檢查"):
+            pass
+        else:
+            self._ensure_chat_open()
+        if not self._env_check_skip("Movement Mode 切換"):
+            ok = self._set_movement_mode(cfg.movement_mode_mining,
+                                         skip_event=self._skip_env_check)
+            # F8 中途中止也會回 False——那是主動跳過不是失敗，別發誤導警告
+            if not ok and not self._skip_env_check.is_set():
+                self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
+                self.last_action = "⚠ Movement Mode 切換失敗，請手動確認"
+        self._startup_phase = False
         miner.init_mining_sequence(rotate=self._rotate_verified)
-        threading.Thread(target=self._hotkey_loop, daemon=True).start()
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
         threading.Thread(target=self._snapshot_cleanup_once, daemon=True).start()
-        # RapidOCR 預熱（實測 init 6~7s）：lazy init 會落在第一次採集的基準 OCR 前、
-        # 白吃掉大半個 verify 窗口（H032/H033 實錄 14:12/16:24 init 都在採集中）。
-        # _get_rapid_engine 有鎖、冪等；未裝時這條執行緒只是快速失敗一次。
-        threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
-        # tesserocr 探測同理背景預熱（成本遠低於 rapidocr，但避免 preflight 首次冷探測）：
-        # tesserocr_available 一樣冪等（沿用 _get_tess_api 的 thread-local 持久 API）。
-        threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,),
-                         daemon=True).start()
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
@@ -1431,6 +1498,9 @@ class Bot:
                 # 之後每輪 _poll_discord 偵測按鈕點擊、狀態變更原地編輯；被擠上去才重貼。
                 self._ensure_remote_control()
         threading.Thread(target=_preflight_and_notify, daemon=True).start()
+        # 啟動耗時不算「無進度」：_last_progress 在 __init__ 設定，啟動 3.5 分鐘曾被算成
+        # 「無進度」→ 一進主迴圈就 STUCK 假警報（spec 2026-07-10 第 5 節）。
+        self._last_progress = time.time()
         try:
             while self._running:
                 if self.paused:
@@ -2915,6 +2985,24 @@ class Bot:
         self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)
         self._running = False
 
+    # ---- F8 跳過啟動環境檢查（spec 2026-07-10 第 2 節）------------------------------
+    def _skip_env_requested(self):
+        """F8：跳過啟動環境檢查（單向，非 toggle）。只在啟動檢查階段有效。"""
+        if not self._startup_phase or self._skip_env_check.is_set():
+            return
+        self._skip_env_check.set()
+        self.logger.info("F8 — 跳過環境檢查（剩餘 UI 前置檢查將略過，直接開挖）")
+        self.last_action = "F8 跳過環境檢查"
+
+    def _env_check_skip(self, name: str) -> bool:
+        """啟動環境檢查的統一跳過判斷：F8 已按或程式要結束 → True（略過該步）。"""
+        if not self._running:
+            return True
+        if self._skip_env_check.is_set():
+            self.logger.info("環境檢查略過（F8）：%s", name)
+            return True
+        return False
+
     # ---- R 鍵手動取樣（校準素材收集；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）--
     def _toggle_sampler(self):
         """R：開/關取樣視窗。開啟時若正在挖礦先自動暫停——取樣的俯仰拖曳/截圖
@@ -2981,6 +3069,9 @@ class Bot:
     def _sampler_pitch_reset(self) -> int:
         """俯仰歸位（Tk 執行緒進來）：點按鈕當下焦點在小視窗上，先聚焦再拖。"""
         self._focus_roblox()
+        # 滑鼠事件送到「游標所在」視窗（鍵盤才看焦點）：點按鈕當下游標還停在
+        # 取樣小視窗上，右鍵拖曳會落在 Tk 視窗、Roblox 收不到 → 先把游標移進遊戲畫面
+        ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)
         ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px)
         self._pitch_offset_px = cfg.reentry_pitch_back_px
         return self._pitch_offset_px
@@ -2988,6 +3079,7 @@ class Bot:
     def _sampler_pitch_nudge(self, dy: int) -> int:
         """微調一步。dy>0 向下拖＝靠近夾限→偏移量減少（偏移＝距夾限的回拉量）。"""
         self._focus_roblox()
+        ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)  # 同 _sampler_pitch_reset：游標須先離開小視窗
         ic.pitch_nudge(dy)
         self._pitch_offset_px -= dy
         return self._pitch_offset_px
