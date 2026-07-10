@@ -1,5 +1,5 @@
 """R 鍵手動取樣：編號接續（純函式）與熱鍵邊緣觸發（TDD）。"""
-from miningbot.sampler import next_manual_index
+from miningbot.sampler import next_manual_index, sync_action
 from miningbot.main import _HotkeyController
 
 
@@ -35,3 +35,18 @@ class TestHotkeyR:
         hk = _HotkeyController(lambda vk: vk == 0x52, lambda: None,
                                lambda: None, lambda: None)
         hk.tick()   # on_sample 未掛也不能炸（既有呼叫端不傳此參數）
+
+
+class TestSyncAction:
+    # sync_action：HUD _poll 用來把「R 熱鍵請求」對齊「取樣視窗實際狀態」的純決策。
+    # 對應 2026-07-10 修復：背景執行緒建第二個 tk.Tk() 會靜默失敗（OS 層無窗），
+    # 改由 HUD Tk 主執行緒輪詢此決策建/銷 Toplevel。
+    def test_want_and_dead_opens(self):
+        assert sync_action(True, False) == "open"
+
+    def test_unwant_and_alive_closes(self):
+        assert sync_action(False, True) == "close"
+
+    def test_steady_states_none(self):
+        assert sync_action(True, True) is None
+        assert sync_action(False, False) is None

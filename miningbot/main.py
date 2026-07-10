@@ -210,7 +210,9 @@ class Bot:
             self._quit,
             on_sample=self._toggle_sampler,   # R：手動取樣視窗（校準素材收集）
         )
-        self._sampler = None                  # SamplerWindow（開著時非 None）
+        self._sampler = None                  # SamplerWindow（無 HUD 後備；開著時非 None）
+        self._sampler_want = False            # R 熱鍵請求開/關（HUD Tk 執行緒依此同步建/銷 Toplevel）
+        self._sampler_ui = None               # SamplerPanel（只在 HUD Tk 執行緒碰）
         self._pitch_offset_px = 0             # 目前俯仰距夾限偏移（歸位後＝reentry_pitch_back_px）
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
@@ -2917,7 +2919,22 @@ class Bot:
     def _toggle_sampler(self):
         """R：開/關取樣視窗。開啟時若正在挖礦先自動暫停——取樣的俯仰拖曳/截圖
         不能跟挖礦的 W+左鍵互搶輸入。關閉不自動 resume（使用者取樣完自己按 Q，
-        視角多半已被拖歪，直接恢復挖礦反而糟）。"""
+        視角多半已被拖歪，直接恢復挖礦反而糟）。
+
+        HUD 模式（hud_enabled=True）：本方法跑在熱鍵執行緒，只翻 _sampler_want 旗標，
+        實際建/銷窗由 HUD 的 Tk 主執行緒 _poll→sync_sampler_ui 負責（背景執行緒建
+        第二個 tk.Tk() 會靜默失敗，OS 層無窗，實機驗證 2026-07-10）。
+        無 HUD 模式：沿用執行緒版 SamplerWindow（主執行緒沒有別的 Tk root）。
+        """
+        if cfg.hud_enabled:
+            self._sampler_want = not self._sampler_want
+            if self._sampler_want:
+                if not self.paused and self.state not in (State.NEEDS_HUMAN, State.RESET_WAIT):
+                    self._pause()
+                self.logger.info("取樣視窗開啟請求 (R)：HUD 執行緒將建窗（≤0.3s）")
+            else:
+                self.logger.info("取樣視窗關閉請求 (R)")
+            return
         if self._sampler is not None and self._sampler.alive:
             self._sampler.close()
             self._sampler = None
@@ -2932,6 +2949,34 @@ class Bot:
             step_px=cfg.sample_pitch_step_px,
             initial_offset=self._pitch_offset_px)
         self.logger.info("取樣視窗開啟 (R)：俯仰歸位/微調＋編號截圖")
+
+    def sync_sampler_ui(self, tk_root):
+        """HUD _poll 每 300ms 在 Tk 主執行緒呼叫：把取樣視窗實際狀態同步到 R 熱鍵請求。
+
+        為何不能在熱鍵執行緒直接開窗：主執行緒已有 HUD 的 Tk mainloop 時，
+        背景執行緒建第二個 tk.Tk() 的視窗永遠不會出現在 OS 層（實機驗證 2026-07-10），
+        所以 Tk 物件只能由 HUD 執行緒建立/銷毀，熱鍵只翻 _sampler_want 旗標。
+        """
+        alive = self._sampler_ui is not None and self._sampler_ui.alive
+        act = sampler.sync_action(self._sampler_want, alive)
+        if act == "open":
+            self._sampler_ui = sampler.SamplerPanel(
+                tk_root,
+                on_capture=self._sampler_capture,
+                on_pitch_reset=self._sampler_pitch_reset,
+                on_pitch_nudge=self._sampler_pitch_nudge,
+                step_px=cfg.sample_pitch_step_px,
+                initial_offset=self._pitch_offset_px,
+                on_user_close=self._sampler_user_closed)
+            self.logger.info("取樣視窗開啟 (R)：俯仰歸位/微調＋編號截圖")
+        elif act == "close":
+            self._sampler_ui.close()
+            self._sampler_ui = None
+            self.logger.info("取樣視窗關閉 (R)")
+
+    def _sampler_user_closed(self):
+        """使用者按視窗 X 關閉（Tk 執行緒進來）：旗標歸位，避免下一輪 poll 重開。"""
+        self._sampler_want = False
 
     def _sampler_pitch_reset(self) -> int:
         """俯仰歸位（Tk 執行緒進來）：點按鈕當下焦點在小視窗上，先聚焦再拖。"""
@@ -2951,7 +2996,9 @@ class Bot:
         frame = capture.grab()
         stem = sampler.save_sample(frame, cfg.manual_snapshot_dir, self._pitch_offset_px)
         self.logger.info("📸 手動截圖 #%s pitch=%d", stem, self._pitch_offset_px)
-        self.last_action = f"📸 手動截圖 #{stem}"
+        # last_action 會進 HUD 的 Tk label：不可含 astral emoji（📸 會卡死 Tk
+        # 事件迴圈，見 status_hud._bmp_safe）；HUD 端已有防線，這裡源頭也不放
+        self.last_action = f"◉ 手動截圖 #{stem}"
         return stem
 
 

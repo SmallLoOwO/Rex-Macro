@@ -138,8 +138,15 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
     after＝轉回後現況；左側 UI 是螢幕覆蓋層、不隨鏡頭轉動 → 前後同框可直接比對「礦是否已被採走」
     （新 has-found 行 / 背包數量增加＝已採到）。舊版單一 `human_review_region` 窄高長條對 Discord 縮圖不友善，拆兩區更貼縮圖比例。
 - 熱鍵用**全域輪詢**（`Bot._check_hotkeys`，GetAsyncKeyState）：**Ctrl+Q** 緊急停、**Q** 暫停/繼續、
-  **F12** 結束、**R** 手動取樣視窗（編號截圖＋俯仰歸位/微調；開啟時自動暫停挖礦）。
+  **F12** 結束、**R** 手動取樣視窗（編號截圖＋俯仰歸位/微調；開啟時自動暫停挖礦；用法詳 `docs/manual-sampling.md`）。
   焦點在遊戲也有效（`keyboard` 庫在遊戲前景時收不到，已棄用）。
+  **R 視窗必須由 HUD 執行緒建（`sampler.SamplerPanel` Toplevel，2026-07-10）**：主執行緒有 HUD 的 Tk
+  mainloop 時，背景執行緒開第二個 `tk.Tk()` 的 OS 視窗**永遠不會出現**（執行緒活著、mainloop 有跑、
+  EnumWindows 列不到——實機驗證）。熱鍵執行緒只翻 `_sampler_want` 旗標，HUD `_poll` 每 300ms
+  `sync_sampler_ui` 建/銷視窗；`hud_enabled=False` 才走舊執行緒版 `SamplerWindow`。
+  **Tk widget 文字絕不可含 astral emoji（>U+FFFF：📸🔔🤖 等）**：這台 Tcl/Tk 8.6 會讓整個事件迴圈
+  **無聲卡死**（無例外；二分實驗定位 2026-07-10）。HUD label 前有 `status_hud._bmp_safe` 防線，
+  但源頭（按鈕文字/`last_action`）也別放；● ⚠ ▲ ▼ ◉ 是 BMP 安全。log/Discord 不受限。
 - **重置自動回礦（REENTRY，2026-07-08）**：設計全文 `docs/superpowers/specs/2026-07-08-mine-reentry-design.md`。
   `auto_reenter` 預設 **False**（關＝RESET_WAIT 等人工＝舊行為；且 `assets/surface/` 無面板模板時視同關閉）。
   流程＝按「回到地表」→ 俯仰歸位（拖到夾限飽和→回拉固定量）→ 八方位掃面板（`best_template_match_scored`）
@@ -177,3 +184,4 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - 遊戲機制與道具：`docs/game-mechanics.md`
 - 設計與計畫：`docs/superpowers/specs/`、`docs/superpowers/plans/`
 - 接手微調指引：`docs/HANDOFF.md`
+- R 鍵手動取樣用法（含回礦校準取樣流程）：`docs/manual-sampling.md`

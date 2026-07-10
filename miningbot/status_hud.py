@@ -20,6 +20,16 @@ _HWND_TOPMOST = -1
 _SWP = 0x0001 | 0x0002 | 0x0010 | 0x0040  # NOSIZE|NOMOVE|NOACTIVATE|SHOWWINDOW
 
 
+def _bmp_safe(s: str) -> str:
+    """Tk 文字防線：剝掉 astral-plane 字元（>U+FFFF，如 📸🔔🤖）。
+
+    這台 Tcl/Tk 8.6 遇到非 BMP 字元進 widget 文字會讓整個 Tk 事件迴圈
+    **無聲卡死**（無例外、無崩潰；實機二分驗證 2026-07-10）。HUD label 吃
+    bot.last_action 自由文字，來源眾多 → 在 config 前一律過這層。
+    """
+    return "".join(c for c in s if ord(c) <= 0xFFFF)
+
+
 def _make_no_activate_topmost(root):
     """把 tkinter 視窗設成置頂且不搶焦點。回傳 hwnd（失敗回 None）。"""
     try:
@@ -107,7 +117,7 @@ class StatusHUD:
             audio = 0.0
         up = int(time.time() - b._started)
         tag = _STATE_ZH.get(state, state) + ("（暫停）" if b.paused else "")
-        self.lbl.config(text=(
+        self.lbl.config(text=_bmp_safe(
             f"● {tag}\n"
             f"動作: {b.last_action}\n"
             f"音訊: {audio:.2f}    運行: {up // 3600}h{(up % 3600) // 60:02d}m{up % 60:02d}s"
@@ -118,4 +128,9 @@ class StatusHUD:
                 ctypes.windll.user32.SetWindowPos(self._hwnd, _HWND_TOPMOST, 0, 0, 0, 0, _SWP)
             except Exception:
                 pass
+        # 同步取樣視窗（R 鍵請求）：Tk 物件只能在主執行緒建/銷，失敗不可拖垮 HUD
+        try:
+            self.bot.sync_sampler_ui(self.root)
+        except Exception:
+            pass
         self.root.after(300, self._poll)
