@@ -1828,6 +1828,9 @@ class Bot:
             self._save_harvest_seq()              # 持久化：重啟後從這號繼續，不重複
             hid = harvester.format_harvest_id(self._harvest_seq)
             self.harvest = harvester.HarvestState(0, 0.0, harvest_id=hid)
+            self.harvest.pitch_layers_left = harvester.plan_pitch_layers(
+                cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
+                cfg.sweep_pitch_center_back_px)
             chill_path = self._hsnap_crop(frame, cfg.chill_text_region, "chill_closeup")
             self._hsnap(frame, "rare_found")
             # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）；檔名帶編號與截圖對齊
@@ -2194,7 +2197,7 @@ class Bot:
                 # 過去只有觸發幀可查（看不到 sweep 各方位實況）→ 存下來供事後跑 find_tracker
                 # 診斷、或裁成模板補進 assets/markers（見 project_sweep_all_empty_giveups）。
                 for di, fr in sweep_frames:
-                    self._hsnap(fr, "sweep_empty_dir%d" % di)
+                    self._hsnap(fr, harvester.sweep_snapshot_label(self.harvest.pitch_layer, di))
                 self.log_harvest.info("[%s] sweep 全空：已存 %d 張各方位全幀供診斷",
                                       hid, len(sweep_frames))
             return None, False
@@ -2252,11 +2255,13 @@ class Bot:
         # face_tracker 需真的有 marker 才成立（防呼叫端誤傳；D3 超時路徑 marker 必已設）
         plan = harvester.plan_giveup(face_tracker and self._target_marker is not None)
 
-        if plan.restore_view and self.harvest.net_rotations:
-            self.logger.info("[%s] 採集放棄 -> 轉回原方位 net=%d",
-                             self.harvest.harvest_id, self.harvest.net_rotations)
-            harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
-            self.harvest.net_rotations = 0
+        if plan.restore_view:
+            self._pitch_restore_if_touched()  # 先俯仰歸位（face_tracker=False 分支才歸位；保持面對框則不動）
+            if self.harvest.net_rotations:
+                self.logger.info("[%s] 採集放棄 -> 轉回原方位 net=%d",
+                                 self.harvest.harvest_id, self.harvest.net_rotations)
+                harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
+                self.harvest.net_rotations = 0
 
         self._human_reason = reason
         frame = capture.grab()              # 轉回後重抓（tracker_view 路徑沒轉回＝面對框現況）
@@ -2316,6 +2321,13 @@ class Bot:
                 return
             # sweep 階段超時（sweep 固定 8 方位約 19s，30s 已是 1.5x 餘裕）
             if self.harvest.elapsed_s > cfg.sweep_timeout_s:
+                if self.harvest.extra_targets > 0:
+                    # 續採途中超時（incident 072）：bonus 框可能已淡出/跑位出視野，
+                    # episode 已有成功入帳 → 正常收尾回 MINING，不交人工
+                    self.logger.info("[%s] 續採 sweep 超時（bonus 框已淡出）-> 正常收尾回 MINING (t=%.1f)",
+                                     hid, self.harvest.elapsed_s)
+                    self._harvest_resume_mining()
+                    return
                 self.logger.info("[%s] sweep 超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
                 self._harvest_giveup("全方位掃描超時，請手動處理")
                 return
@@ -2331,14 +2343,31 @@ class Bot:
                 #   先轉回原視角，人工可一眼判斷「礦已被挖走」的好假警報。
                 # - 看到過但轉回後 verify 失敗 → 框確實存在（D5 到期 FOV 位移把它推進畫面
                 #   邊緣排除帶/短暫遮擋）→ 重掃一次，在新 FOV 下重新定位（上限 1 次）。
-                if harvester.decide_sweep_failure(had_candidates,
-                                                  self.harvest.verify_fail_resweeps) == "RESWEEP":
+                verdict = harvester.decide_sweep_failure(
+                    had_candidates, self.harvest.verify_fail_resweeps,
+                    pitch_layers_left=len(self.harvest.pitch_layers_left),
+                    extra_mode=self.harvest.extra_targets > 0)
+                if verdict == "RESWEEP":
                     self.harvest.verify_fail_resweeps += 1
                     self.logger.info("[%s] sweep 看過穩定框但 verify 失敗（FOV 位移/邊緣裁切）"
                                      "-> 重掃一次 (%d/1)", hid, self.harvest.verify_fail_resweeps)
                     self._reharvest_sweep()
                     return
-                self.logger.info("[%s] sweep 未找到追蹤框（環繞一次）-> 人工", hid)
+                if verdict == "EXIT_SUCCESS":
+                    # 續採途中 sweep 全空/預算用盡（incident 072）：bonus 框已淡出，
+                    # episode 已有成功入帳 → 正常收尾回 MINING，不交人工/換層
+                    self.logger.info("[%s] 續採 sweep 全空（bonus 框已淡出）-> 正常收尾回 MINING", hid)
+                    self._harvest_resume_mining()
+                    return
+                if verdict == "NEXT_LAYER":
+                    # yaw 只改 x 不改 y（H026）：標準層看不到的框，換俯仰層才有機會。
+                    # 只在本來就要 giveup 的案例多花 ~30-40s，換少一次遠端介入。
+                    self.last_action = "俯仰層掃描"
+                    if self._pitch_layer_transition():
+                        return          # 下個 tick 在新層重跑 8 方位（sweep 計時已重置）
+                    # 層全部被吃/重置中 → 落到 giveup
+                self.logger.info("[%s] sweep 未找到追蹤框（俯仰層剩 %d）-> 人工",
+                                 hid, len(self.harvest.pitch_layers_left))
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
             # ★ 聊天基準是 episode 級（2026-07-04 起在進場時拍、RESWEEP 不作廢，見 _on_enter）：
@@ -2609,7 +2638,48 @@ class Bot:
         # 舊版 restore_view 的旋轉鍵就在這窗口內送出＝「視角偶爾停在 45° 斜角」的直接根因
         # （2026-07-05）→ 動畫等待挪到 restore 之前，回轉/init 都在動畫結束後跑。
         self._log_w_state("採集成功→動畫等待前")
-        time.sleep(1.0)                  # 等 pickup 動畫結束
+        # ★ 續採檢查（incident 072）：同一 chill episode 可能同畫面有第二顆礦的追蹤框。
+        #   剛採掉的框 2~10s 才淡出 → 距離閘擋殘影（decide_post_success）。雙幀穩定同 sweep 慣例。
+        time.sleep(1.0)   # 等 pickup 動畫（原本就有，挪到 recheck 前——也讓已採框多淡 1s）
+        _cr = cfg.chat_region
+        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        _ref = getattr(self, '_pre_scan_ref', None)
+        recheck = None
+        r1 = self._find_tracker(capture.grab(), _excl, reference_bgr=_ref)
+        if r1 is not None:
+            time.sleep(0.08)
+            r2 = self._find_tracker(capture.grab(), _excl, reference_bgr=_ref)
+            if r2 is not None and abs(r1[0] - r2[0]) < 8 and abs(r1[1] - r2[1]) < 8:
+                recheck = r2
+        verdict2 = harvester.decide_post_success(
+            recheck, self._target_marker, self.harvest.extra_targets,
+            cfg.harvest_extra_targets_max, cfg.harvest_extra_target_min_dist_px)
+        if verdict2 == "CONTINUE":
+            self.harvest.extra_targets += 1
+            self.harvest.d3_attempts = 0
+            self.harvest.verify_fail_resweeps = 0
+            self.logger.info("[%s] 採集成功但畫面仍有另一追蹤框 (%d,%d) -> 續採（第 %d 顆額外目標）",
+                             hid, recheck[0], recheck[1], self.harvest.extra_targets)
+            self.last_action = "續採第%d顆" % (self.harvest.extra_targets + 1)
+            # 重開聊天差分基準：上一顆的成功行已確認入帳，續採的差分要以「現在」為起點。
+            # （「episode 基準不作廢」規則護的是誤判失敗時晚到的成功行；確認成功後重取語意正確，
+            #   否則上一顆的成功行會讓第二發 D3 未命中也被判 confirmed＝假成功。）
+            fresh = capture.grab()
+            self._chat_baseline = None
+            self._chat_baseline_crop = capture.crop(fresh, cfg.chat_region)
+            self._chat_last_crop = self._chat_baseline_crop
+            self._chat_ledger = None   # 下次開火後的基準 OCR 會重建
+            self._reharvest_sweep()    # 重新 D2 掃描（掃描可能將到期）；保 _pre_scan_ref、重置計時器
+            return                     # 留在 HARVESTING；net_rotations 繼續累計，最後一次轉回
+        self._harvest_resume_mining()
+
+    def _harvest_resume_mining(self):
+        """採集成功後的視角回正 + 恢復挖礦（從 _harvest_success 抽出，incident 072 續採共用）。
+
+        含俯仰歸位（動過才回）、yaw 回正、切 MINING、init_mining_sequence、鎬子/W 保險段。
+        pickup 動畫等待（time.sleep 1.0）由呼叫端在 recheck 前先跑過，這裡不重睡。
+        """
+        self._pitch_restore_if_touched()  # 先俯仰歸位（動過才回置中標準角）、再 yaw 回正
         harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
@@ -3138,6 +3208,63 @@ class Bot:
         self._focus_roblox()
         ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)
         ic.settle(cfg.sampler_pitch_focus_settle_s)
+
+    def _pitch_layer_transition(self) -> bool:
+        """失敗路徑俯仰層轉換：pitch_reset 絕對基準 → nudge 到下一層（2026-07-11 spec）。
+
+        回 True＝已切到新層（呼叫端 return，下個 tick 在新層重跑 8 方位）；False＝層用盡
+        或礦坑重置中（呼叫端走 giveup）。拖曳被吃 → 整組（reset→nudge）重來一次——reset
+        冪等（飽和→回拉）使重試安全、nudge 單獨重送會過量（sampler 微調不重送的教訓）；
+        再失敗跳過該層試下一層（寧可少掃一層，不可角度不明硬掃——45° 斜角事故同族）。
+        """
+        hid = self.harvest.harvest_id
+        while self.harvest.pitch_layers_left:
+            if self._mine_resetting:
+                self.logger.info("[%s] 俯仰層轉換前偵測到礦坑重置 -> 放棄掃層", hid)
+                return False
+            layer = self.harvest.pitch_layers_left.pop(0)
+            self.harvest.pitch_touched = True
+            for attempt in (1, 2):
+                ok = self._pitch_drag_verified(
+                    f"[{hid}] 俯仰層 {layer.name} 歸位(attempt {attempt})",
+                    lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                           cfg.sweep_pitch_center_back_px))
+                if ok:
+                    ok = self._pitch_drag_verified(
+                        f"[{hid}] 俯仰層 {layer.name} nudge {layer.nudge_px}px(attempt {attempt})",
+                        lambda: ic.pitch_nudge(layer.nudge_px))
+                if ok:
+                    break
+                self._focus_roblox()
+                ic.settle(cfg.sampler_pitch_focus_settle_s)
+            if not ok:
+                self.logger.warning("[%s] 俯仰層 %s 拖曳兩輪皆疑似被吃 -> 跳過該層",
+                                    hid, layer.name)
+                continue
+            self.harvest.pitch_layer = layer.name
+            self._harvest_start = time.time()   # 每層獨立 sweep_timeout_s 預算（比照 sweep 完成後重置）
+            self.logger.info("[%s] 俯仰層切換 -> %s（重新 8 方位掃描）", hid, layer.name)
+            return True
+        return False
+
+    def _pitch_restore_if_touched(self):
+        """採集收尾俯仰歸位：動過俯仰層（含轉換失敗——reset 可能已改角度）才歸位到置中標準角。
+
+        使用者挖礦視角習慣＝置中（2026-07-11 確認），center_back_px 即校準成置中 → 歸位＝
+        回到平常挖礦角度。沒動過（絕大多數採集）零成本零風險。
+        """
+        if not self.harvest.pitch_touched:
+            return
+        for attempt in (1, 2):
+            if self._pitch_drag_verified(
+                    f"[{self.harvest.harvest_id}] 收尾俯仰歸位(attempt {attempt})",
+                    lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                           cfg.sweep_pitch_center_back_px)):
+                return
+            self._focus_roblox()
+            ic.settle(cfg.sampler_pitch_focus_settle_s)
+        self.logger.warning("[%s] 收尾俯仰歸位兩輪皆疑似被吃——視角可能非置中，人工留意",
+                            self.harvest.harvest_id)
 
     def _pitch_drag_verified(self, label: str, drag) -> bool:
         """執行俯仰拖曳並用前後幀驗證是否生效（量測與 _rotate_verified 同一套）。

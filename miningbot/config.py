@@ -124,6 +124,8 @@ class Config:
     verify_roi_radius_px: int = 180              # verify 輪詢 gone 檢查的 ROI 半徑：涵蓋雙幀穩定 8px 誤差
                                                   # ＋輕微視角/FOV 殘餘漂移；大位移（D5 到期縮放）由
                                                   # 「ROI miss → 全幀後備」兜住（見 find_tracker_near 註解）
+    harvest_extra_targets_max: int = 2        # 同一 episode 成功後最多續採顆數（迴圈保險；072 實錄 1 顆）
+    harvest_extra_target_min_dist_px: int = 100  # 續採候選離上發開火座標最小距離（兩側夾：真第二框 551px、剛採掉淡出框漂移 ≤8px）
     # D2 掃描成功確認（HANDOFF F）：掃描後 OCR 左下 Local 標籤。彈窗吃掉 click → 白掃
     # 8 方位 ~19s＋可能誤交人工。模式循 RapidOCR 觀察期慣例：
     #   off=不跑；observe=只記 log 收誤判數據（不重試）；enforce=失敗重聚焦重掃一次
@@ -218,8 +220,15 @@ class Config:
     manual_snapshot_dir: str = "logs/snapshots/manual"
     sample_pitch_step_px: int = 40              # R 視窗上/下微調一次的拖曳量
     sampler_pitch_focus_settle_s: float = 0.5   # 俯仰鈕：聚焦回遊戲→拖曳前的沉澱。2026-07-11 實機：
-                                                # 三次「聚焦成功」但拖曳全沒生效——焦點剛切回就送
-                                                # 右鍵拖曳會被吃（與旋轉鍵被吃同家族），settle 後再拖
+                                                 # 三次「聚焦成功」但拖曳全沒生效——焦點剛切回就送
+                                                 # 右鍵拖曳會被吃（與旋轉鍵被吃同家族），settle 後再拖
+
+    # --- 失敗路徑俯仰掃描（2026-07-11 spec：標準層 8 方位全空才掃上/下層）---
+    sweep_pitch_enabled: bool = False           # 校準完成前保持 False（比照 reentry 慣例）
+    sweep_pitch_step_px: int = 0                # 一層 nudge 拖曳量（R 視窗校準；0=未校準＝停用；
+                                                 #   正=向下拖。遊戲拖曳方向若相反，校準時設負值即可）
+    sweep_pitch_clamp_px: int = 1500            # pitch_reset 飽和拖曳量（沿用 reentry 初值；礦內校準可調）
+    sweep_pitch_center_back_px: int = 0         # 夾限→「置中視角」回拉量（R 視窗校準；0=未校準＝停用）
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續

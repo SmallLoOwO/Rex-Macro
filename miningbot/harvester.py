@@ -1,5 +1,5 @@
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from .geometry import aim_decision
 from . import input_control as ic
@@ -13,7 +13,37 @@ class HarvestState:
     d3_attempts: int = 0    # D3 連續未命中次數（達 max_harvest_attempts 自動重掃）
     harvest_id: str = ""    # 本輪採集編號（如 "007"）；貫穿 log/快照檔名/Discord 供事後一鍵搜查
     verify_fail_resweeps: int = 0  # 「掃到框但 verify 失敗」已重掃次數（decide_sweep_failure 上限用，H019）
+    extra_targets: int = 0  # 本 episode 採集成功後已續採顆數（incident 072：同畫面第二顆礦）
     # 註：環繞一次找不到即交人工（2026-06-29 偵測已準，移除二次重掃），故不再記 sweep_attempts
+    pitch_layer: str = "mid"        # 目前俯仰層（"mid"/"up"/"down"；快照 label／log 用）
+    pitch_layers_left: list = field(default_factory=list)  # 尚未掃的 PitchLayer（失敗路徑逐層 pop）
+    pitch_touched: bool = False     # 任一層轉換「嘗試過」（含失敗）→ 收尾必須 pitch_reset 歸位
+
+
+def sweep_snapshot_label(pitch_layer: str, dir_idx: int) -> str:
+    """sweep 全空診斷快照 label（純函式）。標準層維持舊名 sweep_empty_dirN（排錯習慣不變），
+    俯仰層加層標記 sweep_empty_<layer>_dirN。"""
+    if pitch_layer == "mid":
+        return "sweep_empty_dir%d" % dir_idx
+    return "sweep_empty_%s_dir%d" % (pitch_layer, dir_idx)
+
+
+@dataclass(frozen=True)
+class PitchLayer:
+    """失敗路徑俯仰掃描的一層（純資料）。nudge_px＝pitch_reset 置中後的拖曳量（正=向下拖）。"""
+    name: str       # "up" / "down"（快照 label、log 用）
+    nudge_px: int
+
+
+def plan_pitch_layers(enabled: bool, step_px: int, center_back_px: int) -> list:
+    """回失敗路徑要補掃的俯仰層序列（不含已掃過的標準層；純函式）。
+
+    未校準（step=0 或 center_back<=0）視同停用——與 reentry「無模板視同關閉」同慣例。
+    順序固定上→下：實機經驗礦多在壁上高處，H026 證實下方也會漏，兩層都掃。
+    """
+    if not enabled or step_px == 0 or center_back_px <= 0:
+        return []
+    return [PitchLayer("up", -step_px), PitchLayer("down", step_px)]
 
 
 def format_harvest_id(seq: int) -> str:
@@ -93,21 +123,52 @@ def pick_sweep_candidate(candidates, screen_w: int):
 
 
 def decide_sweep_failure(had_candidates: bool, resweeps_done: int,
-                         max_resweeps: int = 1) -> str:
-    """sweep 失敗時依「掃描過程是否看過穩定框」分流（純函式，H019 對策）。
+                         max_resweeps: int = 1, pitch_layers_left: int = 0,
+                         extra_mode: bool = False) -> str:
+    """sweep 失敗分流（純函式）。回 "RESWEEP" / "NEXT_LAYER" / "HUMAN" / "EXIT_SUCCESS"。
 
-    回傳 "RESWEEP" / "HUMAN"。
-
-    - 全 8 方位都沒看到（had_candidates=False）→ HUMAN：偵測已準（2026-06-29 決策），
-      礦多半已被挖走，再掃一次也不會更好。
-    - 看到過穩定框、只是轉回後 verify 失敗 → 框確實存在（FOV 位移把它推出偵測區/
-      邊緣裁切/短暫遮擋），重掃一次值得（重掃在新 FOV 下重新定位，H019 的框在
-      相鄰方位就能以居中位置被找回）。上限 max_resweeps 次，防 verify 反覆失敗
-      的無限重掃循環。
+    - 看到過穩定框、轉回後 verify 失敗 → RESWEEP（H019；框在本層，重掃上限 max_resweeps）。
+    - 全空 ∧ 尚有俯仰層未掃 → NEXT_LAYER（2026-07-11 spec：yaw 只改 x 不改 y，
+      標準層看不到的框換俯仰層才有機會；只掛全空分支，verify 失敗跳層無益）。
+    - 其餘 → HUMAN（偵測已準，2026-06-29 決策）。
+    - extra_mode=True（episode 已有成功入帳、續採途中；incident 072）：原本回 HUMAN/NEXT_LAYER
+      的情況改回 EXIT_SUCCESS——bonus 框淡掉≠失敗，絕不可把成功 episode 轉成交人工/換層，
+      正常收尾回 MINING 即可。RESWEEP 條件成立時仍 RESWEEP（框還在、值得重定位）。
     """
     if had_candidates and resweeps_done < max_resweeps:
         return "RESWEEP"
+    if extra_mode:
+        return "EXIT_SUCCESS"
+    if not had_candidates and pitch_layers_left > 0:
+        return "NEXT_LAYER"
     return "HUMAN"
+
+
+def decide_post_success(recheck_pos, fired_pos, extra_targets: int,
+                        max_extra: int, min_dist_px: float) -> str:
+    """採集成功後「畫面還有另一個追蹤框」的續採決策（純函式，incident 072 對策）。
+
+    回傳 "CONTINUE" / "EXIT"。寧漏勿誤（漏了＝維持今日行為，誤續採＝多繞一輪 sweep）：
+    - recheck_pos None（成功後畫面沒框）→ EXIT
+    - extra_targets >= max_extra（續採上限）→ EXIT
+    - fired_pos None（晚到確認路徑，上一發座標已被 RESWEEP 清掉，無法距離閘）→ EXIT
+    - 距離 < min_dist_px → EXIT（剛採掉的框擊中後 2~10s 才淡出，原地殘影非新礦）
+    - 其餘 → CONTINUE
+
+    距離用歐氏距離。072 實錄：真第二顆距上一發開火座標 551px、剛採掉淡出框漂移 ≤8px，
+    距離閘 100px 兩側各有 ~5.5x / ~12x 餘裕。
+    """
+    if recheck_pos is None:
+        return "EXIT"
+    if extra_targets >= max_extra:
+        return "EXIT"
+    if fired_pos is None:
+        return "EXIT"
+    dx = recheck_pos[0] - fired_pos[0]
+    dy = recheck_pos[1] - fired_pos[1]
+    if (dx * dx + dy * dy) ** 0.5 < min_dist_px:
+        return "EXIT"
+    return "CONTINUE"
 
 
 def decide_verify_poll(gone: bool, confirmed: bool, elapsed_s: float, window_s: float) -> str:

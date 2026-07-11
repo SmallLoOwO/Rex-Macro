@@ -298,3 +298,12 @@ fixture 位置慣例：
 - **對策（寧漏勿假成功方向不變）**：found 行解析加連字號 fallback——原行比對全滅且含 `-` 時，`-`→空格重試一次；排除清單 startswith 兩側對稱去連字號（一般礦黏行 `small-lo-has-found-Siogyne` 仍被排除，白名單既有連字號礦名 X-Flare/Sub-Zero 等不受害）；fuzzy tokenization 同步去連字號。Fortuitous 本身已在白名單（rare_ores.json），清單零改動。
 - **fixture**：`tests/fixtures/chat/h041_before_faded.png`（淡出基準，OCR 只剩側欄 2 行）、`h041_after_fortuitous_hyphen.png`（13 行含黏行，本機重測穩定重現 `rsmall_lo-has-found-Fortuitous`）
 - **commit**：（本輪工作樹）
+
+## H042（2026-07-11 22:14~22:16，harvest 072）：同畫面兩顆礦只採一顆——成功路徑無條件收尾
+
+- **症狀**：一次 chill 觸發的採集中，畫面同時出現兩顆不同階礦的追蹤框（黃橘方框＋尖刺太陽框兩種框形）。腳本採到第一顆（Feebrechaun，Exotic 1/3,232,323）後直接回 MINING，第二顆漏採。
+- **時間線**：22:14:44 chill(0.28) 進 HARVESTING → sweep dir=4 鎖 (603,223)、第一發 D3 未中 → RETRY → 開火前重定位失敗轉全方位重掃 → 22:15:58 **同一幀兩個候選過形狀確認**：(607,223) edge=0.78 ＋ (1097,475) edge=0.61 → 22:16:03 對 (607,223) 開火命中（聊天確認、背包 6→7）→ SUCCESS → 22:16:19 成功收場幀上 (1097,475) 尖刺太陽框仍清晰存在，照樣 restore_view 回 MINING。
+- **一句話根因**：`_harvest_success` 無條件收尾回 MINING（設計假設一次 episode＝一顆礦），同畫面第二顆礦的追蹤框被直接放棄——不是偵測問題（find_tracker 在成功幀上離線實測仍抓得到 (1097,475) edge=0.61），是流程沒有這條路。
+- **對策（續採迴圈，寧漏勿誤）**：成功收尾前雙幀穩定 recheck 當下幀；`harvester.decide_post_success` 純決策——**距離閘** `harvest_extra_target_min_dist_px=100` 擋「剛採掉、擊中後 2~10s 才淡出」的原地殘影（兩側夾：真第二顆距上發開火點 **551px**、殘影漂移 **≤8px**，兩側各 ~5.5x/12x 餘裕）；上限 `harvest_extra_targets_max=2` 防迴圈；fired_pos 不明（晚到確認路徑）→ 不續採。CONTINUE＝重開聊天差分基準（成功已入帳，不重開則上一顆的成功行會讓第二發未命中也判 confirmed＝假成功；「episode 基準不作廢」規則護的是誤判失敗、不適用確認成功後）＋走既有 `_reharvest_sweep`（保 `_pre_scan_ref` 不自我致盲）留在 HARVESTING；net_rotations 跨目標累計、最後一次轉回。**護欄**：續採途中 sweep 全空/超時 → `EXIT_SUCCESS` 正常收尾回 MINING（bonus 框淡掉≠失敗，絕不把已成功 episode 轉成交人工）。
+- **fixture**：`assets/dual_tracker_scene.png`（開火前雙框幀→(607,223)）、`assets/post_success_second_tracker_scene.png`（成功收場幀→(1097,475)）；回歸 `tests/test_vision.py` 072 區塊＋`tests/test_harvester.py` decide_post_success/extra_mode 區塊。
+- **commit**：（本輪工作樹）

@@ -2,6 +2,7 @@ from miningbot import harvester
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, decide_verify_poll,
                                  pick_sweep_candidate, decide_sweep_failure,
+                                 decide_post_success,
                                  format_rotation_hint,
                                  format_harvest_id,
                                  normalize_rotations, plan_return_rotations,
@@ -320,3 +321,116 @@ def test_scan_succeeded_rejects_empty_and_unrelated():
     assert harvester.scan_succeeded([]) is False
     assert harvester.scan_succeeded([""]) is False
     assert harvester.scan_succeeded(["Global"]) is False   # ratio("global","local")≈0.73 < 0.75
+
+
+class TestPlanPitchLayers:
+    """失敗路徑俯仰掃描的層規劃（2026-07-11 spec）：未校準/停用回空；啟用回上→下兩層。"""
+
+    def test_disabled_returns_empty(self):
+        assert harvester.plan_pitch_layers(False, 300, 400) == []
+
+    def test_uncalibrated_step_returns_empty(self):
+        assert harvester.plan_pitch_layers(True, 0, 400) == []
+
+    def test_uncalibrated_center_back_returns_empty(self):
+        assert harvester.plan_pitch_layers(True, 300, 0) == []
+
+    def test_enabled_yields_up_then_down(self):
+        layers = harvester.plan_pitch_layers(True, 300, 400)
+        assert [l.name for l in layers] == ["up", "down"]
+        assert [l.nudge_px for l in layers] == [-300, 300]
+
+
+class TestDecideSweepFailurePitchLayers:
+    """全空且尚有俯仰層 → NEXT_LAYER；其餘維持 H019 既有分流。"""
+
+    def test_all_empty_with_layers_left(self):
+        assert harvester.decide_sweep_failure(False, 0, pitch_layers_left=2) == "NEXT_LAYER"
+
+    def test_all_empty_layers_exhausted(self):
+        assert harvester.decide_sweep_failure(False, 0, pitch_layers_left=0) == "HUMAN"
+
+    def test_resweep_takes_priority_over_layers(self):
+        # 看過穩定框＝框在「這一層」，先在本層重掃（H019），不跳層
+        assert harvester.decide_sweep_failure(True, 0, pitch_layers_left=2) == "RESWEEP"
+
+    def test_had_candidates_resweeps_exhausted_goes_human(self):
+        # spec：俯仰層只掛「全空」分支——verify 反覆失敗是 FOV 位移問題，跳層無益
+        assert harvester.decide_sweep_failure(True, 1, pitch_layers_left=2) == "HUMAN"
+
+
+class TestSweepSnapshotLabel:
+    def test_mid_keeps_legacy_name(self):
+        # 標準層維持舊檔名——logs/_diag_tracker.py 與文件的 `*sweep_empty*` glob 兩者都吃，
+        # 但既有排錯習慣搜 sweep_empty_dirN，不無故改名
+        assert harvester.sweep_snapshot_label("mid", 3) == "sweep_empty_dir3"
+
+    def test_pitch_layer_tagged(self):
+        assert harvester.sweep_snapshot_label("up", 0) == "sweep_empty_up_dir0"
+        assert harvester.sweep_snapshot_label("down", 7) == "sweep_empty_down_dir7"
+
+
+def test_harvest_state_pitch_defaults():
+    st = harvester.HarvestState(rotations=0, elapsed_s=0.0)
+    assert st.pitch_layer == "mid"
+    assert st.pitch_layers_left == []
+    assert st.pitch_touched is False
+
+
+def test_harvest_state_extra_targets_defaults_zero():
+    # episode 進場時 HarvestState 全新建構 → extra_targets=0（incident 072 續採計數起點）
+    st = HarvestState(rotations=0, elapsed_s=0.0)
+    assert st.extra_targets == 0
+
+
+# --- decide_post_success：採集成功後續採決策（純函式，incident 072 對策）---
+# 同一 chill episode 可能同畫面有兩顆不同階礦的追蹤框；採到第一顆後畫面仍清晰存在
+# 第二顆 → 舊版無條件回 MINING 直接漏採。寧漏勿誤：距離閘擋「剛採掉、2~10s 才淡出」
+# 的原地殘影（漂移 ≤8px），真第二顆距上一發開火座標 551px（072 實錄）遠超 100px 閘。
+def test_post_success_no_tracker_exits():
+    assert decide_post_success(None, (607, 223), 0, 2, 100) == "EXIT"
+
+def test_post_success_extra_budget_exhausted_exits():
+    # 已續採到上限（2,2）→ 即使畫面還有框也不續採（迴圈保險）
+    assert decide_post_success((1097, 475), (607, 223), 2, 2, 100) == "EXIT"
+
+def test_post_success_no_fired_pos_exits():
+    # 晚到確認路徑：上一發座標已被 RESWEEP 清掉，無法距離閘 → 不續採
+    assert decide_post_success((1097, 475), None, 0, 2, 100) == "EXIT"
+
+def test_post_success_too_close_to_fired_pos_exits():
+    # 剛採掉的框擊中後 2~10s 才淡出，原地殘影漂移 ≤8px → 距離閘擋下
+    assert decide_post_success((609, 215), (607, 223), 0, 2, 100) == "EXIT"
+
+def test_post_success_072_real_values_continues():
+    # 072 實錄：第二顆 (1097,475) 距上一發 (607,223)＝551px，遠超 100px 閘 → 續採
+    assert decide_post_success((1097, 475), (607, 223), 0, 2, 100) == "CONTINUE"
+
+
+# --- decide_sweep_failure：extra_mode（續採途中 bonus 框淡掉≠失敗，incident 072）---
+def test_sweep_failure_extra_mode_no_candidates_exits_success():
+    # 續採途中 sweep 全空＝bonus 框已淡出，episode 已有成功入帳 → 正常收尾，不交人工/換層
+    assert decide_sweep_failure(had_candidates=False, resweeps_done=0,
+                                extra_mode=True) == "EXIT_SUCCESS"
+
+def test_sweep_failure_extra_mode_resweep_budget_exhausted_exits_success():
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=1,
+                                extra_mode=True) == "EXIT_SUCCESS"
+
+def test_sweep_failure_extra_mode_all_empty_with_layers_exits_success():
+    # 續採途中不 escalate 到換俯仰層——bonus 框淡掉即收尾
+    assert decide_sweep_failure(had_candidates=False, resweeps_done=0,
+                                pitch_layers_left=2, extra_mode=True) == "EXIT_SUCCESS"
+
+def test_sweep_failure_extra_mode_with_candidates_still_resweeps():
+    # RESWEEP 條件成立時仍 RESWEEP（框還在、值得重定位）
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=0,
+                                extra_mode=True) == "RESWEEP"
+
+def test_sweep_failure_default_behavior_unchanged_without_extra_mode():
+    # 既有行為：extra_mode 未傳（預設 False）→ 原 RESWEEP/NEXT_LAYER/HUMAN 分流不變
+    assert decide_sweep_failure(had_candidates=False, resweeps_done=0) == "HUMAN"
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=0) == "RESWEEP"
+    assert decide_sweep_failure(had_candidates=True, resweeps_done=1) == "HUMAN"
+    assert decide_sweep_failure(had_candidates=False, resweeps_done=0,
+                                pitch_layers_left=2) == "NEXT_LAYER"

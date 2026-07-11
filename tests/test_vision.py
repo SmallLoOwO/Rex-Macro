@@ -788,3 +788,51 @@ def test_h040_red_ribbon_equipment_not_detected():
                        shape_scales=cfg.tracker_shape_scales,
                        shape_roi_px=cfg.tracker_shape_roi_px)
     assert loc is None, f"紅緞帶裝備（edge≤0.38）不應被誤判為追蹤框，實得 {loc}"
+
+
+def test_072_dual_tracker_scene_detects_first_fired_target():
+    """真實資料：assets/dual_tracker_scene.png（incident 072，開火前雙框幀）。
+
+    同畫面兩顆不同階礦的追蹤框；採第一顆前 find_tracker 應定位到 (607,223)（edge≈0.78）。
+    釘住「成功收場幀上第二顆仍清晰存在」的對照幀——這是 072 漏採根因（成功後無條件回 MINING）。"""
+    img_path = "assets/dual_tracker_scene.png"
+    tmpls = _load_real_markers_h040()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, reference_bgr=None,
+                       margin_frac=cfg.tracker_margin_frac,
+                       shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px)
+    assert loc is not None, "072 雙框幀應偵測到 (607,223) 追蹤框（edge≈0.78 ≫ 0.42 門檻）"
+    assert abs(loc[0] - 607) <= 20 and abs(loc[1] - 223) <= 20, f"應命中首發目標 (607,223)，實得 {loc}"
+
+
+def test_072_post_success_second_tracker_scene_detected():
+    """真實資料：assets/post_success_second_tracker_scene.png（incident 072，成功收場幀）。
+
+    採到第一顆後畫面仍有第二顆追蹤框 (1097,475)（edge≈0.61 ≫ 0.42）。釘住「成功後畫面仍
+    有另一個可採目標」——decide_post_success 距離閘（551px vs 100px）正是據此判定續採。"""
+    img_path = "assets/post_success_second_tracker_scene.png"
+    tmpls = _load_real_markers_h040()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, reference_bgr=None,
+                       margin_frac=cfg.tracker_margin_frac,
+                       shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px)
+    assert loc is not None, "072 成功收場幀應偵測到第二顆 (1097,475) 追蹤框（edge≈0.61 ≫ 0.42 門檻）"
+    assert abs(loc[0] - 1097) <= 20 and abs(loc[1] - 475) <= 20, f"應命中第二顆 (1097,475)，實得 {loc}"
