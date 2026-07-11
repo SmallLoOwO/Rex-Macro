@@ -230,6 +230,10 @@ class Config:
     sweep_pitch_clamp_px: int = 1500            # pitch_reset 飽和拖曳量（沿用 reentry 初值；礦內校準可調）
     sweep_pitch_center_back_px: int = 0         # 夾限→「置中視角」回拉量（R 視窗校準；0=未校準＝停用）
 
+    # --- Discord 遠端瞄準（2026-07-11 spec：giveup 附近失候選編號圖，回訊息即指揮）---
+    remote_aim_enabled: bool = True             # 關掉＝giveup 附圖/回覆解析全部回到今天行為
+    remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
+
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
     hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟；

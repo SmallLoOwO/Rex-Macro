@@ -836,3 +836,53 @@ def test_072_post_success_second_tracker_scene_detected():
                        shape_roi_px=cfg.tracker_shape_roi_px)
     assert loc is not None, "072 成功收場幀應偵測到第二顆 (1097,475) 追蹤框（edge≈0.61 ≫ 0.42 門檻）"
     assert abs(loc[0] - 1097) <= 20 and abs(loc[1] - 475) <= 20, f"應命中第二顆 (1097,475)，實得 {loc}"
+
+
+# --- collect_rejects：近失候選外露（2026-07-11 remote-aim spec Phase A1）---
+# find_tracker 傳入 collect_rejects list 時，把「值得人工看的被拒候選」外露；
+# 不傳＝行為 byte-identical（純外掛，既有判定零改動）。
+
+def _hollow_ring(img, cx, cy, size=40, color=(60, 220, 60), thick=6):
+    """畫一個彩色空心方框（模擬追蹤框外框），回傳中心座標。"""
+    h = size // 2
+    cv2.rectangle(img, (cx - h, cy - h), (cx + h, cy + h), color, thick)
+    return cx, cy
+
+
+def test_collect_rejects_margin_band():
+    """邊緣帶內的彩色環：現狀被拒（in_area=False）、collect_rejects 應收到 reason=margin。"""
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    _hollow_ring(img, 60, 540)          # x=60 落在 margin_frac=0.10 的左緣帶（<192）
+    rejects = []
+    loc = find_tracker(img, margin_frac=0.10, collect_rejects=rejects)
+    assert loc is None
+    assert any(r["reason"] == "margin" and abs(r["pos"][0] - 60) <= 5 for r in rejects), rejects
+
+
+def test_collect_rejects_none_keeps_behavior():
+    """不傳 collect_rejects：回傳值與傳了之後的回傳值完全一致（外掛零影響）。"""
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    _hollow_ring(img, 960, 540)
+    a = find_tracker(img, margin_frac=0.10)
+    b = find_tracker(img, margin_frac=0.10, collect_rejects=[])
+    assert a == b
+
+
+def test_collect_rejects_hard_rej_real_equipment():
+    """真實資料：H040 紅緞帶裝備場景——現狀 hard_rej 拒收，collect_rejects 應把它外露。"""
+    img_path = "assets/red_ribbon_equipment_scene.png"
+    tmpls = _load_real_markers_h040()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    rejects = []
+    loc = find_tracker(img, margin_frac=cfg.tracker_margin_frac,
+                       shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px,
+                       collect_rejects=rejects)
+    assert loc is None                       # H040 回歸：裝備仍不誤收
+    assert any(r["reason"] == "hard_rej" for r in rejects), rejects

@@ -313,7 +313,8 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  shape_threshold: float = 0.45,
                  shape_hard_floor: float = 0.25,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
-                 shape_roi_px: int = 160, with_score: bool = False):
+                 shape_roi_px: int = 160, with_score: bool = False,
+                 collect_rejects=None):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
@@ -363,23 +364,27 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
             _inner = color_mask[y+_my:y+bh-_my, x+_mx:x+bw-_mx]
             _inner_fill = float(np.mean(_inner > 0)) if _inner.size > 0 else frame_fill
             ring_score = frame_fill - _inner_fill
-            # 差分過濾：掃描前就已存在的彩色物件（礦石本體/角色裝備）→ 排除
-            if ref_mask is not None:
-                ref_fill = float(np.mean(ref_mask[y:y+bh, x:x+bw] > 0))
-                if ref_fill > 0.15:
-                    if log is not None:
-                        log("tracker候選 (%d,%d) area=%d fill=%.2f ref_fill=%.2f -> rej(preexist)"
-                            % (cx, cy, int(area), frame_fill, ref_fill))
-                    continue
             # 專注外框：量「整個 bbox」的彩色佔比（色相無關 S>90&V>90），不再只看中心。
             # 為何不看中心：追蹤框中心顏色每次會變（不同礦色/粉紅/甚至純黑空心 BGR[0,0,0]），
             # 中心非不變特徵；舊版要求中心 2/3 有彩色像素，遇黑心框 colored=0 → 被當暗色 UI
             # 面板拒掉而漏抓（2026-06-29 黑心綠框 black_center_scene.png 踩坑根因）。
             # 真追蹤框有「厚實彩色外框」→ 整框彩色佔比高（實測黑心 0.51-0.62、彩心 0.7-1.0）；
             # 細框暗色 UI 面板佔比低（合成 0.33、實機 ≈0.16）→ 用佔比門檻區隔，形狀確認再精篩。
+            # （colored_frac 算在差分過濾之前——它只讀 hsv，搬動安全；remote-aim 近失候選外露要用）
             bb_hsv = hsv[y:y+bh, x:x+bw]
             colored = (bb_hsv[:, :, 1] > 90) & (bb_hsv[:, :, 2] > 90)
             colored_frac = float(colored.mean())
+            # 差分過濾：掃描前就已存在的彩色物件（礦石本體/角色裝備）→ 排除
+            if ref_mask is not None:
+                ref_fill = float(np.mean(ref_mask[y:y+bh, x:x+bw] > 0))
+                if ref_fill > 0.15:
+                    if collect_rejects is not None and colored_frac > 0.40:
+                        collect_rejects.append({"pos": (cx, cy), "colored": colored_frac,
+                                                "edge": None, "reason": "preexist"})
+                    if log is not None:
+                        log("tracker候選 (%d,%d) area=%d fill=%.2f ref_fill=%.2f -> rej(preexist)"
+                            % (cx, cy, int(area), frame_fill, ref_fill))
+                    continue
             # ring_ok：環形/空心「結構」訊號。**在混合模式下不再當硬門檻**——真追蹤框的中心
             # 可能是亮礦色實心（H13 綠實心中心 fill≈1.00、ring≈0.00）或彩色圖示，會讓 ring≈0/負、
             # fill≥0.85，被舊版 rej(not_ring)/fill 關卡在「形狀確認前」誤殺（H13 漏抓根因；
@@ -394,6 +399,11 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                        "OK" if accept else "rej"))
             if accept:
                 candidates.append((colored_frac, cx, cy, ring_ok))
+            elif collect_rejects is not None and colored_frac > 0.40:
+                # remote-aim 近失候選外露：colored 夠強但被 margin/exclude 擋下（值得人工看）
+                reason = "margin" if not in_area else "exclude"
+                collect_rejects.append({"pos": (cx, cy), "colored": colored_frac,
+                                        "edge": None, "reason": reason})
 
     # ---- 形狀確認（混合方案）：HSV 候選 → 小 ROI 外框比對，拒假陽性 ----
     # 三區判定：edge ≥ threshold → confirmed（不看 ring_ok，救回實心/彩心真框）；
@@ -412,6 +422,9 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
             if log is not None:
                 log("shape確認 (%d,%d) colored=%.2f edge=%.2f ring_ok=%s floor=%.2f thr=%.2f -> %s"
                     % (cx, cy, cf, score, ring_ok, shape_hard_floor, shape_threshold, verdict))
+            if collect_rejects is not None and verdict in ("hard_rej", "soft"):
+                collect_rejects.append({"pos": (cx, cy), "colored": cf,
+                                        "edge": score, "reason": verdict})
             if score >= shape_threshold:
                 confirmed.append((score, cx, cy))       # 形狀夠像＝真框，中心實心與否都收
             elif score >= shape_hard_floor and ring_ok:

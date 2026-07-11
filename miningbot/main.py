@@ -14,7 +14,7 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      toggle_pause_action, is_blocked_from_mining, should_notify_spawn_chill,
                      update_capacity_streak)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
-from . import sampler, reentry, roblox_menu
+from . import sampler, reentry, roblox_menu, remote_aim
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
 
@@ -187,6 +187,9 @@ class Bot:
         # 用完即清空（一次性），避免跨事件殘留。
         self._needs_human_extra_image = None
         self._needs_human_extra_meta: dict = {}
+        # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
+        self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
+        self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # Capacity 監看（重置偵測第二信號，2026-07-11）：背景 worker 每輪多讀 Capacity%
@@ -1803,6 +1806,7 @@ class Bot:
                 self._on_enter(State.NEEDS_HUMAN, frame)  # screenshot + log + alert 副作用
                 return State.NEEDS_HUMAN                  # 信號外層降級（不直接寫 self.state）
             self.human_cleared = False
+            self._aim_context = None          # remote-aim context 作廢（回挖礦＝不再待瞄準）
             # 清重置快取：OCR 已背景化，RESET_WAIT 期間快取凍在 True（worker 只在
             # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
             # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
@@ -1831,6 +1835,9 @@ class Bot:
             self.harvest.pitch_layers_left = harvester.plan_pitch_layers(
                 cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
                 cfg.sweep_pitch_center_back_px)
+            # remote-aim：新一輪採集 episode 重置 context＋sweep 記錄（跨層/跨 RESWEEP 累積）
+            self._aim_context = None
+            self._sweep_shots = []
             chill_path = self._hsnap_crop(frame, cfg.chill_text_region, "chill_closeup")
             self._hsnap(frame, "rare_found")
             # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）；檔名帶編號與截圖對齊
@@ -1928,6 +1935,7 @@ class Bot:
             self.last_action = "礦坑重置，等待重新定位"
             self._alert("礦坑重置，請重新定位後按 Q 繼續")
             self.human_cleared = False
+            self._aim_context = None          # remote-aim context 作廢（礦坑重置＝局勢已變）
             self._reset_wait_since = time.time()     # reset-chime 擷取的 arm 計時起點
             # Movement Mode 前置檢查延後到此：session 內第一次重置才標 due，
             # 等 _on_enter(MINING) 恢復挖礦時消費（2026-07-11 需求）。
@@ -2069,11 +2077,13 @@ class Bot:
         time.sleep(cfg.boost_fov_settle_s)  # 等 FOV 展開，之後抓的幀才是最終座標
         return True
 
-    def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False):
+    def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False,
+                      collect_rejects=None):
         """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
 
         shape_templates 為空（無實機裁圖）時 find_tracker 自動退回純 HSV。
         with_score=True 時回傳 (x, y, edge)，供 sweep 早停判斷高吻合度。
+        collect_rejects：傳 list 進來時收集「值得人工看的被拒候選」（remote-aim 用）。
         """
         return vision.find_tracker(
             frame, exclude=exclude, reference_bgr=reference_bgr, log=log,
@@ -2082,7 +2092,8 @@ class Bot:
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
-            shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score)
+            shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score,
+            collect_rejects=collect_rejects)
 
     def _find_tracker_near(self, frame, center, exclude, reference_bgr=None):
         """verify 輪詢快路徑：只搜開火座標周圍 ROI（參數組與 _find_tracker 一致）。"""
@@ -2152,6 +2163,7 @@ class Bot:
         NUM_DIRS = 8
         candidates = []  # [(dir_idx, position)]
         sweep_frames = []  # 各方位全幀（.copy——grab buffer 會被下一幀覆寫）；全空→交人工時落盤診斷
+        sweep_rejects_by_dir = {}  # remote-aim：各方位近失候選（collect_rejects 收集）
         for i in range(NUM_DIRS):
             f = capture.grab()
             # ★ boost 守門（H026）：sweep 一輪 ~10-19s，D5 常在中段到期。到期即補則各方位
@@ -2160,7 +2172,10 @@ class Bot:
                 f = capture.grab()
             if cfg.sweep_empty_snapshot:
                 sweep_frames.append((i, f.copy()))
-            r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True)
+            rejs = [] if cfg.remote_aim_enabled else None
+            r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True,
+                                    collect_rejects=rejs)
+            sweep_rejects_by_dir[i] = rejs or []
             if r1:
                 m1 = (r1[0], r1[1])
                 time.sleep(0.08)
@@ -2197,7 +2212,10 @@ class Bot:
                 # 過去只有觸發幀可查（看不到 sweep 各方位實況）→ 存下來供事後跑 find_tracker
                 # 診斷、或裁成模板補進 assets/markers（見 project_sweep_all_empty_giveups）。
                 for di, fr in sweep_frames:
-                    self._hsnap(fr, harvester.sweep_snapshot_label(self.harvest.pitch_layer, di))
+                    path = self._hsnap(fr, harvester.sweep_snapshot_label(self.harvest.pitch_layer, di))
+                    self._sweep_shots.append(remote_aim.SweepShot(
+                        layer=self.harvest.pitch_layer, dir_idx=di,
+                        snapshot_path=path or "", rejects=sweep_rejects_by_dir.get(di, [])))
                 self.log_harvest.info("[%s] sweep 全空：已存 %d 張各方位全幀供診斷",
                                       hid, len(sweep_frames))
             return None, False
@@ -2293,11 +2311,51 @@ class Bot:
                     paths.append(p)
             if paths:
                 groups.append((region, paths))
+        # 遠端瞄準 context（2026-07-11 spec）：記「giveup 收尾後」的絕對姿態——
+        # restore_view 路徑歸位完 net=0/mid；face_tracker 路徑保持面對框（net/層照舊）
+        self._aim_context = None
+        if cfg.remote_aim_enabled and self._sweep_shots:
+            ctx = remote_aim.build_aim_context(
+                self._sweep_shots, self.harvest.net_rotations,
+                self.harvest.pitch_layer, self.harvest.harvest_id,
+                now=time.time(), max_candidates=cfg.remote_aim_max_candidates)
+            self._aim_context = ctx
+            aim_paths = self._render_aim_shots(ctx)      # 疊圖＋落盤，回 [(caption, path)]
+            if aim_paths:
+                groups.insert(0, ("aim", [p for _, p in aim_paths[:4]]))
         if groups:
             self._needs_human_extra_meta["image_groups"] = groups
 
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
+
+    def _render_aim_shots(self, ctx):
+        """把有候選的 SweepShot 疊圖（候選編號＋網格）另存，回 [(caption, path)]。
+
+        只發「有候選的方位」防洗版（spec）；讀快照→疊圖→寫檔都在 giveup 當下同步做
+        （一次性、非熱路徑）。讀檔失敗跳過該張（快照是非同步寫檔，極端下可能還沒落盤）。
+        依「該方位最高分候選」排序，最像框的方位先發；最多 4 張。
+        """
+        import cv2
+        by_shot = {}
+        for c in ctx.candidates:
+            by_shot.setdefault((c.layer, c.dir_idx), []).append(c)
+        out = []
+        for shot in ctx.shots:
+            key = (shot.layer, shot.dir_idx)
+            cands = by_shot.get(key)
+            if not cands or not shot.snapshot_path:
+                continue
+            img = cv2.imread(shot.snapshot_path)
+            if img is None:
+                continue
+            overlaid = remote_aim.draw_overlay(img, cands, grid=True)
+            path = shot.snapshot_path.replace(".png", "_aim.png")
+            cv2.imwrite(path, overlaid)
+            best = max(c.score for c in cands)
+            out.append((best, f"方位{shot.dir_idx}（層 {shot.layer}）", path))
+        out.sort(key=lambda t: -t[0])
+        return [(caption, path) for _, caption, path in out[:4]]
 
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
