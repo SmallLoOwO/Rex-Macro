@@ -167,6 +167,14 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   實機三次「聚焦成功」但拖曳全沒生效＝焦點剛從小視窗切回就送右鍵拖曳會被吃（與旋轉鍵被吃
   同家族）。拖曳前後幀差驗證（量測同 `_rotate_verified`）：歸位冪等（飽和→回拉）可自動重試
   一次；微調不重送（誤重送＝記帳脫鉤）只記 log＋HUD 警示。
+  **俯仰驗證用獨立門檻 `pitch_eaten_*`，不可共用旋轉門檻（2026-07-11 晚間對策）**：settle 後
+  右鍵拖曳仍會偶發被吃（歸位一度 0/5 生效；被吃時游標物理滑到工作列、hover 彈出視窗預覽縮圖
+  ＝右鍵按下沒被遊戲註冊的鐵證），但旋轉門檻（mean≤2.0 且 frac≤0.02 才判被吃）是為近全黑
+  礦坑校準——地表粒子特效讓「沒動的畫面」frac 也有 0.022~0.045 → 全數誤判「生效」、歸位的
+  attempt 2 重試從未觸發。兩側夾（被吃 mean≤3.29/frac≤0.045、真生效 mean≥32.5/frac≥0.63）
+  → `pitch_eaten_mean_diff=8.0`/`pitch_eaten_changed_frac=0.15`。方向安全：歸位冪等、誤判
+  被吃重做無害（與旋轉「寧漏判勿誤重送」取捨相反，故必須分家）。被吃的下一次拖曳實測常成功
+  → 門檻判準後重試即自然救回。回歸：`tests/test_pitch_fixtures.py`＋`tests/fixtures/pitch/`。
   **R 視窗必須由 HUD 執行緒建（`sampler.SamplerPanel` Toplevel，2026-07-10）**：主執行緒有 HUD 的 Tk
   mainloop 時，背景執行緒開第二個 `tk.Tk()` 的 OS 視窗**永遠不會出現**（執行緒活著、mainloop 有跑、
   EnumWindows 列不到——實機驗證）。熱鍵執行緒只翻 `_sampler_want` 旗標，HUD `_poll` 每 300ms

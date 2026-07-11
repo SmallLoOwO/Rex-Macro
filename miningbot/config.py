@@ -141,6 +141,10 @@ class Config:
     rotation_eaten_changed_frac: float = 0.02    # 且有感變化像素佔比 ≤ 此值才判被吃（角色 idle 實測遠低於旋轉的大面積變化）
     rotation_changed_pixel_thresh: int = 12      # 單像素任一 channel 差 > 此值才算「有感變化」
     rotation_max_retries: int = 2                # 被吃後重送上限（每次重送前先 _focus_roblox）
+    pitch_eaten_mean_diff: float = 8.0           # 俯仰拖曳被吃判定（2026-07-11 實機兩側夾：被吃 ≤3.29、真生效 ≥32.5）
+    pitch_eaten_changed_frac: float = 0.15       # 同上（被吃 ≤0.045、真生效 ≥0.63）。地表粒子特效讓無效拖曳
+                                                 # 也有 0.022~0.045，旋轉門檻 0.02 會誤判生效；俯仰歸位冪等、
+                                                 # 誤判被吃重做無害 → 門檻可比旋轉激進。旋轉門檻不可共用不可動。
 
     # 卡住（用中央遊戲區判斷，避開左下角的狀態小窗，免得小窗變動誤判成「有進度」）
     stuck_timeout_s: float = 60.0

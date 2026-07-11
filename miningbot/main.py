@@ -3146,6 +3146,11 @@ class Bot:
         前後全幀落盤 snapshots/trace/（2026-07-11 使用者要求）：上次只有「聚焦成功」
         log 沒畫面，查不出「沒作用」是完全沒動/動一半/被選單彈窗擋——落盤後下次
         失效直接看 pitch_*_before/after 兩張圖。
+
+        用獨立 pitch_eaten_* 門檻而非旋轉的 rotation_eaten_*（2026-07-11 實機）：
+        地表粒子特效讓無效拖曳的 frac 也有 0.022~0.045，超過旋轉門檻 0.02 → 全部
+        誤判「生效」、歸位重試從未觸發。俯仰歸位是冪等操作（拖到夾限飽和再回拉），
+        誤判被吃而重做無害 → 門檻可比旋轉激進。旋轉門檻不可共用不可動。
         """
         before_full = capture.grab()
         before = capture.crop(before_full, cfg.rotation_verify_region)
@@ -3157,7 +3162,7 @@ class Bot:
             before, after, cfg.rotation_changed_pixel_thresh)
         eaten = harvester.rotation_looks_eaten(
             mean_diff, changed,
-            cfg.rotation_eaten_mean_diff, cfg.rotation_eaten_changed_frac)
+            cfg.pitch_eaten_mean_diff, cfg.pitch_eaten_changed_frac)
         verdict = "eaten" if eaten else "ok"
         self._snapshot(before_full, f"pitch_{verdict}_before")   # _snapshot 內部 copy，安全
         self._snapshot(after_full, f"pitch_{verdict}_after")
