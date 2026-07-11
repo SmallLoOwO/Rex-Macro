@@ -719,3 +719,72 @@ def test_best_template_match_scored_finds_rect():
 def test_best_template_match_scored_empty_templates():
     scene = np.zeros((100, 100, 3), dtype=np.uint8)
     assert vision.best_template_match_scored(scene, [], scales=(1.0,)) == (-1.0, None)
+
+
+# --- H040（2026-07-11）：shape ROI 撐大（207px 粗紅方框裝不進 160px ROI）---
+# harvest 070 實錄：畫面正中央 207×208px 粗紅色方形追蹤框（bbox x836-1043、y492-700），
+# HSV 找到候選（colored 0.79-0.99），但 tracker_shape_roi_px=160 的 ROI 只有 160×160
+# 裝不下 207px 的框 → 模板×尺度超 ROI 被 _best_edge_match_sized 的 th>sh 跳過
+# → 8 方位全空 → 誤交人工。ROI 尺寸把可偵測框大小硬上限在 ~160px 是結構性缺口。
+# 對策：roi 160→320（207px 真框＋模板 213px×尺度 1.4≈298 都要裝得下）。
+
+def _load_real_markers_h040():
+    """載入 assets/markers 內無 alpha 的 3 通道實機裁圖（含 H040 新增的紅方框模板）。"""
+    names = ("red_square_tracker_real", "exotic_tracker_real",
+             "exquisite_tracker_real", "transcendent_tracker_real")
+    tmpls = {}
+    for n in names:
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    return tmpls
+
+
+def test_h040_red_square_tracker_detected_in_scene():
+    """TP 場景：assets/red_square_tracker_scene.png（070_dir0 全幀，207px 粗紅方框）。
+
+    roi=160（舊值）裝不下 207px 框 → 抓不到（這就是事故）；roi=320（新值）應命中
+    中心 ~(991,553)、edge≈1.00，落在 bbox x∈[836,1043] y∈[492,700] 內。
+    用 cfg.tracker_shape_roi_px：改 config 前此測試必紅（鎖住 roi 是唯一瓶頸）。
+    """
+    img_path = "assets/red_square_tracker_scene.png"
+    tmpls = _load_real_markers_h040()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, reference_bgr=None,
+                       margin_frac=cfg.tracker_margin_frac,
+                       shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px)
+    assert loc is not None, "207px 粗紅方框在 roi=320 下應被偵測到（H040 事故根因）"
+    assert 836 <= loc[0] <= 1043 and 492 <= loc[1] <= 700, \
+        f"中心應落在紅方框 bbox 內，實得 {loc}"
+
+
+def test_h040_red_ribbon_equipment_not_detected():
+    """負樣本：assets/red_ribbon_equipment_scene.png（069_dir5，角色紅緞帶裝飾）。
+
+    紅緞帶裝備 edge 峰值 0.21-0.38（不越 0.42 門檻）→ 即使 roi 撐大也不可誤判為追蹤框。
+    """
+    img_path = "assets/red_ribbon_equipment_scene.png"
+    tmpls = _load_real_markers_h040()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    excl = [(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)]
+    loc = find_tracker(img, exclude=excl, reference_bgr=None,
+                       margin_frac=cfg.tracker_margin_frac,
+                       shape_templates=tmpls,
+                       shape_threshold=cfg.tracker_shape_threshold,
+                       shape_hard_floor=cfg.tracker_shape_hard_floor,
+                       shape_scales=cfg.tracker_shape_scales,
+                       shape_roi_px=cfg.tracker_shape_roi_px)
+    assert loc is None, f"紅緞帶裝備（edge≤0.38）不應被誤判為追蹤框，實得 {loc}"

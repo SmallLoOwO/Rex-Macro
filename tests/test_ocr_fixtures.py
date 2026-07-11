@@ -217,3 +217,25 @@ def test_tesseract_engine_leaves_no_rapid_diagnostics():
     ocr.read_text_multi(_load("h010_faded_no_text.png"), cfg.tesseract_path,
                         engine="tesseract")
     assert ocr.pop_rapid_diagnostics() is None
+
+
+# ---------- H041（2026-07-11）：RapidOCR 黏行（空格→連字號）----------
+# harvest 071 實錄：D3 採到 Fortuitous，聊天新增行被 RapidOCR 讀成
+# "rsmall_lo-has-found-Fortuitous"（整行單一 token、conf 0.97）。
+# before 聊天淡出（只剩側欄 2 行）、after 是 13 行滿版含底部黏行。
+# 任何引擎讀到黏行時，dehyphenation fallback 必須讓差分確認成功。
+KW = ("has found", "found a")
+
+
+@rapid_skip
+def test_rapidocr_h041_confirms_fortuitous_glued_line():
+    before = ocr.read_text_multi(_load("h041_before_faded.png"), cfg.tesseract_path,
+                                 engine="rapidocr")
+    after = ocr.read_text_multi(_load("h041_after_fortuitous_hyphen.png"), cfg.tesseract_path,
+                                engine="rapidocr")
+    # after 至少有一個 pass 含 fortuitous（驗證 fixture 確實讀到目標行）
+    assert any("fortuitous" in t.lower() for t in after), \
+        "fixture after 應讀到含 fortuitous 的行"
+    common = ["Siogyne", "Cleavelite", "Toppatrick", "Riches"]
+    rares = list(game_data.rare_ore_names())
+    assert ocr.any_new_rare_found(before, after, common, KW, rare_names=rares) is True

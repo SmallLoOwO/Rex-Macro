@@ -8,6 +8,20 @@ import numpy as np
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s.lower()).strip()
 
+def _dehyphenate_if_unmatched(line_norm: str, keywords) -> str:
+    """H041（2026-07-11）：RapidOCR 偶爾把整行空格讀成連字號
+    （「small_lo has found X」→「small-lo-has-found-X」，整行變單一 token）。
+
+    精確子字串比對全滅、且行內含 ``-`` 時，把 ``-`` 換空格再比一次。
+    不改變既有可讀行的行為（已對到或無 ``-`` → 原樣回）。
+    對稱應用於「行」側；「排除清單/白名單」側的對稱正規化在 _is_rare_ore 做。
+    """
+    if "-" not in line_norm:
+        return line_norm
+    if any(_normalize(k) in line_norm for k in keywords):
+        return line_norm
+    return line_norm.replace("-", " ")
+
 def contains_phrase(text: str, phrase: str) -> bool:
     return _normalize(phrase) in _normalize(text)
 
@@ -22,6 +36,7 @@ def count_found(text: str, phrases) -> int:
     避免舊的 "has found" 訊息賴在框裡偽造成功（stale-chat false positive）。
     """
     n = _normalize(text)
+    n = _dehyphenate_if_unmatched(n, phrases)  # H041：RapidOCR 黏行（空格→連字號）fallback
     return sum(n.count(_normalize(p)) for p in phrases)
 
 def has_new_found(before: str, after: str, phrases) -> bool:
@@ -43,6 +58,7 @@ def has_new_found_last_line(before: str, after: str, phrases) -> bool:
 
     before_last = _normalize(last_line(before))
     after_last  = _normalize(last_line(after))
+    after_last  = _dehyphenate_if_unmatched(after_last, phrases)  # H041：黏行 fallback
     if before_last == after_last:
         return False
     return any(_normalize(p) in after_last for p in phrases)
@@ -52,8 +68,12 @@ def _found_ore(line: str, found_keywords) -> str | None:
     """從一行聊天抽出「has found / found a」後面的礦名（正規化）；非 found 行回 None。
 
     例：「small_lo has found Lilaverine」→ "lilaverine"。
+
+    H041（2026-07-11）：RapidOCR 偶爾把整行空格讀成連字號（整行單一 token），
+    精確子字串全滅 → fallback 把 - 換空格再比（harvest 071 Fortuitous 黏行事故）。
     """
     n = _normalize(line)
+    n = _dehyphenate_if_unmatched(n, found_keywords)
     for kw in found_keywords:
         k = _normalize(kw)
         i = n.find(k)
@@ -90,11 +110,15 @@ def _is_rare_ore(ore: str | None, common_norm) -> bool:
 
     用 startswith 容忍 OCR 在一般礦名尾端多出的雜訊（如 "bandeau!"）→ 仍判為 common，
     偏保守（寧可把可疑的當 common 漏掉，也不要把一般礦誤當稀有礦造成假成功）。
+
+    H041（2026-07-11）：連字號對稱正規化——白名單含 Anti-Shadow/X-Flare/Sub-Zero 等
+    連字號礦名；比對前把 base 與清單項的 - 都換空格。安全方向：連字號差異絕不可造成
+    「一般礦被誤判稀有」（OCR 把 "Sub-Zero" 讀成 "Sub Zero" 時仍須被排除清單擋下）。
     """
     if not ore:
         return False
-    base = _strip_variant(ore)
-    return not any(base.startswith(c) for c in common_norm)
+    base = _strip_variant(ore).replace("-", " ")
+    return not any(base.startswith(c.replace("-", " ")) for c in common_norm)
 
 def found_ore_name(line: str, found_keywords) -> str | None:
     """公開版 _found_ore：從一行聊天抽礦名（正規化小寫）；非 found 行回 None。
@@ -300,7 +324,7 @@ def _fuzzy_rare_line(line: str, common_pairs, rare_pairs) -> dict | None:
     候選礦名取 found-token 之後的「全部 / 前 1 / 前 2 個 token」（容忍礦名後黏雜訊、
     也涵蓋多字礦名），各剝變體前綴後比對，取白名單分數最高的一組。
     """
-    tokens = _normalize(line).split()
+    tokens = _normalize(line).replace("-", " ").split()  # H041：黏行去 - 再切 token
     best = None
     for i, t in enumerate(tokens[:-1]):     # found-token 之後至少要有礦名
         if i == 0:                          # 行首＝前面沒玩家名，不符 "<名> has found X" 結構
@@ -528,7 +552,8 @@ def extract_new_found_lines(before: str, after: str, found_keywords) -> list:
         s = line.strip()
         if not s or _normalize(s) in before_set:
             continue
-        if any(_normalize(kw) in _normalize(s) for kw in found_keywords):
+        ns = _dehyphenate_if_unmatched(_normalize(s), found_keywords)  # H041：黏行 fallback
+        if any(_normalize(kw) in ns for kw in found_keywords):
             new_lines.append(s)
     return new_lines
 

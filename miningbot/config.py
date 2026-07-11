@@ -103,7 +103,11 @@ class Config:
     tracker_shape_confirm: bool = True           # 開啟形狀確認（需 assets/markers 內有實機裁圖；無則自動退回純 HSV）
     tracker_shape_threshold: float = 0.42        # 外框邊緣相關度門檻（confirmed）；實機真框 edge≥0.43、裝備假陽性≤0.30 中間有 gap，0.42 收「被角色擋到角」的近失綠框(173709)而不誤收裝備（hard_floor 0.30 + colored>0.40 仍守門）
     tracker_shape_scales: tuple = (0.7, 1.0, 1.4)  # 形狀確認用尺度（框置中後尺寸穩定，3 尺度即可）
-    tracker_shape_roi_px: int = 160              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
+    tracker_shape_roi_px: int = 320              # 在 HSV 候選周圍裁多大 ROI 做形狀確認
+                                                 # H040（2026-07-11）：160→320。harvest 070 實錄
+                                                 # 207×208px 粗紅方框裝不進 160 ROI → 模板×尺度
+                                                 # 超 ROI 被跳過 → 8 方位全空誤交人工。
+                                                 # 模板 213px×尺度 1.4≈298 也要裝得下 → 320。
     tracker_shape_hard_floor: float = 0.30       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16/0.25/0.26、真追蹤框≥0.44（2026-06-28 由 0.25→0.30 擋下夜間兩次 borderline 裝備誤射）
     tracker_shape_early_exit: float = 0.60       # sweep 早停：某方位雙幀穩定且 edge≥此值（遠高於裝備上限 0.26）→ 直接確定、免掃完剩餘方位/免轉回 verify（實測真框 0.54-1.00）
     tracker_margin_frac: float = 0.02            # find_tracker 邊緣排除帶（實戰值；vision 函式預設仍 0.10）。H019(1862,418)/H026(1288,1020) 兩次真框都被 0.10 的帶擋掉——D5 到期 FOV 收縮（以中心為錨 ~2.6x 縮放）把框推到邊緣，且 yaw 旋轉不改 y、底緣框 8 方位永遠在帶內。0.02 收得回兩顆（回歸 fixture：edge_clipped/bottom_edge_tracker_scene.png）且對全 fixture 集無新假陽性；邊緣雜訊由 preexist 差分/colored_frac/形狀確認擋

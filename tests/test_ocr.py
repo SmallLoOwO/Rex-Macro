@@ -719,3 +719,82 @@ class TestParseRapidBoxes:
         boxes = [[(0, 0), (10, 0), (10, 10), (0, 10)]]
         recs = ocr.parse_rapid_boxes(boxes, ["x"], None)
         assert recs[0]["score"] == 0.0
+
+
+# ---- H041（2026-07-11）：RapidOCR 黏行（空格→連字號）導致 found 行解析全滅 ----
+# 實錄 harvest 071：D3 採到稀有礦 Fortuitous，聊天新增行的真實文字是
+# "small_lo has found Fortuitous"，但 RapidOCR 穩定讀成 "small-lo-has-found-Fortuitous"
+# （整行單一 token、conf 0.98）或 "rsmall_lo-has-found-Fortuitous"（行首多 r、conf 0.97）。
+# 空格全變連字號 → 精確 "has found" 子字串找不到 → _found_ore/fuzzy 兩路全滅
+# → RESWEEP → 礦已採走重掃必空 → 誤交人工。對策：含 - 的行精確比對失敗時
+# fallback 把 - 換空格再比（不改變既有可讀行的行為）。
+from miningbot.ocr import _found_ore
+
+H041_COMMON = ("Siogyne", "Cleavelite", "Toppatrick", "Riches")
+H041_RARES = ("Fortuitous",)
+
+
+def test_h041_found_ore_dehyphenates_single_token_line():
+    # RapidOCR 把 "small_lo has found Fortuitous" 讀成單一連字號 token
+    assert _found_ore("small-lo-has-found-Fortuitous", KW) == "fortuitous"
+
+
+def test_h041_found_ore_dehyphenates_leading_noise_char():
+    # 行首多一個 r（conf 0.97 的變體讀法）也要救回
+    assert _found_ore("rsmall_lo-has-found-Fortuitous", KW) == "fortuitous"
+
+
+def test_h041_found_ore_normal_line_unchanged():
+    # 一般可讀行（無 -）行為不變
+    assert _found_ore("small_lo has found Fortuitous", KW) == "fortuitous"
+
+
+def test_h041_count_rare_found_counts_fortuitous_in_glued_line():
+    text = "small-lo-has-found-Fortuitous"
+    assert count_rare_found(text, H041_COMMON, KW) == 1
+
+
+def test_h041_count_rare_found_excludes_common_after_dehyphenation():
+    # ★ 安全方向：一般礦被黏行 → de-hyphen 後仍須被排除清單擋下（不可誤判稀有）
+    text = "small-lo-has-found-Siogyne"
+    assert count_rare_found(text, H041_COMMON, KW) == 0
+
+
+def test_h041_count_rare_found_hyphenated_common_ore_name_excluded():
+    # 排除清單含連字號礦名（如 Sub-Zero）：de-hyphen 對稱正規化後仍須排除。
+    # OCR 把 "Sub-Zero" 讀成 "Sub Zero"（- 變空格）時也不可逃過排除清單。
+    text = "small_lo has found Sub Zero"
+    assert count_rare_found(text, ("Sub-Zero",), KW) == 0
+
+
+def test_h041_count_found_dehyphenates_glued_line():
+    # count_found（raw substring 路徑）也要處理黏行
+    assert count_found("small-lo-has-found-Fortuitous", KW) == 1
+
+
+def test_h041_has_new_found_last_line_dehyphenates_glued_line():
+    before = "some chat"
+    after = "some chat\nsmall-lo-has-found-Fortuitous"
+    assert has_new_found_last_line(before, after, KW) is True
+
+
+def test_h041_any_new_rare_found_full_071_transcript():
+    # harvest 071 實錄 13 行全文：底部黏行 rsmall_lo-has-found-Fortuitous 是真成功
+    before = "NORMAL\nShamrock [2/3"
+    after = (
+        "small_lo has tound Siogyne\n"
+        "small_lo has found Cleavelite\n"
+        "small_lo has found Toppatrick\n"
+        "small_lo has found Siogyne\n"
+        "small_lo has found Siogyne\n"
+        "small_lo has found Siogyne\n"
+        "The mine is resetting...\n"
+        "The mine has regenerated!\n"
+        "KIT (@small_lo) has rerolled the event to Verd\n"
+        "small_lo has found Riches\n"
+        "rsmall_lo-has-found-Fortuitous\n"
+        "NORMAL\n"
+        "Shamrock [2/3"
+    )
+    assert any_new_rare_found([before], [after], H041_COMMON, KW,
+                              rare_names=H041_RARES) is True

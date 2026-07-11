@@ -279,3 +279,22 @@ fixture 位置慣例：
 - **待辦**：門檻（mean 2.0／frac 0.02／pixel 12）尚未實機校準，被吃誤重送風險已由 AND 條件壓低。
 - **fixture**：無（純時序/輸入層）
 - **commit**：2026-07-05 工作樹 WIP（本檔撰寫時尚未 commit）
+
+## H040（2026-07-10 20:28~23:53，harvest 066-070）：sweep 全空家族——207px 大框裝不進 160px shape ROI
+
+- **症狀**：一晚連續五輪採集交人工。067/069/070 第一次 sweep 就 8 方位全空；066/071 開火後 RESWEEP 全空。
+- **一句話根因（070 實錘）**：追蹤框可以渲染到 **207×208 px**（070_dir0 畫面正中央粗紅方框，bbox x836-1043 y492-700），但 `tracker_shape_roi_px=160` 的形狀確認 ROI 根本裝不下它——模板×尺度超過 ROI 被 `_best_edge_match_sized` 的 `th > sh` 跳過、既有最大模板 120px 對 207px 實框尺度差 1.7 倍 → edge 崩到 0.28-0.32 全數 hard_rej。**ROI 尺寸把可偵測框大小硬上限在 ~160px，是結構性缺口**（H044-064 全空家族備忘錄的「裁模板」處方對這型無效，模板再多也裝不進 ROI）。
+- **證據**：`_diag_tracker` 070_dir0：HSV 候選 (960,617) colored=0.99 / (960,592) 0.79 / (991,553) 0.84 全落在紅框內、edge 0.28-0.32 hard_rej。離線兩側夾（模板含新裁圖、reference=None）：roi=320 → TP 場景命中 (991,553) **edge=1.00**；負樣本（069 紅緞帶裝備）維持 None（裝備 edge 峰值 0.21-0.38 不越 0.42）；roi=160 → TP 抓不到（事故重現）。roi=320 唯一新增誤收＝工作列圖示 (824,1055) borderline ring 路徑（edge 0.30-0.37）——靜態 UI，實戰被 pre-scan reference 差分擋掉，非新風險面。
+- **對策**：`tracker_shape_roi_px` 160→320；裁 070 實機紅方框入 `assets/markers/red_square_tracker_real.png`（第 4 種實機框形：粗紅方框）。
+- **未解殘留（本事故只修 070 型）**：069 各方位無傳統框可見（角色手邊有紅圈小礦、地上白彩虹礦，疑掃描未觸發或框形未見過）；070 部分方位鏡頭被牆擠成臉部特寫（camera collision，框不可能入鏡）；067/068 無幀存檔前例可判。這三型靠下輪實機 log＋全空快照續診。
+- **fixture**：`assets/red_square_tracker_scene.png`（TP）、`assets/red_ribbon_equipment_scene.png`（負樣本，紅緞帶裝飾＋紅圈小礦）
+- **commit**：（本輪工作樹）
+
+## H041（2026-07-11 00:55，harvest 071）：RapidOCR 連字號黏行——成功行對兩條解析路徑同時隱形
+
+- **症狀**：D3 開火後 verify 三次 OCR（poll/final-check/late）全部 confirmed=False → RESWEEP → 全空（礦已採走）→ 誤交人工。快照肉眼可見聊天末行綠字 `small_lo has found Fortuitous`＝真成功。
+- **一句話根因**：RapidOCR 把該行讀成 `small-lo-has-found-Fortuitous`（三次重測穩定，conf 0.97-0.99，空格全變連字號、整行黏成單一 token）→ 精確路徑 `has found` 子字串對不上、模糊路徑 `_fuzzy_rare_line` 整行只剩 1 個 token 且在行首（i==0 跳過）→ **兩條路徑同時全滅**，log 連 fuzzy 評估記錄都沒有（這行完全隱形）。
+- **與 H020 的差異**：H020 是「關鍵字讀歪」（hee foumel）、token 還在；H041 是「分詞整個消失」——fuzzy 兜底的 token 結構假設（found-ish token 非行首）被黏行擊穿。
+- **對策（寧漏勿假成功方向不變）**：found 行解析加連字號 fallback——原行比對全滅且含 `-` 時，`-`→空格重試一次；排除清單 startswith 兩側對稱去連字號（一般礦黏行 `small-lo-has-found-Siogyne` 仍被排除，白名單既有連字號礦名 X-Flare/Sub-Zero 等不受害）；fuzzy tokenization 同步去連字號。Fortuitous 本身已在白名單（rare_ores.json），清單零改動。
+- **fixture**：`tests/fixtures/chat/h041_before_faded.png`（淡出基準，OCR 只剩側欄 2 行）、`h041_after_fortuitous_hyphen.png`（13 行含黏行，本機重測穩定重現 `rsmall_lo-has-found-Fortuitous`）
+- **commit**：（本輪工作樹）
