@@ -188,6 +188,11 @@ class Bot:
         self._needs_human_extra_meta: dict = {}
         self._last_reset_check = 0.0
         self._mine_resetting = False
+        # Movement Mode 前置檢查延後到第一次礦坑重置後才跑（2026-07-11 需求）：
+        # 啟動時不再跑選單鏈（實測 71-82s）——回礦/傳送功能未完成，session 之間沒有
+        # 東西會動到這個設定。改在 session 內第一次 RESET_WAIT 結束、回 MINING 時跑一次。
+        self._movement_check_due = False       # RESET_WAIT 進場時立起、回 MINING 時消費
+        self._movement_mode_checked = False    # session 內只跑一次（之後不再跑）
         # 重置自動回礦（REENTRY）：reset banner 消失起算的沉澱計時＋單輪執行狀態
         self._reset_clear_since = 0.0            # 0=banner 還在（或不在 RESET_WAIT）
         self._reentry = None                     # reentry.ReentryState（進 REENTRY 時建立）
@@ -1464,13 +1469,14 @@ class Bot:
             pass
         else:
             self._ensure_chat_open()
-        if not self._env_check_skip("Movement Mode 切換"):
-            ok = self._set_movement_mode(cfg.movement_mode_mining,
-                                         skip_event=self._skip_env_check)
-            # Q 跳過中途中止也會回 False——那是主動跳過不是失敗，別發誤導警告
-            if not ok and not self._skip_env_check.is_set():
-                self.logger.warning("UI 前置檢查：Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
-                self.last_action = "⚠ Movement Mode 切換失敗，請手動確認"
+        # Movement Mode 檢查不再於啟動跑（2026-07-11 需求）：回礦/傳送功能未完成 →
+        # session 之間沒有東西會動到這個設定 → 啟動時不必跑。備而不用：只有
+        # auto_reenter 實際啟用（config 開＋面板模板在）時，才在 session 內第一次
+        # RESET_WAIT 結束、回 MINING 時跑一次（_on_enter 控制）。
+        if self._auto_reenter_active():
+            self.logger.info("Movement Mode 檢查延後到第一次礦坑重置後才跑（auto_reenter 啟用中）")
+        else:
+            self.logger.info("Movement Mode 檢查停用（備用：auto_reenter 未啟用，設定不會被動到）")
         self._startup_phase = False
         miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
@@ -1768,6 +1774,16 @@ class Bot:
             # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
             # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
             self._mine_resetting = False
+            # Movement Mode 前置檢查（2026-07-11 需求）：只在 session 內第一次重置後跑一次。
+            # 掛在「恢復挖礦」而非 RESET_WAIT 進場——重置等待期間人可能正在手動操作遊戲
+            # （重新定位），選單鏈的 Esc/點擊會跟人搶輸入；人按 Q 表示定位完成、此時跑鏈
+            # 安全，跑完才 init_mining_sequence。不傳 skip_event（Q 已用於「定位完成」語意）。
+            if self._movement_check_due:
+                self._movement_check_due = False
+                self._movement_mode_checked = True
+                ok = self._set_movement_mode(cfg.movement_mode_mining)
+                if not ok:
+                    self.logger.warning("Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -1874,6 +1890,13 @@ class Bot:
             self._alert("礦坑重置，請重新定位後按 Q 繼續")
             self.human_cleared = False
             self._reset_wait_since = time.time()     # reset-chime 擷取的 arm 計時起點
+            # Movement Mode 前置檢查延後到此：session 內第一次重置才標 due，
+            # 等 _on_enter(MINING) 恢復挖礦時消費（2026-07-11 需求）。
+            # 再閘一層 _auto_reenter_active（同日追加需求）：Movement Mode 只為回礦
+            # click-to-move 服務，自動回礦（R 取樣校準＋auto_reenter）完成前「備而不用」
+            # ——挖礦本身的設定不會被動到，跑選單鏈只是浪費 71-82s 還多一次搶輸入風險。
+            if not self._movement_mode_checked and self._auto_reenter_active():
+                self._movement_check_due = True
 
     def _tick(self, frame):
         self._update_reset_chime_active()
@@ -3067,21 +3090,68 @@ class Bot:
         """使用者按視窗 X 關閉（Tk 執行緒進來）：旗標歸位，避免下一輪 poll 重開。"""
         self._sampler_want = False
 
-    def _sampler_pitch_reset(self) -> int:
-        """俯仰歸位（Tk 執行緒進來）：點按鈕當下焦點在小視窗上，先聚焦再拖。"""
+    def _sampler_pitch_prepare(self):
+        """R 視窗俯仰鈕共用前置：聚焦回遊戲＋游標移進畫面＋沉澱。
+
+        滑鼠事件送到「游標所在」視窗（鍵盤才看焦點）：點按鈕當下游標還停在
+        取樣小視窗上，右鍵拖曳會落在 Tk 視窗、Roblox 收不到 → 先把游標移進遊戲畫面。
+        settle（2026-07-11 實機）：log 三次「聚焦成功」但俯仰全沒生效——焦點剛從
+        小視窗切回遊戲就送右鍵拖曳會被吃（與旋轉鍵在焦點切換後被吃同家族）→
+        拖曳前必須沉澱 sampler_pitch_focus_settle_s。
+        """
         self._focus_roblox()
-        # 滑鼠事件送到「游標所在」視窗（鍵盤才看焦點）：點按鈕當下游標還停在
-        # 取樣小視窗上，右鍵拖曳會落在 Tk 視窗、Roblox 收不到 → 先把游標移進遊戲畫面
         ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)
-        ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px)
+        ic.settle(cfg.sampler_pitch_focus_settle_s)
+
+    def _pitch_drag_verified(self, label: str, drag) -> bool:
+        """執行俯仰拖曳並用前後幀驗證是否生效（量測與 _rotate_verified 同一套）。
+
+        俯仰改變會讓中央場景帶整片位移；被吃則幾乎逐位元相同。回 True＝有生效。
+        """
+        before = capture.crop(capture.grab(), cfg.rotation_verify_region)
+        drag()
+        after = capture.crop(capture.grab(), cfg.rotation_verify_region)
+        mean_diff = vision.frames_mean_diff(before, after)
+        changed = vision.frames_changed_frac(
+            before, after, cfg.rotation_changed_pixel_thresh)
+        eaten = harvester.rotation_looks_eaten(
+            mean_diff, changed,
+            cfg.rotation_eaten_mean_diff, cfg.rotation_eaten_changed_frac)
+        self.logger.info("%s：前後幀 mean=%s frac=%s -> %s",
+                         label, mean_diff, changed, "疑似被吃" if eaten else "生效")
+        return not eaten
+
+    def _sampler_pitch_reset(self) -> int:
+        """俯仰歸位（Tk 執行緒進來）：聚焦＋游標移入＋settle 後拖，前後幀驗證。
+
+        歸位＝拖到夾限飽和再回拉固定量 → 冪等，被吃可安全重做一次（不會過轉）。
+        """
+        self._sampler_pitch_prepare()
+        for attempt in (1, 2):
+            if self._pitch_drag_verified(
+                    f"俯仰歸位(attempt {attempt})",
+                    lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
+                                           cfg.reentry_pitch_back_px)):
+                self.last_action = "▲ 俯仰歸位完成"
+                break
+            self._sampler_pitch_prepare()        # 重新聚焦＋沉澱後重試
+        else:
+            self.last_action = "⚠ 俯仰歸位疑似沒生效，點一下遊戲畫面再按一次"
         self._pitch_offset_px = cfg.reentry_pitch_back_px
         return self._pitch_offset_px
 
     def _sampler_pitch_nudge(self, dy: int) -> int:
-        """微調一步。dy>0 向下拖＝靠近夾限→偏移量減少（偏移＝距夾限的回拉量）。"""
-        self._focus_roblox()
-        ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)  # 同 _sampler_pitch_reset：游標須先離開小視窗
-        ic.pitch_nudge(dy)
+        """微調一步。dy>0 向下拖＝靠近夾限→偏移量減少（偏移＝距夾限的回拉量）。
+
+        微調不自動重試：40px 位移的幀差可能天然偏小，誤判被吃而重送＝多拖一步、
+        記帳跟實際角度脫鉤（與旋轉「誤重送比漏判糟」同取捨）——只記 log＋HUD 警示，
+        懷疑沒生效就按「俯仰歸位」重新對齊。
+        """
+        self._sampler_pitch_prepare()
+        ok = self._pitch_drag_verified(f"俯仰微調 dy={dy}",
+                                       lambda: ic.pitch_nudge(dy))
+        self.last_action = ("▼ 俯仰微調生效" if ok
+                            else "⚠ 俯仰微調疑似沒生效（記帳照減，可按歸位重對齊）")
         self._pitch_offset_px -= dy
         return self._pitch_offset_px
 

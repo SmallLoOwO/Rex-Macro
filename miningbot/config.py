@@ -205,6 +205,9 @@ class Config:
     hotkey_sample: str = "r"
     manual_snapshot_dir: str = "logs/snapshots/manual"
     sample_pitch_step_px: int = 40              # R 視窗上/下微調一次的拖曳量
+    sampler_pitch_focus_settle_s: float = 0.5   # 俯仰鈕：聚焦回遊戲→拖曳前的沉澱。2026-07-11 實機：
+                                                # 三次「聚焦成功」但拖曳全沒生效——焦點剛切回就送
+                                                # 右鍵拖曳會被吃（與旋轉鍵被吃同家族），settle 後再拖
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
