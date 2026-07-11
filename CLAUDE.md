@@ -195,16 +195,28 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - 純邏輯改動走 TDD（先寫失敗測試）。
 - 在預設分支先開 feature 分支再 commit；commit 訊息結尾加 `Co-Authored-By: Claude ...`。
 - **寫 code 交給 opencode subagent（使用者要求 2026-07-09，首例＝玩家列表前置檢查 0c7b779）**：
-  程式實作預設委派 `opencode run`（模型 GLM 5.2，**無視覺能力**）；Claude 負責視覺與驗證。分工：
+  程式實作預設委派 `opencode run`（模型 GLM 5.2，**無視覺能力**）；Claude 負責視覺與驗證。
+  **⚠ 這條常被漏用（使用者實測 2026-07-11：Opus session 有時直接自己寫 code）——只要是
+  「程式實作」（新功能、bug 修、重構、跨檔改動）一律走 opencode，不因「改動小」自己動手；
+  例外只有：資產/文件/memory、一行 config 調參、以及「opencode 跑完後對同檔的小幅收尾補丁」
+  （併發改同檔會衝突，等它結束再補）。** 分工：
   1. **Claude（有視覺）先做**：實機/歷史截圖量測座標、裁 fixtures、用真實引擎驗證偵測配方
      （哪個 OCR/前處理可靠要「實測過」不是猜）、抓座標陷阱（如 Roblox 內建截圖＝client area
      1920×1051，實機 grab＝1080，差 ~30px）。
   2. **寫自足規格書**（存 scratchpad）：列「先讀哪些檔案」（要模仿的樣板、config 格式、測試樣板）、
      「已驗證的視覺/OCR 事實照用勿重推」、明講 **GLM 不要嘗試讀任何圖片**、實作規格含安全細節
      （寧漏勿誤等）、TDD、完成標準＝`python -m pytest -q` 全綠、**不要 commit**（留人工審）。
-  3. **背景執行**：`cd <專案> && opencode run "$(cat 規格.md)" --title <名>`（Bash `run_in_background`；
-     輸出接 tail 會等到結束才吐，中途檔案為空是正常）。
-  4. **Claude 事後驗證**：親自審 diff、獨立重跑新測試、可行就做實機端到端驗證，全過才 commit。
+  3. **背景執行（實例 2026-07-11，H040/H041 batch 驗證可用）**——用 Bash 工具（Git Bash 語法、
+     `run_in_background: true`）：
+     ```bash
+     cd "/c/Users/puppy/OneDrive/Desktop/無聊的挖礦遊戲" && \
+       opencode run "$(cat '/c/.../scratchpad/spec_xxx.md')" --title <任務名> 2>&1 | tail -40
+     ```
+     注意：路徑用 Git Bash 的 `/c/...` 形式；**輸出檔到結束前都是空的（buffer 到結束才吐），
+     中途查進度用 `git status --short` 看它動了哪些檔**，不要因輸出空白誤判沒在跑；
+     期間不要動它會改的檔（main.py/ocr.py/tests），文件/assets/memory 可並行。
+  4. **Claude 事後驗證**：親自審 diff、獨立重跑新測試（含把修復暫時 revert 的紅燈驗證）、
+     可行就做實機端到端驗證，全過才 commit。
 
 ## 延伸文件（不在此重複）
 - **實機事故錄（H 系列完整敘事）：`docs/incidents.md`**——症狀/根因/對策/fixture/commit，改門檻前必讀

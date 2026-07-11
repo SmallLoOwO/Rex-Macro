@@ -3107,18 +3107,27 @@ class Bot:
         """執行俯仰拖曳並用前後幀驗證是否生效（量測與 _rotate_verified 同一套）。
 
         俯仰改變會讓中央場景帶整片位移；被吃則幾乎逐位元相同。回 True＝有生效。
+        前後全幀落盤 snapshots/trace/（2026-07-11 使用者要求）：上次只有「聚焦成功」
+        log 沒畫面，查不出「沒作用」是完全沒動/動一半/被選單彈窗擋——落盤後下次
+        失效直接看 pitch_*_before/after 兩張圖。
         """
-        before = capture.crop(capture.grab(), cfg.rotation_verify_region)
+        before_full = capture.grab()
+        before = capture.crop(before_full, cfg.rotation_verify_region)
         drag()
-        after = capture.crop(capture.grab(), cfg.rotation_verify_region)
+        after_full = capture.grab()
+        after = capture.crop(after_full, cfg.rotation_verify_region)
         mean_diff = vision.frames_mean_diff(before, after)
         changed = vision.frames_changed_frac(
             before, after, cfg.rotation_changed_pixel_thresh)
         eaten = harvester.rotation_looks_eaten(
             mean_diff, changed,
             cfg.rotation_eaten_mean_diff, cfg.rotation_eaten_changed_frac)
-        self.logger.info("%s：前後幀 mean=%s frac=%s -> %s",
-                         label, mean_diff, changed, "疑似被吃" if eaten else "生效")
+        verdict = "eaten" if eaten else "ok"
+        self._snapshot(before_full, f"pitch_{verdict}_before")   # _snapshot 內部 copy，安全
+        self._snapshot(after_full, f"pitch_{verdict}_after")
+        self.logger.info("%s：前後幀 mean=%s frac=%s -> %s（前後全幀已落盤 trace/pitch_%s_*）",
+                         label, mean_diff, changed,
+                         "疑似被吃" if eaten else "生效", verdict)
         return not eaten
 
     def _sampler_pitch_reset(self) -> int:
