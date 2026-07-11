@@ -1,7 +1,8 @@
 import numpy as np
 from miningbot import remote_aim
 from miningbot.remote_aim import (AimCandidate, SweepShot, build_aim_context,
-                                  grid_cell_center, draw_overlay)
+                                  grid_cell_center, draw_overlay, parse_reply,
+                                  plan_alignment)
 
 
 def _shot(layer, d, rejects):
@@ -66,3 +67,68 @@ class TestDrawOverlay:
         frame = np.zeros((540, 960, 3), dtype=np.uint8)
         out = draw_overlay(frame, [], grid=True)
         assert out.sum() > 0                          # 網格線有畫
+
+
+class TestParseReply:
+    def test_candidate_number(self):
+        r = parse_reply("2", 3)
+        assert r.kind == "candidate" and r.number == 2
+
+    def test_candidate_out_of_range(self):
+        assert parse_reply("4", 3) is None
+        assert parse_reply("0", 3) is None
+
+    def test_grid_default_layer(self):
+        r = parse_reply("5 C3", 0)
+        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 5, "mid", "C3")
+
+    def test_grid_pitch_layers(self):
+        r = parse_reply("5U c3", 0, layers_available=("mid", "up", "down"))
+        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 5, "up", "C3")
+        r = parse_reply("0d A1", 0, layers_available=("mid", "up", "down"))
+        assert (r.kind, r.dir_idx, r.layer) == ("grid", 0, "down")
+
+    def test_grid_layer_unavailable(self):
+        # 俯仰掃描未啟用（layers 只有 mid）→ U/D 不合法
+        assert parse_reply("5U C3", 0, layers_available=("mid",)) is None
+
+    def test_grid_invalid(self):
+        assert parse_reply("8 C3", 0) is None       # 方位只有 0-7
+        assert parse_reply("5 G1", 0) is None       # 格子不合法
+        assert parse_reply("5", 0) is None           # 單數字但零候選
+
+    def test_skip_and_all(self):
+        assert parse_reply("跳過", 3).kind == "skip"
+        assert parse_reply("SKIP", 3).kind == "skip"
+        assert parse_reply("全部", 3).kind == "all"
+
+    def test_fullwidth_space_and_noise(self):
+        r = parse_reply("　5　C3　", 0)               # 全形空白
+        assert r is not None and r.kind == "grid"
+        assert parse_reply("哈哈這是聊天", 3) is None
+        assert parse_reply("", 3) is None
+
+
+class TestPlanAlignment:
+    def test_restored_pose_to_dir5(self):
+        # giveup 已歸位（net=0, mid）→ 目標方位 5：最短路徑左轉 3（5-0=5 → -3）
+        assert plan_alignment(0, "mid", 5, "mid") == (-3, None)
+
+    def test_face_tracker_pose_same_dir(self):
+        # face_tracker giveup 停在 dir3（net=3）→ 目標同方位：不轉
+        assert plan_alignment(3, "mid", 3, "mid") == (0, None)
+
+    def test_wrapped_net_rotations(self):
+        # net=9（sweep 轉了超過一圈）≡ dir1 → 目標 0：左轉 1
+        assert plan_alignment(9, "mid", 0, "mid") == (-1, None)
+
+    def test_layer_change(self):
+        steps, pitch = plan_alignment(0, "mid", 2, "up")
+        assert steps == 2 and pitch == "up"
+
+    def test_back_to_mid_from_up(self):
+        # 目前在 up 層、目標 mid 層 → pitch_change="mid"（純歸位）
+        assert plan_alignment(0, "up", 0, "mid") == (0, "mid")
+
+    def test_same_layer_no_pitch(self):
+        assert plan_alignment(0, "up", 0, "up") == (0, None)

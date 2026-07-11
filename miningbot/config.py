@@ -233,6 +233,8 @@ class Config:
     # --- Discord 遠端瞄準（2026-07-11 spec：giveup 附近失候選編號圖，回訊息即指揮）---
     remote_aim_enabled: bool = True             # 關掉＝giveup 附圖/回覆解析全部回到今天行為
     remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
+    remote_aim_refind_radius_px: int = 160      # fire 前重找 ROI 半徑（同 shape_roi 半徑量級）
+    remote_aim_budget_s: float = 120.0          # 單次 fire 全流程預算（對齊+重掃+驗證）
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續

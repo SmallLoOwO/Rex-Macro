@@ -98,3 +98,66 @@ def draw_overlay(frame_bgr, candidates, grid: bool = True):
         cv2.putText(out, str(c.number), (x - 30, y - 44),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 215, 255), 3)
     return out
+
+
+# ===== B1：回覆解析（無前綴；寧可不射不誤射，解析不出回 None）=====
+@dataclass(frozen=True)
+class AimReply:
+    kind: str        # "candidate" / "grid" / "skip" / "all"
+    number: int = 0
+    dir_idx: int = 0
+    layer: str = "mid"
+    cell: str = ""
+
+
+_LAYER_SUFFIX = {"U": "up", "D": "down"}
+
+
+def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
+    """NEEDS_HUMAN 待命時的一般訊息解析（無前綴；寧可不射不誤射，解析不出回 None）。
+
+    - "2" → 候選編號（1..num_candidates 內才收）
+    - "5 C3" / "5U C3" / "5d c3" → 網格（方位 0-7；U/D 需該層存在 layers_available）
+    - "跳過"/"skip" → skip；"全部" → all（補發其餘方位快照）
+    """
+    t = (text or "").replace("　", " ").strip()
+    if not t:
+        return None
+    low = t.lower()
+    if low in ("skip", "跳過"):
+        return AimReply("skip")
+    if low in ("all", "全部"):
+        return AimReply("all")
+    parts = t.split()
+    if len(parts) == 1 and parts[0].isdigit():
+        n = int(parts[0])
+        if 1 <= n <= num_candidates:
+            return AimReply("candidate", number=n)
+        return None
+    if len(parts) == 2:
+        m = re.fullmatch(r"([0-7])([UuDd]?)", parts[0])
+        if not m:
+            return None
+        layer = _LAYER_SUFFIX.get(m.group(2).upper(), "mid") if m.group(2) else "mid"
+        if layer not in layers_available:
+            return None
+        cell = parts[1].upper()
+        if grid_cell_center(cell) is None:
+            return None
+        return AimReply("grid", dir_idx=int(m.group(1)), layer=layer, cell=cell)
+    return None
+
+
+# ===== B2：對齊計畫純函式（目前絕對姿態 → 目標 層/方位）=====
+def plan_alignment(cur_net_rotations: int, cur_layer: str,
+                   tgt_dir: int, tgt_layer: str):
+    """目前絕對姿態 →（目標方位, 目標層）的對齊計畫（純函式）。
+
+    方位＝相對挖礦原視角的淨右轉數 mod 8（sweep dir 與 net_rotations 同一座標系）。
+    回 (帶號最短旋轉步數, None|目標層)。層不同才動俯仰（Bot 端一律 pitch_reset→nudge，
+    "mid" 層 nudge=0＝純歸位）。
+    """
+    from .harvester import plan_return_rotations
+    steps = plan_return_rotations(cur_net_rotations % 8, tgt_dir % 8)
+    pitch = None if cur_layer == tgt_layer else tgt_layer
+    return steps, pitch

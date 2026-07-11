@@ -190,6 +190,9 @@ class Bot:
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
+        # B3：輪詢執行緒寫 pending、主迴圈讀清；_aim_busy 擋執行中再回覆（不排隊）
+        self._pending_aim = None                 # AimReply（輪詢解析結果、主迴圈消費）
+        self._aim_busy = False                   # fire 執行中（主迴圈設、輪詢執行緒讀）
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # Capacity 監看（重置偵測第二信號，2026-07-11）：背景 worker 每輪多讀 Capacity%
@@ -1112,6 +1115,9 @@ class Bot:
             first = content.split()[0].lower() if content else ""
             if first.lstrip("!") in _DISCORD_COMMANDS:
                 self._handle_discord_command(content)
+            elif self._aim_context is not None and self.state is State.NEEDS_HUMAN:
+                # B3：NEEDS_HUMAN 且 aim context 存活時，一般訊息當瞄準回覆（無前綴，spec 第 2 節）
+                self._handle_aim_reply(content)
 
     def _poll_list_reactions(self):
         """輪詢 list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
@@ -1459,6 +1465,44 @@ class Bot:
                 "`clear` — 清空保留清單\n"
                 "`help` — 顯示此說明")
             self.log_discord.info("CMD help -> sent")
+
+    def _handle_aim_reply(self, content: str):
+        """NEEDS_HUMAN＋aim context 存活時，一般訊息當瞄準回覆解析（無前綴，2026-07-11 spec）。
+
+        **此方法在 Discord 輪詢執行緒跑**：只做解析/回覆/寫 self._pending_aim，絕不碰
+        input_control——輸入操作全部由主迴圈 _tick_remote_aim 消費（比照 _sampler_want 旗標）。
+        解析不出→回格式提示不動作；執行中→回「稍候」忽略（不排隊，避免舊指令補刀）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ctx = self._aim_context
+        if ctx is None:      # 競態：elif 檢查過到此期間主迴圈已作廢 context（回 MINING 等）
+            notify.send_message(token, ch, "目前沒有待瞄準的採集（已回挖礦/作廢）")
+            return
+        layers = ("mid", "up", "down") if harvester.plan_pitch_layers(
+            cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
+            cfg.sweep_pitch_center_back_px) else ("mid",)
+        reply = remote_aim.parse_reply(content, len(ctx.candidates), layers)
+        if reply is None:
+            notify.send_message(token, ch,
+                "❓ 看不懂。可用：`2`（射候選②）、`5 C3` / `5U C3`（方位+格子）、"
+                "`跳過`（回挖礦）、`全部`（補發其餘方位圖）")
+            return
+        if self._aim_busy:
+            notify.send_message(token, ch, "⏳ 上一發還在執行，稍候")
+            return
+        if reply.kind == "all":
+            sent = 0
+            for s in ctx.shots:
+                if s.snapshot_path and sent < 8:
+                    notify.send_images_message(token, ch,
+                        f"方位{s.dir_idx}（層 {s.layer}）", [s.snapshot_path])
+                    sent += 1
+            self.log_discord.info("AIM all -> 補發 %d 張", sent)
+            return
+        self._pending_aim = reply          # skip/candidate/grid：主迴圈消費
+        notify.send_message(token, ch, f"✅ 收到（{reply.kind}），主迴圈執行中…")
+        self.log_discord.info("AIM reply=%s -> pending", reply)
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
@@ -1953,7 +1997,11 @@ class Bot:
             self._tick_harvest(frame)
         elif self.state is State.REENTRY:
             self._tick_reentry(frame)
-        # NEEDS_HUMAN / RESET_WAIT: 等待熱鍵，不動作（chill 仍由 observe 監聽）
+        elif self.state is State.NEEDS_HUMAN and self._pending_aim is not None:
+            # B3：遠端瞄準回覆由主迴圈消費（輪詢執行緒只寫 _pending_aim，輸入全在此跑）
+            reply, self._pending_aim = self._pending_aim, None
+            self._tick_remote_aim(frame, reply)
+        # RESET_WAIT / 其餘 NEEDS_HUMAN: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
     def _update_reset_chime_active(self):
         """依 state＋計時決定 reset-chime recorder 是否收音；離開 RESET_WAIT 清空重錄。
@@ -2357,6 +2405,169 @@ class Bot:
         out.sort(key=lambda t: -t[0])
         return [(caption, path) for _, caption, path in out[:4]]
 
+    # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
+    def _tick_remote_aim(self, frame, reply):
+        """消費一則瞄準回覆（主迴圈執行緒）。skip→回挖礦；candidate/grid→對齊+重掃+開火+驗證。
+
+        一發＝一次 D3＋一個 verify 窗口，不自動 RETRY/RESWEEP（spec：要不要再射由使用者決定，
+        每次回報附最新截圖）。全程 remote_aim_budget_s 預算防卡死。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ctx = self._aim_context
+        if reply.kind == "skip":
+            self.logger.info("AIM skip -> 回挖礦")
+            self._aim_context = None
+            self.human_cleared = True          # 下 tick decide_transition 回 MINING（同 resume）
+            notify.send_message(token, ch, "▶️ 跳過這顆，回挖礦")
+            return
+        # 解目標 (層, 方位, 位置先驗)
+        if reply.kind == "candidate":
+            c = ctx.candidates[reply.number - 1]
+            tgt_layer, tgt_dir, prior = c.layer, c.dir_idx, c.pos
+        else:
+            tgt_layer, tgt_dir = reply.layer, reply.dir_idx
+            prior = remote_aim.grid_cell_center(reply.cell)
+        self._aim_busy = True
+        try:
+            ok, detail = self._execute_remote_fire(ctx, tgt_layer, tgt_dir, prior)
+        finally:
+            self._aim_busy = False
+        if ok:
+            self._aim_context = None           # 成功收尾（_execute 內已切 MINING）
+        else:
+            # 失敗：留在 NEEDS_HUMAN、context 續命，附當下截圖讓使用者再決定
+            cur = capture.grab()
+            p1 = self._snapshot(cur, "aim_fail_scene")
+            p2 = self._snapshot_crop(cur, cfg.chat_review_region, "aim_fail_chat")
+            paths = [p for p in (p1, p2) if p]
+            msg = f"❌ 未確認命中（{detail}）。可再回編號/格子重試，或 `跳過` 回挖礦"
+            if paths:
+                notify.send_images_message(token, ch, msg, paths)
+            else:
+                notify.send_message(token, ch, msg)
+
+    def _execute_remote_fire(self, ctx, tgt_layer, tgt_dir, prior):
+        """對齊姿態 → 重新 D2 掃描 → ROI 放寬重找 → 開火 → 聊天驗證。回 (confirmed, 說明)。
+
+        姿態記帳在 ctx（絕對姿態，與 self.harvest 的 net_rotations 分開——勿混用兩個來源）；
+        對齊轉動的「被吃不計」規則比照 _sweep_for_tracker：只計實際轉成的步數。
+        """
+        from . import notify
+        deadline = time.time() + cfg.remote_aim_budget_s
+        hid = ctx.harvest_id
+        if not self._focus_roblox():
+            return False, "無法聚焦 Roblox"
+        if self._mine_resetting:
+            return False, "礦坑重置中"
+        # 1. 對齊：yaw（驗證式）＋俯仰層（reset→nudge，同 pitch-sweep 慣例）
+        steps, pitch = remote_aim.plan_alignment(
+            ctx.pose_net_rotations, ctx.pose_pitch_layer, tgt_dir, tgt_layer)
+        self.logger.info("[%s] AIM 對齊：rot=%+d pitch=%s（目標 dir=%d layer=%s）",
+                         hid, steps, pitch, tgt_dir, tgt_layer)
+        done = 0
+        for _ in range(abs(steps)):
+            if self._rotate_verified(1 if steps > 0 else -1):
+                done += 1 if steps > 0 else -1
+        ctx.pose_net_rotations += done         # 姿態記帳＝實際轉動（被吃不計）
+        if done != steps:
+            return False, f"轉向被吃（{done}/{steps}），姿態已記帳，可重試"
+        if pitch is not None:
+            nudge = {"up": -cfg.sweep_pitch_step_px, "down": cfg.sweep_pitch_step_px,
+                     "mid": 0}[pitch]
+            ok = self._pitch_drag_verified(
+                f"[{hid}] AIM 俯仰歸位",
+                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                       cfg.sweep_pitch_center_back_px))
+            if ok and nudge:
+                ok = self._pitch_drag_verified(
+                    f"[{hid}] AIM nudge {nudge}px", lambda: ic.pitch_nudge(nudge))
+            if not ok:
+                ctx.pose_pitch_layer = "mid"   # reset 至少跑過，保守記歸位
+                return False, "俯仰對齊被吃，可重試"
+            ctx.pose_pitch_layer = pitch
+        # 2. 重新 D2 掃描（框早已到期；新 episode 語意，重拍 ref 正確——非 H026 情境）
+        _cr = cfg.chat_region
+        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]   # 同 _tick_harvest 聊天排除組法
+        chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)   # 開火前基準（截圖先、OCR 後）
+        harvester.prepare_scan()
+        gf = capture.grab()
+        if self._harvest_boost_guard(gf):
+            gf = capture.grab()
+        ref = gf
+        harvester.execute_scan()
+        self._confirm_scan("remote-aim")
+        # 3. ROI 放寬重找：先正常門檻，再 shape_threshold=0（colored 過即收、edge 排序）
+        pos = None
+        for thr in (cfg.tracker_shape_threshold, 0.0):
+            if time.time() > deadline:
+                return False, "預算用盡"
+            f2 = capture.grab()
+            pos = vision.find_tracker_near(
+                f2, prior, cfg.remote_aim_refind_radius_px,
+                frame_margin_frac=0.0, exclude=_excl,
+                reference_bgr=ref, shape_templates=self._shape_templates,
+                shape_threshold=thr, shape_hard_floor=0.0,
+                shape_scales=cfg.tracker_shape_scales,
+                shape_roi_px=cfg.tracker_shape_roi_px)
+            if pos:
+                self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
+                break
+        if not pos:
+            pos = prior                        # 4c. 直接朝先驗點開火（miss 代價＝一發）
+            self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
+        # 4. 開火（既有 D3 序列：2 → 0.15s → 3 → 0.3s → click hold 0.4 → 0.5s）
+        self._hsnap(capture.grab(), "aim_fire_%dx%d" % tuple(pos[:2]))
+        ic.key_press("2"); time.sleep(0.15)
+        ic.key_press("3"); time.sleep(0.3)
+        ic.click_at(int(pos[0]), int(pos[1]), hold=0.4)
+        time.sleep(0.5)
+        # 5. 驗證：基準 OCR（開火後才跑）＋窗口輪詢（幀差閘）＋最終確認
+        common = game_data.common_ore_names()
+        rare_names = game_data.rare_ore_names()
+        chat_before = ocr.read_text_multi(chat_base_crop, cfg.tesseract_path)
+        last_crop = chat_base_crop
+        fired_at = time.time()
+        while time.time() - fired_at < cfg.harvest_verify_window_s:
+            if time.time() > deadline:
+                break
+            time.sleep(0.5)
+            cur = capture.crop(capture.grab(), cfg.chat_region)
+            if vision.frames_differ(last_crop, cur, cfg.chat_change_mean_diff):
+                chat_after, confirmed, special = self._verify_chat_ocr(
+                    cur, chat_before, common, rare_names, hid, "remote-aim")
+                last_crop = cur
+                if confirmed:
+                    self._remote_fire_success(ctx, hid)
+                    return True, "confirmed"
+        # 窗口到期最終確認（H020 慣例）
+        cur = capture.crop(capture.grab(), cfg.chat_region)
+        _, confirmed, _ = self._verify_chat_ocr(
+            cur, chat_before, common, rare_names, hid, "remote-aim-final")
+        if confirmed:
+            self._remote_fire_success(ctx, hid)
+            return True, "confirmed(final)"
+        return False, "verify 窗口內聊天未確認"
+
+    def _remote_fire_success(self, ctx, hid):
+        """遠端開火確認成功：通知＋俯仰歸位＋視角回正＋回挖礦。
+
+        與 _harvest_resume_mining 共用 _resume_mining_tail（yaw 回正+MINING+init+W/D1 保險段）；
+        姿態來源是 ctx（不是 self.harvest.net_rotations——兩個記帳來源勿混）。
+        俯仰歸位條件與正常路徑不同：遠端 fire 可能動過 ctx 的層，一律 reset 回置中標準角
+        （center_back_px>0 才動；未校準=0 絕不動——同 _pitch_restore_if_touched 的守門）。
+        """
+        from . import notify
+        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                            f"🎉 [{hid}] 遠端瞄準採集成功！視角歸位、回挖礦")
+        self.logger.info("[%s] AIM 採集成功 -> 歸位回 MINING", hid)
+        if cfg.sweep_pitch_center_back_px > 0:   # 俯仰未校準（=0）絕不動；歸位冪等、多做無害
+            self._pitch_drag_verified(
+                f"[{hid}] AIM 收尾俯仰歸位",
+                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                       cfg.sweep_pitch_center_back_px))
+        self._resume_mining_tail(ctx.pose_net_rotations)
+
     def _tick_harvest(self, frame):
         self.harvest.elapsed_s = time.time() - self._harvest_start
         hid = self.harvest.harvest_id          # 本輪編號；harvest 里程碑 log 前綴 [Hxxx]
@@ -2738,7 +2949,17 @@ class Bot:
         pickup 動畫等待（time.sleep 1.0）由呼叫端在 recheck 前先跑過，這裡不重睡。
         """
         self._pitch_restore_if_touched()  # 先俯仰歸位（動過才回置中標準角）、再 yaw 回正
-        harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
+        self._resume_mining_tail(self.harvest.net_rotations)
+
+    def _resume_mining_tail(self, net_rotations: int):
+        """採集成功（正常/遠端 fire）後的共用收尾：yaw 回正→切 MINING→init→鎬子/W 保險段。
+
+        從 _harvest_resume_mining 抽出，讓遠端 fire 收尾（姿態在 ctx.pose_net_rotations）
+        與正常採集收尾（姿態在 self.harvest.net_rotations）共用同一份，不複製兩份維護。
+        俯仰歸位由呼叫端先跑（兩路徑條件不同：正常路徑用 _pitch_restore_if_touched，
+        遠端 fire 用 _pitch_drag_verified 直跑）。pickup 動畫等待也由呼叫端先跑。
+        """
+        harvester.restore_view(net_rotations, rotate=self._rotate_verified)
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
         miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
