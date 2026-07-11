@@ -117,10 +117,13 @@ class StatusHUD:
             audio = 0.0
         up = int(time.time() - b._started)
         tag = _STATE_ZH.get(state, state) + ("（暫停）" if b.paused else "")
+        # Capacity%（重置偵測第二信號，2026-07-11）：getattr 防舊物件無此屬性
+        cap = getattr(b, "_capacity_pct", None)
+        cap_s = f"　容量: {cap:.0f}%" if cap is not None else ""
         self.lbl.config(text=_bmp_safe(
             f"● {tag}\n"
             f"動作: {b.last_action}\n"
-            f"音訊: {audio:.2f}    運行: {up // 3600}h{(up % 3600) // 60:02d}m{up % 60:02d}s"
+            f"音訊: {audio:.2f}{cap_s}    運行: {up // 3600}h{(up % 3600) // 60:02d}m{up % 60:02d}s"
         ))
         if not self._hidden and self._hwnd:
             # 重新確保置頂，但不搶焦點（SWP_NOACTIVATE）

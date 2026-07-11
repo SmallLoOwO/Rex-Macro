@@ -138,3 +138,19 @@ def is_blocked_from_mining(state: State, paused: bool) -> bool:
     回傳 False（MINING + 非暫停 = 已在挖，!resume 是無效操作；回覆「不需要恢復」）。
     """
     return paused or state in (State.NEEDS_HUMAN, State.RESET_WAIT)
+
+
+def update_capacity_streak(streak: int, pct: float | None,
+                           threshold: float) -> tuple[int, bool]:
+    """Capacity 連續 ≥ 門檻計數（重置偵測第二信號，2026-07-11；純函式）。
+
+    - pct is None（本輪 OCR 讀失敗）→ streak 原樣、不觸發（單次讀失敗不重計）。
+    - pct >= threshold → streak+1；新 streak >= 2 → 觸發（連續兩次確認）。
+    - pct < threshold → 歸零、不觸發。
+    """
+    if pct is None:
+        return streak, False
+    if pct >= threshold:
+        new_streak = streak + 1
+        return new_streak, new_streak >= 2
+    return 0, False

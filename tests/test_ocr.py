@@ -4,6 +4,7 @@ from miningbot.ocr import (contains_phrase, contains_any, count_found,
                            count_rare_found, has_new_rare_found,
                            has_new_rare_found_last_line,
                            extract_new_found_lines,
+                           parse_capacity_pct,
                            _tessdata_dir, _resolve_tessdata)
 
 def test_contains_phrase_case_insensitive_and_fuzzy():
@@ -798,3 +799,49 @@ def test_h041_any_new_rare_found_full_071_transcript():
     )
     assert any_new_rare_found([before], [after], H041_COMMON, KW,
                               rare_names=H041_RARES) is True
+
+
+# ── parse_capacity_pct：頂部「Capacity: NNN%」解析（2026-07-11 重置偵測第二信號）──
+# OCR 實測 4 張快照的讀值（Claude 真實引擎驗證，直接寫進測試）：
+#   'Capacity: 14% |'  → 14
+#   'Capacity: 100% |' → 100
+#   'Capacity: 101% [' → 101
+#   'Capacity: 101% |' → 101
+# 尾端 | / [ 是 pill 分隔線雜訊，解析必須容忍。
+
+def test_parse_capacity_pct_real_fixture_strings():
+    assert parse_capacity_pct("Capacity: 14% |") == 14.0
+    assert parse_capacity_pct("Capacity: 100% |") == 100.0
+    assert parse_capacity_pct("Capacity: 101% [") == 101.0
+    assert parse_capacity_pct("Capacity: 101% |") == 101.0
+
+def test_parse_capacity_pct_case_insensitive():
+    assert parse_capacity_pct("CAPACITY: 99%") == 99.0
+    assert parse_capacity_pct("capacity: 42%") == 42.0
+
+def test_parse_capacity_pct_decimal():
+    assert parse_capacity_pct("Capacity: 99.5%") == 99.5
+
+def test_parse_capacity_pct_tolerates_trailing_noise():
+    assert parse_capacity_pct("Capacity: 87%|Depth: 100m") == 87.0
+
+def test_parse_capacity_pct_empty_returns_none():
+    assert parse_capacity_pct("") is None
+
+def test_parse_capacity_pct_no_percent_returns_none():
+    assert parse_capacity_pct("Capacity: 100") is None
+
+def test_parse_capacity_pct_depth_not_misread_as_pct():
+    # sanity range 守門：Depth 的數字不可被當成 pct（防 OCR 把整行讀歪時誤觸發重置）
+    assert parse_capacity_pct("Depth: 8109m") is None
+
+def test_parse_capacity_pct_out_of_range_returns_none():
+    # >150 → None（防把 $ 金額誤讀成 pct）
+    assert parse_capacity_pct("Capacity: 800%") is None
+
+def test_parse_capacity_pct_falls_back_to_first_pct_when_label_missing():
+    # OCR 可能把 label 讀歪但數字在 → 退而求整串第一個 NNN%
+    assert parse_capacity_pct("Capucity 98%") == 98.0
+
+def test_parse_capacity_pct_negative_returns_none():
+    assert parse_capacity_pct("Capacity: -5%") is None

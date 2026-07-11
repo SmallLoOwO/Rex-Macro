@@ -29,6 +29,26 @@ def contains_any(text: str, phrases) -> bool:
     n = _normalize(text)
     return any(_normalize(p) in n for p in phrases)
 
+# ── Capacity 解析（2026-07-11 重置偵測第二信號）─────────────────────────────
+# 頂部常駐「Capacity: NNN%」列：bot 挖礦累積、到 100% 觸發重置。OCR 尾端會帶 pill
+# 分隔線雜訊（|/`[）。優先抓 Capacity label 後的數字；label 被讀歪時退而求整串第一個 NNN%。
+# sanity range 0-150：超出（如把 Depth/$ 誤讀成 pct）回 None，防假觸發重置。
+_CAPACITY_RE = re.compile(r"capacity.*?(-?\d+(?:\.\d+)?)\s*%", re.IGNORECASE)
+_PCT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
+
+
+def parse_capacity_pct(text: str) -> float | None:
+    """從頂部列文字抽出 Capacity 百分比；找不到或超出 sanity range(0-150) 回 None。"""
+    m = _CAPACITY_RE.search(text)
+    if m is None:
+        m = _PCT_RE.search(text)          # label 讀歪 → 退而求整串第一個 NNN%
+    if m is None:
+        return None
+    v = float(m.group(1))
+    if v < 0 or v > 150:
+        return None
+    return v
+
 def count_found(text: str, phrases) -> int:
     """計 phrases 在 text 中出現的總次數（正規化後比對）。
 

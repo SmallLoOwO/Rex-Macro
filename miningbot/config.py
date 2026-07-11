@@ -166,6 +166,14 @@ class Config:
     # 礦坑重置：頂部訊息列出現含這些關鍵字 → 進 RESET_WAIT（停下等你重新定位）
     reset_phrases: tuple = ("reset in", "will reset", "reset")
     reset_check_interval_s: float = 2.0          # 多久 OCR 一次頂部列找重置字樣（OCR 較慢，節流）
+    # 重置偵測的第二信號：頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）。
+    # Capacity 由玩家挖礦累積、到 100% 觸發重置——bot 自己填的，故只能「貼著 100% 瞬間停」
+    # 不可提早暫停（杯子永遠不滿＝死鎖）。連續 2 次 ≥ threshold 視同偵測到重置（與橫幅訊號 OR）。
+    capacity_region: Region = field(default_factory=lambda: Region(715, 92, 200, 45))
+        # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4；重置偵測的第二信號）
+    capacity_reset_threshold: float = 100.0   # ≥此值連續 2 次 → 視同偵測到重置（<100 提早停＝死鎖，勿降）
+    capacity_fast_from: float = 95.0          # ≥此值 banner worker 輪詢加速
+    capacity_fast_interval_s: float = 0.5     # 加速後間隔（平時沿用 reset_check_interval_s=2.0）
 
     # 記錄 / 診斷
     log_dir: str = "logs"

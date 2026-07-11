@@ -1,7 +1,8 @@
 from miningbot.states import (State, Observation, decide_transition,
                               resolve_state_transition,
                               toggle_pause_action, is_blocked_from_mining,
-                              should_notify_spawn_chill)
+                              should_notify_spawn_chill,
+                              update_capacity_streak)
 
 def obs(**kw):
     base = dict(chill_audio=False, chill_text=False, harvest_done=False,
@@ -186,3 +187,47 @@ class TestSpawnChillNotify:
         # 去抖動：同一波 chill 已通知過 → 不重複
         assert should_notify_spawn_chill(State.NEEDS_HUMAN, True, True, True) is False
         assert should_notify_spawn_chill(State.REENTRY, True, True, True) is False
+
+
+# ── update_capacity_streak：Capacity 連續計數（重置偵測第二信號，2026-07-11）──
+# 語意：pct None（讀失敗）→ streak 原樣不推進不歸零；≥threshold → +1、達 2 觸發；
+#       <threshold → 歸零。單次讀失敗不重計（防單次 OCR 抖動造成假歸零）。
+TH = 100.0
+
+def test_capacity_streak_none_keeps_streak_no_trigger():
+    assert update_capacity_streak(0, None, TH) == (0, False)
+    assert update_capacity_streak(1, None, TH) == (1, False)
+
+def test_capacity_streak_single_at_threshold_no_trigger():
+    assert update_capacity_streak(0, 100.0, TH) == (1, False)
+
+def test_capacity_streak_two_consecutive_at_threshold_triggers():
+    s1, t1 = update_capacity_streak(0, 100.0, TH)
+    assert (s1, t1) == (1, False)
+    s2, t2 = update_capacity_streak(s1, 100.0, TH)
+    assert (s2, t2) == (2, True)
+
+def test_capacity_streak_below_threshold_resets_to_zero():
+    s1, _ = update_capacity_streak(0, 100.0, TH)
+    s2, t2 = update_capacity_streak(s1, 95.0, TH)
+    assert (s2, t2) == (0, False)
+
+def test_capacity_streak_100_95_100_does_not_trigger():
+    # 中間歸零後再 100 只是 streak=1，不觸發（防抖：連續必須不打斷）
+    s1, _ = update_capacity_streak(0, 100.0, TH)
+    s2, _ = update_capacity_streak(s1, 95.0, TH)
+    s3, t3 = update_capacity_streak(s2, 100.0, TH)
+    assert (s3, t3) == (1, False)
+
+def test_capacity_streak_continues_true_after_first_trigger():
+    # 觸發後持續 ≥門檻仍回 True（冪等無妨：_mine_resetting 本來就是重複賦值）
+    s2, t2 = update_capacity_streak(1, 100.0, TH)
+    assert (s2, t2) == (2, True)
+    s3, t3 = update_capacity_streak(s2, 101.0, TH)
+    assert (s3, t3) == (3, True)
+
+def test_capacity_streak_above_101_triggers_at_two():
+    s1, t1 = update_capacity_streak(0, 101.0, TH)
+    assert (s1, t1) == (1, False)
+    s2, t2 = update_capacity_streak(s1, 101.0, TH)
+    assert (s2, t2) == (2, True)
