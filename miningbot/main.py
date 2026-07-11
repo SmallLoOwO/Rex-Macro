@@ -943,31 +943,50 @@ class Bot:
         return records
 
     def _ensure_chat_open(self):
-        """啟動 UI 前置檢查：聊天框關著就點圖示開啟；仍關只記警告＋HUD，照常啟動
+        """啟動 UI 前置檢查：聊天框關著就點圖示開啟；複檢仍關 → 重新聚焦再點（最多 chat_open_max_retries 次）。
+
+        點擊被吃的既有對策＝重新聚焦後重送（_focus_roblox；OCR 複檢即驗證，不必如 _rotate_verified 比對幀差）。
+        重試用盡仍關 → 保留 WARNING + HUD，另存快照（snapshots/trace/，label chat_open_fail）供診斷，照常啟動
         （不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，見 CLAUDE.md）。
         """
         t0 = time.perf_counter()
         frame = capture.grab()
         text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
-        ocr1_ms = (time.perf_counter() - t0) * 1000
+        ocr_ms = (time.perf_counter() - t0) * 1000
         if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟（OCR %.0fms）", ocr1_ms)
+            self.logger.info("UI 前置檢查：聊天框已開啟（OCR %.0fms）", ocr_ms)
             return
-        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr1_ms)
+        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr_ms)
         ic.click_at(*cfg.chat_icon_xy)
-        time.sleep(cfg.menu_open_settle_s)
+        time.sleep(cfg.chat_open_settle_s)
         if self._env_check_skip("聊天框複檢"):   # Q 已按 → 省下 ~2-8s 第二次 OCR
             return
         t0 = time.perf_counter()
         frame = capture.grab()
         text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
-        ocr2_ms = (time.perf_counter() - t0) * 1000
+        ocr_ms = (time.perf_counter() - t0) * 1000
         if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認，OCR %.0fms）", ocr2_ms)
+            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認，OCR %.0fms）", ocr_ms)
             return
+        # 首次點擊仍關 → 重新聚焦再點（輸入被吃的既有對策）；最多 chat_open_max_retries 次
+        for attempt in range(1, cfg.chat_open_max_retries + 1):
+            if self._env_check_skip("聊天框重試"):
+                return
+            self._focus_roblox()
+            self.logger.info("UI 前置檢查：聊天框仍未開啟，第 %d 次重試（重新聚焦再點）", attempt)
+            ic.click_at(*cfg.chat_icon_xy)
+            time.sleep(cfg.chat_open_settle_s)
+            t0 = time.perf_counter()
+            frame = capture.grab()
+            text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
+            ocr_ms = (time.perf_counter() - t0) * 1000
+            if ocr.contains_any(text, cfg.chat_input_phrases):
+                self.logger.info("UI 前置檢查：聊天框第 %d 次重試後開啟（OCR %.0fms）", attempt, ocr_ms)
+                return
         self.logger.warning("UI 前置檢查：聊天框仍未開啟，可能影響採集確認；請手動開啟（OCR %.0fms）",
-                            ocr2_ms)
+                            ocr_ms)
         self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
+        self._snapshot(frame, "chat_open_fail")   # label 無 reentry/sweep/d3/chill 關鍵字 → snapshots/trace/
 
     def _ensure_player_list_closed(self):
         """啟動 UI 前置檢查：右上角玩家列表（Tab toggle）開著就按 Tab 關閉，避免遮擋右側點擊。
@@ -1170,10 +1189,11 @@ class Bot:
             # 的狀態同步條件（last_shown != current）仍成立，會自動重試。
 
     def _repost_remote_control(self):
-        """刪舊遙控器、貼新的到頻道底。**只在被其他訊息擠上去時**呼叫（混合設計）。
+        """刪舊遙控器、貼新的到頻道底。
 
-        狀態更新/按鈕點擊走 _edit_remote_control（原地 PATCH）；重貼保留給「維持釘底」
-        這一個用途。刪除結果必記 log（舊設計不記，刪除失敗無從診斷）；刪失敗不擋重貼。
+        兩個呼叫路徑：(1) 被其他訊息擠上去時重新釘底（_poll_discord 2a）；(2) 按鈕觸發後刪舊貼新——
+        DM 無法移除他人表情（HTTP 403 code 50003），repost 讓新訊息表情歸零、使用者可立即再點。
+        刪除結果必記 log（舊設計不記，刪除失敗無從診斷）；刪失敗不擋重貼。
         """
         from . import notify
         old = self._remote_message_id
@@ -1203,15 +1223,13 @@ class Bot:
         self._post_remote_control()
 
     def _poll_remote_reactions(self):
-        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並原地編輯遙控器。
+        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並刪舊貼新遙控器。
 
-        混合設計（2026-07-09）：動作觸發後用 edit_message（PATCH）原地更新狀態——
-        不產生新訊息、不推播（舊設計每次都刪舊貼新＝洗版）；刪舊重貼只保留給
-        「被其他訊息擠上去」的釘底路徑（_poll_discord 2a → _repost_remote_control）。
+        動作觸發後刪舊貼新（DM 無法清除他人表情 HTTP 403 code 50003，repost 是等效方案：
+        新訊息表情歸零可立即再點）；代價＝每次點擊 DM 多一則訊息（使用者已接受）。
 
         seen 集合採「同步語意」（每輪覆寫成當前反應名單，而非累加 update）：使用者自己取消
-        反應會被移出 seen，下次再點即可再次觸發。這也是 remove_reaction 失敗的降級路徑——
-        缺 Manage Messages 權限時 bot 無法替使用者移除反應，但使用者手動取消再點一樣能再觸發。
+        反應會被移出 seen，下次再點即可再次觸發。
 
         守門 ``if not users: continue`` 不可省：get_reactions 失敗回空 list，若照樣同步會把
         seen 清空、下一輪把所有既有反應誤判成新點擊（假觸發）。必須 fetch 有結果才同步。
@@ -1247,24 +1265,11 @@ class Bot:
                 self._pause()
                 self.log_discord.info("remote ⏸️ pause by %s（already=%s）",
                                       ",".join(sorted(new_clickers)), already)
-            # 嘗試移除使用者反應讓他能再點（需 Manage Messages；缺權限則靜默降級——
-            # 使用者自己取消反應再點也能再次觸發，見 docstring seen 同步語意）
-            for uid in sorted(new_clickers):
-                rok, rdetail = notify.remove_reaction(token, ch, mid, emoji, uid)
-                if rok:
-                    # 移除成功即把 uid 踢出 seen：若使用者在下一輪輪詢前就再點，
-                    # seen 若仍含他會把該點擊永久吞掉（反應在名單上、又在 seen 裡
-                    # → 差集永遠為空）。先踢出的代價只是 Discord 移除尚未生效時
-                    # 可能重複觸發一次——resume/pause 皆冪等，無害。
-                    self._remote_reactions_seen[emoji].discard(uid)
-                else:
-                    self.log_discord.info("remote remove_reaction %s %s FAIL -> %s "
-                                          "（可能缺 Manage Messages；改由使用者自行取消）",
-                                          emoji, uid, rdetail)
             break                              # 一次輪詢只處理一個動作
         if action_taken:
-            # 動作觸發後原地編輯遙控器：刷新狀態文字（不產生新訊息、不推播）
-            self._edit_remote_control()
+            # 動作觸發後刪舊貼新：表情歸零＝使用者可立即再點
+            # （DM 不能 remove_reaction HTTP 403 code 50003，repost 是等效方案）
+            self._repost_remote_control()
 
     def _handle_discord_command(self, content: str):
         """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。

@@ -254,6 +254,8 @@ class Config:
         # 展開後固定位置的輸入列「To chat click here or press / key」（2026-07-08 實機截圖量測＋
         # 真實 tesseract OCR 驗證過：開啟時讀到 "press / key"、收合時讀到雜訊不誤判）
     chat_input_phrases: tuple = ("to chat click here", "press / key")
+    chat_open_settle_s: float = 0.8      # 點聊天圖示後等展開動畫（menu_open_settle_s 0.3 偏緊）
+    chat_open_max_retries: int = 2       # 首次點擊複檢仍關 → 重新聚焦再點的重試次數
 
     player_list_region: Region = field(default_factory=lambda: Region(1490, 110, 425, 150))
         # 右上角玩家列表（Tab toggle）標題列＋第一列。2026-07-09 由實機截圖量測：
