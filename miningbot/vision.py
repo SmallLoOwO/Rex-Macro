@@ -154,6 +154,25 @@ def frame_mean_diff(a_bgr, b_bgr) -> float:
     return float(np.mean(np.abs(a_bgr.astype(np.int16) - b_bgr.astype(np.int16))))
 
 
+def region_greenness(scene_bgr, region) -> float:
+    """區域『綠色主導』程度＝平均 G − 平均 (R+B)/2（BGR 影像；region 為 config.Region）。
+
+    hotbar 選中（裝備中）的槽位底色會轉綠 → 綠色主導值明顯為正；未選中為灰、值近 0。
+    用來取代易受版面位移影響的單點 `pixel_matches`（工作列調回顯示後底部 UI 上移約 50px，
+    寫死單點會落到場景上）。取整區平均而非單點 → 對輕微位移/雜訊穩健。
+    """
+    roi = scene_bgr[region.y:region.y + region.h, region.x:region.x + region.w]
+    b = float(roi[..., 0].mean())
+    g = float(roi[..., 1].mean())
+    r = float(roi[..., 2].mean())
+    return g - (r + b) / 2.0
+
+
+def slot_selected(scene_bgr, region, threshold: float) -> bool:
+    """槽位是否為『選中/裝備中』狀態（底色轉綠）：greenness ≥ threshold 即選中。"""
+    return region_greenness(scene_bgr, region) >= threshold
+
+
 # 各階級追蹤框外框 HSV 顏色範圍（wiki 量測 ± 余量）
 # 橘/黃/綠：Exotic(H22), Enigmatic(H34), Exquisite(H64) → H18-78
 # 藍系：Transcendent(H105), Unfathomable(H109) → H88-130

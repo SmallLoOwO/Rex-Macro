@@ -26,7 +26,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
 - **啟動先設 DPI-aware**（`main._set_dpi_aware`）：否則 `mss` 第一次截圖才把行程切 DPI-aware，
   害 `GetWindowRect`/輸入座標在截圖前後不一致（視窗跑位偵測誤判 resized）。
 - **道具數字鍵會 toggle 裝備**：對已拿著的工具再按一次該數字鍵 = **收起來**。所以 init 只在
-  槽位像素顯示「沒拿鎬子」時才按 D1（見 `miner._ensure_pickaxe`）；D5/D4 用完按 D1 是從別的工具切回，OK。
+  槽位顯示「沒拿鎬子」時才按 D1（見 `miner._ensure_pickaxe`）；D5/D4 用完按 D1 是從別的工具切回，OK。
+  **D1 是否已裝備＝區域顏色判定（2026-07-10 起，`vision.slot_selected`）**：hotbar 選中的槽位底色會轉綠，
+  量 `d1_slot_region`（slot 1 內部 54×58）的 greenness＝平均G−平均(R+B)/2，≥`d1_selected_greenness_min`(5.0)
+  ＝已裝備。實測 選中≈+10.8、未選中≈−1.4（兩側夾 5.0）。舊寫死單點 `slot_pixel`(1011,845)/`slot_color`
+  0x232323 已停用——**工作列調回顯示後遊戲底部 UI 整條上移約 50px**（實測 boost 瓶子 y1039→989），單點落到
+  場景上（讀到紅色 ~[164,167,217]）→ 判定全錯；區域平均對輕微位移穩健。回歸：`tests/test_slot_fixtures.py`。
+  **注意此 region 為 taskbar 可見版面校準**：若日後把工作列隱藏（回全 1080）需重新量 slot 1 位置。
 - **轉視角＝ `,` / `.`（轉 45°，可數、可回歸）**；`pydirectinput.moveRel` 單獨用**不會**轉視角，
   細部瞄準要 **按住右鍵**拖曳（`input_control.aim_move`）。但右鍵難精準，策略以 `,`/`.` 為主。
 - **旋轉一律走驗證式（2026-07-05，`Bot._rotate_verified`）**：`,`/`.` 可能被吃（pickup 動畫 1-2s 吃鍵窗口／焦點被搶）→ `net_rotations` 計數與實際角度脫鉤、視角停在 45° 斜角傷挖礦效率（成功路徑 restore_view 曾在動畫窗口內送鍵＝主要肇因，動畫等待已挪到 restore 之前；見 docs/incidents.md「視角回歸 45° 斜角」）。每次送鍵前後截 `rotation_verify_region`（中央偏上場景帶）比對：**兩訊號都近零才判被吃**（`harvester.rotation_looks_eaten`＝平均差＋`vision.frames_changed_frac` 有感變化像素佔比；近全黑礦坑旋轉平均差可能很低但佔比仍高——誤判重送＝過轉製造偏移，比漏判更糟）→ `_focus_roblox` 後重送（上限 `rotation_max_retries=2`）；重試用盡**不計入 net_rotations**（計數＝實際角度，restore 才必回原角）。套用點：sweep 兩個旋轉迴圈、成功/放棄路徑 `restore_view(rotate=...)`、`miner.init_mining_sequence`/`handle_cave` 的成對 `,`/`.`（成對淨 0 的前提是兩鍵都生效；右轉沒轉成就不左轉）。settle 含在 `_rotate_verified` 內，呼叫端不再自行 sleep 0.35s。

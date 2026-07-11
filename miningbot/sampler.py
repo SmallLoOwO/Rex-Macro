@@ -9,6 +9,8 @@ sidecar json 記俯仰偏移量——這讓「合適的仰角」變成可重現�
 外部（熱鍵執行緒的再按 R）只設 close flag，由 Tk 執行緒輪詢自行收掉。
 按鈕 callback 在 Tk 執行緒執行——callback（Bot 掛入）內先 _focus_roblox 再送
 pydirectinput，因為點按鈕當下焦點必在小視窗上，不聚焦按鍵會送錯視窗。
+⚠ 聚焦只救鍵盤：滑鼠事件送到「游標所在」視窗、不看焦點——點按鈕當下游標必停在
+小視窗上，右鍵拖曳（俯仰）前還要先把游標移進遊戲畫面（實機踩坑 2026-07-10）。
 """
 import json
 import os

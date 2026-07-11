@@ -55,8 +55,14 @@ class Config:
     window_check_interval_s: float = 1.0         # 多久查一次視窗狀態（Win32 很快，節流即可）
     window_pos_tolerance_px: int = 6             # 位置偏移容差（相對基準）
     window_size_tolerance_px: int = 8            # 大小偏移容差（相對基準）
-    slot_pixel: tuple = (1011, 845)
-    slot_color: int = 0x232323
+    # D1（鎬子）是否已裝備——舊寫死單點 slot_pixel/slot_color（對照原巨集 IF PIXEL FOUND
+    # 2302755=0x232323）在工作列調回顯示後失準（底部 UI 整條上移約 50px、單點落到場景上）。
+    # 2026-07-10 起改「區域顏色」：hotbar 選中的槽位底色會轉綠 → 量 slot 1 內部區域的綠色主導
+    # 程度（vision.slot_selected）。slot_pixel/slot_color 保留給 calibrate 說明字串，偵測已不用。
+    slot_pixel: tuple = (1011, 845)              # 已停用（見 d1_slot_region）
+    slot_color: int = 0x232323                   # 已停用（原巨集 0x232323 灰＝未拿鎬子）
+    d1_slot_region: Region = field(default_factory=lambda: Region(798, 948, 54, 58))  # slot 1（鎬子）內部；實機 taskbar 可見版面
+    d1_selected_greenness_min: float = 5.0       # greenness=平均G-平均(R+B)/2 ≥ 此值＝槽位選中(裝備中)；實測 選中≈+9.8~+11.5、未選中≈-1.4~0 → 5.0 兩側夾
 
     # 音訊
     chill_audio_path: str = "assets/chill_reference.wav"  # 單一參考（後備；chill_refs 夾為空時用）

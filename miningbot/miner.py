@@ -80,7 +80,9 @@ def _ensure_pickaxe() -> bool:
     from .config import DEFAULT as cfg
     try:
         frame = capture.grab()
-        if vision.pixel_matches(frame, cfg.slot_pixel, cfg.slot_color, tol=12):
+        # 區域顏色判定（2026-07-10）：選中槽位底色轉綠 → slot_selected=True＝已裝備；
+        # 未選中(灰底) → 沒拿鎬子 → 按 D1 切回（安全：已裝備時不會誤按而 toggle 收起）。
+        if not vision.slot_selected(frame, cfg.d1_slot_region, cfg.d1_selected_greenness_min):
             ic.key_press("1")
             ic.settle(0.4)    # 等鎬子裝備動畫（太早按 W 會被吃掉，bot 不會走）
             return True
