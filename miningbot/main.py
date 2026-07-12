@@ -1564,7 +1564,7 @@ class Bot:
         if reply is None:
             notify.send_message(token, ch,
                 "❓ 看不懂。可用：`3 C2`（方位+粗格）、`B3`／`B3 <層名>`（細格）、"
-                "`走 C2`、`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`")
+                "`走 C2`、`遠 [n]`/`近 [n]`（鏡頭）、`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`")
             return
         if self._rr_busy or self._pending_reentry is not None:
             notify.send_message(token, ch, "⏳ 上一則指令還在執行，稍候")
@@ -3157,6 +3157,7 @@ class Bot:
         self._pending_reentry = None
         if ctx is None:
             return
+        self._zoom_restore_if_touched(ctx)
         world = game_data.current_world_name()   # 已鎖定世界才記；未鎖回 None
         self._rr_ledger_append(reentry_remote.ledger_entry(
             ctx, outcome, world, time.time() - ctx.created_at))
@@ -3253,15 +3254,16 @@ class Bot:
                                 ctx.episode_id, ctx.cur_dir)
         ctx.shots = []
         pairs = []                                # [(dir_idx, grid_path)]
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         for i in range(8):
             if self._mine_resetting:
                 return                            # 上層 tick 下一輪處理 reset
             f = capture.grab()
-            path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i}")
+            path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i}{zs}")
             ctx.shots.append((i, path or ""))
             grid_img = f.copy()
             remote_aim.draw_grid(grid_img, 6, 4)
-            gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_dir{i}_grid")
+            gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_dir{i}_grid{zs}")
             pairs.append((i, gpath))
             self._rotate_verified(1)              # 8 次右轉＝轉滿一圈回原向；cur_dir 座標系不變
         head = (prefix_msg or
@@ -3294,6 +3296,8 @@ class Bot:
             self._rr_open_episode(reroll=True)
         elif k == "sweep":
             self._rr_sweep_and_send(prefix_msg=f"🔁 回礦 #{ctx.episode_id} 重新八方位掃描")
+        elif k in ("zoom_out", "zoom_in"):
+            self._rr_zoom_cam(ctx, reply)
         elif k == "walk":
             self._rr_walk(ctx, reply.cell)
         elif k == "coarse":
@@ -3329,8 +3333,9 @@ class Bot:
         zoom = reentry_remote.render_zoom(
             f, region, scale=cfg.reentry_remote_zoom_scale,
             cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         base = os.path.join(self._rr_snap_dir(),
-                            f"ep{ctx.episode_id}_zoom_{tgt_dir}{cell}")
+                            f"ep{ctx.episode_id}_zoom_{tgt_dir}{cell}{zs}")
         os.makedirs(self._rr_snap_dir(), exist_ok=True)
         x, y, rw, rh = region
         cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])   # 漂移守門基準（同步寫）
@@ -3377,11 +3382,12 @@ class Bot:
         layer = layer_override or ctx.sticky_layer
         marker = reentry_remote.draw_click_marker(cur, pos)
         os.makedirs(self._rr_snap_dir(), exist_ok=True)
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         mpath = os.path.join(self._rr_snap_dir(),
-                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_marker.png")
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_marker{zs}.png")
         cv2.imwrite(mpath, marker)
         fpath = os.path.join(self._rr_snap_dir(),
-                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full.png")
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full{zs}.png")
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         reentry_remote.record_click(ctx, pos, layer, ctx.zoom_region, time.time())
         ic.click_at(int(pos[0]), int(pos[1]))
@@ -3400,7 +3406,7 @@ class Bot:
         time.sleep(1.5)                          # 傳送落地
         land = capture.grab()
         lpath = os.path.join(self._rr_snap_dir(),
-                             f"ep{ctx.episode_id}_click{len(ctx.clicks) - 1}_landing.png")
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks) - 1}_landing{zs}.png")
         cv2.imwrite(lpath, land)
         # 礦內亮度：照抄 auto 版 _tick_reentry CLICK_VERIFY（不另加 vision API）
         r = cfg.stuck_region
@@ -3469,12 +3475,52 @@ class Bot:
         f = capture.grab()
         grid_img = f.copy()
         remote_aim.draw_grid(grid_img, 6, 4)
-        gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_walk_{cell}")
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
+        gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_walk_{cell}{zs}")
         ctx.phase = "awaiting_cmd"
         ctx.zoom_region = ()
         ctx.zoom_base = ""
         notify.send_images_message(token, ch,
             f"🚶 已走位（其餘方位圖已過期）。回 `{ctx.cur_dir % 8} 粗格` 繼續指位，或 `掃` 重掃八方位",
+            [gpath])
+
+    def _rr_zoom_cam(self, ctx, reply):
+        """`遠`/`近`：I/O 鍵逐步驗證式 zoom → 其餘方位快照過期、重拍當前面向回傳。
+
+        只在 awaiting_cmd 收（等細格時鏡頭一動放大圖必然作廢）；未校準整組停用。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if cfg.zoom_reset_pullback_steps <= 0:
+            notify.send_message(token, ch,
+                "⚠ zoom 未校準（zoom_reset_pullback_steps=0），`遠`/`近` 不可用")
+            return
+        if ctx.phase != "awaiting_cmd":
+            notify.send_message(token, ch,
+                "❓ 現在不能動鏡頭；先完成細格點擊/確認，或重下 `方位 粗格`")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        out = reply.kind == "zoom_out"
+        key, sign = ("o", 1) if out else ("i", -1)
+        steps = reentry_remote.effective_zoom_steps(
+            reply.steps, cfg.reentry_zoom_step_default, cfg.reentry_zoom_max_steps)
+        done = 0
+        for _ in range(steps):
+            if self._zoom_key_verified(key):
+                ctx.net_zoom += sign
+                done += 1
+        f = capture.grab()
+        grid_img = f.copy()
+        remote_aim.draw_grid(grid_img, 6, 4)
+        gpath = self._rr_sync_write(
+            grid_img, f"reentry_ep{ctx.episode_id}_zoomcam_z{ctx.net_zoom:+d}")
+        ctx.zoom_region = ()
+        ctx.zoom_base = ""
+        notify.send_images_message(token, ch,
+            f"🔭 鏡頭{'拉遠' if out else '拉近'} {done}/{steps} 步（淨 {ctx.net_zoom:+d}；"
+            f"其餘方位圖已過期）。回 `{ctx.cur_dir % 8} 粗格` 指位、`掃` 重掃、`遠`/`近` 微調",
             [gpath])
 
     def _tick_reentry(self, frame):
@@ -4044,6 +4090,50 @@ class Bot:
                          label, mean_diff, changed,
                          "疑似被吃" if eaten else "生效", verdict)
         return not eaten
+
+    def _zoom_key_verified(self, key: str) -> bool:
+        """I/O 一步＋前後幀驗證被吃（獨立 zoom_eaten_* 門檻）；被吃重聚焦重送一次。
+
+        誤判被吃而重送＝實際多 zoom 一步、net_zoom 記帳偏一步——只影響 ledger
+        標注與回傳圖，歸位走絕對基準不受害（與旋轉「寧漏判勿誤重送」取捨相反）。
+        """
+        for attempt in (1, 2):
+            before = capture.crop(capture.grab(), cfg.rotation_verify_region)
+            ic.key_press(key)
+            ic.settle()
+            after = capture.crop(capture.grab(), cfg.rotation_verify_region)
+            eaten = harvester.rotation_looks_eaten(
+                vision.frames_mean_diff(before, after),
+                vision.frames_changed_frac(before, after,
+                                           cfg.rotation_changed_pixel_thresh),
+                cfg.zoom_eaten_mean_diff, cfg.zoom_eaten_changed_frac)
+            if not eaten:
+                return True
+            self.logger.info("zoom 鍵 %s 疑似被吃（attempt %d/2），重聚焦重送", key, attempt)
+            self._focus_roblox()
+        return False
+
+    def _zoom_restore_if_touched(self, ctx):
+        """碰過 zoom 才歸位：I 飽和進第一人稱（冪等、量多無妨）→ O 回拉 K 步。
+
+        掛在 _rr_finalize＝三個出口（成功回 MINING/跳過交人工/重置作廢）的共同漏斗；
+        回拉段逐步驗證被吃、被吃重送無害（歸位冪等，同俯仰歸位 attempt-2 語意）。
+        """
+        plan = reentry_remote.plan_zoom_restore(
+            ctx.net_zoom, cfg.zoom_reset_saturate_presses, cfg.zoom_reset_pullback_steps)
+        if not plan:
+            return
+        self._focus_roblox()
+        for key, count in plan:
+            for _ in range(count):
+                if key == "i":
+                    ic.key_press(key)                    # 飽和段不驗證（冪等）
+                else:
+                    self._zoom_key_verified(key)         # 回拉段逐步驗證
+            ic.settle(0.4)
+        ctx.net_zoom = 0
+        self.logger.info("[RR#%s] zoom 歸位完成（I 飽和→O 回拉 %d 步）",
+                         ctx.episode_id, cfg.zoom_reset_pullback_steps)
 
     def _sampler_pitch_reset(self) -> int:
         """俯仰歸位（Tk 執行緒進來）：聚焦＋游標移入＋settle 後拖，前後幀驗證。

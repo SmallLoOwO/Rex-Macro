@@ -9,10 +9,11 @@ from .remote_aim import GRID_COLS, GRID_ROWS, draw_grid, grid_cell_center
 
 @dataclass(frozen=True)
 class RemoteReply:
-    kind: str        # "coarse"/"fine"/"walk"/"sweep"/"reroll"/"skip"/"confirm"/"void"/"layer"
+    kind: str        # "coarse"/"fine"/"walk"/"sweep"/"reroll"/"skip"/"confirm"/"void"/"layer"/"zoom_out"/"zoom_in"
     dir_idx: int = 0
     cell: str = ""
     layer: str = ""  # layer 指令的新層名；fine 的單次覆寫（空＝無）
+    steps: int = 0   # zoom_out/zoom_in：使用者指定步數（0＝未指定，用 config 預設）
 
 
 _KEYWORDS = {
@@ -22,6 +23,7 @@ _KEYWORDS = {
     "好": "confirm", "ok": "confirm",
     "作廢": "void", "void": "void",
 }
+_ZOOM_WORDS = {"遠": "zoom_out", "far": "zoom_out", "近": "zoom_in", "near": "zoom_in"}
 _FINE_CELL = re.compile(r"^[A-F][1-6]$")
 
 
@@ -42,6 +44,12 @@ def parse_reply(text: str):
         return RemoteReply(_KEYWORDS[low])
     parts = t.split()
     head = parts[0].lower()
+    if head in _ZOOM_WORDS:
+        if len(parts) == 1:
+            return RemoteReply(_ZOOM_WORDS[head])
+        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > 0:
+            return RemoteReply(_ZOOM_WORDS[head], steps=int(parts[1]))
+        return None
     if head in ("層", "layer") and len(parts) >= 2:
         return RemoteReply("layer", layer=" ".join(parts[1:]))
     if head in ("走", "walk") and len(parts) == 2:
@@ -76,6 +84,23 @@ def fine_cell_to_screen(region, cell: str, cols: int = 6, rows: int = 6):
     sw, sh = rw // cols, rh // rows
     return (x + GRID_COLS.index(cell[0]) * sw + sw // 2,
             y + GRID_ROWS.index(cell[1]) * sh + sh // 2)
+
+
+def effective_zoom_steps(requested: int, default: int, max_steps: int) -> int:
+    """`遠 [n]` 的實際步數：0＝未指定→default；超上限 clamp（寧可少拉不擋操作）。"""
+    n = requested if requested > 0 else default
+    return min(n, max_steps)
+
+
+def plan_zoom_restore(net_zoom: int, saturate: int, pullback: int):
+    """絕對歸位按鍵計畫：I 飽和進第一人稱（冪等）→ O 回拉 K 步＝標準挖礦距離。
+
+    沒碰過（net_zoom=0）或未校準（pullback<=0）回空。記帳誤差/步進不對稱
+    都不影響歸位正確性——這是選絕對基準而非反向記帳的理由（spec 第 3 節）。
+    """
+    if net_zoom == 0 or pullback <= 0:
+        return []
+    return [("i", saturate), ("o", pullback)]
 
 
 def render_zoom(frame_bgr, region, scale: int = 3, cols: int = 6, rows: int = 6):
@@ -115,6 +140,7 @@ class RemoteReentryContext:
     log: list = field(default_factory=list)      # 指令流水
     clicks: list = field(default_factory=list)   # 點擊記錄（ground truth 本體）
     walked: bool = False         # 本 episode 用過 `走`（movement mode 已切、收尾要切回）
+    net_zoom: int = 0            # 淨 zoom 步數（+＝遠）；重骰不清（鏡頭距離跨重生點持續）
 
 
 def next_episode_id(last_ledger_line):
@@ -129,12 +155,13 @@ def next_episode_id(last_ledger_line):
 
 def log_command(ctx, raw, reply, now):
     ctx.log.append({"t": now, "raw": raw, "kind": reply.kind if reply else None,
-                    "pose_dir": ctx.cur_dir})
+                    "pose_dir": ctx.cur_dir, "zoom": ctx.net_zoom})
 
 
 def record_click(ctx, pos, layer, region, now):
     ctx.clicks.append({"t": now, "pos": tuple(pos), "layer": layer,
-                       "dir": ctx.cur_dir, "region": tuple(region), "invalid": False})
+                       "dir": ctx.cur_dir, "region": tuple(region),
+                       "zoom": ctx.net_zoom, "invalid": False})
 
 
 def ledger_entry(ctx, outcome, world, duration_s):

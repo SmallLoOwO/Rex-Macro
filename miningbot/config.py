@@ -247,6 +247,16 @@ class Config:
     reentry_remote_auto_resume: bool = False    # True=幀差+礦內亮度雙過即自動開挖；False=一律等「好」放行（亮度簽名校準前的安全預設）
     reentry_remote_ledger: str = "logs/reentry_remote/ledger.jsonl"   # append-only ground-truth 帳本
 
+    # REENTRY 鏡頭遠近（2026-07-12 spec：遠/近指令＋夾限飽和絕對歸位）
+    reentry_zoom_step_default: int = 4          # `遠`/`近` 省略步數時的預設
+    reentry_zoom_max_steps: int = 12            # 單指令步數上限（防手滑打 99；超過 clamp 不拒收）
+    zoom_reset_saturate_presses: int = 30       # 歸位飽和段按 I 次數（須大於最大可能累積步數）
+    zoom_reset_pullback_steps: int = 0          # 歸位回拉 K 步；0＝未校準＝遠/近指令整組停用。
+                                                # 校準：鏡頭調到平常挖礦距離→狂按 I 進第一人稱→
+                                                # 一步步按 O 數到回到熟悉距離＝K（docs/manual-sampling.md）
+    zoom_eaten_mean_diff: float = 8.0           # zoom 送鍵被吃判定（初值抄 pitch_eaten_*；獨立門檻，
+    zoom_eaten_changed_frac: float = 0.15       # 不可共用旋轉門檻——歸位冪等、誤判重做無害，方向安全性與旋轉相反）
+
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
     hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟；

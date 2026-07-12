@@ -69,5 +69,19 @@ sidecar 的意義：找到「合適的仰角」後，那個偏移量是個數字
    會讓這台 Tcl/Tk 8.6 的**整個事件迴圈無聲卡死**（無例外、無崩潰；二分實驗定位）。
    修法：按鈕改 ◉（BMP 安全）；`last_action` 等會流進 HUD label 的自由文字，
    HUD 端統一過 `status_hud._bmp_safe` 剝掉 >U+FFFF 字元當防線。
-   **教訓：任何要進 Tk widget 的字串都別放 emoji**（📸🔔🤖🎮 全是 astral；
-   ● ⚠ ▲ ▼ ◉ 是 BMP 安全的）。log/Discord 文字不受限。
+    **教訓：任何要進 Tk widget 的字串都別放 emoji**（📸🔔🤖🎮 全是 astral；
+    ● ⚠ ▲ ▼ ◉ 是 BMP 安全的）。log/Discord 文字不受限。
+
+## 回礦 zoom 歸位校準（zoom_reset_pullback_steps）
+
+遠端回礦的 `遠`/`近` 指令在 `zoom_reset_pullback_steps=0` 時整組停用——先照下面量出 K：
+
+1. 進遊戲，把鏡頭手動調到**平常挖礦的距離**（記住這個畫面感覺；可先按 R 開取樣視窗截一張留參考）。
+2. 狂按 I 直到進第一人稱（夾限飽和，多按無妨）。
+3. 一步一步按 O，數步數，直到畫面回到步驟 1 的距離——這個步數＝K。
+4. 填進 `config.py` 的 `zoom_reset_pullback_steps`。之後 bot 歸位＝「按 I 飽和 → 按 O K 步」，
+   與俯仰歸位同手法（夾限＝絕對基準，中途被吃/記帳錯都不影響落點）。
+5. 驗證：實機讓 bot 跑一次 `遠 5` → `跳過`，確認歸位後畫面與步驟 1 參考圖一致。
+
+`zoom_eaten_*` 門檻初值抄俯仰（mean 8.0 / frac 0.15）；若實機出現「明明有 zoom 卻判被吃而重送」
+或反之，比照俯仰事故兩側夾實測值再調（docs/incidents.md 俯仰門檻分家一節）。

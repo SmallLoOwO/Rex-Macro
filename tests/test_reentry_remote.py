@@ -132,3 +132,47 @@ class TestContextLedger:
         v = void_entry(17, click_index=0, now=200.0)
         assert v["type"] == "void" and v["episode"] == 17 and v["click_index"] == 0
 
+
+from miningbot.reentry_remote import effective_zoom_steps
+
+
+class TestZoomParse:
+    def test_zoom_bare_and_steps(self):
+        r = parse_reply("遠")
+        assert (r.kind, r.steps) == ("zoom_out", 0)      # 0＝未指定，用 config 預設
+        r = parse_reply("far 3")
+        assert (r.kind, r.steps) == ("zoom_out", 3)
+        r = parse_reply("近 2")
+        assert (r.kind, r.steps) == ("zoom_in", 2)
+        assert parse_reply("NEAR").kind == "zoom_in"
+
+    def test_zoom_invalid(self):
+        assert parse_reply("遠 abc") is None
+        assert parse_reply("遠 0") is None
+        assert parse_reply("遠 -3") is None               # 負數（isdigit False）
+        assert parse_reply("遠 3 5") is None              # 多餘參數
+
+    def test_effective_zoom_steps(self):
+        assert effective_zoom_steps(0, 4, 12) == 4        # 未指定 → default
+        assert effective_zoom_steps(3, 4, 12) == 3
+        assert effective_zoom_steps(99, 4, 12) == 12      # 超上限 clamp、不拒收
+
+
+from miningbot.reentry_remote import plan_zoom_restore
+
+
+class TestZoomRestore:
+    def test_plan_zoom_restore(self):
+        assert plan_zoom_restore(0, 30, 7) == []                       # 沒碰過不歸位
+        assert plan_zoom_restore(5, 30, 7) == [("i", 30), ("o", 7)]
+        assert plan_zoom_restore(-2, 30, 7) == [("i", 30), ("o", 7)]   # 拉近過也歸位
+        assert plan_zoom_restore(5, 30, 0) == []                       # 未校準防禦（上游已擋）
+
+    def test_zoom_recorded_in_log_and_click(self):
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="L")
+        ctx.net_zoom = 3
+        log_command(ctx, "遠 3", parse_reply("遠 3"), now=1.0)
+        record_click(ctx, (1, 2), "L", (0, 0, 320, 270), now=2.0)
+        assert ctx.log[0]["zoom"] == 3
+        assert ctx.clicks[0]["zoom"] == 3
+
