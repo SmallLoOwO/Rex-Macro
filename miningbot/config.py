@@ -175,13 +175,17 @@ class Config:
     # 礦坑重置：頂部訊息列出現含這些關鍵字 → 進 RESET_WAIT（停下等你重新定位）
     reset_phrases: tuple = ("reset in", "will reset", "reset")
     reset_check_interval_s: float = 2.0          # 多久 OCR 一次頂部列找重置字樣（OCR 較慢，節流）
-    # 重置偵測的第二信號：頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）。
-    # Capacity 由玩家挖礦累積、到 100% 觸發重置——bot 自己填的，故只能「貼著 100% 瞬間停」
-    # 不可提早暫停（杯子永遠不滿＝死鎖）。連續 2 次 ≥ threshold 視同偵測到重置（與橫幅訊號 OR）。
+    # 容量飽和監看（輔助信號，2026-07-12 起不再觸發 RESET_WAIT）：頂部「Capacity: NNN%」段
+    # （2026-07-11 實機 4 張快照實測 4/4）。Capacity 由玩家挖礦累積——bot 自己填的，
+    # 礦坑遠未填滿時就顯示飽和（Mine Capacity 300% 升級下顯示 100% ≠ 重置臨近），
+    # 提早停挖容量永遠不再累積＝死鎖（2026-07-12 實錄卡死 1h47m）。故現在只當「加速
+    # banner 輪詢＋記一次飽和 INFO」的輔助信號；唯一停機條件是 reset 橫幅。
     capacity_region: Region = field(default_factory=lambda: Region(715, 92, 200, 45))
-        # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4；重置偵測的第二信號）
-    capacity_reset_threshold: float = 100.0   # ≥此值連續 2 次 → 視同偵測到重置（<100 提早停＝死鎖，勿降）
-    capacity_fast_from: float = 95.0          # ≥此值 banner worker 輪詢加速
+        # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）
+    capacity_reset_threshold: float = 100.0   # ≥此值連續 2 次＝容量飽和：只記一次 INFO＋維持加速輪詢，
+                                              # 不再觸發 RESET_WAIT（2026-07-12 死鎖實錄：Mine Capacity 300%
+                                              # 升級下顯示 100% ≠ 重置臨近，提早停挖＝死鎖）
+    capacity_fast_from: float = 99.0          # ≥此值 banner worker 輪詢加速（容量飽和期間高頻監看橫幅）
     capacity_fast_interval_s: float = 0.5     # 加速後間隔（平時沿用 reset_check_interval_s=2.0）
 
     # 記錄 / 診斷

@@ -208,10 +208,12 @@ class Bot:
         self._rr_movement_ready = False           # `走` 懶啟動：session 內只跑一次 Click to Move 鏈
         self._last_reset_check = 0.0
         self._mine_resetting = False
-        # Capacity 監看（重置偵測第二信號，2026-07-11）：背景 worker 每輪多讀 Capacity%
-        # 快取於此（HUD 顯示）；連續 2 次 ≥100 → 與橫幅訊號 OR 觸發 RESET_WAIT。
+        # Capacity 監看（輔助信號，2026-07-12 起不再觸發 RESET_WAIT）：背景 worker 每輪多讀
+        # Capacity% 快取於此（HUD 顯示＋加速輪詢判斷）；連續 2 次 ≥100 只記一次飽和 INFO，
+        # 唯一停機條件是 reset 橫幅（cap_trigger 當假陽性會死鎖，見 config 容量區塊註解）。
         self._capacity_pct = None
         self._capacity_streak = 0
+        self._capacity_full_logged = False      # 容量飽和 INFO 去抖（首次觸發記一次，回 MINING 清除）
         # Movement Mode 前置檢查延後到第一次礦坑重置後才跑（2026-07-11 需求）：
         # 啟動時不再跑選單鏈（實測 71-82s）——回礦/傳送功能未完成，session 之間沒有
         # 東西會動到這個設定。改在 session 內第一次 RESET_WAIT 結束、回 MINING 時跑一次。
@@ -717,8 +719,8 @@ class Bot:
                 if frame is None or self.paused or not allowed:
                     continue
                 now = time.time()
-                # 近門檻加速（2026-07-11）：Capacity ≥95 → worker 輪詢加速到 0.5s，
-                # 貼著 100% 瞬間停（平時仍 2.0s）。capacity OCR 全滅時沿用 reset_check_interval_s。
+                # 近門檻加速（2026-07-11）：Capacity ≥99 → worker 輪詢加速到 0.5s，
+                # 容量飽和期間高頻監看橫幅（平時仍 2.0s）。capacity OCR 全滅時沿用 reset_check_interval_s。
                 if (self._capacity_pct is not None
                         and self._capacity_pct >= cfg.capacity_fast_from):
                     interval = cfg.capacity_fast_interval_s
@@ -733,24 +735,27 @@ class Bot:
                 self._banner_text_at = time.time()
                 self._maybe_detect_world(text)  # 搭便車：頂部事件列也用來推斷目前世界
                 banner_resetting = ocr.contains_any(text, cfg.reset_phrases)
-                # Capacity 監看（重置偵測第二信號）：同輪裁 capacity_region → parse → 快取＋streak
-                cap_pct_this = ocr.parse_capacity_pct(
-                    ocr.read_text(capture.crop(frame, cfg.capacity_region),
-                                  cfg.tesseract_path))
-                if cap_pct_this is not None:
-                    self._capacity_pct = cap_pct_this       # 讀成功才更新（失敗沿用舊值）
-                self._capacity_streak, cap_trigger = update_capacity_streak(
-                    self._capacity_streak, cap_pct_this, cfg.capacity_reset_threshold)
-                # 訊號合併：worker 對 _mine_resetting 無條件賦值，不 OR 會被下一輪
-                # banner=False 蓋掉（關鍵正確性細節）。
-                resetting = banner_resetting or cap_trigger
+                # Capacity 監看（輔助信號，2026-07-12 起不再觸發 RESET_WAIT）：同輪裁
+                # capacity_region → parse → 快取＋streak。已確認飽和（streak>=2）後跳過
+                # capacity OCR 省一半開銷——值已釘死不會變，加速輪詢 0.5s 期間可能持續很久；
+                # _capacity_pct 維持舊值供 HUD 顯示與加速間隔判斷（banner OCR 每輪照跑）。
+                if self._capacity_streak < 2:
+                    cap_pct_this = ocr.parse_capacity_pct(
+                        ocr.read_text(capture.crop(frame, cfg.capacity_region),
+                                      cfg.tesseract_path))
+                    if cap_pct_this is not None:
+                        self._capacity_pct = cap_pct_this   # 讀成功才更新（失敗沿用舊值）
+                    self._capacity_streak, cap_trigger = update_capacity_streak(
+                        self._capacity_streak, cap_pct_this, cfg.capacity_reset_threshold)
+                    if cap_trigger and not self._capacity_full_logged:
+                        self.logger.info("容量已滿（≥%.0f 連續2次），不停機、已加速監看重置橫幅",
+                                         cfg.capacity_reset_threshold)
+                        self._capacity_full_logged = True
+                # 唯一停機信號是 reset 橫幅；cap_trigger 不再寫 _mine_resetting／_human_reason
+                # （2026-07-12 死鎖實錄：Capacity 假陽性 → 卡死 RESET_WAIT）。
+                resetting = banner_resetting
                 if resetting and not self._mine_resetting:
-                    if banner_resetting:
-                        self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
-                    elif cap_pct_this is not None:
-                        self.logger.info(
-                            "偵測到礦坑重置（Capacity %.0f%% ≥ %.0f，連續2次）",
-                            cap_pct_this, cfg.capacity_reset_threshold)
+                    self.logger.info("偵測到礦坑重置: %r", text.strip()[:60])
                     self._human_reason = "礦坑重置，請重新定位後按 Q 繼續"
                 self._mine_resetting = resetting
             except Exception as e:              # OCR 偶發失敗不中斷 worker
@@ -1928,9 +1933,10 @@ class Bot:
             # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
             # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
             self._mine_resetting = False
-            # 同步清 Capacity 快取＋streak：重置後殘留 ≥100 會立即假觸發（設計文件第 4 點）。
+            # 同步清 Capacity 快取＋streak＋飽和 LOG 旗標：重置後殘留會誤導下一輪監看。
             self._capacity_pct = None
             self._capacity_streak = 0
+            self._capacity_full_logged = False
             # Movement Mode 前置檢查（2026-07-11 需求）：只在 session 內第一次重置後跑一次。
             # 掛在「恢復挖礦」而非 RESET_WAIT 進場——重置等待期間人可能正在手動操作遊戲
             # （重新定位），選單鏈的 Esc/點擊會跟人搶輸入；人按 Q 表示定位完成、此時跑鏈

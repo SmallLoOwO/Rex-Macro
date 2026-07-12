@@ -190,9 +190,10 @@ class TestSpawnChillNotify:
         assert should_notify_spawn_chill(State.REENTRY, True, True, True) is False
 
 
-# ── update_capacity_streak：Capacity 連續計數（重置偵測第二信號，2026-07-11）──
+# ── update_capacity_streak：Capacity 連續飽和計數（輔助信號，2026-07-11；2026-07-12
+#    起降級為「記一次飽和 INFO＋跳過後續 capacity OCR」，不再觸發 RESET_WAIT）──
 # 語意：pct None（讀失敗）→ streak 原樣不推進不歸零；≥threshold → +1、達 2 觸發；
-#       <threshold → 歸零。單次讀失敗不重計（防單次 OCR 抖動造成假歸零）。
+#       <threshold → 歸零。單次讀失敗不重計（防單次 OCR 抖動造成假歸零）。純函式本身不變。
 TH = 100.0
 
 def test_capacity_streak_none_keeps_streak_no_trigger():
@@ -221,7 +222,7 @@ def test_capacity_streak_100_95_100_does_not_trigger():
     assert (s3, t3) == (1, False)
 
 def test_capacity_streak_continues_true_after_first_trigger():
-    # 觸發後持續 ≥門檻仍回 True（冪等無妨：_mine_resetting 本來就是重複賦值）
+    # 觸發後持續 ≥門檻仍回 True（消費者用 _capacity_full_logged 去抖，只記一次 INFO）
     s2, t2 = update_capacity_streak(1, 100.0, TH)
     assert (s2, t2) == (2, True)
     s3, t3 = update_capacity_streak(s2, 101.0, TH)

@@ -189,6 +189,12 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   **Tk widget 文字絕不可含 astral emoji（>U+FFFF：📸🔔🤖 等）**：這台 Tcl/Tk 8.6 會讓整個事件迴圈
   **無聲卡死**（無例外；二分實驗定位 2026-07-10）。HUD label 前有 `status_hud._bmp_safe` 防線，
   但源頭（按鈕文字/`last_action`）也別放；● ⚠ ▲ ▼ ◉ 是 BMP 安全。log/Discord 不受限。
+- **礦坑重置偵測＝橫幅唯一（2026-07-12 死鎖對策）**：停機（→RESET_WAIT）只認頂部橫幅 `reset_phrases`。
+  **Capacity OCR 絕不可當停機觸發**——玩家有 Mine Capacity 升級（實機 300%）時顯示值飽和在 100% 而礦坑
+  遠未填滿；Capacity 是 bot 自己挖的（單人），停挖＝容量凍結＝重置永遠不來＝死鎖 RESET_WAIT（2026-07-12
+  實錄卡 1h47m+）。capacity 只保留兩個角色：≥`capacity_fast_from`(99) 加速 banner 輪詢 2.0s→0.5s
+  （＝提高 reset 訊息偵測優先級，橫幅出現 ~0.5-1s 內停）；連續 2 次 ≥100 記一次 INFO（不停機），
+  飽和確認後跳過 capacity OCR 省 worker 開銷。詳 `docs/superpowers/specs/2026-07-11-capacity-reset-detection-design.md` 的 2026-07-12 addendum。
 - **重置自動回礦（REENTRY，2026-07-08）**：設計全文 `docs/superpowers/specs/2026-07-08-mine-reentry-design.md`。
   `auto_reenter` 預設 **False**（關＝RESET_WAIT 等人工＝舊行為；且 `assets/surface/` 無面板模板時視同關閉）。
   流程＝按「回到地表」→ 俯仰歸位（拖到夾限飽和→回拉固定量）→ 八方位掃面板（`best_template_match_scored`）
