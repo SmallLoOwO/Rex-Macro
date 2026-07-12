@@ -140,6 +140,16 @@ def is_blocked_from_mining(state: State, paused: bool) -> bool:
     return paused or state in (State.NEEDS_HUMAN, State.RESET_WAIT)
 
 
+def can_consume_ability(state: State) -> bool:
+    """Discord `ability` 指令（遠端按一次 X）的主迴圈消費閘（純函式）。
+
+    回傳 True：MINING / NEEDS_HUMAN / RESET_WAIT —— 按一下 X 安全、不干擾其他流程。
+    回傳 False：HARVESTING / REENTRY —— sweep/開火/回礦導航進行中插按鍵會打亂時序，
+    旗標留著不消費，回到可消費狀態（MINING 等）後自然執行。
+    """
+    return state not in (State.HARVESTING, State.REENTRY)
+
+
 def update_capacity_streak(streak: int, pct: float | None,
                            threshold: float) -> tuple[int, bool]:
     """Capacity 連續 ≥ 門檻計數（重置偵測第二信號，2026-07-11；純函式）。

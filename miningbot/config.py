@@ -29,7 +29,7 @@ class Config:
     # before＝本輪 _pre_scan_ref、after＝放棄當下；左側 UI 是螢幕覆蓋層、不隨鏡頭角度變 → 前後同框
     # 可直接對比「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。座標實機校準自 logs H010 d3_fire。
     chat_review_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))     # 左上 has-found 聊天（= chat_region；最新行在底部，勿縮短高度否則漏掉最新 has-found）
-    backpack_review_region: Region = field(default_factory=lambda: Region(0, 395, 226, 335)) # 左下 NORMAL 背包「上半」：面板依稀有度排序（Exquisite→Mythic→Surreal→Master→Rare），新採到的礦（count=1）浮最上面；h335 涵蓋到 Surreal 帶 1-2 行 Master，Discord 縮圖才夠大（2026-07-03 需求：舊 h670 全清單縮圖看不清、下半 Rare 橙黃區無關採集比對）
+    backpack_review_region: Region = field(default_factory=lambda: Region(0, 345, 226, 335)) # 左下 NORMAL 背包「上半」：面板依稀有度排序（Exquisite→Mythic→Surreal→Master→Rare），新採到的礦（count=1）浮最上面；h335 涵蓋到 Surreal 帶 1-2 行 Master，Discord 縮圖才夠大（2026-07-03 需求：舊 h670 全清單縮圖看不清、下半 Rare 橙黃區無關採集比對）。y395→345（2026-07-12）：工作列調回顯示後左側面板同底部 UI 整條上移 ~50px（舊裁圖 NORMAL 標題被切掉、新版面兩幀實測標題 y≈345-385）
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     # 右緣縮到永久計數圖示左緣(x=1740)、下緣延到 1080（2026-07-08 遊戲更新新增常駐計數圖示，
     # 舊區涵蓋到它 → 舊「瓶子在=生效中」邏輯永遠判生效、永遠不補 D5；見 boost_active.png 說明）
@@ -156,8 +156,11 @@ class Config:
     # 狀態小窗（置頂顯示機器人在做什麼；放左下角避開偵測區，採集時自動隱藏）
     hud_enabled: bool = True
     hud_x: int = 12
-    hud_y: int = 905
-    launch_countdown_s: int = 3           # 啟動倒數秒數（給時間切到 Roblox）；0 = 不倒數直接啟動
+    hud_y: int = 860                      # 905→860（2026-07-12）：工作列調回顯示後頂緣 y≈1015，
+                                          # 905 時倒數畫面（5 行 ~145px）底緣被工作列蓋到；860 連倒數也放得下
+    launch_countdown_s: int = 0           # 啟動倒數秒數（給時間切到 Roblox）；0 = 不倒數直接啟動
+                                          # 3→0（2026-07-12 需求）：啟動環境檢查本身夠長，倒數多餘；
+                                          # 要找回倒數改回 >0 即可（HUD _countdown_tick 分支仍在）
 
     # OCR
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"

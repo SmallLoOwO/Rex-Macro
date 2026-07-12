@@ -1,6 +1,7 @@
 from miningbot.states import (State, Observation, decide_transition,
                               resolve_state_transition,
                               toggle_pause_action, is_blocked_from_mining,
+                              can_consume_ability,
                               should_notify_spawn_chill,
                               update_capacity_streak)
 
@@ -231,3 +232,26 @@ def test_capacity_streak_above_101_triggers_at_two():
     assert (s1, t1) == (1, False)
     s2, t2 = update_capacity_streak(s1, 101.0, TH)
     assert (s2, t2) == (2, True)
+
+
+# --- Discord `ability` 指令：主迴圈消費狀態閘（純函式 can_consume_ability）---------
+# 對應 2026-07-12 spec：遠端按一次 X。輪詢執行緒只寫旗標、主迴圈消費。
+# 消費閘：HARVESTING/REENTRY 進行中插按鍵會干擾 sweep/開火/導航時序 → 不消費（旗標留著，
+# 回到可消費狀態自然執行）。MINING/NEEDS_HUMAN/RESET_WAIT 可安全按 X。
+
+def test_can_consume_ability_mining_yes():
+    assert can_consume_ability(State.MINING) is True
+
+def test_can_consume_ability_needs_human_yes():
+    assert can_consume_ability(State.NEEDS_HUMAN) is True
+
+def test_can_consume_ability_reset_wait_yes():
+    assert can_consume_ability(State.RESET_WAIT) is True
+
+def test_can_consume_ability_harvesting_no():
+    # sweep/開火中插按鍵會干擾時序——旗標留著，回 MINING 自然執行
+    assert can_consume_ability(State.HARVESTING) is False
+
+def test_can_consume_ability_reentry_no():
+    # 自動回礦導航中——同上，不消費
+    assert can_consume_ability(State.REENTRY) is False

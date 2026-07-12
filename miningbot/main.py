@@ -11,8 +11,8 @@ import numpy as np
 from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
-                     toggle_pause_action, is_blocked_from_mining, should_notify_spawn_chill,
-                     update_capacity_streak)
+                     toggle_pause_action, is_blocked_from_mining, can_consume_ability,
+                     should_notify_spawn_chill, update_capacity_streak)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import sampler, reentry, roblox_menu, remote_aim
 from . import input_control as ic
@@ -22,6 +22,7 @@ from .preflight import PreflightFacts, run_checks
 # 不需 ! 前綴：使用者直接打 `status` 即觸發（打 `!status` 也相容，見 _handle_discord_command）。
 _DISCORD_COMMANDS = frozenset({
     "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
+    "ability",
 })
 
 # 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
@@ -29,6 +30,7 @@ _DISCORD_COMMANDS = frozenset({
 # 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
+_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；等同 `ability` 指令）
 # 遙控器 embed 標題——啟動時靠它掃頻道「認領」跨重啟殘留的遙控器（find_remote_messages），
 # 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
 _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
@@ -193,6 +195,9 @@ class Bot:
         # B3：輪詢執行緒寫 pending、主迴圈讀清；_aim_busy 擋執行中再回覆（不排隊）
         self._pending_aim = None                 # AimReply（輪詢解析結果、主迴圈消費）
         self._aim_busy = False                   # fire 執行中（主迴圈設、輪詢執行緒讀）
+        # Discord `ability` 指令／遙控器 ⚡（2026-07-12 spec）：輪詢執行緒寫旗標、
+        # 主迴圈消費後按 X。布林於 GIL 下原子（同 human_cleared 跨執行緒寫入模式）。
+        self._pending_ability = False
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # Capacity 監看（重置偵測第二信號，2026-07-11）：背景 worker 每輪多讀 Capacity%
@@ -1165,6 +1170,7 @@ class Bot:
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
+                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內按一次 X；等同 `ability`）\n"
                 f"\n"
                 f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
             ),
@@ -1185,11 +1191,11 @@ class Bot:
         if not (ok and mid):
             self.log_discord.info("remote post FAIL -> %s", detail)
             return
-        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI):
+        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI):
             notify.add_reaction(token, ch, mid, em)
         # 基線：機器人自己貼的反應記成「已見」，避免首輪誤觸發
         seen = {}
-        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI):
+        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI):
             users = notify.get_reactions(token, ch, mid, em)
             seen[em] = {u.get("id") for u in users if u.get("id")}
         self._remote_message_id = mid
@@ -1276,7 +1282,8 @@ class Bot:
         mid = self._remote_message_id
         action_taken = None
         for emoji, action in ((_REMOTE_RESUME_EMOJI, "resume"),
-                              (_REMOTE_PAUSE_EMOJI, "pause")):
+                              (_REMOTE_PAUSE_EMOJI, "pause"),
+                              (_REMOTE_ABILITY_EMOJI, "ability")):
             users = notify.get_reactions(token, ch, mid, emoji)
             if not users:
                 continue                            # get_reactions 失敗→不可同步（見 docstring）
@@ -1297,6 +1304,12 @@ class Bot:
                     self._resume()
                 self.log_discord.info("remote ▶️ resume by %s（was_blocked=%s）",
                                       ",".join(sorted(new_clickers)), was_blocked)
+            elif action == "ability":
+                # 等同 !ability：只寫旗標（輪詢執行緒鐵律——此方法在 Discord 輪詢執行緒跑，
+                # 不碰 input_control），主迴圈 _tick 開頭消費 → 在遊戲內按一次 X。
+                self._pending_ability = True
+                self.log_discord.info("remote ⚡ ability by %s（queued state=%s）",
+                                      ",".join(sorted(new_clickers)), self.state.value)
             else:  # pause
                 already = self.paused
                 self._pause()
@@ -1451,6 +1464,19 @@ class Bot:
                 notify.send_message(token, ch, f"⚠️ 截圖失敗：{type(e).__name__}: {e}")
             self.log_discord.info("CMD shot -> state=%s", self.state.value)
 
+        elif cmd == "ability":
+            # 遠端手動使用能力：輪詢執行緒只寫旗標＋回覆，輸入由主迴圈消費（鐵律：
+            # _handle_discord_command 在 Discord 輪詢執行緒跑，絕不碰 input_control）。
+            # 布林旗標指定在 GIL 下為原子，與既有 human_cleared 跨執行緒寫入同模式，不需鎖。
+            # 暫停中主迴圈不走 _tick → 旗標等恢復後執行（回覆已註明，預期行為）。
+            self._pending_ability = True
+            notify.send_message(token, ch,
+                f"⚡ 能力指令已排入（狀態: {self.state.value}"
+                + ("，暫停中——恢復後才會執行" if self.paused else "")
+                + "）→ 主迴圈將在遊戲內按一次 X")
+            self.log_discord.info("CMD ability -> queued state=%s paused=%s",
+                                  self.state.value, self.paused)
+
         elif cmd == "help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
@@ -1458,6 +1484,7 @@ class Bot:
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
                 "`status` — 查詢目前狀態、統計、保留清單\n"
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
+                "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
                 "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
@@ -1991,6 +2018,13 @@ class Bot:
 
     def _tick(self, frame):
         self._update_reset_chime_active()
+        # Discord `ability` 指令消費：可消費狀態才按 X（HARVESTING/REENTRY 插按鍵會
+        # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
+        if self._pending_ability and can_consume_ability(self.state):
+            self._pending_ability = False
+            ic.key_press("x")
+            self.last_action = "遠端能力：已按 X"
+            self.log_discord.info("ability 已執行（state=%s）", self.state.value)
         if self.state is State.MINING:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
