@@ -198,8 +198,8 @@ class Config:
     snapshot_max_total_mb: int = 2048            # snapshots 總量上限，超過從最舊開始刪
 
     # 重置自動回礦（auto re-entry；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）
-    reentry_mode: str = "off"                   # "off"=RESET_WAIT 等人工（今日行為）/"remote"=Discord 指位（2026-07-12 spec）/"auto"=全自動（2026-07-08 spec，面板模板校準完成前勿開）
-    reentry_surface_button_xy: tuple = (0, 0)   # 右下「回到地表」UI 按鈕座標（實機校準後填）
+    reentry_mode: str = "remote"                # "off"=RESET_WAIT 等人工（今日行為）/"remote"=Discord 指位（2026-07-12 spec）/"auto"=全自動（2026-07-08 spec，面板模板校準完成前勿開）
+    reentry_surface_button_xy: tuple = (1855, 965)  # 右下「Go to surface」UI 按鈕中心（2026-07-12 實機 RESET_WAIT 幀量測：按鈕 x1804-1907/y914-1017；taskbar 可見版面，工作列隱藏需重量——同 d1_slot_region 家族）
     reentry_reset_settle_s: float = 5.0         # banner reset 字樣消失後沉澱多久才開始
     reentry_max_attempts: int = 5               # reroll 上限，用盡 → NEEDS_HUMAN
     reentry_attempt_timeout_s: float = 60.0     # 單輪（按回到地表→點擊驗證）時限
