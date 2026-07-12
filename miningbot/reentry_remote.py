@@ -1,0 +1,151 @@
+"""Discord 遠端回礦（2026-07-12 spec）：回覆解析／粗細網格座標換算／放大圖與
+點擊標記疊圖／ledger 記錄建構——全部純函式，I/O 在 main.Bot。"""
+import json
+import re
+from dataclasses import dataclass, field
+
+from .remote_aim import GRID_COLS, GRID_ROWS, draw_grid, grid_cell_center
+
+
+@dataclass(frozen=True)
+class RemoteReply:
+    kind: str        # "coarse"/"fine"/"walk"/"sweep"/"reroll"/"skip"/"confirm"/"void"/"layer"
+    dir_idx: int = 0
+    cell: str = ""
+    layer: str = ""  # layer 指令的新層名；fine 的單次覆寫（空＝無）
+
+
+_KEYWORDS = {
+    "掃": "sweep", "sweep": "sweep",
+    "重骰": "reroll", "reroll": "reroll",
+    "跳過": "skip", "skip": "skip",
+    "好": "confirm", "ok": "confirm",
+    "作廢": "void", "void": "void",
+}
+_FINE_CELL = re.compile(r"^[A-F][1-6]$")
+
+
+def _valid_coarse(cell: str) -> bool:
+    return grid_cell_center(cell) is not None            # 預設 6×4
+
+
+def parse_reply(text: str):
+    """REENTRY 等待時的一般訊息解析（無前綴；寧可不點不誤點，解析不出回 None）。
+
+    phase 無關——`B3` 在「等細格」外收到＝時機不合法，由 Bot 回提示；解析只管語法。
+    """
+    t = (text or "").replace("　", " ").strip()
+    if not t:
+        return None
+    low = t.lower()
+    if low in _KEYWORDS:
+        return RemoteReply(_KEYWORDS[low])
+    parts = t.split()
+    head = parts[0].lower()
+    if head in ("層", "layer") and len(parts) >= 2:
+        return RemoteReply("layer", layer=" ".join(parts[1:]))
+    if head in ("走", "walk") and len(parts) == 2:
+        cell = parts[1].upper()
+        return RemoteReply("walk", cell=cell) if _valid_coarse(cell) else None
+    if len(parts) == 2 and re.fullmatch(r"[0-7]", parts[0]):
+        cell = parts[1].upper()
+        return RemoteReply("coarse", dir_idx=int(parts[0]), cell=cell) \
+            if _valid_coarse(cell) else None
+    cell = parts[0].upper()
+    if _FINE_CELL.fullmatch(cell):
+        return RemoteReply("fine", cell=cell, layer=" ".join(parts[1:]))
+    return None
+
+
+def coarse_cell_region(cell: str, w: int = 1920, h: int = 1080,
+                       cols: int = 6, rows: int = 4):
+    """粗格代碼 → 原幀裁圖區域 (x, y, rw, rh)；不合法回 None。"""
+    cell = (cell or "").strip().upper()
+    if len(cell) != 2 or cell[0] not in GRID_COLS[:cols] or cell[1] not in GRID_ROWS[:rows]:
+        return None
+    cw, ch = w // cols, h // rows
+    return (GRID_COLS.index(cell[0]) * cw, GRID_ROWS.index(cell[1]) * ch, cw, ch)
+
+
+def fine_cell_to_screen(region, cell: str, cols: int = 6, rows: int = 6):
+    """細格代碼＋粗格區域 → 絕對螢幕座標（子格中心）；不合法回 None。"""
+    cell = (cell or "").strip().upper()
+    if len(cell) != 2 or cell[0] not in GRID_COLS[:cols] or cell[1] not in GRID_ROWS[:rows]:
+        return None
+    x, y, rw, rh = region
+    sw, sh = rw // cols, rh // rows
+    return (x + GRID_COLS.index(cell[0]) * sw + sw // 2,
+            y + GRID_ROWS.index(cell[1]) * sh + sh // 2)
+
+
+def render_zoom(frame_bgr, region, scale: int = 3, cols: int = 6, rows: int = 6):
+    """裁粗格 → 放大 scale 倍 → 疊細網格（純函式，不改輸入）。"""
+    import cv2
+    x, y, rw, rh = region
+    crop = frame_bgr[y:y + rh, x:x + rw]
+    out = cv2.resize(crop, (rw * scale, rh * scale), interpolation=cv2.INTER_CUBIC)
+    draw_grid(out, cols, rows)
+    return out
+
+
+def draw_click_marker(frame_bgr, pos):
+    """紅圈＋十字標出實際點擊座標（回報「沒點歪」核對用；不改輸入）。"""
+    import cv2
+    out = frame_bgr.copy()
+    x, y = int(pos[0]), int(pos[1])
+    cv2.circle(out, (x, y), 24, (0, 0, 255), 3)
+    cv2.line(out, (x - 36, y), (x + 36, y), (0, 0, 255), 2)
+    cv2.line(out, (x, y - 36), (x, y + 36), (0, 0, 255), 2)
+    return out
+
+
+# ===== Task 3：context 與 ledger 建構純函式 =====
+@dataclass
+class RemoteReentryContext:
+    episode_id: int
+    created_at: float
+    sticky_layer: str            # 黏性目標層（層指令改；純使用者宣告、bot 不驗證）
+    cur_dir: int = 0             # 目前面向（相對開場 sweep 起始面向的淨右轉 mod 8）
+    phase: str = "awaiting_cmd"  # awaiting_cmd / awaiting_fine / awaiting_confirm
+    attempt: int = 1             # reroll 次數記帳（human-driven，無上限）
+    zoom_dir: int = 0            # 等細格時：目標方位
+    zoom_region: tuple = ()      # 等細格時：粗格原幀區域 (x, y, w, h)
+    zoom_base: str = ""          # 等細格時：漂移守門基準圖路徑（Task 5 _rr_zoom 寫、_rr_click 讀）
+    shots: list = field(default_factory=list)    # [(dir_idx, snapshot_path)]
+    log: list = field(default_factory=list)      # 指令流水
+    clicks: list = field(default_factory=list)   # 點擊記錄（ground truth 本體）
+    walked: bool = False         # 本 episode 用過 `走`（movement mode 已切、收尾要切回）
+
+
+def next_episode_id(last_ledger_line):
+    """ledger 末行 episode+1；無檔/壞行回 1（編號只求人眼可對，不求嚴格連續）。"""
+    if not last_ledger_line:
+        return 1
+    try:
+        return int(json.loads(last_ledger_line).get("episode", 0)) + 1
+    except (ValueError, KeyError, TypeError):
+        return 1
+
+
+def log_command(ctx, raw, reply, now):
+    ctx.log.append({"t": now, "raw": raw, "kind": reply.kind if reply else None,
+                    "pose_dir": ctx.cur_dir})
+
+
+def record_click(ctx, pos, layer, region, now):
+    ctx.clicks.append({"t": now, "pos": tuple(pos), "layer": layer,
+                       "dir": ctx.cur_dir, "region": tuple(region), "invalid": False})
+
+
+def ledger_entry(ctx, outcome, world, duration_s):
+    """episode 收尾行（append-only；快照路徑在 shots/clicks 內，離線可回放）。"""
+    return {"episode": ctx.episode_id, "t": ctx.created_at, "world": world,
+            "outcome": outcome, "attempt": ctx.attempt,
+            "sticky_layer": ctx.sticky_layer, "shots": list(ctx.shots),
+            "log": list(ctx.log), "clicks": list(ctx.clicks),
+            "duration_s": round(duration_s, 1)}
+
+
+def void_entry(episode_id, click_index, now):
+    """作廢追加行：資料消費端讀到後把該 episode 第 click_index 筆點擊視為 invalid。"""
+    return {"type": "void", "episode": episode_id, "click_index": click_index, "t": now}

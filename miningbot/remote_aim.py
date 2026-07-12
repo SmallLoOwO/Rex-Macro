@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 GRID_COLS = "ABCDEF"
-GRID_ROWS = "1234"
+GRID_ROWS = "123456"
 
 
 @dataclass(frozen=True)
@@ -72,26 +72,31 @@ def grid_cell_center(cell: str, w: int = 1920, h: int = 1080,
     return (ci * cw + cw // 2, ri * ch + ch // 2)
 
 
+def draw_grid(img, cols: int = 6, rows: int = 4) -> None:
+    """in-place 疊半透明格線＋格代碼（A1..）。draw_overlay 與 reentry_remote 共用。"""
+    import cv2
+    h, w = img.shape[:2]
+    cw, ch = w // cols, h // rows
+    for i in range(1, cols):
+        cv2.line(img, (i * cw, 0), (i * cw, h), (90, 90, 90), 1)
+    for j in range(1, rows):
+        cv2.line(img, (0, j * ch), (w, j * ch), (90, 90, 90), 1)
+    for i in range(cols):
+        for j in range(rows):
+            cv2.putText(img, f"{GRID_COLS[i]}{GRID_ROWS[j]}",
+                        (i * cw + 6, j * ch + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (140, 140, 140), 1)
+
+
 def draw_overlay(frame_bgr, candidates, grid: bool = True):
     """把候選框編號＋淡色網格疊到快照上（純函式，copy 後畫、不改輸入）。
 
     延遲 import cv2/np：解析/座標函式在無 OpenCV 環境也可測。
     """
-    import cv2
     out = frame_bgr.copy()
-    h, w = out.shape[:2]
     if grid:
-        cols, rows = len(GRID_COLS), len(GRID_ROWS)
-        cw, ch = w // cols, h // rows
-        for i in range(1, cols):
-            cv2.line(out, (i * cw, 0), (i * cw, h), (90, 90, 90), 1)
-        for j in range(1, rows):
-            cv2.line(out, (0, j * ch), (w, j * ch), (90, 90, 90), 1)
-        for i in range(cols):
-            for j in range(rows):
-                cv2.putText(out, f"{GRID_COLS[i]}{GRID_ROWS[j]}",
-                            (i * cw + 6, j * ch + 22),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (140, 140, 140), 1)
+        draw_grid(out, len(GRID_COLS), 4)
+    import cv2
     for c in candidates:
         x, y = c.pos
         cv2.rectangle(out, (x - 36, y - 36), (x + 36, y + 36), (0, 215, 255), 3)

@@ -19,7 +19,7 @@ class Observation:
     reset_complete: bool = False   # RESET_WAIT 中 banner reset 字樣已消失＋沉澱夠久
     reentry_done: bool = False     # _tick_reentry 回報成功（已回礦內）
     reentry_failed: bool = False   # reroll 用盡（→ NEEDS_HUMAN）
-    auto_reenter: bool = False     # config 開關（關＝RESET_WAIT 維持今日等人工行為）
+    auto_reenter: bool = False     # 任一回礦模式（remote/auto）啟用（Bot._reentry_active()；off＝RESET_WAIT 維持今日等人工行為）
 
 def decide_transition(state: State, o: Observation) -> State:
     if state is State.MINING:

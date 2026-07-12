@@ -198,7 +198,7 @@ class Config:
     snapshot_max_total_mb: int = 2048            # snapshots 總量上限，超過從最舊開始刪
 
     # 重置自動回礦（auto re-entry；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）
-    auto_reenter: bool = False                  # 校準完成前預設關：關＝RESET_WAIT 等人工（今日行為）
+    reentry_mode: str = "off"                   # "off"=RESET_WAIT 等人工（今日行為）/"remote"=Discord 指位（2026-07-12 spec）/"auto"=全自動（2026-07-08 spec，面板模板校準完成前勿開）
     reentry_surface_button_xy: tuple = (0, 0)   # 右下「回到地表」UI 按鈕座標（實機校準後填）
     reentry_reset_settle_s: float = 5.0         # banner reset 字樣消失後沉澱多久才開始
     reentry_max_attempts: int = 5               # reroll 上限，用盡 → NEEDS_HUMAN
@@ -238,6 +238,14 @@ class Config:
     remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
     remote_aim_refind_radius_px: int = 160      # fire 前重找 ROI 半徑（同 shape_roi 半徑量級）
     remote_aim_budget_s: float = 120.0          # 單次 fire 全流程預算（對齊+重掃+驗證）
+
+    # --- Discord 遠端回礦（2026-07-12 spec：重置後發八方位圖，回訊息兩段式指位點傳送面板）---
+    reentry_remote_fine_cols: int = 6           # 細網格欄數（放大圖上）
+    reentry_remote_fine_rows: int = 6           # 細網格列數；6×6 映射回原幀一格 ≈53×45px（±27px）
+    reentry_remote_zoom_scale: int = 3          # 粗格 320×270 → 放大 960×810 再疊細網格
+    reentry_remote_drift_diff: float = 12.0     # 點擊前漂移守門：粗格區域幀平均差 ≥ 此值 → 不點、重發放大圖（H026 家族）
+    reentry_remote_auto_resume: bool = False    # True=幀差+礦內亮度雙過即自動開挖；False=一律等「好」放行（亮度簽名校準前的安全預設）
+    reentry_remote_ledger: str = "logs/reentry_remote/ledger.jsonl"   # append-only ground-truth 帳本
 
     # 熱鍵（控制權）
     hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續

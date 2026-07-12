@@ -288,19 +288,27 @@ class Bot:
         import glob
         tmpls = [vision.load_template(p)
                  for p in sorted(glob.glob(os.path.join(cfg.reentry_panel_dir, "*.png")))]
-        if cfg.auto_reenter:
+        if cfg.reentry_mode == "auto":
             if tmpls:
-                self.logger.info("auto_reenter 啟用，面板模板 %d 張（%s）",
+                self.logger.info("reentry_mode=auto，面板模板 %d 張（%s）",
                                  len(tmpls), cfg.reentry_panel_dir)
             else:
-                self.logger.warning("auto_reenter 開著但 %s 無面板模板——自動回礦視同關閉；"
+                self.logger.warning("reentry_mode=auto 但 %s 無面板模板——自動回礦視同關閉；"
                                     "先用 R 鍵截圖＋calibrate_surface --import 裁模板",
                                     cfg.reentry_panel_dir)
         return tmpls
 
     def _auto_reenter_active(self) -> bool:
-        """auto_reenter 的有效值：config 開關＋面板模板存在（缺模板視同關閉）。"""
-        return cfg.auto_reenter and bool(self._panel_templates)
+        """auto 模式的有效值：mode=auto＋面板模板存在（缺模板視同關閉）。"""
+        return cfg.reentry_mode == "auto" and bool(self._panel_templates)
+
+    def _remote_reenter_active(self) -> bool:
+        """remote 模式的有效值：mode=remote＋「回到地表」按鈕座標已校準（(0,0)=未校準視同關閉）。"""
+        return cfg.reentry_mode == "remote" and tuple(cfg.reentry_surface_button_xy) != (0, 0)
+
+    def _reentry_active(self) -> bool:
+        """任一回礦模式啟用（REENTRY 觸發條件；傳 Observation.auto_reenter）。"""
+        return self._auto_reenter_active() or self._remote_reenter_active()
 
     def _load_marker_templates(self) -> dict:
         import glob
@@ -602,7 +610,7 @@ class Bot:
                            reset_complete=self._update_reset_complete(),
                            reentry_done=self._reentry_done,
                            reentry_failed=self._reentry_failed,
-                           auto_reenter=self._auto_reenter_active())
+                           auto_reenter=self._reentry_active())
 
     def _update_reset_complete(self) -> bool:
         """RESET_WAIT 中追蹤「banner reset 字樣已消失＋沉澱夠久」（REENTRY 觸發條件）。
@@ -610,7 +618,7 @@ class Bot:
         banner 快取由背景 worker 更新（auto_reenter 下 RESET_WAIT 也跑）；字樣一回來
         計時歸零重來——重置訊息可能閃爍，沉澱期就是為了吃掉這種抖動。
         """
-        if self.state is not State.RESET_WAIT or not self._auto_reenter_active():
+        if self.state is not State.RESET_WAIT or not self._reentry_active():
             self._reset_clear_since = 0.0
             return False
         if self._mine_resetting:
@@ -696,7 +704,7 @@ class Bot:
                 # auto_reenter 下 RESET_WAIT 也要跑：REENTRY 的觸發條件是「reset 字樣
                 # 消失＋沉澱」，worker 不跑快取凍在 True、reset_complete 永遠不成立。
                 allowed = (self.state is State.MINING
-                           or (self._auto_reenter_active()
+                           or (self._reentry_active()
                                and self.state is State.RESET_WAIT))
                 if frame is None or self.paused or not allowed:
                     continue
