@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import ctypes
+import json
 import threading
 import queue
 import winsound
@@ -14,7 +15,7 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      toggle_pause_action, is_blocked_from_mining, can_consume_ability,
                      should_notify_spawn_chill, update_capacity_streak)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
-from . import sampler, reentry, roblox_menu, remote_aim
+from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
 
@@ -198,6 +199,13 @@ class Bot:
         # Discord `ability` 指令／遙控器 ⚡（2026-07-12 spec）：輪詢執行緒寫旗標、
         # 主迴圈消費後按 X。布林於 GIL 下原子（同 human_cleared 跨執行緒寫入模式）。
         self._pending_ability = False
+        # Discord 遠端回礦（2026-07-12 spec）：輪詢執行緒只寫 _pending_reentry（含原文，
+        # 供 ledger 指令流水），主迴圈消費；比照 _pending_aim／_aim_busy。
+        self._rr_ctx = None                      # RemoteReentryContext（進 REENTRY remote 時建、收尾時清）
+        self._pending_reentry = None              # (raw, RemoteReply)：輪詢解析結果、主迴圈消費
+        self._rr_busy = False                    # 開場鏈/指令執行中（主迴圈設、輪詢執行緒讀）
+        self._rr_sticky_layer = cfg.reentry_target_layer   # 黏性目標層（`層` 指令改、session 內沿用）
+        self._rr_movement_ready = False           # `走` 懶啟動：session 內只跑一次 Click to Move 鏈
         self._last_reset_check = 0.0
         self._mine_resetting = False
         # Capacity 監看（重置偵測第二信號，2026-07-11）：背景 worker 每輪多讀 Capacity%
@@ -1131,6 +1139,9 @@ class Bot:
             elif self._aim_context is not None and self.state is State.NEEDS_HUMAN:
                 # B3：NEEDS_HUMAN 且 aim context 存活時，一般訊息當瞄準回覆（無前綴，spec 第 2 節）
                 self._handle_aim_reply(content)
+            elif self._rr_ctx is not None and self.state is State.REENTRY:
+                # 遠端回礦：REENTRY(remote) 等待時，一般訊息當回礦指令（無前綴，2026-07-12 spec）
+                self._handle_reentry_reply(content)
 
     def _poll_list_reactions(self):
         """輪詢 list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
@@ -1539,6 +1550,28 @@ class Bot:
         notify.send_message(token, ch, f"✅ 收到（{reply.kind}），主迴圈執行中…")
         self.log_discord.info("AIM reply=%s -> pending", reply)
 
+    def _handle_reentry_reply(self, content: str):
+        """REENTRY(remote) 等待時，一般訊息當回礦指令解析（無前綴，2026-07-12 spec）。
+
+        **此方法在 Discord 輪詢執行緒跑**：只做解析/回覆/寫 self._pending_reentry，絕不碰
+        input_control、capture、ledger 檔案——輸入與寫檔全由主迴圈 _tick_reentry_remote 消費
+        （比照 _handle_aim_reply／_pending_aim）。解析不出→回格式提示不動作；執行中→回「稍候」
+        忽略（不排隊，避免舊指令補刀）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        reply = reentry_remote.parse_reply(content)
+        if reply is None:
+            notify.send_message(token, ch,
+                "❓ 看不懂。可用：`3 C2`（方位+粗格）、`B3`／`B3 <層名>`（細格）、"
+                "`走 C2`、`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`")
+            return
+        if self._rr_busy or self._pending_reentry is not None:
+            notify.send_message(token, ch, "⏳ 上一則指令還在執行，稍候")
+            return
+        self._pending_reentry = (content, reply)
+        self.log_discord.info("RR reply=%s -> pending", reply)
+
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         self._running = True
@@ -1650,8 +1683,11 @@ class Bot:
                 self._heartbeat()
                 # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工
                 # 期間閒置過久會被 Roblox 踢出）。恢復挖礦/採集時歸 0，下次等待重新計時。
-                if self.state in (State.NEEDS_HUMAN, State.RESET_WAIT):
-                    self._antiafk_tick("需人工/重置等待")
+                # 遠端回礦等待指令（rr_waiting）同理保活——使用者回覆以分鐘計。
+                rr_waiting = (self.state is State.REENTRY and self._rr_ctx is not None
+                              and not self._rr_busy and self._pending_reentry is None)
+                if self.state in (State.NEEDS_HUMAN, State.RESET_WAIT) or rr_waiting:
+                    self._antiafk_tick("需人工/重置等待" if not rr_waiting else "回礦等待指令")
                 elif self._antiafk_last and not self.paused:
                     self._antiafk_last = 0.0
                 # sleep 補償：tick 本身已花掉的時間（grab ~106ms 起跳）從 50ms 目標
@@ -1886,6 +1922,8 @@ class Bot:
                 return State.NEEDS_HUMAN                  # 信號外層降級（不直接寫 self.state）
             self.human_cleared = False
             self._aim_context = None          # remote-aim context 作廢（回挖礦＝不再待瞄準）
+            self._rr_ctx = None               # remote reentry episode 已收尾（_rr_success 已 finalize，保險清掃）
+            self._pending_reentry = None
             # 清重置快取：OCR 已背景化，RESET_WAIT 期間快取凍在 True（worker 只在
             # MINING 跑）——不清的話回 MINING 第一個 tick 就讀到過期 True 又彈回
             # RESET_WAIT。worker ~2s 內會重驗，banner 真的還在會再次偵測到。
@@ -1953,22 +1991,14 @@ class Bot:
             self._chat_last_crop = self._chat_baseline_crop
             self._chat_ledger = None            # episode 帳本（ocr.ChatLedger）：基準 OCR 完成時建立
         if s is State.REENTRY:
-            # 入口聚焦失敗 → 降級 NEEDS_HUMAN（比照 MINING 入口）：REENTRY 全程都在
+            # 入口聚焦失敗 → 降級 NEEDS_HUMAN（兩種模式共用）：REENTRY 全程都在
             # 送鍵/點擊，焦點不在 Roblox 上會全部送錯視窗、白白燒光 reroll 次數。
             if not self._focus_roblox():
                 self.logger.warning("進入 REENTRY 但無法聚焦 Roblox -> 降級 NEEDS_HUMAN")
                 self._human_reason = "無法聚焦 Roblox（自動回礦前），請確認遊戲視窗後按 Q"
                 self._on_enter(State.NEEDS_HUMAN, frame)
                 return State.NEEDS_HUMAN
-            # click-to-move 導航依賴 Movement Mode=Click to Move；切不過去導航無意義，
-            # reroll 也救不了 → 直接降級 NEEDS_HUMAN（比照聚焦失敗的既定模式）。
-            if not self._set_movement_mode(cfg.movement_mode_reentry):
-                self.logger.warning("進入 REENTRY 但無法切換 Movement Mode -> 降級 NEEDS_HUMAN")
-                self._human_reason = "無法切換至 Click to Move（自動回礦前），請手動確認設定後按 Q"
-                self._on_enter(State.NEEDS_HUMAN, frame)
-                return State.NEEDS_HUMAN
             now = time.time()
-            self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
             self._reentry_done = False
             self._reentry_failed = False
             self._reentry_ref = None
@@ -1976,6 +2006,27 @@ class Bot:
             self._move_diffs = []
             self._last_nav_frame = None
             ic.key_up("w"); ic.mouse_up()            # RESET_WAIT 本已放開，保險再放一次
+            if self._remote_reenter_active():
+                # remote 模式（2026-07-12 spec）：開場鏈（按回到地表→傳送等待→俯仰歸位→
+                # 八方位拍照→Discord 發送）由 _tick_reentry_remote → _rr_open_episode 在主迴圈
+                # 同步跑；Movement Mode 走 _rr_walk 懶啟動（首次走位才切 Click to Move，
+                # 省 71-82s 選單鏈）。此處只建 ReentryState 佔位（共用路徑防禦性讀）＋清快取。
+                self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
+                self._rr_ctx = None
+                self._pending_reentry = None
+                self._rr_busy = False
+                self.last_action = "重置完成，遠端回礦中（等待 Discord 指令）"
+                self.log.log("REENTRY_START")
+                self.logger.info("REENTRY(remote)：等主迴圈開場鏈")
+                return
+            # auto 模式（既有邏輯）：click-to-move 導航依賴 Movement Mode=Click to Move；
+            # 切不過去導航無意義，reroll 也救不了 → 直接降級 NEEDS_HUMAN（比照聚焦失敗）。
+            if not self._set_movement_mode(cfg.movement_mode_reentry):
+                self.logger.warning("進入 REENTRY 但無法切換 Movement Mode -> 降級 NEEDS_HUMAN")
+                self._human_reason = "無法切換至 Click to Move（自動回礦前），請手動確認設定後按 Q"
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return State.NEEDS_HUMAN
+            self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
             ic.click_at(*cfg.reentry_surface_button_xy)   # 按「回到地表」
             self.last_action = "重置完成，自動回礦中"
             self.log.log("REENTRY_START")
@@ -2015,6 +2066,8 @@ class Bot:
             self._alert("礦坑重置，請重新定位後按 Q 繼續")
             self.human_cleared = False
             self._aim_context = None          # remote-aim context 作廢（礦坑重置＝局勢已變）
+            self._rr_ctx = None               # remote reentry context 作廢（_rr_abort_reset 已 finalize，保險清掃）
+            self._pending_reentry = None
             self._reset_wait_since = time.time()     # reset-chime 擷取的 arm 計時起點
             # Movement Mode 前置檢查延後到此：session 內第一次重置才標 due，
             # 等 _on_enter(MINING) 恢復挖礦時消費（2026-07-11 需求）。
@@ -3055,12 +3108,385 @@ class Bot:
         return True
 
     # ---- REENTRY：重置後自動回礦 --------------------------------------------
+    # ---- Discord 遠端回礦（2026-07-12 spec）----------------------------------
+    # 輪詢執行緒只寫 _pending_reentry（_handle_reentry_reply）；開場鏈／指令執行／寫檔
+    # 全在主迴圈（_tick_reentry_remote 及其 helpers）。比照 _pending_aim／_tick_remote_aim。
+
+    def _tick_reentry_remote(self, frame):
+        """REENTRY 遠端模式主迴圈（2026-07-12 spec）：首 tick 開場，之後消費 pending 指令。
+
+        等待回覆無硬超時（使用者延遲以分鐘計）；防踢由 run() 主迴圈的 antiafk 分支保活。
+        """
+        if self._mine_resetting:
+            self._rr_abort_reset(frame)
+            return
+        if self._rr_ctx is None:
+            self._rr_busy = True
+            try:
+                self._rr_open_episode()
+            finally:
+                self._rr_busy = False
+            return
+        if self._pending_reentry is not None:
+            (raw, reply), self._pending_reentry = self._pending_reentry, None
+            reentry_remote.log_command(self._rr_ctx, raw, reply, time.time())
+            self._rr_busy = True
+            try:
+                self._rr_execute(reply)
+            finally:
+                self._rr_busy = False
+        else:
+            # 等待指令：更新 HUD 顯示（last_action 進 status_hud 的「動作」欄）
+            ctx = self._rr_ctx
+            mins = int((time.time() - ctx.created_at) // 60)
+            self.last_action = f"回礦等待指令 #{ctx.episode_id}（已等 {mins} 分）"
+
+    def _rr_abort_reset(self, frame):
+        """等待/執行間礦坑又重置：收尾 ledger、作廢 context、回 RESET_WAIT。"""
+        from . import notify
+        if self._rr_ctx is not None:
+            self._rr_finalize("reset_interrupt")
+        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                            "🔄 礦坑重置中，本輪回礦作廢、重來")
+        self.state = State.RESET_WAIT
+        self._on_enter(State.RESET_WAIT, frame)
+
+    def _rr_finalize(self, outcome):
+        """episode 收尾：寫 ledger 一行、清 context/pending。"""
+        ctx, self._rr_ctx = self._rr_ctx, None
+        self._pending_reentry = None
+        if ctx is None:
+            return
+        world = game_data.current_world_name()   # 已鎖定世界才記；未鎖回 None
+        self._rr_ledger_append(reentry_remote.ledger_entry(
+            ctx, outcome, world, time.time() - ctx.created_at))
+
+    def _rr_ledger_append(self, d):
+        """append-only JSONL：一行一筆（episode 收尾行／void 作廢行）。"""
+        os.makedirs(os.path.dirname(cfg.reentry_remote_ledger), exist_ok=True)
+        with open(cfg.reentry_remote_ledger, "a", encoding="utf-8") as f:
+            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+
+    def _rr_snap_dir(self) -> str:
+        """遠端回礦快照目錄（logs/snapshots/reentry）。"""
+        return os.path.join(cfg.log_dir, "snapshots", "reentry")
+
+    def _rr_sync_write(self, img, label: str) -> str:
+        """同步寫快照（發送前檔案必須存在，比照 _render_aim_shots 的 cv2.imwrite）。"""
+        import cv2
+        snap_dir, path = diagnostics.snapshot_path(cfg.log_dir, label)
+        os.makedirs(snap_dir, exist_ok=True)
+        cv2.imwrite(path, img)
+        return path
+
+    def _rr_open_episode(self, reroll: bool = False):
+        """按回到地表 → 等傳送 → 俯仰歸位 → 八方位拍照 → Discord 發送 → 建/續 context。
+
+        同步阻塞主迴圈 ~20-30s（比照 _sweep_for_tracker 慣例）；步驟間查 _mine_resetting。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，回 `重骰` 重試或 `跳過`")
+            self._rr_ensure_ctx(reroll)
+            return
+        ref = capture.grab()
+        ic.click_at(*cfg.reentry_surface_button_xy)
+        deadline = time.time() + cfg.reentry_teleport_wait_s
+        teleported = False
+        while time.time() < deadline:
+            time.sleep(0.4)
+            if self._mine_resetting:
+                return                            # 上層 tick 下一輪 _rr_abort_reset
+            if vision.frame_mean_diff(ref, capture.grab()) >= cfg.reentry_teleport_diff:
+                teleported = True
+                break
+        self._rr_ensure_ctx(reroll)
+        if not teleported:
+            notify.send_message(token, ch,
+                f"⚠ 回礦 #{self._rr_ctx.episode_id}：按「回到地表」畫面無變化，"
+                "回 `重骰` 重試或 `跳過`")
+            return
+        time.sleep(1.0)                          # 傳送落地沉澱
+        ok = self._pitch_drag_verified(
+            f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位",
+            lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px))
+        if not ok:
+            notify.send_message(token, ch, "⚠ 俯仰歸位被吃（已重試）；圖照發，角度可能偏")
+        self._rr_sweep_and_send()
+
+    def _rr_ensure_ctx(self, reroll: bool):
+        """建新 context 或 reroll 續用（同 episode 號、attempt+1、面向/快照歸零）。"""
+        if reroll and self._rr_ctx is not None:
+            ctx = self._rr_ctx
+            ctx.attempt += 1
+            ctx.cur_dir = 0
+            ctx.phase = "awaiting_cmd"
+            ctx.shots = []
+            ctx.zoom_region = ()
+            ctx.zoom_base = ""
+            return
+        last = None
+        try:
+            with open(cfg.reentry_remote_ledger, "rb") as f:
+                lines = f.read().splitlines()
+                last = lines[-1].decode("utf-8") if lines else None
+        except OSError:
+            pass
+        self._rr_ctx = reentry_remote.RemoteReentryContext(
+            episode_id=reentry_remote.next_episode_id(last),
+            created_at=time.time(), sticky_layer=self._rr_sticky_layer)
+
+    def _rr_sweep_and_send(self, prefix_msg: str = ""):
+        """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ctx = self._rr_ctx
+        # 對齊座標系：sweep 標號固定 0-7＝相對開場面向（cur_dir=0）。zoom/走位後 cur_dir
+        # 可能非 0，先轉回 dir 0 再掃——否則「方位 N」標籤與之後 `N 粗格` 的轉向計畫錯位。
+        back = harvester.plan_return_rotations(ctx.cur_dir % 8, 0)
+        for _ in range(abs(back)):
+            if self._rotate_verified(1 if back > 0 else -1):
+                ctx.cur_dir += 1 if back > 0 else -1
+        if ctx.cur_dir % 8 != 0:
+            self.logger.warning("[RR#%s] sweep 前對齊 dir0 未完成（cur_dir=%d）——方位標籤可能偏",
+                                ctx.episode_id, ctx.cur_dir)
+        ctx.shots = []
+        pairs = []                                # [(dir_idx, grid_path)]
+        for i in range(8):
+            if self._mine_resetting:
+                return                            # 上層 tick 下一輪處理 reset
+            f = capture.grab()
+            path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i}")
+            ctx.shots.append((i, path or ""))
+            grid_img = f.copy()
+            remote_aim.draw_grid(grid_img, 6, 4)
+            gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_dir{i}_grid")
+            pairs.append((i, gpath))
+            self._rotate_verified(1)              # 8 次右轉＝轉滿一圈回原向；cur_dir 座標系不變
+        head = (prefix_msg or
+                f"⛏ 回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}\n"
+                f"回 `方位 粗格`（如 `3 C2`）指位；`走 C2` 走近；`重骰` 換重生點；"
+                f"`層 <名>` 改目標層；`跳過` 交人工")
+        batch = [p for _, p in pairs if p]
+        notify.send_images_message(token, ch, head + "\n方位 0-3", batch[:4])
+        if len(batch) > 4:
+            notify.send_images_message(token, ch, "方位 4-7", batch[4:8])
+
+    # ---- Task 5：指令執行鏈（主迴圈執行緒，輸入全在此）-----------------------
+    def _rr_execute(self, reply):
+        """主迴圈消費一則回礦指令（輸入操作全在此執行緒）。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ctx = self._rr_ctx
+        k = reply.kind
+        if k == "layer":
+            self._rr_sticky_layer = reply.layer
+            ctx.sticky_layer = reply.layer
+            notify.send_message(token, ch, f"✅ 目標層改為：{reply.layer}")
+        elif k == "void":
+            self._rr_void_last(ctx)
+        elif k == "skip":
+            self._rr_finalize("skip")
+            self._reentry_failed = True           # decide_transition → NEEDS_HUMAN
+            notify.send_message(token, ch, "⏭ 跳過，交人工（NEEDS_HUMAN）")
+        elif k == "reroll":
+            self._rr_open_episode(reroll=True)
+        elif k == "sweep":
+            self._rr_sweep_and_send(prefix_msg=f"🔁 回礦 #{ctx.episode_id} 重新八方位掃描")
+        elif k == "walk":
+            self._rr_walk(ctx, reply.cell)
+        elif k == "coarse":
+            self._rr_zoom(ctx, reply.dir_idx, reply.cell)
+        elif k == "fine":
+            if ctx.phase != "awaiting_fine":
+                notify.send_message(token, ch, "❓ 現在不是等細格的時候，先回 `方位 粗格`（如 `3 C2`）")
+                return
+            self._rr_click(ctx, reply.cell, reply.layer)
+        elif k == "confirm":
+            if ctx.phase != "awaiting_confirm":
+                notify.send_message(token, ch, "❓ 目前沒有待確認的點擊")
+                return
+            self._rr_success(ctx, "confirmed_by_user")
+
+    def _rr_zoom(self, ctx, tgt_dir, cell):
+        """轉到目標方位、裁粗格放大＋細網格回傳，進「等細格」。"""
+        from . import notify
+        import cv2
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        steps = harvester.plan_return_rotations(ctx.cur_dir % 8, tgt_dir % 8)
+        for _ in range(abs(steps)):
+            if self._rotate_verified(1 if steps > 0 else -1):
+                ctx.cur_dir += 1 if steps > 0 else -1
+        if ctx.cur_dir % 8 != tgt_dir % 8:
+            notify.send_message(token, ch, "⚠ 轉向被吃，目前面向可能偏；重下一次 `方位 粗格` 即重對齊")
+            return
+        f = capture.grab()
+        region = reentry_remote.coarse_cell_region(cell)
+        zoom = reentry_remote.render_zoom(
+            f, region, scale=cfg.reentry_remote_zoom_scale,
+            cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        base = os.path.join(self._rr_snap_dir(),
+                            f"ep{ctx.episode_id}_zoom_{tgt_dir}{cell}")
+        os.makedirs(self._rr_snap_dir(), exist_ok=True)
+        x, y, rw, rh = region
+        cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])   # 漂移守門基準（同步寫）
+        cv2.imwrite(base + ".png", zoom)
+        ctx.phase = "awaiting_fine"
+        ctx.zoom_dir = tgt_dir
+        ctx.zoom_region = region
+        ctx.zoom_base = base                      # _rr_click 讀回（不重組字串）
+        notify.send_images_message(token, ch,
+            f"🔍 方位 {tgt_dir} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
+            f"要換層回 `B3 <層名>`；太粗回 `走 {cell}` 走近", [base + ".png"])
+
+    def _rr_click(self, ctx, fine_cell, layer_override):
+        """細格點擊：漂移守門 → 左鍵點傳送按鈕 → 三態（成功/等確認/無反應）。"""
+        from . import notify
+        import cv2
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        pos = reentry_remote.fine_cell_to_screen(
+            ctx.zoom_region, fine_cell,
+            cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        if pos is None:
+            notify.send_message(token, ch, "❓ 細格代碼不合法（A1–F6）")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        # 漂移守門（H026 家族）：粗格區域現況 vs 放大圖來源幀
+        x, y, rw, rh = ctx.zoom_region
+        cur = capture.grab()
+        base = ctx.zoom_base
+        src = cv2.imread(base + "_src.png") if base else None
+        if src is not None and vision.frame_mean_diff(
+                src, cur[y:y + rh, x:x + rw]) >= cfg.reentry_remote_drift_diff:
+            zoom = reentry_remote.render_zoom(cur, ctx.zoom_region,
+                                              scale=cfg.reentry_remote_zoom_scale,
+                                              cols=cfg.reentry_remote_fine_cols,
+                                              rows=cfg.reentry_remote_fine_rows)
+            cv2.imwrite(base + ".png", zoom)
+            cv2.imwrite(base + "_src.png", cur[y:y + rh, x:x + rw])
+            notify.send_images_message(token, ch,
+                "⚠ 畫面已漂移（buff 到期/保活跳動），沒有點。這是更新後的放大圖，請重指細格",
+                [base + ".png"])
+            return
+        layer = layer_override or ctx.sticky_layer
+        marker = reentry_remote.draw_click_marker(cur, pos)
+        os.makedirs(self._rr_snap_dir(), exist_ok=True)
+        mpath = os.path.join(self._rr_snap_dir(),
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_marker.png")
+        cv2.imwrite(mpath, marker)
+        fpath = os.path.join(self._rr_snap_dir(),
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full.png")
+        cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
+        reentry_remote.record_click(ctx, pos, layer, ctx.zoom_region, time.time())
+        ic.click_at(int(pos[0]), int(pos[1]))
+        # 驗證：等傳送幀差
+        deadline = time.time() + cfg.reentry_teleport_wait_s
+        teleported = False
+        while time.time() < deadline:
+            time.sleep(0.4)
+            if vision.frame_mean_diff(cur, capture.grab()) >= cfg.reentry_teleport_diff:
+                teleported = True
+                break
+        if not teleported:
+            notify.send_images_message(token, ch,
+                "❌ 點了畫面無變化（紅圈＝實際點擊處）。重指細格、或 `走`/`重骰`", [mpath])
+            return                                # 留在 awaiting_fine
+        time.sleep(1.5)                          # 傳送落地
+        land = capture.grab()
+        lpath = os.path.join(self._rr_snap_dir(),
+                             f"ep{ctx.episode_id}_click{len(ctx.clicks) - 1}_landing.png")
+        cv2.imwrite(lpath, land)
+        # 礦內亮度：照抄 auto 版 _tick_reentry CLICK_VERIFY（不另加 vision API）
+        r = cfg.stuck_region
+        in_mine = float(np.mean(land[r.y:r.y + r.h, r.x:r.x + r.w])) <= cfg.reentry_mine_max_brightness
+        if cfg.reentry_remote_auto_resume and in_mine:
+            notify.send_images_message(token, ch,
+                f"✅ 回礦 #{ctx.episode_id} 傳送成功（層：{layer}）。紅圈＝點擊處；自動開挖",
+                [mpath, lpath])
+            self._rr_success(ctx, "success")
+        else:
+            ctx.phase = "awaiting_confirm"
+            notify.send_images_message(token, ch,
+                f"❓ 已傳送（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
+                f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
+                [mpath, lpath])
+
+    def _rr_success(self, ctx, outcome):
+        """成功收尾：movement mode 復原（若走過位）→ ledger → 回 MINING。"""
+        from . import notify
+        if ctx.walked:
+            self._set_movement_mode(cfg.movement_mode_mining)
+        self._rr_finalize(outcome)
+        self._reentry_done = True                 # decide_transition → MINING → init 序列
+        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, "⛏ 回礦完成，開挖")
+
+    def _rr_void_last(self, ctx):
+        """作廢最後一筆點擊（ledger 追加 void 行＋ctx 標 invalid）。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if not ctx.clicks:
+            notify.send_message(token, ch, "❓ 本輪還沒有點擊記錄")
+            return
+        idx = len(ctx.clicks) - 1
+        ctx.clicks[idx]["invalid"] = True
+        self._rr_ledger_append(reentry_remote.void_entry(ctx.episode_id, idx, time.time()))
+        notify.send_message(token, ch, f"🗑 已作廢本輪第 {idx + 1} 筆點擊資料")
+
+    def _rr_walk(self, ctx, cell):
+        """右鍵 click-to-move 到當前面向的粗格中心，走完重拍回傳（其餘方位圖視為過期）。"""
+        from . import notify
+        import cv2
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if not self._rr_movement_ready:
+            notify.send_message(token, ch, "⏳ 首次走位：切換移動模式（最多 ~90s）…")
+            if not self._set_movement_mode(cfg.movement_mode_reentry):
+                notify.send_message(token, ch, "⚠ 移動模式切換失敗，走位不可用；請 `重骰` 或 `跳過`")
+                return
+            self._rr_movement_ready = True
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        target = remote_aim.grid_cell_center(cell)          # 粗網格 6×4 格中心
+        ic.click_at(target[0], target[1], button="right")
+        ctx.walked = True
+        # 到位偵測：連續 N tick 幀差近零＝停下（沿用 auto 版門檻）
+        diffs, prev = [], capture.grab()
+        deadline = time.time() + cfg.reentry_nav_timeout_s
+        while time.time() < deadline:
+            time.sleep(0.5)
+            f = capture.grab()
+            diffs.append(vision.frame_mean_diff(prev, f))
+            prev = f
+            if reentry.movement_status(diffs, cfg.reentry_move_diff,
+                                       cfg.reentry_move_stable_ticks) == "stopped":
+                break
+        f = capture.grab()
+        grid_img = f.copy()
+        remote_aim.draw_grid(grid_img, 6, 4)
+        gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_walk_{cell}")
+        ctx.phase = "awaiting_cmd"
+        ctx.zoom_region = ()
+        ctx.zoom_base = ""
+        notify.send_images_message(token, ch,
+            f"🚶 已走位（其餘方位圖已過期）。回 `{ctx.cur_dir % 8} 粗格` 繼續指位，或 `掃` 重掃八方位",
+            [gpath])
+
     def _tick_reentry(self, frame):
         """REENTRY 每 tick 一步。決策純函式在 reentry.py，這裡只做 I/O。
 
-        任一步失敗統一走 _reentry_reroll（按回到地表換重生點）；
+        remote 模式（2026-07-12 spec）在最頂端分流到 _tick_reentry_remote，不跑 auto 版相位機。
+        auto 模式：任一步失敗統一走 _reentry_reroll（按回到地表換重生點）；
         attempts 用盡 → _reentry_failed=True（decide_transition → NEEDS_HUMAN）。
         """
+        if self._remote_reenter_active():
+            self._tick_reentry_remote(frame)
+            return
         st = self._reentry
         now = time.time()
         if now - st.attempt_started > cfg.reentry_attempt_timeout_s:
