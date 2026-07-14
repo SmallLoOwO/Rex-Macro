@@ -208,7 +208,14 @@ class Config:
     reentry_max_attempts: int = 5               # reroll 上限，用盡 → NEEDS_HUMAN
     reentry_attempt_timeout_s: float = 60.0     # 單輪（按回到地表→點擊驗證）時限
     reentry_teleport_wait_s: float = 6.0        # 按回到地表/層按鈕後等場景切換上限
-    reentry_teleport_diff: float = 25.0         # 幀平均差超過此值＝傳送發生（校準時調）
+    reentry_teleport_diff: float = 12.0         # 幀平均差超過此值＝傳送發生。兩側夾數據（2026-07-13
+                                                 # 實機）：虛空無變化噪音 ≤0.3、UI 動畫噪音 ~4.4、真傳送
+                                                 # 穩定值 ≥19、地表→地表換重生點最低 26.8。舊值 25 會漏判
+                                                 # 真傳送（夜間地表穩定值 19 < 25）→ 降到 12（>4.4 噪音、<19 真傳送）
+    reentry_evac_settle_s: float = 0.5          # RESET_WAIT 進場撤離：focus 後沉澱再點「回到地表」
+                                                 # （輸入被吃家族既有教訓——焦點剛切回就送點擊會被吃）
+    reentry_click_retries: int = 3              # 單次撤離/開場的「回到地表」點擊重試上限（虛空下偶發
+                                                 # 成功前都有真實滑鼠移動事件；重試前 move_to 中央再移回按鈕）
     reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
     reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
     reentry_panel_dir: str = "assets/surface"   # 面板偵測模板資料夾（實機裁圖）

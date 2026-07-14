@@ -176,3 +176,60 @@ def ledger_entry(ctx, outcome, world, duration_s):
 def void_entry(episode_id, click_index, now):
     """作廢追加行：資料消費端讀到後把該 episode 第 click_index 筆點擊視為 invalid。"""
     return {"type": "void", "episode": episode_id, "click_index": click_index, "t": now}
+
+
+# ===== Task 4：REENTRY 互動 embed 純函式（2026-07-13 spec；比照遙控器）=====
+# 反應鈕 emoji 只進 Discord embed，絕不進 Tk/HUD——astral emoji（>U+FFFF）在 Tcl/Tk 8.6
+# 會無聲卡死事件迴圈（實機二分驗證 2026-07-10）。Discord 沒此限制。
+REENTRY_REACTIONS: tuple[str, ...] = ("🎲", "⏭️", "📷")
+
+_REENTRY_PHASE_LABEL = {
+    "awaiting_cmd": "等指令",
+    "awaiting_fine": "等細格",
+    "awaiting_confirm": "等確認",
+}
+_REENTRY_PHASE_COLOR = {
+    "awaiting_cmd": 0x5865F2,      # Blurple
+    "awaiting_fine": 0xFEE75C,     # 黃
+    "awaiting_confirm": 0x57F287,  # 綠
+}
+_REACTION_KIND = {"🎲": "reroll", "⏭️": "skip", "📷": "sweep"}
+
+
+def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool) -> dict:
+    """組 REENTRY episode 互動 embed（照片訊息獨立發、此卡隨進度原地 PATCH 更新）。
+
+    sticky_layer 顯式傳入（session 黏性層 _rr_sticky_layer；與 ctx.sticky_layer 同步但取
+    session 來源，reroll 過渡期 ctx 剛清掉時也能讀）。evac_done 僅 footer 標注是否已撤離
+    至地表（開場鏈本來就要再按一次換重生點，evac 結果不改流程）。
+    """
+    mins = int((now - ctx.created_at) // 60)
+    phase_label = _REENTRY_PHASE_LABEL.get(ctx.phase, ctx.phase)
+    color = _REENTRY_PHASE_COLOR.get(ctx.phase, 0x5865F2)
+    evac_tag = "（已撤離至地表）" if evac_done else ""
+    return {
+        "title": f"⛏ 回礦 #{ctx.episode_id}",
+        "description": (
+            f"**attempt**：{ctx.attempt}\n"
+            f"**目標層**：{sticky_layer}\n"
+            f"**已等**：{mins} 分鐘\n"
+            f"**階段**：{phase_label}{evac_tag}\n"
+            f"\n"
+            f"指令：`方位 粗格`（如 `3 C2`）、`走 C2`、`層 <名>`、`遠/近 [n]`；"
+            f"文字 `重骰`/`跳過` 也可\n"
+            f"反應鈕：🎲 重骰　⏭️ 跳過　📷 重新掃描"
+        ),
+        "color": color,
+        "footer": {"text": "照片訊息在上方；此卡會隨進度原地更新"},
+    }
+
+
+def reaction_to_reentry_reply(emoji: str):
+    """反應鈕 emoji → RemoteReply；非 REENTRY_REACTIONS 已知反應回 None。
+
+    回的 kind 與 parse_reply 的關鍵字一致（reroll/skip/sweep），主迴圈消費路徑零改動。
+    """
+    kind = _REACTION_KIND.get(emoji)
+    if kind is None:
+        return None
+    return RemoteReply(kind)

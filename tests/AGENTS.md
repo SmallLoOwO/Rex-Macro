@@ -1,77 +1,81 @@
-# tests/ — pure-logic TDD suite
+# tests/ — TEST GUIDE
 
-Conventions for the 401-test pytest suite. Read `../AGENTS.md` for project commands, `../miningbot/AGENTS.md` for what each module does. This file is the test-writing guide.
+Read `../AGENTS.md` for project-wide source priority and `../miningbot/AGENTS.md` for module ownership.
 
-## OVERVIEW
+## BASELINE
 
-401 pytest tests covering **pure logic only** — no Roblox, no audio device, no screen. All green (2026-07-07). Runs in ~15s.
+As of 2026-07-13:
 
-## STRUCTURE
+- `python -m pytest --collect-only -q` → **651 tests collected** in about 39 seconds on this machine.
+- The complete suite includes real OCR/image fixtures and can exceed 3 minutes. Do not document a full “passed” count unless the command actually completes in the current worktree.
+- Tests do not require Roblox, a live screen, an audio device, or Discord, but some real-engine fixture tests are conditionally skipped when tesseract/RapidOCR is unavailable.
 
-```
-tests/
-├── __init__.py            # package marker (empty)
-├── test_states.py     (21) # decide_transition — full 4-state FSM
-├── test_geometry.py    (5) # aim_decision — FIRE/ROTATE/MOUSE_AIM/HUMAN
-├── test_miner.py      (10) # dispatch_event priority + cooldown_ready
-├── test_harvester.py  (53) # next_harvest_step + restore_actions + sweep/verify decisions
-├── test_events.py      (2) # EventLog sink fan-out
-├── test_ocr.py        (85) # contains/count/has_new_found + ChatLedger (diff semantics)
-├── test_ocr_fixtures.py(14) # real-crop chat OCR across 3 backgrounds (H014/H020/H032/H039)
-├── test_vision.py     (52) # find_tracker hybrid (HSV+shape), find_marker, outline/alpha, real-frame
-├── test_window.py      (9) # displacement_reason priority + WindowState
-├── test_audio.py      (15) # match_score + loudest_window (synthetic signals)
-├── test_add_chill_ref.py(6) # chill reference-set expansion (--scan confirmed-only)
-├── test_notify.py     (20) # format_message + group messages (Chinese templates)
-├── test_game_data.py  (79) # event/ore tables + fuzzy_match_ore + World/keep-list + classify
-├── test_fetch_ores.py (14) # wiki ore-list sync: world discovery + exclusion diff
-├── test_capture.py     (2) # crop region math
-├── test_hotkeys.py    (10) # _HotkeyController edge-trigger (Ctrl+Q / Q / F12)
-└── test_diagnostics.py (4) # setup_logging + save_snapshot (tmp_path)
-```
+The suite is no longer “pure logic only.” It contains:
 
-## WHERE TO LOOK
+- pure decision/value tests;
+- synthetic numpy image/audio tests;
+- tracked real screenshot/OCR fixture regressions;
+- filesystem tests using `tmp_path`;
+- narrow I/O-wrapper tests using injected functions or `monkeypatch`;
+- engine-dependent tests guarded with `pytest.mark.skipif`.
 
-| Need | Go to |
+## FILE MAP
+
+| Area | Test files |
 |---|---|
-| Find the test for a state transition | `test_states.py` — names like `test_chill_takes_priority_over_reset` |
-| Find the test for tracker ranking | `test_vision.py:81` `test_find_tracker_prefers_higher_colored_over_larger_area` |
-| Find the test that locks the OCR stale-chat bug | `test_ocr.py:39` — comment `# ★ 核心bug：D3 前就有舊訊息...` |
-| Find the helper that builds an Observation | `test_states.py:3` `def obs(**kw)` |
-| Find the helper that builds a synthetic tracker image | `test_vision.py:14` `_draw_tracker(scene, cx, cy, size, color)` |
-| Find the test for window DPI scaling | `test_window.py:5` `BASELINE` — 1536×864 (not 1920×1080) |
+| FSM/policies/hotkeys | `test_states.py`, `test_hotkeys.py` |
+| Harvest/aim/vision | `test_harvester.py`, `test_geometry.py`, `test_vision.py`, boost/slot/pitch fixture files |
+| Chat/OCR/UI | `test_ocr.py`, `test_ocr_fixtures.py`, capacity/chat/player/menu fixture files, `test_roblox_menu.py` |
+| Audio/chill refs | `test_audio.py`, `test_add_chill_ref.py` |
+| Worlds/events/ore sync | `test_game_data.py`, `test_fetch_ores.py` |
+| Re-entry/remote | `test_reentry.py`, `test_reentry_remote.py`, `test_remote_aim.py` |
+| Discord/events | `test_notify.py`, `test_events.py` |
+| Platform/ops/UI | `test_capture.py`, `test_input_control.py`, `test_window.py`, `test_diagnostics.py`, `test_preflight.py`, `test_sampler.py`, `test_status_hud.py` |
 
-## CONVENTIONS (this test suite only)
+Use `rg -n subject_or_incident tests` instead of relying on stale per-file test counts.
 
-- **Pure-function TDD.** Every test exercises a pure function or pure method. I/O is never invoked. The 6 I/O wrappers (`capture`, `input_control`, `audio.LoopbackCapture`, `vision` OpenCV parts, `ocr.read_text`, `window.query_window`) are untested by design — `CLAUDE.md` rule.
-- **No `conftest.py`, no shared fixtures.** Each test file builds its own minimal helpers inline. Duplication beats indirection at this scale.
-- **No `parametrize`, no `mock`, no `monkeypatch`.** Verified by grep. Only the built-in `tmp_path` fixture is used (in `test_diagnostics.py`).
-- **Inline constructor helpers** per file:
-  - `obs(**kw)` → `Observation` with safe defaults (`test_states.py:3`)
-  - `flags(**kw)` → `EventFlags` (`test_miner.py:3`)
-  - `cur(**kw)` + `BASELINE`/`POS_TOL`/`SIZE_TOL` module consts → `WindowState` (`test_window.py:5-17`)
-  - `rec(t, **meta)` → `EventRecord` (`test_notify.py:7`)
-  - `_scene_with_patch`, `_draw_tracker`, `_framed_box`, `_ring` → synthetic numpy arrays (`test_vision.py`)
-- **Tests inject `cfg=DEFAULT`** instead of hardcoding thresholds — `test_harvester.py` passes `cfg=DEFAULT` to `next_harvest_step`. Keeps tests aligned with `config.py` automatically.
-- **Test name = invariant**: `test_<subject>_<expected>` (e.g. `test_find_tracker_ignores_dark_panel_without_colored_center`). Read the name to know what's locked down.
-- **Regression tests cite the bug in a comment**: `# 對應 HANDOFF「修 2」`, `# ★ 核心bug：D3 前就有舊訊息...`. These are executable bug reports — don't strip the citation when editing.
-- **AAA in ~4-5 lines, no comments** unless it's a regression-cite. No `# arrange`, no `# act`, no `# assert` decoration.
+## CONVENTIONS
 
-## ANTI-PATTERNS (in this suite)
+- Test name states the invariant: `test_<subject>_<expected>`; class grouping is used for coherent feature families.
+- Real regressions cite H incident IDs or the observed failure in a nearby comment/docstring. Preserve those references.
+- Prefer the smallest pure decision surface. If orchestration is hard to test, extract a pure function or inject the narrow external action.
+- `monkeypatch` is allowed for thin platform wrappers and engine fallback selection. Keep it local and assert exact calls/arguments; do not build a fake Roblox runtime.
+- `tmp_path` is used wherever file retention, refs, logs, or tessdata discovery is under test.
+- `pytest.mark.skipif` is correct for optional real OCR engines. A skip is not proof that the engine path works; report skips in verification results.
+- Synthetic thresholds should normally come from `DEFAULT`. A custom `Config` is appropriate when the test specifically exercises a non-default mode/boundary.
+- Real fixture tests should bracket both sides: the target frame passes and the incident’s false-positive/false-negative counterpart behaves correctly.
+- Keep fixtures immutable. Add a new named fixture for new evidence instead of overwriting old incident evidence.
 
-1. **NEVER add a test that imports `mss`, `pydirectinput`, `pyaudiowpatch`, or `pytesseract`** — those are I/O deps and break CI without hardware. Pure logic + numpy only.
-2. **NEVER hardcode a threshold in a test.** Read from `from miningbot.config import DEFAULT` and pass `cfg=DEFAULT`. If you need a non-default value, construct a `Config(...)` instance locally.
-3. **NEVER use `unittest.mock` or `monkeypatch`** to fake I/O. The codebase pattern is to refactor the pure decision out (see `decide_transition`, `dispatch_event`, `next_harvest_step`) and test that. If you find yourself reaching for mock, the production code needs refactoring instead.
-4. **NEVER delete a failing test to make the suite green.** Read the comment — it's a regression lock. Either fix the production code or update the test with a justification comment.
-5. **NEVER add a `conftest.py`** — the no-shared-fixture style is intentional. Helpers stay local to the file that needs them.
+## WHAT NOT TO DO
 
-## NOTES
+1. Do not invoke live screen capture, send real input, open Roblox, access Discord, or require a physical audio device in the default suite.
+2. Do not delete/relax an incident regression merely to make a new approach green. Explain any deliberate semantic change and retain an equivalent safety test.
+3. Do not hardcode obsolete coordinates or copied production thresholds when `DEFAULT` is the behavior under test.
+4. Do not cross-compare OCR outputs from different preprocess passes as if they were one stream; pass self-consistency is part of the verifier design.
+5. Do not treat an optional-engine skip as a passing end-to-end OCR validation.
+6. Do not use broad mocks of `Bot` to claim runtime coverage. Test pure policies, and reserve live validation for explicit desktop sessions.
 
-- **Coverage matrix** (what's tested vs not):
-  - Fully tested: `states`, `geometry`, `events`, `window` (pure parts), `diagnostics`
-  - Partially tested: `miner` (only `dispatch_event`/`cooldown_ready` — not the I/O macros), `harvester` (only `next_harvest_step`/`restore_actions` — not `start_scan`/`fire_d3`), `ocr` (matchers yes, `read_text` no), `audio` (`match_score`/`loudest_window` yes, `ChillListener`/`LoopbackCapture` no), `notify` (`format_message` yes, HTTP no), `vision` (all pure helpers yes, `load_template` no)
-  - Untested by design: `capture`, `input_control`, `main.Bot`
-- **Highest-leverage gaps** (pure logic, TDD-able): `miner._ensure_pickaxe` (locks the D1-toggle rule), `harvester.fire_d3` (locks 0.6s+0.4s timing), `audio.ChillListener.feed/score` (locks ~0.4 threshold behavior). All would need a thin injectable interface or `monkeypatch.setattr` on `ic`.
-- **Run command**: `python -m pytest -q` from project root. `pytest.ini` only sets `testpaths = tests`.
-- **Collection time**: ~5.6s (dominated by OpenCV/numpy import in `test_vision.py`). Actual test execution ~2.6s.
-- **The 1536×864 baseline in `test_window.py`** is NOT a bug — it encodes the 125% DPI scaling on the dev machine. Don't "fix" it to 1920×1080.
+## FIXTURE RULES
+
+- Tracked fixtures live under `tests/fixtures/` and selected tracked datasets under `assets/*.json`.
+- Local PNG/WAV files under `assets/` are mostly gitignored even if present. A test intended for a fresh checkout must not silently depend on an untracked machine-local asset.
+- OCR fixture tests may load real engines and dominate runtime. Run focused tests while iterating, then collection/full-suite checks before handoff.
+- For new tracker evidence, keep the full scene when feasible and encode the incident/harvest ID in the test or fixture name. Cropped runtime templates belong to local `assets/markers/`; regression scenes belong in tracked test fixtures only when intentionally added.
+
+## COMMANDS
+
+```powershell
+# inventory only
+python -m pytest --collect-only -q
+
+# focused iteration
+python -m pytest -q tests/test_states.py
+python -m pytest -q tests/test_harvester.py tests/test_vision.py
+python -m pytest -q tests/test_ocr.py tests/test_ocr_fixtures.py
+python -m pytest -q tests/test_reentry.py tests/test_reentry_remote.py tests/test_remote_aim.py
+
+# complete verification (allow several minutes)
+python -m pytest -q
+```
+
+When reporting verification, include the exact command, pass/fail/skip totals, and whether the command timed out. “No output before timeout” is inconclusive, not green or red.

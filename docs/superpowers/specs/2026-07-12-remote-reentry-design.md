@@ -129,3 +129,22 @@
 - 自動重放/場景比對查表（樣本累積後另案，先做離線偵測評估）
 - 點擊前確認往返、落點層數自動判別、按鈕文字 OCR（遠距看不清，人工也靠版面記位）
 - 離線評估腳本
+
+## 2026-07-13 addendum：H043 虛空墜落實錄修正
+
+首三次實機 run 全滅的根因＝**設計假設「重置後按回到地表即可傳送」不成立**：RESET_WAIT 等
+banner 消失才進 REENTRY，重置瞬間人還在礦內 → 礦體消失自由落體墜入虛空（Depth 33M+、畫面
+全黑），虛空下墜狀態「Go to surface」幾乎不回應（瞬間點/hold/懸停全滅、僅偶發成功）；
+地表狀態同一點擊 100% 有效。完整敘事見 docs/incidents.md H043。
+
+設計修正：
+1. **RESET_WAIT 進場即撤離**（remote 模式限定）：banner 出現時礦體還在、點擊可靠，先按
+   回到地表離開；REENTRY 開場再按一次＝換重生點（原 reroll 語意不變）。
+2. 撤離/開場點擊共用 `_click_surface_verified`：幀差驗證＋`reentry_click_retries=3` 重試，
+   重試前游標移中央再移回（多一次真實滑鼠移動事件）。
+3. `reentry_teleport_diff` 25→12：虛空→夜間地表傳送後穩定幀差僅 ~19（兩側夾：噪音 ≤4.4、
+   換重生點最低 26.8）。
+4. 開場失敗警告附當下截圖（全黑＝虛空一眼可辨）；所有 RR 發送走 `_rr_notify` 記送達結果。
+5. **互動 embed 化**（使用者需求）：episode 卡片（attempt/目標層/已等分鐘/階段色）原地
+   PATCH 更新、收尾刪卡；🎲重骰/⏭️跳過/📷重掃反應鈕與文字指令同走 `_pending_reentry`，
+   主迴圈消費路徑零改動。純函式 `build_reentry_embed`/`reaction_to_reentry_reply`（有測試）。

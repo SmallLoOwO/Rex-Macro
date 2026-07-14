@@ -1,136 +1,146 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-06-27 · **Updated:** 2026-06-28 (log 分檔/Discord 圖片+命令/game_data/harvest 修復包/chill 延遲修復/pythonw)
-**Branch:** `feature/window-discord-controls`（`python -m pytest -q` → 123 passed）
+**Audited:** 2026-07-13
+
+**Snapshot:** branch `feature/optimization-roadmap`, commit `96b01c1`
+
+**Tests:** `python -m pytest --collect-only -q` → **651 collected** (2026-07-13). The full OCR/fixture suite can take more than 3 minutes on this machine; never replace this count with a guessed “passed” number.
 
 ## OVERVIEW
 
-Windows-only Python 3.11+ bot that idles the Roblox game "REX" (rex-3 wiki): auto-mines common ore, drinks boosters (D5), rerolls events (D4), and harvests rare ore when the "chill" audio cue fires. Stops for human on mine reset. State-machine driven, 50 ms tick, pure-logic TDD core.
+Windows-only Python 3.11+ automation bot for Roblox REX. It mines, maintains D5 boost, rerolls/keeps D4 events, detects rare-ore chill audio, sweeps/aims/fires D3, verifies success from chat, exposes Discord controls, and handles mine reset through manual, Discord-remote, or experimental automatic re-entry.
+
+The architecture is still state-machine driven, but this is no longer the small 2026-06 prototype. `miningbot/main.py` is a ~4,200-line I/O orchestrator with background workers and multiple bounded subflows. Do not infer current behavior from old line numbers, old test counts, or the frozen June plans.
+
+## SOURCE OF TRUTH
+
+When sources disagree, use this order:
+
+1. Current code + tests + `miningbot/config.py` defaults.
+2. `CLAUDE.md` hard-won runtime rules and `docs/incidents.md` evidence.
+3. The newest relevant design/spec **plus its implementing commits/tests**. A plan checkbox alone is not proof that code shipped.
+4. `docs/game-mechanics.md` for game-domain facts and `docs/manual-sampling.md` for R-key calibration.
+5. `docs/HANDOFF.md`, `docs/HANDOFF_false_positives.md`, and older `docs/superpowers/*` as historical context only.
+
+Known documentation drift as of this audit:
+
+- `docs/HANDOFF.md` still says branch `main`, 133/401 tests, recommends shrinking tracker ROI to 80, calls vertical sweep/world support missing, and omits the shipped remote-aim/remote-reentry flows. Current code/CLAUDE says ROI 320, pitch layers shipped, nine-world data shipped, and `reentry_mode` defaults to `remote`.
+- `docs/HANDOFF_false_positives.md` is a 2026-06-29 investigation, not the current detector specification.
+- `CLAUDE.md` is current in its long hard-rule section, but its opening sentence/module summary still describes manual-only reset handling and the old small pure-module set. Read the later REENTRY/remote sections before using that summary.
+- `README.md`, `.env.example`, and `assets/README.md` still use “Phase 2”/early-template language and omit current startup, remote control, re-entry, RapidOCR, and tracked JSON datasets.
+- A few source docstrings are historical: `notify.py` still advertises removed `send_image_message`, and `states.update_capacity_streak` still calls capacity a reset “second signal” even though its caller now uses it only for acceleration/logging.
+- `requirements.txt` still pins `keyboard`, but runtime hotkeys intentionally use `GetAsyncKeyState`; do not reintroduce the `keyboard` library without a new real-game validation.
 
 ## STRUCTURE
 
+```text
+miningbot/                  importable package (32 Python modules)
+  main.py                   Bot orchestration, all runtime state/subflows
+  config.py                 Config/Region and DEFAULT; coordinates/thresholds/modes
+  states.py                 top-level FSM and small state-policy functions
+  harvester.py              harvest decisions, pitch/sweep/verify/give-up plans
+  vision.py / ocr.py        detector and OCR logic + engine adapters
+  audio.py                  chill scoring, edge/spike detection, loopback capture
+  game_data.py              9-world events/ores/classification/keep-list formatting
+  reentry*.py               automatic and Discord-remote re-entry pure logic
+  remote_aim.py             Discord-assisted harvest targeting/alignment
+  roblox_menu.py            menu OCR decisions
+  sampler.py                R-key manual calibration UI and sample writing
+  notify.py                 Discord HTTP API, embeds, reactions, grouped images
+  diagnostics.py            split logging, snapshots, retention
+  preflight.py              pure startup warning policy
+  __main__.py               splash entrypoint used by pythonw/batch launcher
+tests/                      651 collected tests; synthetic + tracked real fixtures
+assets/                     tracked JSON datasets + local/gitignored machine assets
+docs/                       incidents, mechanics, manual, specs/plans, stale handoffs
+logs/                       gitignored runtime evidence and diagnostic scripts
+*.mcr                       original human-recorded Roblox macro sequences
+啟動挖礦bot.bat             pythonw -m miningbot (preferred no-console launcher)
 ```
-無聊的挖礦遊戲/
-├── miningbot/        # importable package — Bot orchestrator + I/O wrappers + pure logic + 4 CLI tools
-├── tests/            # 131 pytest tests — pure-logic only (no Roblox, no audio device needed)
-├── docs/             # incidents.md (H 系列實機事故錄：症狀/根因/對策/fixture/commit), HANDOFF.md (live status), game-mechanics.md (REX rules), superpowers/{specs,plans}/ (frozen 2026-06-23 design)
-├── assets/           # gitignored binaries — chill_reference.wav, boost_active.png, d4_cooldown.png, markers/*.png
-├── logs/             # runtime (gitignored) — miningbot.log, events.log, snapshots/*.png
-├── *.mcr             # Roblox macro recordings (NOT Python — human-recorded hotkey sequences, original source for sequences in miner.py)
-├── CLAUDE.md         # ⭐ SOURCE OF TRUTH — operating manual with hard-won rules
-└── README.md         # user-facing install + run guide
-```
+
+`assets/ores_all.json`, `assets/rare_ores.json`, and `assets/README.md` are tracked. Most PNG/WAV runtime assets are ignored even when present locally. Never assume an asset visible on this machine will exist in a fresh checkout.
 
 ## WHERE TO LOOK
 
-| Task | Read first | Then |
+| Task | Read first | Then inspect |
 |---|---|---|
-| **Understand what the bot does** | `CLAUDE.md` (top), `docs/game-mechanics.md` | `miningbot/main.py:245` `Bot.run()` loop |
-| **Tweak a coordinate / threshold / hotkey** | `miningbot/config.py` (`Config` dataclass, ~110 fields) | No call-site edits — all consumers read `cfg` |
-| **Change state-machine logic** | `miningbot/states.py:19` `decide_transition` + `tests/test_states.py` | TDD: failing test first |
-| **Fix tracker detection** | `miningbot/vision.py` `find_tracker` (hybrid HSV + shape) + `tests/test_vision.py` | Read CLAUDE.md "追蹤框偵測" + ANTI-PATTERNS 6-9; **門檻來歷/漏抓事故見 `docs/incidents.md`**; needs REAL frames (see NOTES) |
-| **Change D3 harvest timing** | `miningbot/main.py` `_tick_harvest` D3 fire section + `config.py` `sweep_timeout_s`/`harvest_verify_timeout_s` | CLAUDE.md "D3 採集" rule (0.3s equip + 0.4s hold + 0.5s server); **改門檻前先讀 `docs/incidents.md` 對應 Hxxx** |
-| **D4 事件保留/刷新** | `miningbot/game_data.py` `EVENTS` + `match_event`/`is_kept` | `main.py` USE_D4 分支；Discord `!keep`/`!list` 命令 |
-| **Discord 通知/命令** | `miningbot/notify.py` `send_image_message`/`fetch_messages` | `main.py` `_discord_poll_loop`/`_handle_discord_command` |
-| **Chill 音訊偵測** | `miningbot/audio.py` `ChillListener`（節流 `score_interval_s`）| `config.py` `audio_match_threshold`/`audio_score_interval_s` |
-| **Log 分檔** | `miningbot/diagnostics.py` `setup_logging`（子 logger `_SUBLOGGERS`）| `main.py` log 路由（`log_hb`/`log_act`/`log_harvest`/`log_discord`）|
-| **Tune chill audio threshold** | `miningbot/config.py:52` `audio_match_threshold=0.30` | `miningbot/audio.py:25` `ChillListener` |
-| **Change hotkeys** | `miningbot/config.py:101` + `miningbot/main.py:470` `_check_hotkeys` | CLAUDE.md says NEVER use `keyboard` lib |
-| **Setup Discord notifications** | `.env.example` → `.env` with `DISCORD_BOT_TOKEN`/`DISCORD_CHANNEL_ID` | `miningbot/notify.py` |
-| **What's currently broken** | `docs/HANDOFF.md` §3 | Has ready-to-implement fixes in §4 |
-| **Source-of-truth hierarchy for docs** | `CLAUDE.md` > `docs/HANDOFF.md` > `docs/game-mechanics.md` > `docs/superpowers/*` (historical, partially stale) | See ANTI-PATTERNS below |
-| **Per-module map / inter-module deps** | `miningbot/AGENTS.md` | — |
-| **How to write / find tests** | `tests/AGENTS.md` | — |
+| Runtime lifecycle/startup | `CLAUDE.md`, `main.Bot.run` | `Bot._on_enter`, `_tick`, `_focus_roblox`, `miningbot/__main__.py` |
+| Top-level state behavior | `states.py` + `tests/test_states.py` | `main.observe`, `resolve_state_transition`, direct `self.state =` sites |
+| Coordinates/thresholds/modes/hotkeys | `config.py` | fixture tests that bracket the value; relevant H incident |
+| Rare-ore harvesting | CLAUDE harvest section + latest H incidents | `main._sweep_for_tracker`, `_tick_harvest`, `_harvest_success`; `harvester.py` |
+| Tracker detection | H039/H040 + `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near`; real crops in local `assets/markers/` |
+| Chat verification/OCR | H014/H020/H032/H041 | `ocr.ChatLedger`, `read_text_multi`, `_verify_chat_ocr`; OCR fixture tests |
+| Chill/reset audio | CLAUDE audio/reset sections | `audio.py`, `main._on_audio_*`, `tests/test_audio.py` |
+| Mine reset | 2026-07-12 capacity addendum | `states.py`, `main._banner_ocr_loop`, `_update_reset_complete` |
+| Re-entry | latest remote-reentry/reentry-zoom specs | `reentry.py`, `reentry_remote.py`, `main._tick_reentry*`, config `reentry_*` |
+| Discord remote aim | latest remote-aim spec | `remote_aim.py`, `main._handle_aim_reply`, `_tick_remote_aim` |
+| Discord commands/control panel | `main._poll_discord`, `_handle_discord_command` | `notify.py`, `tests/test_notify.py` |
+| D4/world/ore data | `game_data.py` | `fetch_ores.py`, tracked JSON datasets, `test_game_data.py` |
+| Startup UI/menu checks | CLAUDE startup section | `roblox_menu.py`, `main._ensure_*`, `preflight.py` |
+| R-key calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py`, `status_hud.py` |
+| Logs/snapshots | CLAUDE “實機排錯” | `diagnostics.py`, `logs/preflight_alerts.md`, categorized snapshots |
 
-## CODE MAP (top symbols by reference centrality)
+See `miningbot/AGENTS.md` for the current package map and `tests/AGENTS.md` for test rules.
 
-| Symbol | Type | Location | Role |
-|---|---|---|---|
-| `Bot` | class | `miningbot/main.py:13` | Orchestrator: holds state machine thread, wires all I/O, owns 50 ms loop |
-| `Config` / `DEFAULT` | dataclass | `miningbot/config.py:18` / `:110` | All coords/thresholds/hotkeys/secrets — single source |
-| `State` | enum | `miningbot/states.py:4` | `MINING / HARVESTING / NEEDS_HUMAN / RESET_WAIT` |
-| `decide_transition` | pure fn | `miningbot/states.py:19` | Sole pure state-machine decision (chill beats reset) |
-| `Observation` | dataclass | `miningbot/states.py:11` | Per-frame observation (chill/harvest/reset/human flags) |
-| `dispatch_event` | pure fn | `miningbot/miner.py:12` | MINING action picker: priority REFOCUS > USE_D5 > USE_D4 |
-| `next_harvest_step` | pure fn | `miningbot/harvester.py:20` | HARVESTING step generator: WAIT/ROTATE/MOUSE_AIM/FIRE_D3/HUMAN |
-| `find_tracker` | fn | `miningbot/vision.py` | Rare-ore detection — **hybrid (2026-06-28)**: HSV per-range locate (hue-independent colored) + small-ROI real-crop outline confirm (`shape_templates`) |
-| `find_marker` / `best_outline_score` | fn | `miningbot/vision.py` | Color-independent outline (Canny) shape match; alpha-outline for transparent wiki PNGs via `template_outline_edges` |
-| `ChillListener` | class | `miningbot/audio.py:25` | Rolling buffer + cross-correlation score（**節流**：每 `score_interval_s` 算一次，非每 chunk）|
-| `LoopbackCapture` | class | `miningbot/audio.py:47` | WASAPI speaker-loopback thread feeding `ChillListener` |
-| `displacement_reason` | pure fn | `miningbot/window.py:30` | Window-drift verdict: missing > unfocused > moved > resized |
-| `EventLog` | class | `miningbot/events.py` | Observer sink fan-out (file + Discord image/text + logger) |
-| `match_event` / `is_kept` | pure fn | `miningbot/game_data.py` | REX 事件 OCR 比對 + D4 keep/reroll 判斷（16 事件資料庫）|
-| `resume_mining` | fn | `miningbot/miner.py` | 採集成功後恢復挖 礦（直接按 1+W，取代 init_mining_sequence）|
-| `send_image_message` | fn | `miningbot/notify.py` | Discord multipart 圖片上傳（stdlib urllib）|
+## NON-NEGOTIABLE RUNTIME RULES
 
-## CONVENTIONS (deviations from standard Python)
+These are condensed guardrails; read CLAUDE/incidents before changing the related code.
 
-- **Flat layout, no `src/`, no `pyproject.toml`, no `setup.py`.** Just `requirements.txt` (11 pinned deps) + `pytest.ini` (`testpaths = tests`).
-- **Single-config hub.** Every coordinate/threshold/hotkey lives in `miningbot/config.py:Config`. Never hardcode in logic modules.
-- **Pure-vs-I/O split is strict.** Pure (`states`, `geometry`, `miner` dispatch fns, `harvester` step fn, `ocr` matchers, `events`) has full type hints + unit tests. I/O wrappers (`capture`, `audio` device parts, `vision` OpenCV, `ocr` Tesseract, `input_control`, `window` Win32) hold all hardware calls and are untested by design.
-- **`@dataclass` + `Enum` everywhere** for state carriers (`Config`, `Region`, `Observation`, `HarvestState`, `EventFlags`, `EventRecord`, `WindowState`).
-- **CLI utilities are first-class modules**: `python -m miningbot.{main,convert_audio,fetch_trackers,capture_template,calibrate}`.
-- **Windows-only.** DPI-aware, Win32 API, `pydirectinput`, WASAPI loopback. Cross-platform is not a goal.
-- **Threaded, not async.** Main loop on main thread; audio capture, hotkey poll, HUD on background threads.
-- **Lazy imports for optional deps**: `notify` (only if Discord env set, `main.py:24`), `pydirectinput` (only on focus-failure fallback, `main.py:234`), `tkinter` (only if HUD enabled).
+1. Use `SW_MAXIMIZE`, never `SW_RESTORE`; call DPI awareness before the first screenshot/GUI.
+2. Runtime coordinates are calibrated for a maximized 1920×1080 capture with the Windows taskbar visible. The taskbar shift invalidated several old y-coordinates; calibrate from real frames instead of “fixing” them by eye.
+3. Tool keys toggle equipment. Never press D1 blindly. Current D1 detection is `vision.slot_selected` over `d1_slot_region`; the old `slot_pixel/slot_color` is retained only for calibration history.
+4. Camera yaw uses `,`/`.` and must go through verified rotation. Fine pitch/aim uses right-button drag with settle and frame-diff validation. Plain `moveRel` does not rotate REX.
+5. D3 is always `2 → 0.15s → 3 → 0.3s → hold-click 0.4s → 0.5s`; a tap or repeated bare `3` is unsafe because equipment toggles.
+6. Harvest success requires new rare/special chat evidence. Tracker disappearance alone means RESWEEP, not success. Preserve episode `ChatLedger` and late-confirm paths.
+7. Capacity reaching 100% must **never** enter `RESET_WAIT`; only the reset banner can stop mining. Capacity only accelerates banner polling and emits a one-time informational log.
+8. Tracker color masks stay per-range; center-color confirmation is hue-independent. Real in-game crops, not wiki alpha icons, are shape templates. The shape ROI is currently 320 because real frames reach 207×208 px. Full-frame shape matching is prohibited in the sweep.
+9. Discord polling/background workers may set pending flags or caches; game input is consumed on the main loop. Never send game input directly from the polling thread.
+10. Tk widgets must not contain astral emoji (`> U+FFFF`) on this Tcl/Tk 8.6 machine; it can silently freeze the event loop. Use `_bmp_safe` and BMP symbols.
+11. Global hotkeys are `GetAsyncKeyState`: Ctrl+Q pause-only, Q pause/resume/clear/skip startup, F12 quit, R sampler. Do not use the `keyboard` library. Never press Esc during manual game driving.
+12. `reentry_mode` is a three-way switch: `off`, `remote`, `auto`. `remote` is the current default; `auto` is gated by calibrated surface templates. Preserve bounded failure → `NEEDS_HUMAN` behavior and restore pitch/zoom before finalizing.
 
-## ANTI-PATTERNS (THIS PROJECT — read CLAUDE.md for the full list)
+## DEVELOPMENT WORKFLOW
 
-These are forbidden here, not generic Python advice:
-
-1. **NEVER use `SW_RESTORE` to focus Roblox** — collapses maximized window, all coords break. Use `SW_MAXIMIZE=3` (`main.py:224`).
-2. **NEVER skip `SetProcessDpiAwareness(2)` before first screenshot** — `mss` flips DPI-awareness on first grab; baseline captured before that then disagrees with runtime coords → false "resized" (`main.py:528-542`).
-3. **NEVER use `keyboard` library for hotkeys** — fails to receive keys when Roblox has foreground. Use `GetAsyncKeyState` polling (`main.py:470`).
-4. **NEVER press D1 unconditionally** — toggles pickaxe off if already equipped. Only press when `slot_pixel` matches "not holding" (`miner.py:49-58`).
-5. **NEVER use `pydirectinput.moveRel` alone to rotate camera** — does nothing in REX. Use `,` / `.` (45° each) or right-click drag (`input_control.py:55`).
-6. **NEVER merge `_TRACKER_COLORS` HSV masks** — range3 (H=153-179) overlaps red mine background (H≈168); per-range `frame_fill` only (`vision.py`).
-7. **NEVER hue-restrict the `colored` confirm in `find_tracker`** — the old `(S>90)&(V>90)&((H<35)|(H>95))` excluded H35-95 (yellow-green), silently dropping yellow/green-centered ores (e.g. Ionized). MUST be hue-independent `(S>90)&(V>90)` (2026-06-28 fix; root cause of "ore on screen but not detected"). Tier center color is arbitrary.
-8. **NEVER use wiki PNGs as detection templates** — they are transparent outline-only icons; even matched correctly via the alpha outline (`template_outline_edges`), the vector edges DON'T match the in-game anti-aliased render at realistic scale (empirically all-miss; only noise-hits at scale 0.2). Use **real in-game crops** (`assets/markers/*_tracker_real.png`, no alpha → auto-selected into the shape-confirm set). One real crop generalizes across tiers (shape is color-independent). Real crops require real frames — see NOTES.
-9. **NEVER run full-frame shape/template matching in the sweep** — 5.7s (2 templates) to 23.5s (9) per frame at 1080p. Shape confirm runs ONLY in a small ROI around each HSV candidate (`shape_roi_px`, ~65ms).
-10. **NEVER make D3 a tap-click** — must be hold-click 0.4s after equip delay (`main.py`; equip wait 0.3s per 2026-06-28 HANDOFF, was 0.6s).
-11. **NEVER cite `docs/superpowers/spec|plans/*` for thresholds/hotkeys/APIs without cross-checking code** — these are 2026-06-23 frozen designs; many values superseded (audio thr 0.55→0.30, hotkeys F8/F9/F12→Ctrl+Q/Q/F12, 3 states→4, Discord "deferred"→shipped, `contains_any` success→diff-based `has_new_found`).
-12. **NEVER press Esc when driving the game manually** (computer-use sessions) — opens Roblox menu. Use only game keys: 1-5, `,`/`.`, W, ←/→.
-
-## UNIQUE STYLES
-
-- **Test names encode the invariant**: `test_chill_takes_priority_over_reset`, `test_find_tracker_ignores_dark_panel_without_colored_center`. Read the test name to know what's locked down.
-- **Regression tests cite the bug**: comments like `# 對應 HANDOFF「修 2」` or `# ★ 核心bug：D3 前就有舊訊息...` link the test to a real-world failure. Treat as executable bug reports.
-- **Coordinates annotated with real-hardware reasoning**: e.g. `Region(360, 42, 1440, 52)  # 頂部事件列（chill/事件文字）實測`. Comments are calibration provenance, not decoration.
-- **`.mcr` files at root are Roblox macro recordings** — the human-recorded originals that `miner.py`'s key sequences were transcribed from. Useful as ground truth if a sequence looks wrong.
-- **`logs/_*.py` are diagnostic scripts** (e.g. `logs/_test_harvest.py`, `logs/_diag_tracker.py`) — ad-hoc one-shots for real-hardware debugging, NOT production code. Listed in `docs/HANDOFF.md` §6.
+- Start every task with `git status --short` and inspect overlapping user changes. The local `.claude/` directory is currently untracked user/tool state; do not add, delete, or normalize it unless explicitly asked.
+- Use symbol search (`rg`) rather than stale line numbers. `main.py` changes rapidly.
+- Pure decisions should be extracted and tested first. I/O shells can be tested with injected callables or narrowly scoped `monkeypatch`; real devices/game/network are never required for the default suite.
+- Visual/OCR threshold changes require real fixtures and a two-sided bracket: true positive still passes and the relevant negative still rejects. Cite the H incident in the regression test.
+- All coordinates and thresholds belong in `Config`; do not add hardcoded runtime coordinates in call sites.
+- Preserve Chinese calibration comments: they are provenance, not decoration.
+- Do not commit, switch branches, push, delete runtime evidence, or mutate Roblox/Discord unless the user asks. When a commit is requested, first follow the branch/co-author conventions currently documented in `CLAUDE.md`.
+- `CLAUDE.md` currently asks that nontrivial code implementation be delegated through `opencode run`, with the primary agent owning specification, diff review, and verification. Treat that as active until the user explicitly retires it; docs/assets and one-line config tuning are listed exceptions.
 
 ## COMMANDS
 
-```bash
-# Test (pure logic, no game needed) — must stay green
+```powershell
+# exact suite inventory (fastest reliable documentation check)
+python -m pytest --collect-only -q
+
+# complete suite; OCR/real-fixture tests can take several minutes
 python -m pytest -q
 
-# Start bot (Roblox must be open + maximized first)
+# normal console run
 python -m miningbot.main
 
-# Asset prep (all output gitignored — user-generated)
-python -m miningbot.convert_audio "chill.mp3"          # → assets/chill_reference.wav
-python -m miningbot.fetch_trackers                     # → assets/markers/*.png (7 high-tier)
-python -m miningbot.capture_template boost              # → assets/boost_active.png
-python -m miningbot.capture_template d4cool             # → assets/d4_cooldown.png
-python -m miningbot.calibrate                           # prints Region(...) for config.py
+# preferred splash/no-console route used by 啟動挖礦bot.bat
+pythonw -m miningbot
 
-# Debug one-liner (screenshot — sets DPI-aware first)
-python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"
+# asset/data/calibration tools
+python -m miningbot.convert_audio chill.mp3
+python -m miningbot.add_chill_ref --scan
+python -m miningbot.fetch_trackers
+python -m miningbot.fetch_ores
+python -m miningbot.capture_template boost
+python -m miningbot.calibrate
+python -m miningbot.calibrate_surface --import NNN
 ```
 
-**Hotkeys at runtime** (polled globally, work even with Roblox foreground):
-- **Ctrl+Q** — emergency stop (release all keys, wait for Q to resume)
-- **Q** — toggle pause / resume
-- **F12** — real exit
+On this managed Windows workspace, sandboxed `python.exe` may fail with “系統無法存取該檔案”; that is an execution-permission failure, not a pytest failure. Re-run through the approved Python/pytest path before diagnosing project code. PowerShell/OneDrive startup can also take 10–15 seconds, so give read-only inventory commands a realistic timeout.
 
-## NOTES
+## CURRENT RISK AREAS
 
-- **Tracker detection needs REAL game frames** (wiki PNGs are insufficient — see ANTI-PATTERN 8). Real in-game captures live in **`C:\Users\puppy\OneDrive\Pictures\Roblox`** (Roblox screenshot key; files `RobloxScreenShot<YYYYMMDD_HHMMSS>.png`, ~1080p). Workflow to add a tier's template or tune thresholds: search that folder for the matching frame (by time / event banner text / ore color) → load with cv2 → run `find_tracker` / `best_outline_score` to confirm → crop the frame to `assets/markers/<tier>_tracker_real.png` (no alpha → auto-joins the shape-confirm set). Irrelevant screenshots there may be deleted to reduce clutter (verify contents before deleting). Cross-tier shape generalization (one crop covering all tiers) is UNVERIFIED — low-res video frames suggest tier frame shapes may differ (yellow starburst vs blue diamond vs red flower); confirm with full-res real frames.
-- **Reference frame on disk**: `assets/very_rare.png` is a real Transcendent-tier frame (Ionized, red cave, blue diamond frame + lime center) with the tracker at ~(1230,643) — used by `tests/test_vision.py::test_find_tracker_hybrid_detects_real_marker`.
-- **Log streams**: 分檔（propagate=False 隔離）—`miningbot.log`(主敘事), `heartbeat.log`(心跳+RMS), `actions.log`(boost/D4), `harvest.log`(sweep/D3細節), `discord.log`(通知+命令), `events.log`(TSV), `snapshots/*.png`+`chill_audio_*.wav`. Flip `cfg.log_level="DEBUG"` for per-frame detail.
-- **SSH Session 0 Isolation**: bot must run on local desktop, not via SSH — audio loopback and Win32 foreground APIs don't work in Session 0 (`docs/HANDOFF.md` §6.1).
-- **Tesseract path** is hardcoded to `C:\Program Files\Tesseract-OCR\tesseract.exe` (UB-Mannheim build) in `config.py:81`.
-- **DPI scaling note**: this machine runs 125% DPI → `GetWindowRect` reports 1536×864, not 1920×1080. `tests/test_window.py` baseline reflects this. The bot uses **baseline-relative** comparison, not absolute pixels.
-- **3 known limitations** (per `docs/HANDOFF.md` §7): (A) `find_tracker` false-positive on red chat text inside `chat_region`; (B) 「 礦已被自動挖走」無法自動偵測（聊天只顯示 礦名不帶 tier）；(C) D3 階段超時檢查有 blocking 問題（sleep 序列阻塞主迴圈）。
-- **123 tests green** (2026-06-28). game_data 新增 18 測試（event match/fuzzy/embed/is_kept）；vision template matching 加 8 測試。
+- `main.py` is the dominant complexity hotspot and still has several intentional direct state assignments outside the central commit path. Search all `self.state =` sites when adding/changing a state.
+- Remote aim/re-entry and zoom are new (2026-07-12) and need more live-game evidence than their pure tests provide.
+- `scan_confirm_mode` is `off` and its region is not calibrated for the taskbar-visible layout; do not enable enforcement by assumption.
+- Machine-local PNG/WAV assets are necessary for best runtime behavior but mostly absent from git. Preflight warnings and `assets/README.md` must be checked on a fresh machine.
+- `docs/HANDOFF.md` §9 is actively dangerous as a current backlog; H040 and later code reverse several recommendations there.

@@ -202,6 +202,13 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   **寧漏勿誤**：面板分數低於門檻/按鈕文字對 target 沒有嚴格贏過 decoy → 不點、reroll（再按回到地表換重生點）；
   reroll 用盡（`reentry_max_attempts`）→ NEEDS_HUMAN＝今日現狀。決策純函式在 `reentry.py`（有單元測試），
   I/O 在 `Bot._tick_reentry`；座標/門檻全在 config `reentry_*`，實機校準（R 鍵取樣＋`calibrate_surface`）完成前勿開。
+  **H043（2026-07-13）虛空墜落**：重置瞬間人還在礦內＝礦體消失直接掉虛空（Depth 33M+、畫面全黑），
+  **虛空下墜中「Go to surface」幾乎點不動**（地表同一點擊 100% 有效、座標/點擊機制都沒問題）→
+  (1) remote 模式 RESET_WAIT 進場**即撤離**（banner 出現礦體還在、點擊可靠，先按回到地表）；
+  (2) 撤離/開場共用 `_click_surface_verified`（幀差驗證＋重試 `reentry_click_retries`，重試前游標移中央再移回）；
+  (3) `reentry_teleport_diff` 25→**12**（虛空→夜間地表傳送穩定幀差僅 ~19，25 會漏判真傳送；噪音 ≤4.4）；
+  (4) RR 所有 Discord 發送走 `_rr_notify` 記送達結果。remote 互動已 embed 化（episode 卡片原地更新
+  ＋🎲重骰/⏭️跳過/📷重掃反應鈕，反應與文字指令同走 `_pending_reentry` 主迴圈消費）。詳 docs/incidents.md H043。
 
 ## 實機排錯（怎麼看到畫面）
 - 截圖：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → 再 Read `logs/x.png`。

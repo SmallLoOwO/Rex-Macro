@@ -176,3 +176,71 @@ class TestZoomRestore:
         assert ctx.log[0]["zoom"] == 3
         assert ctx.clicks[0]["zoom"] == 3
 
+
+# ===== Task 4：REENTRY 互動 embed 純函式（2026-07-13 spec）=====
+from miningbot.reentry_remote import (build_reentry_embed, reaction_to_reentry_reply,
+                                      REENTRY_REACTIONS)
+
+
+class TestReentryEmbed:
+    def _ctx(self, phase="awaiting_cmd"):
+        ctx = RemoteReentryContext(episode_id=42, created_at=100.0, sticky_layer="Mantle Layer")
+        ctx.attempt = 3
+        ctx.phase = phase
+        return ctx
+
+    def test_title_and_episode_id(self):
+        e = build_reentry_embed(self._ctx(), "Mantle Layer", now=160.0, evac_done=False)
+        assert e["title"] == "⛏ 回礦 #42"
+
+    def test_sticky_layer_in_description(self):
+        e = build_reentry_embed(self._ctx(), "Core Layer", now=160.0, evac_done=False)
+        assert "Core Layer" in e["description"]
+
+    def test_attempt_in_description(self):
+        e = build_reentry_embed(self._ctx(), "L", now=160.0, evac_done=False)
+        assert "attempt**：3" in e["description"]
+
+    def test_minutes_elapsed(self):
+        ctx = self._ctx()
+        e = build_reentry_embed(ctx, "L", now=160.0, evac_done=False)   # (160-100)//60=1
+        assert "1 分鐘" in e["description"]
+        e2 = build_reentry_embed(ctx, "L", now=100.0, evac_done=False)  # 0 分
+        assert "0 分鐘" in e2["description"]
+
+    def test_phase_colors(self):
+        assert build_reentry_embed(self._ctx("awaiting_cmd"), "L", 100.0, False)["color"] == 0x5865F2
+        assert build_reentry_embed(self._ctx("awaiting_fine"), "L", 100.0, False)["color"] == 0xFEE75C
+        assert build_reentry_embed(self._ctx("awaiting_confirm"), "L", 100.0, False)["color"] == 0x57F287
+
+    def test_phase_labels_in_description(self):
+        for phase, label in [("awaiting_cmd", "等指令"), ("awaiting_fine", "等細格"),
+                             ("awaiting_confirm", "等確認")]:
+            e = build_reentry_embed(self._ctx(phase), "L", 100.0, False)
+            assert label in e["description"]
+
+    def test_evac_done_annotation(self):
+        e = build_reentry_embed(self._ctx(), "L", 100.0, evac_done=True)
+        assert "已撤離" in e["description"]
+        e2 = build_reentry_embed(self._ctx(), "L", 100.0, evac_done=False)
+        assert "已撤離" not in e2["description"]
+
+    def test_footer_mentions_photos_and_updates(self):
+        e = build_reentry_embed(self._ctx(), "L", 100.0, False)
+        assert "照片訊息在上方" in e["footer"]["text"]
+        assert "原地更新" in e["footer"]["text"]
+
+
+class TestReactionToReply:
+    def test_known_emojis(self):
+        assert reaction_to_reentry_reply("🎲").kind == "reroll"
+        assert reaction_to_reentry_reply("⏭️").kind == "skip"
+        assert reaction_to_reentry_reply("📷").kind == "sweep"
+
+    def test_unknown_emoji_returns_none(self):
+        assert reaction_to_reentry_reply("👍") is None
+        assert reaction_to_reentry_reply("") is None
+
+    def test_reactions_constant(self):
+        assert REENTRY_REACTIONS == ("🎲", "⏭️", "📷")
+

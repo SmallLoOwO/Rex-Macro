@@ -307,3 +307,13 @@ fixture 位置慣例：
 - **對策（續採迴圈，寧漏勿誤）**：成功收尾前雙幀穩定 recheck 當下幀；`harvester.decide_post_success` 純決策——**距離閘** `harvest_extra_target_min_dist_px=100` 擋「剛採掉、擊中後 2~10s 才淡出」的原地殘影（兩側夾：真第二顆距上發開火點 **551px**、殘影漂移 **≤8px**，兩側各 ~5.5x/12x 餘裕）；上限 `harvest_extra_targets_max=2` 防迴圈；fired_pos 不明（晚到確認路徑）→ 不續採。CONTINUE＝重開聊天差分基準（成功已入帳，不重開則上一顆的成功行會讓第二發未命中也判 confirmed＝假成功；「episode 基準不作廢」規則護的是誤判失敗、不適用確認成功後）＋走既有 `_reharvest_sweep`（保 `_pre_scan_ref` 不自我致盲）留在 HARVESTING；net_rotations 跨目標累計、最後一次轉回。**護欄**：續採途中 sweep 全空/超時 → `EXIT_SUCCESS` 正常收尾回 MINING（bonus 框淡掉≠失敗，絕不把已成功 episode 轉成交人工）。
 - **fixture**：`assets/dual_tracker_scene.png`（開火前雙框幀→(607,223)）、`assets/post_success_second_tracker_scene.png`（成功收場幀→(1097,475)）；回歸 `tests/test_vision.py` 072 區塊＋`tests/test_harvester.py` decide_post_success/extra_mode 區塊。
 - **commit**：（本輪工作樹）
+
+## H043（2026-07-12~13，reentry ep1-3）：重置墜入虛空——「Go to surface」在虛空下墜中點不動
+- **症狀**：remote 回礦三次實機 run（07-12 19:48/21:04、07-13 16:52）全部「按回到地表畫面無變化」；`重骰` 有被消費（log 可見 focus＋點擊重跑）但一樣無效，只能 `跳過` 交人工。
+- **時間線（07-13 場）**：16:52:16 banner「reset in 28 seconds」→ 16:52:44 礦體消失、玩家自由落體墜入虛空 → 16:52:50 REENTRY 開場點擊 (1855,965) 無效 → 17:09/17:10 兩次重骰同樣無效 → 17:18 實機截圖：畫面全黑、**Depth 33,290,005m 持續增加**（掛 25 分鐘還在掉）。
+- **一句話根因**：RESET_WAIT 等 banner 消失才進 REENTRY ＝ 重置瞬間人還在礦內 → 礦體消失直接掉進虛空；**虛空下墜狀態「Go to surface」按鈕幾乎不回應**（活體實驗：瞬間點/hold 0.35s/懸停 0.3s 全滅、僅偶發成功；同時刻 hotbar `^` 鈕即點即開＝合成點擊與座標都沒問題）。
+- **反證實驗（地表狀態）**：同一 `focus→grab→click_at` 原序列 100% 傳送成功；重複點＝換重生點（spec 重骰語意成立）。
+- **附帶量測**：傳送幀差——虛空→夜間地表穩定值僅 ~19、地表換重生點最低 26.8、無變化噪音 ≤4.4 → 舊門檻 `reentry_teleport_diff=25` 會漏判真傳送，降 12.0（兩側夾）。
+- **對策**：(1) **RESET_WAIT 進場即撤離**——banner 出現時礦體還在、點擊可靠，先按回到地表離開礦坑，不讓人掉虛空（僅 remote 模式）；(2) 撤離/開場點擊共用 `_click_surface_verified`：幀差驗證＋重試 `reentry_click_retries=3`（重試前游標移中央再移回、多一次真實移動事件）；(3) 開場失敗警告附當下截圖（全黑＝虛空一眼可辨）；(4) `_rr_notify` 統一記錄 Discord 送達結果（舊版 send_message 回傳被丟棄、送沒送到無從稽核）。
+- **診斷佐證**：logs/reentry_debug_now.png（虛空全黑幀）、logs/exp2_after.png（傳送成功幀）；memory `reentry-void-fall`。
+- **commit**：（本輪工作樹；同輪含 REENTRY 互動 embed 化——🎲重骰/⏭️跳過/📷重掃反應鈕）
