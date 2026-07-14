@@ -216,6 +216,17 @@ class Config:
                                                  # （輸入被吃家族既有教訓——焦點剛切回就送點擊會被吃）
     reentry_click_retries: int = 3              # 單次撤離/開場的「回到地表」點擊重試上限（虛空下偶發
                                                  # 成功前都有真實滑鼠移動事件；重試前 move_to 中央再移回按鈕）
+    reentry_game_region: Region = field(default_factory=lambda: Region(1100, 200, 690, 650))
+    # ↑ H044 遊戲專屬觀測區（右側場景帶 x1100-1790/y200-850）：避開頂部橫幅、左側聊天/NORMAL
+    #   面板、右側按鈕欄（x≥1800）、左下 HUD，也避開使用者常放覆蓋視窗的中央區。傳送驗證量此區。
+    #   ⚠ 此區必須保持無覆蓋視窗；改座標須重裁 tests/fixtures/reentry/h044_*.png。
+    reentry_teleport_frac: float = 0.05         # 傳送雙訊號之二（frames_changed_frac ≥ 此值＝傳送）。
+    #   兩側夾（H044）：真傳送 0.9966 / 活著靜止 ≤0.0004 / 凍結 0.0000。mean 會被夜空大片黑稀釋，
+    #   frac 補位；與 reentry_teleport_diff 取 OR。
+    reentry_open_retry_wait_s: float = 20.0     # 開場探測：判「未傳送」後隔多久再點一次（H044 凍結中
+    #   點擊無反應，點擊本身就是探針；被動凍結偵測已被量測否決——活著靜止畫面與凍結像素不可分）
+    reentry_open_budget_s: float = 300.0        # 開場探測總預算（自 episode 首擊起算；實測凍結 1~2.5
+    #   分鐘，300s 蓋過最壞觀測 2 倍）。用盡→通知一次附截圖，等 重骰/跳過/回礦
     reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
     reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
     reentry_panel_dir: str = "assets/surface"   # 面板偵測模板資料夾（實機裁圖）

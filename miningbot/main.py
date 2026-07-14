@@ -13,7 +13,8 @@ from .config import DEFAULT as cfg
 from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining, can_consume_ability,
-                     should_notify_spawn_chill, update_capacity_streak)
+                     should_notify_spawn_chill, update_capacity_streak,
+                     can_accept_manual_reentry)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote
 from . import input_control as ic
@@ -23,7 +24,7 @@ from .preflight import PreflightFacts, run_checks
 # 不需 ! 前綴：使用者直接打 `status` 即觸發（打 `!status` 也相容，見 _handle_discord_command）。
 _DISCORD_COMMANDS = frozenset({
     "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
-    "ability",
+    "ability", "回礦", "reenter",
 })
 
 # 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
@@ -156,6 +157,12 @@ class Bot:
         self._skip_env_check = threading.Event()
         self._startup_phase = False
         self._stuck_notified = False
+        self._manual_reentry = False           # Discord 回礦 指令/STUCK 🏠（輪詢執行緒寫、主迴圈消費）
+        self._rr_trigger = "reset"             # 本輪 REENTRY 觸發來源（reset/manual；建 ctx 時寫入）
+        self._stuck_alert_mid = None           # STUCK 警告訊息 id（🏠 反應輪詢；進度恢復即作廢）
+        self._stuck_seen = set()               # 🏠 已見使用者基線（含 bot 自己貼的）
+        self._rr_open_first_ts = 0.0           # H044 開場探測：episode 首擊時刻（0=非探測中）
+        self._rr_open_last_ts = 0.0            # H044 開場探測：上一次探測時刻
         self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
         self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
@@ -617,6 +624,9 @@ class Bot:
         # chill 未確認（require_ocr 下 OCR 沒過）才照常檢查 reset，不漏判礦坑重置。
         chill_confirmed = chill_audio and chill_text
         mine_resetting = False if chill_confirmed else self._check_reset(frame)
+        manual = self._manual_reentry
+        if manual:
+            self._manual_reentry = False        # 一次性消費：不留舊旗標補刀（比照 aim-reply 不排隊）
         return Observation(chill_audio=chill_audio, chill_text=chill_text,
                            harvest_done=False, harvest_failed=False,
                            human_cleared=self.human_cleared,
@@ -624,7 +634,8 @@ class Bot:
                            reset_complete=self._update_reset_complete(),
                            reentry_done=self._reentry_done,
                            reentry_failed=self._reentry_failed,
-                           auto_reenter=self._reentry_active())
+                           auto_reenter=self._reentry_active(),
+                           manual_reentry=manual)
 
     def _update_reset_complete(self) -> bool:
         """RESET_WAIT 中追蹤「banner reset 字樣已消失＋沉澱夠久」（REENTRY 觸發條件）。
@@ -1116,6 +1127,10 @@ class Bot:
         # Task 4：REENTRY episode embed 反應輪詢（只在 REENTRY 且 embed 存活時跑）
         if self._rr_embed_mid and self.state is State.REENTRY:
             self._poll_rr_reactions()
+        if self._stuck_alert_mid and self.state is not State.MINING:
+            self._stuck_alert_mid = None       # 離開 MINING＝卡住語境失效，🏠 作廢（訊息留著）
+        elif self._stuck_alert_mid:
+            self._poll_stuck_reaction()
         # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
         # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
         # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
@@ -1508,6 +1523,23 @@ class Bot:
             self.log_discord.info("CMD ability -> queued state=%s paused=%s",
                                   self.state.value, self.paused)
 
+        elif cmd in ("回礦", "reenter"):
+            # 手動觸發回礦（H044 spec 第 3 節；用途不限卡死——蒐集面板樣本等皆可）。
+            # 輪詢執行緒只寫旗標；狀態守門走純函式 can_accept_manual_reentry。
+            ok, reason = can_accept_manual_reentry(self.state, self._reentry_active())
+            if not ok:
+                notify.send_message(token, ch, f"❌ 回礦未接受：{reason}")
+            else:
+                self._manual_reentry = True
+                unpause = ""
+                if self.paused:
+                    self.paused = False           # 比照 resume：手動回礦隱含「動起來」
+                    self._antiafk_last = 0.0
+                    unpause = "（已解除暫停）"
+                notify.send_message(token, ch,
+                    f"⛏ 手動回礦已排入{unpause}（狀態: {self.state.value}）→ 下個 tick 進 REENTRY")
+            self.log_discord.info("CMD 回礦 -> accepted=%s state=%s", ok, self.state.value)
+
         elif cmd == "help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
@@ -1516,6 +1548,7 @@ class Bot:
                 "`status` — 查詢目前狀態、統計、保留清單\n"
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
                 "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
+                "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
                 "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
@@ -1675,6 +1708,14 @@ class Bot:
                 self._latest_frame = frame       # 發佈給背景 banner OCR worker（唯讀共享）
                 obs = self.observe(frame)
                 decided = decide_transition(self.state, obs)
+                if obs.manual_reentry:
+                    if decided is State.REENTRY:
+                        self._rr_trigger = "manual"
+                        self._evac_done = False   # 手動觸發沒有撤離步驟，footer 不得沿用上輪殘值
+                    else:   # 競態：指令到消費之間狀態變了（如 chill 搶轉）→ 明講不動作
+                        self._rr_notify(f"ℹ️ 回礦指令已忽略（{self.state.value} 優先轉 {decided.value}）")
+                elif decided is State.REENTRY and self.state is not State.REENTRY:
+                    self._rr_trigger = "reset"
                 if decided != self.state:
                     self.log.log("STATE_CHANGE", from_=self.state.value, to=decided.value)
                     # _on_enter 回傳降級目標（例：MINING 入口重新聚焦失敗 → NEEDS_HUMAN），
@@ -2216,6 +2257,7 @@ class Bot:
             if diff >= cfg.stuck_frame_diff_threshold or action is not None:
                 self._last_progress = time.time()
                 self._stuck_notified = False
+                self._stuck_alert_mid = None       # 進度恢復＝卡住解除，🏠 作廢
         self._prev_frame = cur
         if (not self._stuck_notified
                 and time.time() - self._last_progress > cfg.stuck_timeout_s):
@@ -2223,6 +2265,7 @@ class Bot:
             self.stats["stuck"] += 1
             self._snapshot(frame, "stuck")
             self._alert("腳本可能卡住了")
+            self._notify_stuck(f"{cfg.stuck_timeout_s:.0f}s 無進度")
             self._stuck_notified = True
 
     def _tracker_log(self, msg):
@@ -3163,6 +3206,32 @@ class Bot:
             finally:
                 self._rr_busy = False
             return
+        # H044 開場探測：上一擊未傳送（first_ts 非 0）→ 依節奏重探/放棄。使用者指令優先
+        #（重骰/跳過照常走 pending 消費；重骰失敗會回到這裡繼續計預算）。
+        if self._rr_open_first_ts and self._pending_reentry is None:
+            act = reentry_remote.plan_open_retry(
+                self._rr_open_first_ts, time.time(),
+                cfg.reentry_open_retry_wait_s, cfg.reentry_open_budget_s,
+                self._rr_open_last_ts)
+            if act == "probe":
+                self._rr_busy = True
+                try:
+                    self._rr_open_episode(reroll=True)
+                finally:
+                    self._rr_busy = False
+                return
+            if act == "give_up":
+                self._rr_open_first_ts = 0.0
+                snap = capture.grab()
+                path = self._rr_sync_write(
+                    snap, f"reentry_ep{self._rr_ctx.episode_id}_open_nochange")
+                self._rr_notify(
+                    f"⚠ 回礦 #{self._rr_ctx.episode_id}：「回到地表」點了 "
+                    f"{int(cfg.reentry_open_budget_s)}s 畫面都無變化"
+                    "（全黑＝虛空；有畫面＝凍結或按鈕失效）。回 `重骰` 重試或 `跳過`",
+                    image_paths=[path])
+                return
+            # act == "wait" → 落到下方等待分支更新 HUD
         if self._pending_reentry is not None:
             (raw, reply), self._pending_reentry = self._pending_reentry, None
             reentry_remote.log_command(self._rr_ctx, raw, reply, time.time())
@@ -3175,7 +3244,10 @@ class Bot:
             # 等待指令：更新 HUD 顯示（last_action 進 status_hud 的「動作」欄）
             ctx = self._rr_ctx
             mins = int((time.time() - ctx.created_at) // 60)
-            self.last_action = f"回礦等待指令 #{ctx.episode_id}（已等 {mins} 分）"
+            if self._rr_open_first_ts:
+                self.last_action = f"回礦開場探測中 #{ctx.episode_id}（畫面可能凍結，已 {mins} 分）"
+            else:
+                self.last_action = f"回礦等待指令 #{ctx.episode_id}（已等 {mins} 分）"
             # Task 4：分鐘數變了才 edit embed（每分鐘最多 1 次 PATCH，防 rate limit）
             if self._rr_embed_mid and mins != self._rr_last_min:
                 self._rr_edit_embed()
@@ -3190,6 +3262,7 @@ class Bot:
 
     def _rr_finalize(self, outcome):
         """episode 收尾：刪 embed 卡片、寫 ledger 一行、清 context/pending。"""
+        self._rr_open_first_ts = 0.0             # episode 收尾清探測狀態
         # Task 4：episode 結束收走 embed 卡片（避免殘留一堆死卡）。放在 ctx 清除前，
         # 即使 ctx 已 None（防禦性呼叫）也能清掉殘留 embed。
         if self._rr_embed_mid:
@@ -3250,11 +3323,14 @@ class Bot:
 
         不查 _mine_resetting（RESET_WAIT 本就 resetting；REENTRY 開場若 reset，幀差暴增被判
         teleported，下一 tick _rr_abort_reset 收尾）。只查 _running／paused（關閉或暫停即中止）。
+
+        H044 起量 reentry_game_region（全幀會被覆蓋視窗重繪灌爆＝凍結中假傳送）；frac 雙訊號
+        補「夜空大片黑稀釋 mean」的地表↔地表傳送。
         """
         for attempt in range(1, cfg.reentry_click_retries + 1):
             if not self._running or self.paused:
                 return False
-            ref = capture.grab()
+            ref = capture.crop(capture.grab(), cfg.reentry_game_region)
             ic.click_at(*cfg.reentry_surface_button_xy)
             deadline = time.time() + cfg.reentry_teleport_wait_s
             max_diff = 0.0
@@ -3262,19 +3338,21 @@ class Bot:
                 time.sleep(0.4)
                 if not self._running or self.paused:
                     return False
-                d = vision.frame_mean_diff(ref, capture.grab())
+                cur = capture.crop(capture.grab(), cfg.reentry_game_region)
+                d = vision.frame_mean_diff(ref, cur)
+                fr = vision.frames_changed_frac(ref, cur) or 0.0
                 if d > max_diff:
                     max_diff = d
-                if d >= cfg.reentry_teleport_diff:
-                    self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f -> teleported",
-                                      tag, attempt, cfg.reentry_click_retries, max_diff)
+                if d >= cfg.reentry_teleport_diff or fr >= cfg.reentry_teleport_frac:
+                    self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> teleported",
+                                      tag, attempt, cfg.reentry_click_retries, max_diff, fr)
                     return True
             # 未達門檻：游標移中央再移回按鈕，重試
             ic.move_to(960, 540)
             ic.move_to(*cfg.reentry_surface_button_xy)
-            self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f < %.1f -> retry",
+            self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> retry",
                               tag, attempt, cfg.reentry_click_retries,
-                              max_diff, cfg.reentry_teleport_diff)
+                              max_diff, fr)
         return False
 
     # ---- Task 4：REENTRY 互動 embed（比照遙控器四件套，但作用域是單一 episode）-----
@@ -3363,6 +3441,58 @@ class Bot:
                                   emoji, ",".join(sorted(new_clickers)), reply.kind)
             break
 
+    def _notify_stuck(self, reason: str):
+        """STUCK Discord 警告＋🏠 手動回礦反應鈕（H044 spec 第 3 節）。
+
+        取代舊 STUCK 事件模板（notify._TEMPLATES 已移除，避免雙發）。回礦未啟用＝純文字。
+        在主迴圈跑（與舊 sink 同步發送同成本）；失敗只記 log。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        active = self._reentry_active()
+        text = f"⚠️ 腳本可能卡住：{reason}"
+        if active:
+            text += "\n點 🏠 或回 `回礦` ＝手動回礦自救（回地表→傳圖→你指揮）"
+        ok, detail, mid = notify.send_message_with_id(token, ch, text)
+        self.log_discord.info("STUCK alert -> %s (mid=%s)", detail, mid)
+        if not (ok and mid and active):
+            return
+        notify.add_reaction(token, ch, mid, "🏠")
+        users = notify.get_reactions(token, ch, mid, "🏠")
+        self._stuck_alert_mid = mid
+        self._stuck_seen = {u.get("id") for u in users if u.get("id")}   # 基線含 bot 自己
+
+    def _poll_stuck_reaction(self):
+        """輪詢 STUCK 警告的 🏠：新點擊＝手動回礦（與 `回礦` 指令同一旗標）。
+
+        Discord 輪詢執行緒：只寫旗標/回覆，絕不碰 input_control。
+        fetch 失敗回空 list → 不同步 seen（照抄 _poll_remote_reactions 守門）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        mid = self._stuck_alert_mid
+        if not mid:
+            return
+        users = notify.get_reactions(token, ch, mid, "🏠")
+        if not users:
+            return
+        user_ids = {u.get("id") for u in users if u.get("id")}
+        new_clickers = user_ids - self._stuck_seen
+        self._stuck_seen = set(user_ids)
+        if not new_clickers:
+            return
+        ok, reason = can_accept_manual_reentry(self.state, self._reentry_active())
+        if not ok:
+            notify.send_message(token, ch, f"❌ 回礦（🏠）未接受：{reason}")
+            return
+        self._manual_reentry = True
+        if self.paused:
+            self.paused = False
+            self._antiafk_last = 0.0
+        self._stuck_alert_mid = None       # 一次性：觸發後按鈕作廢（訊息留著）
+        notify.send_message(token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
+        self.log_discord.info("STUCK 🏠 by %s -> manual_reentry", ",".join(sorted(new_clickers)))
+
     def _rr_open_episode(self, reroll: bool = False):
         """按回到地表 → 等傳送 → 俯仰歸位 → 八方位拍照 → Discord 發送 → 建/續 context。
 
@@ -3373,16 +3503,22 @@ class Bot:
             self._rr_notify("⚠ 無法聚焦 Roblox，回 `重骰` 重試或 `跳過`")
             self._rr_ensure_ctx(reroll)
             return
+        now = time.time()
+        if self._rr_open_first_ts == 0.0:
+            self._rr_open_first_ts = now         # 探測預算起算（episode 首擊）
         teleported = self._click_surface_verified("開場")
         self._rr_ensure_ctx(reroll)
+        self._rr_open_last_ts = time.time()
         if not teleported:
-            # 附當下截圖：全黑畫面一眼即知在虛空（背景 1）
-            snap = capture.grab()
-            path = self._rr_sync_write(snap, f"reentry_ep{self._rr_ctx.episode_id}_open_nochange")
-            self._rr_notify(f"⚠ 回礦 #{self._rr_ctx.episode_id}：按「回到地表」畫面無變化"
-                            "（全黑＝在虛空）。回 `重骰` 重試或 `跳過`",
-                            image_paths=[path])
+            # H044 探測式開場：未傳送（凍結/虛空/按鈕失效）→ 不通知、不拍圖，排下一次探測；
+            # 預算用盡才通知一次（_tick_reentry_remote 依 plan_open_retry 決策）。
+            self.logger.info("[RR#%s] 開場點擊無反應（可能凍結/虛空）——%.0fs 後再探（預算剩 %.0fs）",
+                             self._rr_ctx.episode_id, cfg.reentry_open_retry_wait_s,
+                             max(0.0, cfg.reentry_open_budget_s
+                                 - (time.time() - self._rr_open_first_ts)))
+            self.last_action = "回礦開場探測中（畫面可能凍結）"
             return
+        self._rr_open_first_ts = 0.0             # 傳送成功：清探測狀態
         time.sleep(1.0)                          # 傳送落地沉澱
         ok = self._pitch_drag_verified(
             f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位",
@@ -3416,7 +3552,8 @@ class Bot:
             pass
         self._rr_ctx = reentry_remote.RemoteReentryContext(
             episode_id=reentry_remote.next_episode_id(last),
-            created_at=time.time(), sticky_layer=self._rr_sticky_layer)
+            created_at=time.time(), sticky_layer=self._rr_sticky_layer,
+            trigger=self._rr_trigger)
 
     def _rr_sweep_and_send(self, prefix_msg: str = ""):
         """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""

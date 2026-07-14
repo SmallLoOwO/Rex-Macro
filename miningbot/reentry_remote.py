@@ -141,6 +141,7 @@ class RemoteReentryContext:
     clicks: list = field(default_factory=list)   # 點擊記錄（ground truth 本體）
     walked: bool = False         # 本 episode 用過 `走`（movement mode 已切、收尾要切回）
     net_zoom: int = 0            # 淨 zoom 步數（+＝遠）；重骰不清（鏡頭距離跨重生點持續）
+    trigger: str = "reset"       # 本 episode 觸發來源：reset（礦坑重置）/ manual（回礦 指令、🏠）
 
 
 def next_episode_id(last_ledger_line):
@@ -151,6 +152,22 @@ def next_episode_id(last_ledger_line):
         return int(json.loads(last_ledger_line).get("episode", 0)) + 1
     except (ValueError, KeyError, TypeError):
         return 1
+
+
+def plan_open_retry(first_open_ts: float, now: float, wait_s: float,
+                    budget_s: float, last_probe_ts: float) -> str:
+    """開場探測節奏（H044）：上一擊判「未傳送」後的下一步。
+
+    "probe"＝間隔已到且預算未盡（再點一次「回到地表」當探針）；
+    "wait"＝間隔未到（主迴圈下 tick 再問）；"give_up"＝預算用盡（通知一次、等人工）。
+    預算從 episode 第一擊（first_open_ts）起算——凍結 1~2.5 分鐘是常態，探測本身無害
+    （點了沒反應＝什麼都沒發生），預算只是「該告訴人類了」的收口。
+    """
+    if now - first_open_ts >= budget_s:
+        return "give_up"
+    if now - last_probe_ts >= wait_s:
+        return "probe"
+    return "wait"
 
 
 def log_command(ctx, raw, reply, now):
@@ -170,7 +187,8 @@ def ledger_entry(ctx, outcome, world, duration_s):
             "outcome": outcome, "attempt": ctx.attempt,
             "sticky_layer": ctx.sticky_layer, "shots": list(ctx.shots),
             "log": list(ctx.log), "clicks": list(ctx.clicks),
-            "duration_s": round(duration_s, 1)}
+            "duration_s": round(duration_s, 1),
+            "trigger": ctx.trigger}
 
 
 def void_entry(episode_id, click_index, now):
@@ -220,7 +238,8 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool) -> 
             f"反應鈕：🎲 重骰　⏭️ 跳過　📷 重新掃描"
         ),
         "color": color,
-        "footer": {"text": "照片訊息在上方；此卡會隨進度原地更新"},
+        "footer": {"text": ("手動觸發｜" if ctx.trigger == "manual" else "")
+                           + "照片訊息在上方；此卡會隨進度原地更新"},
     }
 
 

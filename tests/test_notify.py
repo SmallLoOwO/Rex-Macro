@@ -2,6 +2,7 @@ import threading
 import time
 from miningbot.notify import (format_message, make_async_sink, format_group_messages,
                               find_remote_messages)
+from miningbot import notify
 from miningbot.events import EventRecord
 
 
@@ -65,9 +66,14 @@ def test_no_harvest_id_means_no_prefix():
     assert m is not None and not m.startswith("[H")
 
 
-def test_stuck_includes_reason():
-    m = format_message(rec("STUCK", reason="60s 無進度"))
-    assert m is not None and "60s 無進度" in m
+def test_stuck_no_longer_templated():
+    # H044 起 STUCK 走 Bot._notify_stuck 專屬路徑（送出後掛 🏠），事件模板移除避免雙發
+    assert format_message(rec("STUCK", reason="60s 無進度")) is None
+
+
+def test_send_message_with_id_requires_credentials():
+    ok, detail, mid = notify.send_message_with_id("", "", "hi")
+    assert ok is False and mid is None
 
 
 def test_mine_reset_message():

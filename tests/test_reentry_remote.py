@@ -244,3 +244,43 @@ class TestReactionToReply:
     def test_reactions_constant(self):
         assert REENTRY_REACTIONS == ("🎲", "⏭️", "📷")
 
+
+# ===== H044：開場探測節奏＋手動觸發記帳 =====
+from miningbot.reentry_remote import plan_open_retry
+
+
+def test_plan_open_retry_probe_when_interval_elapsed():
+    assert plan_open_retry(0.0, 25.0, 20.0, 300.0, 0.0) == "probe"
+
+
+def test_plan_open_retry_wait_before_interval():
+    assert plan_open_retry(0.0, 10.0, 20.0, 300.0, 0.0) == "wait"
+
+
+def test_plan_open_retry_give_up_at_budget():
+    assert plan_open_retry(0.0, 300.0, 20.0, 300.0, 250.0) == "give_up"
+
+
+def test_plan_open_retry_budget_wins_over_interval():
+    # 預算已盡且間隔也到：give_up 優先（不再多點一擊）
+    assert plan_open_retry(0.0, 400.0, 20.0, 300.0, 0.0) == "give_up"
+
+
+def test_ctx_trigger_default_reset_and_ledger_records_it():
+    ctx = RemoteReentryContext(episode_id=9, created_at=0.0,
+                               sticky_layer="Mantle Layer")
+    assert ctx.trigger == "reset"
+    entry = ledger_entry(ctx, "success", "Aesteria", 12.3)
+    assert entry["trigger"] == "reset"
+
+
+def test_embed_footer_marks_manual_trigger():
+    ctx = RemoteReentryContext(episode_id=9, created_at=0.0,
+                               sticky_layer="Mantle Layer",
+                               trigger="manual")
+    embed = build_reentry_embed(ctx, "Mantle Layer", 60.0, False)
+    assert embed["footer"]["text"].startswith("手動觸發｜")
+    ctx.trigger = "reset"
+    embed = build_reentry_embed(ctx, "Mantle Layer", 60.0, False)
+    assert "手動觸發" not in embed["footer"]["text"]
+

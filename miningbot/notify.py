@@ -31,6 +31,7 @@ REACTION_USER_API = "https://discord.com/api/v10/channels/{channel_id}/messages/
 
 # 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停/繼續、心跳…）不送，避免洗版。
 # PAUSED/RESUMED 不送——會手動暫停的人一定在畫面前，不需要 Discord 提醒。
+# STUCK 不在此：H044 起走 Bot._notify_stuck 專屬路徑（送出後掛 🏠 手動回礦反應鈕）
 _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",
@@ -41,7 +42,6 @@ _TEMPLATES = {
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "SPAWN_CHILL":     lambda m: (f"💎 spawn chill！稀有礦可能生在 礦坑刷新的預設方塊，"
                                   f"bot 處於 {m.get('state', '?')} 挖不到，請手動處理"),
-    "STUCK":           lambda m: f"⚠️ 腳本可能卡住：{m.get('reason', '無進度')}",
     "MINE_RESET":      lambda m: "🔄 礦坑重置，已停下等待重新定位（按 Q 繼續）",
     "REENTRY_START":   lambda m: "⛏️ 礦坑已重置，開始自動回礦…",
     "REENTRY_SUCCESS": lambda m: f"✅ 自動回礦成功（第 {m.get('attempts', '?')} 輪），恢復挖礦",
@@ -91,8 +91,18 @@ def format_group_messages(content: str, image_groups) -> list:
 
 def send_message(token: str, channel_id: str, content: str, timeout: float = 10.0):
     """直接送一則純文字訊息到 Discord 頻道。回 (ok: bool, detail: str)。"""
+    ok, detail, _ = send_message_with_id(token, channel_id, content, timeout)
+    return ok, detail
+
+
+def send_message_with_id(token: str, channel_id: str, content: str, timeout: float = 10.0):
+    """送純文字訊息並回 (ok, detail, message_id)——需要對該訊息貼反應/編輯時用。
+
+    message_id 取自 Discord 回應 JSON 的 "id"（比照 send_embed）；失敗時 None。
+    STUCK 🏠 手動回礦鈕（H044）靠它拿 mid 貼反應。
+    """
     if not token or not channel_id:
-        return False, "缺少 token 或 channel_id"
+        return False, "缺少 token 或 channel_id", None
     url = API.format(channel_id=channel_id)
     data = json.dumps({"content": content}).encode("utf-8")
     req = urllib.request.Request(
@@ -105,12 +115,17 @@ def send_message(token: str, channel_id: str, content: str, timeout: float = 10.
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return True, f"HTTP {resp.status}"
+            body = resp.read().decode("utf-8", "replace")
+            try:
+                mid = json.loads(body).get("id")
+            except (ValueError, AttributeError):
+                mid = None
+            return True, f"HTTP {resp.status}", mid
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
-        return False, f"HTTP {e.code}: {body}"
+        return False, f"HTTP {e.code}: {body}", None
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", None
 
 
 def _build_multipart(payload: dict, files: list[tuple[str, bytes]]) -> tuple[bytes, str]:

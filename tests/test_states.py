@@ -1,7 +1,7 @@
 from miningbot.states import (State, Observation, decide_transition,
                               resolve_state_transition,
                               toggle_pause_action, is_blocked_from_mining,
-                              can_consume_ability,
+                              can_consume_ability, can_accept_manual_reentry,
                               should_notify_spawn_chill,
                               update_capacity_streak)
 
@@ -256,3 +256,55 @@ def test_can_consume_ability_harvesting_no():
 def test_can_consume_ability_reentry_no():
     # 自動回礦導航中——同上，不消費
     assert can_consume_ability(State.REENTRY) is False
+
+
+# ===== H044 spec 第 3 節：手動回礦觸發 =====
+def _obs_manual(**kw):
+    base = dict(chill_audio=False, chill_text=False, harvest_done=False,
+                harvest_failed=False, human_cleared=False,
+                manual_reentry=True, auto_reenter=True)
+    base.update(kw)
+    return Observation(**base)
+
+
+def test_manual_reentry_from_mining():
+    assert decide_transition(State.MINING, _obs_manual()) is State.REENTRY
+
+
+def test_manual_reentry_from_needs_human_beats_human_cleared():
+    o = _obs_manual(human_cleared=True)
+    assert decide_transition(State.NEEDS_HUMAN, o) is State.REENTRY
+
+
+def test_manual_reentry_from_reset_wait_bypasses_reset_complete():
+    o = _obs_manual(mine_resetting=True, reset_complete=False)
+    assert decide_transition(State.RESET_WAIT, o) is State.REENTRY
+
+
+def test_manual_reentry_ignored_without_auto_reenter():
+    o = _obs_manual(auto_reenter=False)
+    assert decide_transition(State.MINING, o) is State.MINING
+
+
+def test_manual_reentry_mining_loses_to_chill_and_reset():
+    o = _obs_manual(chill_audio=True, chill_text=True)
+    assert decide_transition(State.MINING, o) is State.HARVESTING
+    o = _obs_manual(mine_resetting=True)
+    assert decide_transition(State.MINING, o) is State.RESET_WAIT
+
+
+def test_manual_reentry_does_not_touch_harvesting():
+    assert decide_transition(State.HARVESTING, _obs_manual()) is State.HARVESTING
+
+
+def test_can_accept_manual_reentry_matrix():
+    ok, _ = can_accept_manual_reentry(State.MINING, True)
+    assert ok
+    ok, _ = can_accept_manual_reentry(State.RESET_WAIT, True)
+    assert ok
+    ok, reason = can_accept_manual_reentry(State.HARVESTING, True)
+    assert not ok and "採集" in reason
+    ok, reason = can_accept_manual_reentry(State.REENTRY, True)
+    assert not ok and "回礦" in reason
+    ok, reason = can_accept_manual_reentry(State.MINING, False)
+    assert not ok and "未啟用" in reason

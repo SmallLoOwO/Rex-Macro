@@ -20,13 +20,16 @@ class Observation:
     reentry_done: bool = False     # _tick_reentry 回報成功（已回礦內）
     reentry_failed: bool = False   # reroll 用盡（→ NEEDS_HUMAN）
     auto_reenter: bool = False     # 任一回礦模式（remote/auto）啟用（Bot._reentry_active()；off＝RESET_WAIT 維持今日等人工行為）
+    manual_reentry: bool = False   # Discord `回礦` 指令/STUCK 🏠 反應：手動觸發回礦（H044 spec 第 3 節）
 
 def decide_transition(state: State, o: Observation) -> State:
     if state is State.MINING:
         if o.chill_audio and o.chill_text:   # 稀有優先（雙重確認）
             return State.HARVESTING
-        if o.mine_resetting:                 # 偵測到重置 → 暫停等定位
+        if o.mine_resetting:                 # 偵測到重置 → 暫停等定位（回礦由重置流程接手）
             return State.RESET_WAIT
+        if o.manual_reentry and o.auto_reenter:   # 手動回礦（蒐集素材/卡死自救，用途不限）
+            return State.REENTRY
         return State.MINING
     if state is State.HARVESTING:
         if o.harvest_failed:
@@ -35,10 +38,14 @@ def decide_transition(state: State, o: Observation) -> State:
             return State.MINING
         return State.HARVESTING
     if state is State.NEEDS_HUMAN:
+        if o.manual_reentry and o.auto_reenter:   # 手動優先於 human_cleared（更明確的意圖）
+            return State.REENTRY
         return State.MINING if o.human_cleared else State.NEEDS_HUMAN
     if state is State.RESET_WAIT:
         if o.chill_audio and o.chill_text:   # 例外：重置期間意外出現稀有 → 強制採集
             return State.HARVESTING
+        if o.manual_reentry and o.auto_reenter:   # 人工強制：繞過 reset_complete（凍結逃生口）
+            return State.REENTRY
         if o.human_cleared:                  # 使用者重新定位後按 Q＝明確接手，優先於自動路徑
             return State.MINING
         if o.auto_reenter and o.reset_complete:
@@ -148,6 +155,21 @@ def can_consume_ability(state: State) -> bool:
     旗標留著不消費，回到可消費狀態（MINING 等）後自然執行。
     """
     return state not in (State.HARVESTING, State.REENTRY)
+
+
+def can_accept_manual_reentry(state: State, reentry_active: bool) -> tuple[bool, str]:
+    """Discord `回礦` 指令／STUCK 🏠 的接收守門（純函式）。回 (可接受, 拒絕原因)。
+
+    HARVESTING 拒收：採集有自己的超時/giveup 路徑，插入回礦會亂時序；也不排隊
+    （比照 aim-reply「不排隊，避免舊指令補刀」）。REENTRY 拒收：已在流程中。
+    """
+    if not reentry_active:
+        return False, "回礦模式未啟用（reentry_mode=off 或按鈕座標未校準）"
+    if state is State.HARVESTING:
+        return False, "採集進行中，稍後再送"
+    if state is State.REENTRY:
+        return False, "已在回礦流程中（用 重骰/跳過/📷 控制）"
+    return True, ""
 
 
 def update_capacity_streak(streak: int, pct: float | None,
