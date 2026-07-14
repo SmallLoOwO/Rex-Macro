@@ -209,6 +209,16 @@ Windows 專用 Python 機器人，掛機玩 Roblox 遊戲「REX」（rex-3 wiki�
   (3) `reentry_teleport_diff` 25→**12**（虛空→夜間地表傳送穩定幀差僅 ~19，25 會漏判真傳送；噪音 ≤4.4）；
   (4) RR 所有 Discord 發送走 `_rr_notify` 記送達結果。remote 互動已 embed 化（episode 卡片原地更新
   ＋🎲重骰/⏭️跳過/📷重掃反應鈕，反應與文字指令同走 `_pending_reentry` 主迴圈消費）。詳 docs/incidents.md H043。
+  **H044（2026-07-14）重生凍結**：礦坑重生時客戶端**整個渲染凍結 1~2.5 分鐘**（凍結幀恰無 reset
+  字樣→「banner 消失＋5s」照樣成立），且傳送驗證量全幀會被**覆蓋視窗重繪**灌爆門檻（假傳送）→
+  (1) 傳送驗證改量 `reentry_game_region`（右側場景帶，**此區必須保持無覆蓋視窗**；改座標須重裁
+  h044 fixtures）＋雙訊號 `mean≥12 OR frac≥0.05`（兩側夾：真傳送 57.73/0.9966、活著靜止 ≤0.09/≤0.0004、凍結 0.00）；
+  (2) **探測式開場**：判「未傳送」不通知不拍圖，每 20s 再點一次（點擊即探針），解凍後自動續走；
+  300s 預算用盡才通知一次附截圖。**被動凍結偵測不可行**（活著靜止畫面與凍結像素不可分，量測否決）。
+  (3) **手動回礦**：Discord `回礦`/`reenter` 指令＋STUCK 警告 🏠 反應鈕（用途不限卡死——蒐集面板
+  樣本等皆可；`states.decide_transition` 的 `manual_reentry` 旗標，MINING/NEEDS_HUMAN/RESET_WAIT
+  可觸發、RESET_WAIT 下＝繞過 reset_complete 的人工強制；HARVESTING 拒收不排隊；暫停中自動解除；
+  ledger 記 `trigger` 來源、embed footer 標「手動觸發」）。詳 docs/incidents.md H044。
 
 ## 實機排錯（怎麼看到畫面）
 - 截圖：`python -c "import ctypes; ctypes.windll.shcore.SetProcessDpiAwareness(2); import cv2; from miningbot.capture import grab; cv2.imwrite('logs/x.png', grab())"` → 再 Read `logs/x.png`。
