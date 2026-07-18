@@ -50,6 +50,7 @@ uv run python -m miningbot.calibrate_pitch
 | OCR／聊天 | H014/H020/H032/H041 | pass 自洽、`ChatLedger`、晚到確認、引擎降級 |
 | D3／掃描 | `harvester.py`、原始 `.mcr` | toggle、settle、固定按鍵與 hold 時序 |
 | 世界／礦物 | `game_data.py`、`fetch_ores.py` | active registry、低高階衝突、JSON 同步 |
+| D4 事件 keep/reroll | H049、`miner.plan_d4` | 快取須晚於上次動作、未知雙樣本確認 |
 | 回礦／remote aim | 最新已實作 spec 與純測試 | bounded failure、ledger、pitch/zoom 復原 |
 | UI／取樣 | `docs/manual-sampling.md` | Tk BMP-safe 文字、主執行緒 UI |
 

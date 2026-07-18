@@ -96,7 +96,7 @@ def snapshot_subdir(label: str) -> str:
     if any(k in label for k in (
             "needs_human", "d3_fire", "d3_miss", "stuck",
             "sweep_empty", "sweep_seen_once", "sweep_accepted",
-            "aim_")):
+            "aim_", "d4_unknown")):
         return "review"
     if any(k in label for k in ("chill", "rare_found", "audio")):
         return "events"

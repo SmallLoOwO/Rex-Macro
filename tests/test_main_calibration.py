@@ -21,6 +21,7 @@ def _calib_bot(monkeypatch, paused=False):
     bot._calib_session = None
     bot._pending_calib_start = None
     bot._pending_calib_action = None
+    bot._pending_calib_px = 0
     bot._pitch_offset_px = 0
     bot._pause = lambda: setattr(bot, "paused", True)
     bot._sampler_pitch_prepare = lambda: None
@@ -370,3 +371,66 @@ def test_ensure_no_stale_calib_deletes_all(monkeypatch):
                         lambda token, ch, mid, **kw: deleted.append(mid) or (True, "ok"))
     bot._ensure_no_stale_calib()
     assert sorted(deleted) == ["1", "2"]      # 殘留卡全刪不認領（session 不跨重啟）
+
+
+# ---- 校準卡文字指令 wiring（2026-07-19：文字與反應等價；px 可覆寫幅度）----
+def test_tick_calibration_text_px_overrides_step(monkeypatch):
+    bot = _tick_bot(monkeypatch)
+    nudges = []
+    monkeypatch.setattr(main.ic, "pitch_nudge", lambda dy: nudges.append(dy))
+
+    def verified(label, drag):
+        drag()
+        return True
+
+    bot._pitch_drag_verified = verified
+    bot._pending_calib_action = "up"
+    bot._pending_calib_px = 12                # 文字 `上 12`：像素覆寫現行幅度 5
+    bot._tick_calibration()
+    assert nudges == [-12]
+    assert bot._calib_session.offset == 312
+    assert bot._pending_calib_px == 0         # 消費後清零（反應路徑不受污染）
+
+
+def test_handle_calib_text_sets_pending(monkeypatch):
+    sent = []
+    bot = _guard_bot(monkeypatch, sent)
+    bot._handle_calib_text("上 10")
+    assert (bot._pending_calib_action, bot._pending_calib_px) == ("up", 10)
+    assert sent == []                         # 正常入列不回嘴（動作後會重貼卡）
+
+
+def test_handle_calib_text_busy_replies_wait(monkeypatch):
+    sent = []
+    bot = _guard_bot(monkeypatch, sent)
+    bot._pending_calib_action = "up"
+    bot._handle_calib_text("下 5")
+    assert bot._pending_calib_action == "up"  # 不覆蓋（一次一動作，與反應輪詢同語意）
+    assert any("稍候" in m for m in sent)
+
+
+def test_handle_calib_text_ignores_chatter(monkeypatch):
+    sent = []
+    bot = _guard_bot(monkeypatch, sent)
+    bot._handle_calib_text("今天狀況如何")
+    assert bot._pending_calib_action is None
+    assert sent == []
+
+
+# ---- 挖礦中俯仰指令回指引不靜默（2026-07-19 使用者反映打了沒反應）----
+def test_pitch_guidance_outside_reentry_and_calib(monkeypatch):
+    import miningbot.notify as notify_mod
+    sent = []
+    bot = _calib_bot(monkeypatch)
+    bot.state = State.MINING
+    monkeypatch.setattr(notify_mod, "send_message",
+                        lambda token, ch, msg, **kw: sent.append(msg) or (True, "ok"))
+    monkeypatch.setattr(main.cfg, "discord_bot_token", "t")
+    monkeypatch.setattr(main.cfg, "discord_channel_id", "c")
+    bot._maybe_pitch_guidance("仰角 上 20")
+    bot._maybe_pitch_guidance("上 20")
+    assert len(sent) == 2 and all("校準" in m for m in sent)
+    sent.clear()
+    bot._maybe_pitch_guidance("B3")           # 非俯仰指令不回（避免誤嘴一般聊天）
+    bot._maybe_pitch_guidance("今天狀況如何")
+    assert sent == []

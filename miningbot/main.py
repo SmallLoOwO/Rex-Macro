@@ -180,6 +180,7 @@ class Bot:
         self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
         self._activity_present = False               # 上次偵測到的 D4 冷卻圖示在否（節流間沿用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
+        self._d4_unknown_at = 0.0                    # D4 事件文字認不得的 hold 起點（0=沒在 hold；雙樣本確認用）
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
         # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
         self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
@@ -223,7 +224,8 @@ class Bot:
         # 主迴圈。session 活著＝強制暫停中（paused 底下的旗標，不是 states.py 新狀態）。
         self._calib_session = None                # calibrate_pitch.CalibSession | None
         self._pending_calib_start = None          # "mining"/"reentry"：指令驗收後待主迴圈進場
-        self._pending_calib_action = None         # "up"/…/"exit"：反應輪詢待主迴圈消費
+        self._pending_calib_action = None         # "up"/…/"exit"：反應輪詢/文字指令待主迴圈消費
+        self._pending_calib_px = 0                # 文字指令的像素覆寫（`上 12`；0=用現行幅度）
         self._rr_sticky_layer = cfg.reentry_target_layer   # 黏性目標層（`層` 指令改、session 內沿用）
         self._evac_done = False                   # RESET_WAIT 撤離結果（REENTRY embed 僅供 footer 標注，不改流程）
         self._rr_embed_mid = None                 # REENTRY episode embed 訊息 id（_rr_finalize 時刪除，避免殘留死卡）
@@ -551,6 +553,52 @@ class Bot:
                 cfg.activity_cooldown_edge_threshold, cfg.buff_scales) is not None
         return miner.cooldown_ready(self._activity_present, time.time() - self._last_activity,
                                     cfg.activity_cooldown_grace_s)
+
+    def _handle_use_d4(self, frame):
+        """D4 就緒時的 keep/reroll 決策（2026-07-19 01:16 未知連刷對策）。
+
+        ① 快取文字必須晚於上次 D4 動作（miner.d4_text_fresh）——動作前的快取
+        描述的是已處理過的舊事件；不夠新就同步重讀當前幀。
+        ② 認不得的文字先 hold 一輪，等背景 worker 下一份新樣本仍認不得才刷新
+        （miner.plan_d4 雙樣本確認）——單次誤讀就右鍵會把 keep 事件不可逆刷掉。
+        ③ 決策 log 落原始文字、hold 時存 review 快照——01:16 事故的原始 OCR
+        文字完全無從回溯，這裡把證據補上。
+        """
+        now = time.time()
+        if (self._d4_unknown_at > 0.0
+                and self._banner_text_at <= self._d4_unknown_at
+                and now - self._d4_unknown_at <= cfg.reset_check_interval_s * 3):
+            return          # hold 中：等 worker 新樣本（~2s 一份），不每 tick 同步 OCR
+        if miner.d4_text_fresh(now, self._banner_text_at, self._last_activity,
+                               cfg.reset_check_interval_s):
+            event_text = self._banner_text.strip()
+        else:
+            event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
+                                       cfg.tesseract_path).strip()
+            self._maybe_detect_world(event_text)
+        ev = game_data.match_event(event_text)
+        verdict = miner.plan_d4(
+            kept=bool(ev) and game_data.is_kept(event_text, self._keep_ores),
+            matched=ev is not None,
+            unknown_confirmed=self._d4_unknown_at > 0.0)
+        if verdict == "hold":
+            self._d4_unknown_at = now
+            self.logger.info("D4: 事件文字認不得，hold 一輪等新樣本再確認 (text=%r)",
+                             event_text[:80])
+            self._snapshot(frame, "d4_unknown")
+            return
+        self._d4_unknown_at = 0.0
+        if verdict == "keep":
+            self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])
+            self.last_action = f"保留事件: {ev['ore']}"
+            miner.use_activity_keep()
+        else:
+            self.log_act.info("mining: 刷新事件 -> D4 右鍵 (%s) text=%r",
+                              ev["ore"] if ev else "未知/無事件", event_text[:80])
+            self.last_action = "刷新事件(D4)"
+            miner.use_activity()
+        self.stats["rerolls"] += 1
+        self._last_activity = time.time()
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -1318,12 +1366,18 @@ class Bot:
             command = discord_commands.parse_command(content)
             if command is not None:
                 self._handle_discord_command(command)
+            elif self._calib_session is not None:
+                # 校準卡活躍（modal、必暫停）：文字指令與反應等價（`上|下 [px]` 等）
+                self._handle_calib_text(content)
             elif self._aim_context is not None and self.state is State.NEEDS_HUMAN:
                 # B3：NEEDS_HUMAN 且 aim context 存活時，一般訊息當瞄準回覆（無前綴，spec 第 2 節）
                 self._handle_aim_reply(content)
             elif self._rr_ctx is not None and self.state is State.REENTRY:
                 # 遠端回礦：REENTRY(remote) 等待時，一般訊息當回礦指令（無前綴，2026-07-12 spec）
                 self._handle_reentry_reply(content)
+            else:
+                # 俯仰指令在挖礦中打了沒反應（2026-07-19 使用者反映）→ 回指引不靜默
+                self._maybe_pitch_guidance(content)
 
     def _poll_list_reactions(self):
         """輪詢 list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
@@ -1781,7 +1835,8 @@ class Bot:
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
                 "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
-                "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config）\n"
+                "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
+                "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
                 "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
@@ -1854,7 +1909,7 @@ class Bot:
         if reply is None:
             notify.send_message(token, ch,
                 "❓ 看不懂。可用：`3 C2`（方位 1-8+粗格）、`B3`／`B3 <層名>`（細格）、"
-                "`放大 <細格>`、`遠 [n]`/`近 [n]`（鏡頭）、`仰角 歸位|上|下 [px]`、"
+                "`放大 <細格>`、`遠 [n]`/`近 [n]`（鏡頭）、`上|下 [px]`/`歸位`（俯仰）、"
                 "`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`（回挖礦）")
             return
         self._queue_reentry_reply(content, reply, source="text")
@@ -2535,27 +2590,7 @@ class Bot:
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
         elif action == "USE_D4":
-            # D4 前先讀事件文字，判斷該保留（左鍵）還是刷新（右鍵）。
-            # 背景 worker（_banner_ocr_loop）每 2s 已 OCR 同一區——快取夠新就直接用，
-            # 免再付 ~400ms 同步 OCR 卡主迴圈；過舊（worker 剛好沒跑到）才同步後備。
-            if time.time() - self._banner_text_at <= cfg.reset_check_interval_s * 2:
-                event_text = self._banner_text.strip()
-            else:
-                event_text = ocr.read_text(capture.crop(frame, cfg.chill_text_region),
-                                           cfg.tesseract_path).strip()
-                self._maybe_detect_world(event_text)
-            ev = game_data.match_event(event_text)
-            if ev and game_data.is_kept(event_text, self._keep_ores):
-                self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])
-                self.last_action = f"保留事件: {ev['ore']}"
-                miner.use_activity_keep()
-            else:
-                self.log_act.info("mining: 刷新事件 -> D4 右鍵 (%s)",
-                                  ev["ore"] if ev else "未知/無事件")
-                self.last_action = "刷新事件(D4)"
-                miner.use_activity()
-            self.stats["rerolls"] += 1
-            self._last_activity = time.time()
+            self._handle_use_d4(frame)
         elif action is None:
             self.last_action = "挖礦中"
 
@@ -4054,7 +4089,7 @@ class Bot:
         self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
         if not pitch_ok:
             self._rr_notify("⚠ 俯仰歸位疑似被吃；圖照發，角度可能偏"
-                            "（回 `仰角 歸位` 或 `仰角 上/下 [像素]` 修正後 📷 重掃）")
+                            "（回 `歸位` 或 `上|下 [px]` 修正後 📷 重掃）")
         self._rr_sweep_and_send()
         # Task 4：sweep 發圖後貼 embed 卡片（首次貼；reroll 時 edit 同一則）
         if self._rr_embed_mid:
@@ -4116,7 +4151,7 @@ class Bot:
         head = (prefix_msg or
                 f"⛏ 回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}\n"
                 f"回 `方位 粗格`（如 `3 C2`，方位 1-8）指位；`重骰` 換重生點；"
-                f"`仰角 歸位`/`仰角 上|下 [px]` 調視角；`層 <名>` 改目標層；`跳過` 回挖礦")
+                f"`歸位`/`上|下 [px]` 調視角；`層 <名>` 改目標層；`跳過` 回挖礦")
         batch = [p for _, p in pairs if p]
         self._rr_notify(head + "\n方位 1-4", image_paths=batch[:4])
         if len(batch) > 4:
@@ -5040,16 +5075,55 @@ class Bot:
         sess.reactions_seen, increments = notify.find_reaction_increments(
             message, sess.reactions_seen, calibrate_pitch.CALIB_EMOJIS)
         for emoji, delta in increments:
+            self._pending_calib_px = 0            # 反應無像素參數（文字指令才有）
             self._pending_calib_action = calibrate_pitch.CALIB_ACTIONS[emoji]
             self.log_discord.info("calib %s -> action=%s (+%d)",
                                   emoji, self._pending_calib_action, delta)
             break                                 # 一次輪詢只收一個動作
+
+    def _handle_calib_text(self, content: str):
+        """校準卡活躍時的文字指令（Discord 輪詢執行緒）：只寫 pending，主迴圈消費。
+
+        與反應等價（2026-07-19 使用者反映只有反應可點、`上|下 [px]` 沒反應）；
+        px 未給用現行幅度。pending 佔用中回「稍候」不覆蓋（一次一動作，與反應
+        輪詢同語意）。
+        """
+        from . import notify
+        parsed = calibrate_pitch.parse_calib_text(content)
+        if parsed is None:
+            return                                # 普通聊天：忽略
+        if self._pending_calib_action is not None:
+            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                                "⏳ 上一個校準動作處理中，稍候再送")
+            return
+        action, px = parsed
+        self._pending_calib_px = px               # 先寫 px 再寫 action（action＝就緒旗標）
+        self._pending_calib_action = action
+        self.log_discord.info("calib text %r -> action=%s px=%d", content, action, px)
+
+    def _maybe_pitch_guidance(self, content: str):
+        """挖礦中收到俯仰指令回指引不靜默（2026-07-19 使用者反映打了沒反應、以為壞掉）。
+
+        只認 pitch/pitch_reset 型輸入（`上|下 [px]`、`仰角 …`、`歸位`），其他一般
+        聊天照舊忽略——避免誤嘴。
+        """
+        from . import notify
+        reply = reentry_remote.parse_reply(content)
+        if reply is None or reply.kind not in ("pitch", "pitch_reset"):
+            return
+        notify.send_message(
+            cfg.discord_bot_token, cfg.discord_channel_id,
+            "⚠ 俯仰指令只在回礦流程或校準卡中有效。要調角度請下 `校準 挖礦` 或 "
+            "`校準 回礦`（會發專屬校準卡：⬆️⬇️ 反應或文字 `上|下 [px]`/`歸位` 皆可，"
+            "💾 寫回 config）")
+        self.log_discord.info("pitch guidance for %r", content)
 
     def _tick_calibration(self):
         """消費校準動作（主迴圈、paused 分支）。⬆️⬇️🧭 執行後重貼卡＋附新截圖。"""
         if self._pending_calib_action is None:
             return
         action, self._pending_calib_action = self._pending_calib_action, None
+        px, self._pending_calib_px = self._pending_calib_px, 0
         sess = self._calib_session
         _, clamp_fld = calibrate_pitch.calib_field_names(sess.target)
         if action == "step":
@@ -5057,10 +5131,11 @@ class Bot:
             self._repost_calib_embed()
         elif action in ("up", "down"):
             self._sampler_pitch_prepare()
-            dy = -sess.step if action == "up" else sess.step   # 上＝dy<0（取樣視窗語意）
-            ok = self._pitch_drag_verified(f"[校準] {action} {sess.step}px",
+            step = px if px > 0 else sess.step    # 文字指令可帶像素覆寫（`上 12`）
+            dy = -step if action == "up" else step   # 上＝dy<0（取樣視窗語意）
+            ok = self._pitch_drag_verified(f"[校準] {action} {step}px",
                                            lambda: ic.pitch_nudge(dy))
-            sess.offset = calibrate_pitch.apply_calib_step(sess.offset, action, sess.step)
+            sess.offset = calibrate_pitch.apply_calib_step(sess.offset, action, step)
             self._pitch_offset_px = sess.offset
             self._repost_calib_embed(
                 "" if ok else "拖曳疑似被吃（記帳照調；懷疑沒動就 🧭 重新絕對定位）")

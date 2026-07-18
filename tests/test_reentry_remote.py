@@ -266,10 +266,11 @@ class TestReentryEmbed:
         assert "原地更新" in e["footer"]["text"]
 
     def test_pitch_offset_line(self):
-        # 2026-07-18 使用者要求：目前角度顯示在回礦卡（`仰角` 功能所在處）
+        # 2026-07-18 使用者要求：目前角度顯示在回礦卡；07-19 提示改裸 `上|下 [px]`
+        # （使用者照舊提示打了帶前綴以外的簡寫沒反應——現在裸寫即可用）
         e = build_reentry_embed(self._ctx(), "L", 100.0, False, pitch_offset_px=400)
         assert "夾限上 400px" in e["description"]
-        assert "仰角" in e["description"]
+        assert "上|下" in e["description"]
         e2 = build_reentry_embed(self._ctx(), "L", 100.0, False)   # 未傳＝不顯示該行
         assert "夾限上" not in e2["description"]
 
@@ -348,6 +349,24 @@ def test_parse_pitch_rejects_garbage():
     assert parse_reply("仰角 斜") is None
     assert parse_reply("仰角 上 -5") is None      # 像素只收正整數（方向由 上/下 表達）
     assert parse_reply("仰角 上 0") is None
+
+
+def test_parse_bare_up_down_aliases_pitch():
+    # 2026-07-19 使用者反映：卡上寫 `上|下 [px]` 但裸打不帶「仰角」前綴沒反應
+    r = parse_reply("上 20")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "up", 20)
+    r = parse_reply("下")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "down", 0)
+    r = parse_reply("up 40")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "up", 40)
+    assert parse_reply("歸位").kind == "pitch_reset"
+
+
+def test_parse_bare_up_down_rejects_garbage():
+    assert parse_reply("上 -5") is None
+    assert parse_reply("上 0") is None
+    assert parse_reply("上 abc") is None
+    assert parse_reply("上次那個先跳過") is None   # 一般聊天不誤觸
 
 
 # ===== H045/H046：開場雙閘（凍結探針＋容量歸零）＝傳送驗證過後、拍照前的最後守門 =====

@@ -27,6 +27,34 @@ def test_apply_step_accounting_saturates_at_clamp():
 
 
 from miningbot.calibrate_pitch import parse_calib_target, can_accept_calibration
+from miningbot.calibrate_pitch import parse_calib_text
+
+
+# ---- 校準卡文字指令（2026-07-19 使用者反映：只有反應可點、`上|下 [px]` 文字沒反應）----
+def test_parse_calib_text_up_down_px():
+    assert parse_calib_text("上 10") == ("up", 10)
+    assert parse_calib_text("下") == ("down", 0)          # px=0＝用現行幅度
+    assert parse_calib_text("up 25") == ("up", 25)
+    assert parse_calib_text("仰角 上 5") == ("up", 5)      # 回礦卡語法也吃（使用者混用）
+    assert parse_calib_text("pitch down 8") == ("down", 8)
+
+
+def test_parse_calib_text_named_actions():
+    assert parse_calib_text("歸位") == ("home", 0)
+    assert parse_calib_text("截圖") == ("snap", 0)
+    assert parse_calib_text("存檔") == ("save", 0)
+    assert parse_calib_text("離開") == ("exit", 0)
+    assert parse_calib_text("exit") == ("exit", 0)
+
+
+def test_parse_calib_text_rejects_garbage():
+    # 普通聊天回 None（寧可不動不誤動，與 parse_calib_command 同哲學）
+    assert parse_calib_text("") is None
+    assert parse_calib_text("上 -5") is None
+    assert parse_calib_text("上 0") is None
+    assert parse_calib_text("上 abc") is None
+    assert parse_calib_text("上次那個") is None
+    assert parse_calib_text("歸位 10") is None            # 具名動作不吃參數
 
 
 def test_parse_calib_target_defaults_and_aliases():

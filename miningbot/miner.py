@@ -34,6 +34,29 @@ def cooldown_ready(icon_present: bool, since_last_press: float, grace_s: float) 
         return False
     return since_last_press > grace_s
 
+def d4_text_fresh(now: float, banner_at: float, last_press: float,
+                  interval_s: float) -> bool:
+    """D4 決策可否用背景 worker 的事件文字快取（不可用就同步重讀）。
+
+    「夠新」之外還要求「晚於上次 D4 動作」——上次動作之前 OCR 的快取描述的是
+    已被刷掉/確認過的舊事件，拿它決策會對剛骰出的新事件按錯鍵
+    （2026-07-19 01:16 兩筆未知連刷、間隔僅 4s 的根因候選）。
+    """
+    return now - banner_at <= interval_s * 2 and banner_at > last_press
+
+def plan_d4(kept: bool, matched: bool, unknown_confirmed: bool) -> str:
+    """D4 事件決策：keep（左鍵確認）/ reroll（右鍵刷新）/ hold（本輪不動作）。
+
+    認不得的文字第一次先 hold：單次誤讀（換場動畫、OCR 噪音）就右鍵會把
+    keep 清單事件不可逆刷掉；等下一份新樣本仍認不得才刷新（雙樣本確認，
+    比照 tracker 雙幀穩定／capacity streak 慣例）。
+    """
+    if kept:
+        return "keep"
+    if matched:
+        return "reroll"
+    return "reroll" if unknown_confirmed else "hold"
+
 def init_mining_sequence(log=None, rotate=None):
     """初始化（只在啟動/失焦復原做一次）：放開→. , 視角→雙 Shift→（沒拿鎬子才按 D1）→挖礦。
 

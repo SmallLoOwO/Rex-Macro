@@ -49,6 +49,34 @@ def apply_calib_step(offset: int, kind: str, px: int) -> int:
     return max(0, offset - px)
 
 
+def parse_calib_text(text: str):
+    """校準卡活躍時的 Discord 文字指令（與反應等價；2026-07-19 使用者反映只有
+    反應可點、`上|下 [px]` 文字沒反應）。回 (action, px)；px=0＝用現行幅度。
+    普通聊天回 None（寧可不動不誤動）。也吃回礦卡的 `仰角 上|下 [px]` 語法——
+    使用者兩張卡之間會混用同一套詞。
+    """
+    parts = (text or "").replace("　", " ").split()
+    if parts and parts[0].lower() in ("仰角", "pitch"):
+        parts = parts[1:]                     # 前綴剝掉後同一套解析
+    if not parts:
+        return None
+    head = parts[0].lower()
+    named = {"歸位": "home", "home": "home", "reset": "home",
+             "截圖": "snap", "snap": "snap",
+             "存檔": "save", "save": "save",
+             "離開": "exit", "exit": "exit"}
+    if head in named:
+        return (named[head], 0) if len(parts) == 1 else None
+    direction = {"上": "up", "up": "up", "下": "down", "down": "down"}.get(head)
+    if direction is None:
+        return None
+    if len(parts) == 1:
+        return (direction, 0)
+    if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > 0:
+        return (direction, int(parts[1]))
+    return None
+
+
 def parse_calib_target(args: tuple):
     """`校準 [挖礦|回礦]` 目標角解析（純函式）。無參數預設挖礦；解析不出回 None。"""
     if not args:

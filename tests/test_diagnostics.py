@@ -96,6 +96,12 @@ def test_harvest_recovery_snapshots_use_critical_review_storage():
     assert snapshot_subdir("079_sweep_empty_dir0") == "review"
     assert snapshot_subdir("079_sweep_seen_once_dir3") == "review"
     assert snapshot_subdir("079_aim_fire_500x400") == "review"
+
+
+def test_d4_unknown_snapshot_goes_to_review():
+    # D4 未知文字 hold 快照要人眼核對（誤讀樣本＝下次 fuzzy 修復的證據），
+    # 落 trace 會被清檔政策掃掉（079 教訓）
+    assert snapshot_subdir("d4_unknown") == "review"
     assert snapshot_priority("079_sweep_empty_dir0") == 0
 
 

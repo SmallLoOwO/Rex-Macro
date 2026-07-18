@@ -65,6 +65,17 @@ def parse_reply(text: str):
         if len(parts) == 3 and parts[2].isdigit() and int(parts[2]) > 0:
             return RemoteReply("pitch", cell=direction, steps=int(parts[2]))
         return None
+    if head == "歸位" and len(parts) == 1:
+        # 裸「歸位」＝仰角歸位（2026-07-19：使用者照卡面 `上|下 [px]` 簡寫打、沒帶前綴）
+        return RemoteReply("pitch_reset")
+    bare_dir = {"上": "up", "up": "up", "下": "down", "down": "down"}.get(head)
+    if bare_dir is not None:
+        # 裸 `上|下 [px]`＝`仰角 上|下 [px]` 同義（多 token 的一般聊天不會進到這裡）
+        if len(parts) == 1:
+            return RemoteReply("pitch", cell=bare_dir)
+        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > 0:
+            return RemoteReply("pitch", cell=bare_dir, steps=int(parts[1]))
+        return None
     if head in ("層", "layer") and len(parts) >= 2:
         return RemoteReply("layer", layer=" ".join(parts[1:]))
     if head in ("放大", "magnify") and len(parts) == 2:
@@ -372,7 +383,7 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
     color = _REENTRY_PHASE_COLOR.get(ctx.phase, 0x5865F2)
     evac_tag = "（已撤離至地表）" if evac_done else ""
     pitch_line = ("" if pitch_offset_px is None
-                  else f"**俯仰**：夾限上 {pitch_offset_px}px（`仰角 上/下 [px]` 調）\n")
+                  else f"**俯仰**：夾限上 {pitch_offset_px}px（`上|下 [px]` 調、`歸位` 回夾限）\n")
     return {
         "title": f"⛏ 回礦 #{ctx.episode_id}",
         "description": (
@@ -383,7 +394,7 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
             f"**階段**：{phase_label}{evac_tag}\n"
             f"\n"
             f"指令：`方位 粗格`（如 `3 C2`，方位 1-8）、`放大 <細格>`、`層 <名>`、"
-            f"`遠/近 [n]`、`仰角 歸位|上|下`；文字 `重骰`/`跳過`（跳過＝回挖礦）也可\n"
+            f"`遠/近 [n]`、`上|下 [px]`、`歸位`；文字 `重骰`/`跳過`（跳過＝回挖礦）也可\n"
             f"反應鈕：🎲 重骰　⏭️ 跳過　📷 重新掃描"
         ),
         "color": color,

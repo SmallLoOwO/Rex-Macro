@@ -48,3 +48,50 @@ def test_boost_detection_is_high_frequency_and_single_scale():
 def test_boost_checks_more_often_than_d4():
     # D4 不在意空轉 → 維持較疏節流；boost 要比 D4 更頻繁
     assert DEFAULT.boost_check_interval_s < DEFAULT.activity_check_interval_s
+
+
+# --- D4 決策文字的快取有效性（2026-07-19 01:16 未知連刷對策）------------------
+# 快取必須「夠新」且「晚於上次 D4 動作」——上次動作之前 OCR 的快取描述的是
+# 已被刷掉/確認過的舊事件，用它決策等於對錯的事件按鍵。
+from miningbot.miner import d4_text_fresh, plan_d4
+
+
+def test_d4_cache_fresh_and_after_last_press_usable():
+    assert d4_text_fresh(now=100.0, banner_at=99.0, last_press=90.0,
+                         interval_s=2.0) is True
+
+
+def test_d4_cache_from_before_last_press_rejected():
+    # 01:16:42 按了 D4 → 01:16:46 再判時快取仍是動作前 OCR 的 → 必須同步重讀
+    assert d4_text_fresh(now=100.0, banner_at=97.0, last_press=98.0,
+                         interval_s=2.0) is False
+
+
+def test_d4_cache_too_old_rejected():
+    assert d4_text_fresh(now=100.0, banner_at=95.0, last_press=0.0,
+                         interval_s=2.0) is False
+
+
+def test_d4_cache_usable_at_boot():
+    # 開機 _last_activity=0.0：第一份快取即可用
+    assert d4_text_fresh(now=10.0, banner_at=9.0, last_press=0.0,
+                         interval_s=2.0) is True
+
+
+# --- plan_d4：未知文字雙樣本確認才刷新（單次誤讀就右鍵＝keep 事件被不可逆刷掉）---
+def test_plan_d4_keep_listed_event_keeps():
+    assert plan_d4(kept=True, matched=True, unknown_confirmed=False) == "keep"
+
+
+def test_plan_d4_known_non_keep_rerolls():
+    assert plan_d4(kept=False, matched=True, unknown_confirmed=False) == "reroll"
+
+
+def test_plan_d4_first_unknown_holds():
+    # 第一次認不得：hold 等背景 worker 的下一份新樣本（比照 tracker 雙幀穩定慣例）
+    assert plan_d4(kept=False, matched=False, unknown_confirmed=False) == "hold"
+
+
+def test_plan_d4_unknown_confirmed_by_second_sample_rerolls():
+    # 新樣本仍認不得 → 維持舊巨集語意刷新（未知事件通常是無事件/低價值）
+    assert plan_d4(kept=False, matched=False, unknown_confirmed=True) == "reroll"
