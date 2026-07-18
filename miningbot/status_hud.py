@@ -131,9 +131,5 @@ class StatusHUD:
                 ctypes.windll.user32.SetWindowPos(self._hwnd, _HWND_TOPMOST, 0, 0, 0, 0, _SWP)
             except Exception:
                 pass
-        # 同步取樣視窗（R 鍵請求）：Tk 物件只能在主執行緒建/銷，失敗不可拖垮 HUD
-        try:
-            self.bot.sync_sampler_ui(self.root)
-        except Exception:
-            pass
+        # （R 取樣視窗已退役 2026-07-17：截圖→遙控器 📷、俯仰→回礦 仰角 指令）
         self.root.after(300, self._poll)

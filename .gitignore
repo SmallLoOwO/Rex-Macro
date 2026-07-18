@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.coverage
 .venv/
 venv/
 env/
@@ -31,3 +33,8 @@ desktop.ini
 .omo/
 .opencode/
 .codegraph/
+
+# 工作暫存（079 修復期間的比對副本/patch）
+.tmp079/
+# script(1) 意外錄製檔
+/typescript

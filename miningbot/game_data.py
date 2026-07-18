@@ -1,8 +1,7 @@
-"""REX 礦坑遊戲資料庫（**分世界 / world**）。
+"""REX active-world 事件與礦物資料庫。
 
-REX 分世界（world），每個世界有各自的事件清單與礦物表。目前實作 **Aesteria** 與
-**Lucernia**（兩者事件 + 低稀有度礦皆齊備）。之後新增世界只要再建一個 `World` 並加進
-`WORLDS` 即可（事件、礦物都各自獨立）。
+每個有效世界都有獨立事件與礦物表；`WORLDS` 是目前支援世界的唯一 registry。
+新增世界時必須同時補事件、低階排除資料、表情映射與對應測試。
 
 每個世界含：
 - `events`：D4 事件清單。D4 右鍵刷新時判斷目前事件是否值得保留（左鍵確認）還是刷新。
@@ -496,11 +495,9 @@ _LUCERNIA_COMMON_ORES: list[dict] = [
 ]
 
 
-# ── World 0: Digita：低稀有度 礦（common_ores；事件清單待補）─────────────────
+# ── World 0: Digita：低稀有度礦（common_ores）────────────────────────────
 # 資料源：rex-reincarnated wiki World 0 頁，經 fetch_ores 解析（2026-07-05 匯入）。
 # AI/數位世界（Statistone/Wireframe/Matricite 圖層）。layer="?" = wiki 該列未帶圖層資訊（layer 僅資訊備查，排除邏輯只用 礦名+tier）。
-# 事件（events）目前為空 → D4 keep/reroll 判斷與世界自動偵測對這些世界尚未生效；
-# 待使用者補事件資料後再填（見 _AESTERIA_EVENTS 格式）。common_ores 已齊 → 採集排除安全。
 _WORLD0_COMMON_ORES: list[dict] = [
     {"ore": 'Hyposhock', "rarity": 15051, "layer": '?', "tier": 'Surreal'},
     {"ore": 'Dualisplite', "rarity": 18300, "layer": '?', "tier": 'Surreal'},
@@ -563,11 +560,9 @@ _WORLD0_COMMON_ORES: list[dict] = [
     {"ore": 'Rendispike', "rarity": 979595, "layer": '?', "tier": 'Mythic'},
 ]
 
-# ── World 1: Natura：低稀有度 礦（common_ores；事件清單待補）─────────────────
+# ── World 1: Natura：低稀有度礦（common_ores）────────────────────────────
 # 資料源：rex-reincarnated wiki World 1 頁，經 fetch_ores 解析（2026-07-05 匯入）。
 # 自然/古老王國（Stone/Basalt/Granite 圖層）。layer="?" = wiki 該列未帶圖層資訊（layer 僅資訊備查，排除邏輯只用 礦名+tier）。
-# 事件（events）目前為空 → D4 keep/reroll 判斷與世界自動偵測對這些世界尚未生效；
-# 待使用者補事件資料後再填（見 _AESTERIA_EVENTS 格式）。common_ores 已齊 → 採集排除安全。
 _WORLD1_COMMON_ORES: list[dict] = [
     {"ore": 'Opal', "rarity": 16000, "layer": 'Cave Exclusives', "tier": 'Surreal'},
     {"ore": 'Divinessence', "rarity": 16000, "layer": 'Cave Exclusives', "tier": 'Surreal'},
@@ -608,11 +603,9 @@ _WORLD1_COMMON_ORES: list[dict] = [
     {"ore": 'Viscriol', "rarity": 900100, "layer": 'Obsidian', "tier": 'Mythic'},
 ]
 
-# ── World 2：低稀有度 礦（common_ores；事件清單待補）─────────────────
+# ── World 2：低稀有度礦（common_ores）─────────────────────────────────
 # 資料源：rex-reincarnated wiki World 2 頁，經 fetch_ores 解析（2026-07-05 匯入）。
 # 板岩/永久凍土＋銀河/魔法洞穴。layer="?" = wiki 該列未帶圖層資訊（layer 僅資訊備查，排除邏輯只用 礦名+tier）。
-# 事件（events）目前為空 → D4 keep/reroll 判斷與世界自動偵測對這些世界尚未生效；
-# 待使用者補事件資料後再填（見 _AESTERIA_EVENTS 格式）。common_ores 已齊 → 採集排除安全。
 _WORLD2_COMMON_ORES: list[dict] = [
     {"ore": 'Condensium', "rarity": 106000, "layer": '?', "tier": 'Surreal'},
     {"ore": 'Culindrene', "rarity": 131262, "layer": '?', "tier": 'Surreal'},
@@ -647,11 +640,9 @@ _WORLD2_COMMON_ORES: list[dict] = [
     {"ore": 'The Nightmare', "rarity": 964250, "layer": 'Riftrock', "tier": 'Mythic'},
 ]
 
-# ── Subworld 1: Luna Refuge：低稀有度 礦（common_ores；事件清單待補）─────────────────
+# ── Subworld 1: Luna Refuge：低稀有度礦（common_ores）──────────────────
 # 資料源：rex-reincarnated wiki Subworld 1 頁，經 fetch_ores 解析（2026-07-05 匯入）。
 # 月球/太空聚落（Moon Stone/Moon Mantle 圖層）。layer="?" = wiki 該列未帶圖層資訊（layer 僅資訊備查，排除邏輯只用 礦名+tier）。
-# 事件（events）目前為空 → D4 keep/reroll 判斷與世界自動偵測對這些世界尚未生效；
-# 待使用者補事件資料後再填（見 _AESTERIA_EVENTS 格式）。common_ores 已齊 → 採集排除安全。
 _SUBWORLD1_COMMON_ORES: list[dict] = [
     {"ore": 'Actinium', "rarity": 120000, "layer": '?', "tier": 'Mythic'},
     {"ore": 'EDMium', "rarity": 145000, "layer": '?', "tier": 'Surreal'},
@@ -669,11 +660,9 @@ _SUBWORLD1_COMMON_ORES: list[dict] = [
     {"ore": 'Hyperstone', "rarity": 870000, "layer": '?', "tier": 'Mythic'},
 ]
 
-# ── Subworld 2: Farlight：低稀有度 礦（common_ores；事件清單待補）─────────────────
+# ── Subworld 2: Farlight：低稀有度礦（common_ores）──────────────────────
 # 資料源：rex-reincarnated wiki Subworld 2 頁，經 fetch_ores 解析（2026-07-05 匯入）。
 # 太空/反物質（Outer Space/Antimatter/Vacuum 圖層）。layer="?" = wiki 該列未帶圖層資訊（layer 僅資訊備查，排除邏輯只用 礦名+tier）。
-# 事件（events）目前為空 → D4 keep/reroll 判斷與世界自動偵測對這些世界尚未生效；
-# 待使用者補事件資料後再填（見 _AESTERIA_EVENTS 格式）。common_ores 已齊 → 採集排除安全。
 _SUBWORLD2_COMMON_ORES: list[dict] = [
     {"ore": 'Shadow Neutronite', "rarity": 10229, "layer": '?', "tier": 'Surreal'},
     {"ore": 'Protonite', "rarity": 12131, "layer": '?', "tier": 'Surreal'},
@@ -1389,7 +1378,7 @@ _SUBWORLD2_EVENTS: list[dict] = [
 
 
 # ── 世界登記 + 目前世界偵測 ─────────────────────────────────────────────
-# Aesteria / Lucernia：事件 + 礦物皆齊（完整支援：D4 keep/reroll、世界自動偵測、採集排除）。
+# 所有登記世界皆具事件與低階礦物資料，支援 D4、世界偵測與採集排除。
 AESTERIA = World("Aesteria", _AESTERIA_EVENTS, _AESTERIA_COMMON_ORES)
 LUCERNIA = World("Lucernia", _LUCERNIA_EVENTS, _LUCERNIA_COMMON_ORES)
 # 下列五世界事件（wiki Events 表）＋ common_ores 皆齊 → D4 keep/reroll、世界自動偵測、
@@ -1480,8 +1469,8 @@ def detect_world_from_ore(ore_name: str) -> str | None:
     """從被動聊天「has found X」的礦名 X 反推世界：哪個世界的 common_ores 命中此名。
 
     結構同 `detect_world`（事件版），差別是掃 common_ores 而非 events，且來源是
-    D3 verify 已在讀的聊天行（零額外 OCR 成本；7/9 世界 events 空、無法靠事件鎖定）。
-    剝變體前綴/冠詞後（沿用 classify_found_ore 同一套 `_strip_variant` 前處理）用
+    D3 verify 已在讀的聊天行（零額外 OCR 成本，可補足事件訊號尚未出現的情況）。剝變體
+    前綴/冠詞後（沿用 classify_found_ore 同一套 `_strip_variant` 前處理）用
     startswith 找命中世界；唯一命中一個世界 → 回該世界名；零個或跨世界撞名 → None
     （保守，同 detect_world 的規則——不確定就不鎖，寧可繼續用聯集排除清單）。
     """

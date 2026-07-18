@@ -845,3 +845,85 @@ def test_parse_capacity_pct_falls_back_to_first_pct_when_label_missing():
 
 def test_parse_capacity_pct_negative_returns_none():
     assert parse_capacity_pct("Capacity: -5%") is None
+
+
+# ── fixed-ROI single-line RapidOCR fast path ──
+
+def test_read_text_line_rapid_disables_detection_and_classification(monkeypatch):
+    from miningbot import ocr as ocr_module
+
+    calls = []
+
+    class Output:
+        txts = ("Capacity: 100%",)
+        scores = (0.99,)
+
+    def fake_engine(image, **kwargs):
+        calls.append(kwargs)
+        return Output()
+
+    monkeypatch.setattr(ocr_module, "_get_rapid_engine", lambda: fake_engine)
+    image = np.zeros((45, 200, 3), dtype=np.uint8)
+
+    assert ocr_module.read_text_line(image, engine="rapidocr") == "Capacity: 100%"
+    assert calls == [{"use_det": False, "use_cls": False, "use_rec": True}]
+
+
+def test_read_text_line_does_not_poison_next_full_detection(monkeypatch):
+    from miningbot import ocr as ocr_module
+
+    calls = []
+
+    class Output:
+        scores = (0.99,)
+
+        def __init__(self, text):
+            self.txts = (text,)
+
+    class StatefulEngine:
+        use_det = True
+
+        def __call__(self, image, **kwargs):
+            self.use_det = kwargs["use_det"]
+            calls.append(dict(kwargs))
+            return Output("full chat" if self.use_det else "Capacity: 100%")
+
+    engine = StatefulEngine()
+    monkeypatch.setattr(ocr_module, "_get_rapid_engine", lambda: engine)
+    image = np.zeros((45, 200, 3), dtype=np.uint8)
+
+    assert ocr_module.read_text_line(image, engine="rapidocr") == "Capacity: 100%"
+    assert ocr_module._read_text_rapid(image) == "full chat"
+    assert [call["use_det"] for call in calls] == [False, True]
+
+
+def test_read_text_line_auto_falls_back_when_validator_rejects(monkeypatch):
+    from miningbot import ocr as ocr_module
+
+    class Output:
+        txts = ("unrelated text",)
+        scores = (0.91,)
+
+    monkeypatch.setattr(ocr_module, "_get_rapid_engine", lambda: lambda image, **kwargs: Output())
+    monkeypatch.setattr(ocr_module, "read_text", lambda *args, **kwargs: "Capacity: 14%")
+    image = np.zeros((45, 200, 3), dtype=np.uint8)
+
+    text = ocr_module.read_text_line(
+        image,
+        validator=lambda value: ocr_module.parse_capacity_pct(value) is not None,
+    )
+
+    assert text == "Capacity: 14%"
+
+
+def test_read_text_line_auto_falls_back_when_rapidocr_raises(monkeypatch):
+    from miningbot import ocr as ocr_module
+
+    def broken_engine(image, **kwargs):
+        raise RuntimeError("temporary inference failure")
+
+    monkeypatch.setattr(ocr_module, "_get_rapid_engine", lambda: broken_engine)
+    monkeypatch.setattr(ocr_module, "read_text", lambda *args, **kwargs: "fallback")
+    image = np.zeros((45, 200, 3), dtype=np.uint8)
+
+    assert ocr_module.read_text_line(image) == "fallback"

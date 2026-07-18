@@ -129,6 +129,8 @@ rapid_skip = pytest.mark.skipif(not ocr.rapidocr_available(), reason="rapidocr æ
 
 
 @rapid_skip
+@pytest.mark.fixture
+@pytest.mark.ocr
 def test_real_screenshot_default_keyboard_detected():
     img = _load("mm_cycle0.png")
     recs = ocr.read_text_boxes(img, region_offset=(460, 130))
@@ -140,6 +142,8 @@ def test_real_screenshot_default_keyboard_detected():
 
 
 @rapid_skip
+@pytest.mark.fixture
+@pytest.mark.ocr
 def test_real_screenshot_keyboard_mouse_detected_and_not_confused_with_default():
     img = _load("mm_cycle1.png")
     recs = ocr.read_text_boxes(img, region_offset=(460, 130))
@@ -150,3 +154,27 @@ def test_real_screenshot_keyboard_mouse_detected_and_not_confused_with_default()
         value, "Keyboard + Mouse", ("Default (Keyboard)", "Click to Move"), 0.6) is True
     assert roblox_menu.value_matches_target(
         value, "Default (Keyboard)", ("Keyboard + Mouse", "Click to Move"), 0.6) is False
+
+
+@rapid_skip
+@pytest.mark.fixture
+@pytest.mark.ocr
+def test_fixed_roi_recognition_only_reads_movement_mode_row():
+    from miningbot.config import DEFAULT as cfg
+
+    for name, expected in (
+        ("mm_cycle0.png", "Default (Keyboard)"),
+        ("mm_cycle1.png", "Keyboard + Mouse"),
+    ):
+        img = _load(name)
+        panel = cfg.menu_panel_region
+
+        def panel_crop(region):
+            x0, y0 = region.x - panel.x, region.y - panel.y
+            return img[y0:y0 + region.h, x0:x0 + region.w]
+
+        label = ocr.read_text_line(panel_crop(cfg.menu_movement_label_region), engine="rapidocr")
+        value = ocr.read_text_line(panel_crop(cfg.menu_movement_value_region), engine="rapidocr")
+
+        assert roblox_menu.text_matches_label(label, "Movement Mode", 0.6)
+        assert roblox_menu.find_matching_option(value, cfg.movement_mode_options, 0.6) == expected

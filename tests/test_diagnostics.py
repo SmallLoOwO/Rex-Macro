@@ -2,7 +2,11 @@ import logging
 import os
 import numpy as np
 from miningbot.diagnostics import (setup_logging, save_snapshot, LOGGER_NAME,
-                                   tmp_snapshot_path, plan_snapshot_cleanup)
+                                   tmp_snapshot_path, plan_snapshot_cleanup,
+                                   plan_snapshot_cleanup_tiered,
+                                   snapshot_enqueue_allowed, snapshot_priority,
+                                   snapshot_path, snapshot_subdir,
+                                   append_snapshot_index)
 
 def test_setup_logging_creates_dir_and_handlers(tmp_path):
     logger = setup_logging(str(tmp_path / "logs"), "DEBUG")
@@ -62,3 +66,64 @@ def test_cleanup_noop_when_fresh_and_small():
     entries = [("a.png", 9 * DAY, 100)]
     assert plan_snapshot_cleanup(entries, now_ts=10 * DAY,
                                  max_age_days=30, max_total_mb=1000) == []
+
+
+def test_tiered_cleanup_expires_trace_before_review():
+    entries = [
+        (os.path.join("snapshots", "trace", "old.png"), 0.0, 10),
+        (os.path.join("snapshots", "review", "old.png"), 0.0, 10),
+    ]
+
+    got = plan_snapshot_cleanup_tiered(
+        entries,
+        now_ts=8 * DAY,
+        max_age_days=30,
+        max_total_mb=1024,
+        category_limits={"trace": (7, 256)},
+    )
+
+    assert got == [os.path.join("snapshots", "trace", "old.png")]
+
+
+def test_snapshot_queue_reserves_capacity_for_critical_categories():
+    assert snapshot_enqueue_allowed("routine", qsize=12, maxsize=16, critical_reserve=4) is False
+    assert snapshot_enqueue_allowed("rare_found", qsize=12, maxsize=16, critical_reserve=4) is True
+    assert snapshot_enqueue_allowed("rare_found", qsize=16, maxsize=16, critical_reserve=4) is False
+    assert snapshot_priority("rare_found") < snapshot_priority("routine")
+
+
+def test_harvest_recovery_snapshots_use_critical_review_storage():
+    assert snapshot_subdir("079_sweep_empty_dir0") == "review"
+    assert snapshot_subdir("079_sweep_seen_once_dir3") == "review"
+    assert snapshot_subdir("079_aim_fire_500x400") == "review"
+    assert snapshot_priority("079_sweep_empty_dir0") == 0
+
+
+def test_snapshot_path_default_does_not_overwrite_same_label(tmp_path):
+    _, first = snapshot_path(str(tmp_path), "079_d3_fire")
+    _, second = snapshot_path(str(tmp_path), "079_d3_fire")
+    assert first != second
+
+
+def test_snapshot_index_records_absolute_path_and_harvest_id(tmp_path):
+    import json
+
+    image_path = tmp_path / "snapshots" / "review" / "079_d3_fire.png"
+    index_path = append_snapshot_index(
+        str(tmp_path), "079_d3_fire_500x400", str(image_path), written_at=123.0)
+    with open(index_path, encoding="utf-8") as f:
+        record = json.loads(f.readline())
+    assert record == {
+        "written_at": 123.0,
+        "label": "079_d3_fire_500x400",
+        "path": os.path.abspath(image_path),
+        "harvest_id": "079",
+    }
+
+
+def test_snapshot_path_sequence_survives_identical_windows_clock_ticks(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr("miningbot.diagnostics.time.time_ns", lambda: 1234567890000000000)
+    _, first = snapshot_path(str(tmp_path), "079_d3_fire")
+    _, second = snapshot_path(str(tmp_path), "079_d3_fire")
+    assert first != second

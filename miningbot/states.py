@@ -174,7 +174,7 @@ def can_accept_manual_reentry(state: State, reentry_active: bool) -> tuple[bool,
 
 def update_capacity_streak(streak: int, pct: float | None,
                            threshold: float) -> tuple[int, bool]:
-    """Capacity 連續 ≥ 門檻計數（重置偵測第二信號，2026-07-11；純函式）。
+    """Capacity 連續 ≥ 門檻計數（只供加速 banner 輪詢與去抖 log；純函式）。
 
     - pct is None（本輪 OCR 讀失敗）→ streak 原樣、不觸發（單次讀失敗不重計）。
     - pct >= threshold → streak+1；新 streak >= 2 → 觸發（連續兩次確認）。

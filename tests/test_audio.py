@@ -225,3 +225,39 @@ def test_recorder_reset_calls_detector_reset():
     rec.feed(np.array([1.0], np.float32))
     rec.reset()
     assert det._n == 0                        # detector 已重置
+
+
+# --- reset-chime 錄音窗（H045）：舊時間錨（arm 30s > banner 倒數 26~28s）＝鈴聲
+# 永遠在窗外；改容量錨（與開場容量閘同訊號源），窗跨 RESET_WAIT/REENTRY ----
+from miningbot.audio import capture_window_active, chime_capacity_armed
+
+
+def test_chime_arm_on_low_capacity():
+    # 真重置完成幀 Capacity 0%（2026-07-14 ep3 dir7 實機幀）
+    assert chime_capacity_armed(0.0, 10.0) is True
+    assert chime_capacity_armed(10.0, 10.0) is True     # 邊界含
+
+
+def test_chime_not_armed_on_stale_or_high_capacity():
+    # 凍結舊幀 78%（ep3 dir0）／重置前 100%：都不開窗
+    assert chime_capacity_armed(78.0, 10.0) is False
+    assert chime_capacity_armed(100.0, 10.0) is False
+
+
+def test_chime_not_armed_when_capacity_unreadable():
+    assert chime_capacity_armed(None, 10.0) is False
+
+
+def test_capture_window_active_within_max():
+    assert capture_window_active(100.0, 100.5, 120.0) is True
+    # 窗跨進 REENTRY（H045 前離開 RESET_WAIT 即停錄＝實際窗只有 1~3s）
+    assert capture_window_active(100.0, 219.0, 120.0) is True
+
+
+def test_capture_window_closes_after_max():
+    # 上限收口：REENTRY 等 Discord 指令可長達數十分鐘，遊戲音效會洗版 max_clips
+    assert capture_window_active(100.0, 221.0, 120.0) is False
+
+
+def test_capture_window_inactive_when_not_armed():
+    assert capture_window_active(0.0, 999.0, 120.0) is False

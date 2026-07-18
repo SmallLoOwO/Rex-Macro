@@ -17,6 +17,29 @@ def _norm(s: str) -> str:
     return " ".join(s.lower().split())
 
 
+def text_matches_label(text, label: str, min_ratio: float) -> bool:
+    """固定 ROI 的單段文字是否可靠對應指定標籤。"""
+    if not text:
+        return False
+    return SequenceMatcher(None, _norm(text), _norm(label)).ratio() >= min_ratio
+
+
+def find_matching_option(value_text, options, min_ratio: float):
+    """辨識值嚴格對應哪個已知選項；低分或最佳分數打平時回 None。"""
+    if not value_text:
+        return None
+    value = _norm(value_text)
+    ranked = sorted(
+        ((SequenceMatcher(None, value, _norm(option)).ratio(), option) for option in options),
+        reverse=True,
+    )
+    if not ranked or ranked[0][0] < min_ratio:
+        return None
+    if len(ranked) > 1 and ranked[0][0] <= ranked[1][0]:
+        return None
+    return ranked[0][1]
+
+
 def menu_open(records, min_ratio: float) -> bool:
     """OCR 文字框裡看不看得到分頁列（People/Settings/...）任一個——選單開了的訊號。
 
@@ -81,3 +104,27 @@ def value_matches_target(value_text, target: str, other_options, min_ratio: floa
     other_ratio = max((SequenceMatcher(None, t, _norm(o)).ratio() for o in other_options),
                       default=0.0)
     return tgt_ratio > other_ratio
+
+
+def plan_chat_open_action(state: str, clicks_done: int, reads_done: int,
+                          max_clicks: int, max_reads: int) -> str:
+    """聊天框開啟檢查的下一步（H047）。回 'done' | 'click' | 'reread' | 'give_up'。
+
+    state=='open'                                  -> 'done'
+    state=='closed' 且 clicks_done < max_clicks    -> 'click'
+    state=='closed'（點擊額度用盡）                  -> 'give_up'
+    state=='unknown' 且 reads_done < max_reads     -> 'reread'（重抓幀再判，不點擊）
+    state=='unknown'（重讀額度用盡）                  -> 'give_up'
+    其他 state 值                                    -> 'give_up'（防禦）
+
+    toggle 安全核心：unknown 在任何 clicks_done 下都不會回 'click'——誤判開＝不點＝
+    最多維持現狀；誤判關才會點掉開著的聊天框，所以只有明確判「關」時才點擊
+    （比照 _ensure_player_list_closed 的「絕不按第二次 Tab」精神）。
+    """
+    if state == "open":
+        return "done"
+    if state == "closed":
+        return "click" if clicks_done < max_clicks else "give_up"
+    if state == "unknown":
+        return "reread" if reads_done < max_reads else "give_up"
+    return "give_up"

@@ -7,6 +7,48 @@ try:
 except ImportError:
     pass
 
+
+def default_log_dir() -> str:
+    """執行期資料預設放本機 AppData，避免 repo/OneDrive 同步大量快照。"""
+    override = os.getenv("REX_MININGBOT_LOG_DIR")
+    if override:
+        return os.path.expandvars(os.path.expanduser(override))
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        return os.path.join(local_app_data, "RexMacro", "logs")
+    return "logs"
+
+
+def resolve_log_dir(path: str, project_root: str | None = None) -> str:
+    """Resolve runtime logs to one stable absolute directory."""
+    expanded = os.path.expandvars(os.path.expanduser(path))
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    root = project_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.abspath(os.path.join(root, expanded))
+
+
+def resolve_runtime_log_path(path: str, log_dir: str,
+                             project_root: str | None = None) -> str:
+    """Resolve legacy ``logs/...`` settings under the active log root."""
+    expanded = os.path.expandvars(os.path.expanduser(path))
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    normalized = os.path.normpath(expanded)
+    head, tail = os.path.split(normalized)
+    while head and os.path.basename(head):
+        parent, name = os.path.split(head)
+        if not parent:
+            if os.path.normcase(name) == os.path.normcase("logs"):
+                return os.path.normpath(os.path.join(log_dir, tail))
+            break
+        tail = os.path.join(name, tail)
+        head = parent
+    if os.path.normcase(normalized) == os.path.normcase("logs"):
+        return os.path.normpath(log_dir)
+    return resolve_log_dir(normalized, project_root)
+
+
 @dataclass
 class Region:
     x: int
@@ -84,7 +126,13 @@ class Config:
     # 重置完成鈴聲擷取（第一階段：RESET_WAIT 期間只錄候選片段、不比對）
     # 設計：docs/superpowers/specs/2026-07-09-reset-chime-capture-design.md
     reset_chime_capture: bool = True             # 總開關；校準拿到樣本後可關
-    reset_chime_arm_delay_s: float = 30.0        # 進 RESET_WAIT 多久後才開始錄（跳過重置開始的雜音）
+    reset_chime_capacity_arm_pct: float = 10.0   # 錄音窗開啟錨（H045 使用者裁決 2026-07-17）：RESET_WAIT/
+                                                 # REENTRY 期間容量 OCR 讀到 ≤ 此值＝重置真的完成、開始錄。
+                                                 # 時間錨被否決——banner 到真重置完成的耗時不定（凍結可拖
+                                                 # 1~2.5 分）。兩側夾：重置前/凍結舊幀 78~100% vs 重置後 0%
+    reset_chime_capture_max_s: float = 120.0     # 錄音窗上限（自容量歸零觀測起算；窗跨 RESET_WAIT/REENTRY
+                                                 # 需要收口——等 Discord 指令可達數十分鐘，遊戲音效會把
+                                                 # max_clips 洗滿）
     reset_chime_spike_factor: float = 3.0        # rms/baseline 達此倍數即觸發（安靜後一記鈴聲＝相對尖峰）
     reset_chime_baseline_alpha: float = 0.9      # 基準線 EMA 係數（越大越慢跟隨；實機再調）
     reset_chime_min_floor: float = 50.0          # 絕對 RMS 下限，防純靜音除以極小值誤觸（int16 值域，實機看 heartbeat log 校）
@@ -118,6 +166,7 @@ class Config:
     max_aim_rotations: int = 8                   # 水平轉視角上限
     sweep_timeout_s: float = 30.0                # 全方位掃描階段時限（實測 8 方位 ~19s，留 1.5x 餘裕）
     harvest_verify_timeout_s: float = 45.0       # D3 開火+驗證階段時限（sweep 完成後才開始算）。一次 D3 嘗試實測 ~20s（聊天 3-pass OCR 滿版文字 ~10s＋開火序列 1.5s＋輪詢驗證），舊 15s 連一次都裝不下 → RETRY 後 1s 即超時交人工，5 次重試預算形同虛設（H015 根因之一）
+    d3_cooldown_s: float = 10.0                  # Starts at the actual hold-click; shared by normal and remote fire.
     max_harvest_attempts: int = 5
     harvest_verify_window_s: float = 8.0         # D3 後輪詢驗證窗口（H015：框擊中後 2~10s 才消失、聊天成功行更晚到，單幀判定必假陰性）
     harvest_verify_poll_interval_s: float = 0.5  # 輪詢間隔（每輪本身含 find_tracker ~2s，這只是喘息 sleep）
@@ -182,6 +231,9 @@ class Config:
     # banner 輪詢＋記一次飽和 INFO」的輔助信號；唯一停機條件是 reset 橫幅。
     capacity_region: Region = field(default_factory=lambda: Region(715, 92, 200, 45))
         # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）
+    depth_region: Region = field(default_factory=lambda: Region(890, 92, 210, 45))
+        # 頂部「Depth: Surface / NNNm」段（H046 開場狀態錨；2026-07-17 實機 3 張快照
+        # Surface/488m/25790m 實測 3/3，fixtures tests/fixtures/reentry/h046_depth_*.png）
     capacity_reset_threshold: float = 100.0   # ≥此值連續 2 次＝容量飽和：只記一次 INFO＋維持加速輪詢，
                                               # 不再觸發 RESET_WAIT（2026-07-12 死鎖實錄：Mine Capacity 300%
                                               # 升級下顯示 100% ≠ 重置臨近，提早停挖＝死鎖）
@@ -189,7 +241,7 @@ class Config:
     capacity_fast_interval_s: float = 0.5     # 加速後間隔（平時沿用 reset_check_interval_s=2.0）
 
     # 記錄 / 診斷
-    log_dir: str = "logs"
+    log_dir: str = field(default_factory=default_log_dir)
     log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）
     save_snapshots: bool = True                  # 關鍵事件（chill/失敗/卡住/成功）自動存畫面截圖以利除錯
     sweep_empty_snapshot: bool = True            # sweep 全 8 方位皆空→交人工時，存每個方位的全幀（診斷用）：
@@ -198,8 +250,16 @@ class Config:
                                                  # sweep 各方位實況→無從判斷是真漏抓還是礦已被挖走、也無法裁模板補救
     heartbeat_interval_s: float = 30.0           # 長時間等待時，每隔多久記一筆「還活著」的心跳
     snapshot_retention_enabled: bool = True      # 啟動時清理過舊/過量快照（實測 632MB 且在 OneDrive 同步夾）
-    snapshot_max_age_days: int = 30              # 快照保留天數（trace/review 排錯過了熱度就不會再看）
-    snapshot_max_total_mb: int = 2048            # snapshots 總量上限，超過從最舊開始刪
+    snapshot_max_age_days: int = 30              # review/events/reentry 等診斷的全域最長保留期
+    snapshot_max_total_mb: int = 1024            # 全部 snapshots 總量上限，超過從最舊開始刪
+    snapshot_trace_max_age_days: int = 7          # trace 高頻且低價值，較早回收
+    snapshot_trace_max_total_mb: int = 256
+    snapshot_queue_max: int = 16                  # 1080p BGR 約 6MB/張；限制最壞記憶體占用
+    snapshot_queue_critical_reserve: int = 4      # 保留給 rare/review/reentry，trace 不得吃滿
+    snapshot_shutdown_drain_s: float = 5.0        # Bounded shutdown wait for queued snapshot writes.
+    discord_sink_queue_max: int = 64              # 網路斷線時避免事件無界堆積
+    perf_log_interval_s: float = 60.0             # 主迴圈延遲分位數寫 heartbeat.log 的間隔
+    perf_sample_window: int = 300                 # 每個階段保留最近 N 筆樣本
 
     # 重置自動回礦（auto re-entry；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）
     reentry_mode: str = "remote"                # "off"=RESET_WAIT 等人工（今日行為）/"remote"=Discord 指位（2026-07-12 spec）/"auto"=全自動（2026-07-08 spec，面板模板校準完成前勿開）
@@ -212,6 +272,11 @@ class Config:
                                                  # 實機）：虛空無變化噪音 ≤0.3、UI 動畫噪音 ~4.4、真傳送
                                                  # 穩定值 ≥19、地表→地表換重生點最低 26.8。舊值 25 會漏判
                                                  # 真傳送（夜間地表穩定值 19 < 25）→ 降到 12（>4.4 噪音、<19 真傳送）
+    reentry_evac_on_banner: bool = False        # RESET_WAIT 進場即撤離（H043 對策）總開關。H045 起預設
+                                                 # 關：撤離＝重置那一刻人在地表，遊戲不記錄坑內位置，
+                                                 # 臨時挖到的稀有礦回不去原位（使用者 2026-07-17 裁決：
+                                                 # 留坑內記位置，虛空/凍結交 H044 探測預算慢慢爬出）。
+                                                 # 若實機證明虛空卡死率不可接受，開回 True 即回 H043 行為
     reentry_evac_settle_s: float = 0.5          # RESET_WAIT 進場撤離：focus 後沉澱再點「回到地表」
                                                  # （輸入被吃家族既有教訓——焦點剛切回就送點擊會被吃）
     reentry_click_retries: int = 3              # 單次撤離/開場的「回到地表」點擊重試上限（虛空下偶發
@@ -227,8 +292,22 @@ class Config:
     #   點擊無反應，點擊本身就是探針；被動凍結偵測已被量測否決——活著靜止畫面與凍結像素不可分）
     reentry_open_budget_s: float = 300.0        # 開場探測總預算（自 episode 首擊起算；實測凍結 1~2.5
     #   分鐘，300s 蓋過最壞觀測 2 倍）。用盡→通知一次附截圖，等 重骰/跳過/回礦
+    reentry_open_capacity_max_pct: float = 0.0  # 開場容量閘（H045，僅 reset 觸發）：拍照前容量 OCR 須
+    #   ≤ 此值。兩側夾（2026-07-14 ep3 實機幀）：凍結舊幀 Capacity 78% / 真重置完成後 0%。
+    #   凍結中傳送驗證可能在凍結開始前真過了——容量歸零是「重置真的完成且畫面是活的」第二訊號。
+    #   H046：容量 OCR 與俯仰結果解耦（頂部 Capacity 列不管俯仰有沒有生效都讀得到）
+    reentry_frozen_mean_max: float = 0.02       # 凍結探針（H046）：俯仰拖曳前後幀 mean ≤ 此值「且」frac ≤
+    reentry_frozen_frac_max: float = 0.0002     #   下值才判凍結。兩側夾：凍結 0.00/0.0000（逐位元相同）vs
+    #   活著靜止 0.09/0.0004 vs 夜間地表拖曳最小 0.93/0.018（2026-07-17 ep1）。⚠ 不可改用
+    #   pitch_eaten_*（那是「拖曳生效」門檻 8.0/0.15）——H046 就是誤用它把活人鎖 300s
     reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
     reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
+    # --- H048 俯仰拖曳人式分段（2026-07-18 實機兩側量測）---
+    pitch_drag_hold_budget_px: int = 150        # 單次右鍵 hold 的注入上限。指標加速實測 40→78/80→174/
+    #   120→271/180→416（~2.0-2.3x），150px 實走 ~345px < 中央到標題列/工作列 ~500px——
+    #   游標永不甩出遊戲視口（甩到標題列＝右鍵放開會彈系統選單、吞掉後續輸入）
+    pitch_drag_hold_settle_s: float = 0.8       # 兩次 hold 間沉澱。兩側夾：間隔 0.15~0.2s 的下一段右鍵
+    #   被吃（回拉段長期失效、歸位實停在下夾限）、0.55s 以上生效——取 0.8 留餘裕
     reentry_panel_dir: str = "assets/surface"   # 面板偵測模板資料夾（實機裁圖）
     reentry_panel_threshold: float = 0.45       # 面板邊緣比對門檻（高信心才進下一步）
     reentry_panel_scales: tuple = (0.5, 0.7, 1.0, 1.4, 2.0)  # 距離變化大→尺度比 marker 寬
@@ -260,6 +339,9 @@ class Config:
     remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
     remote_aim_refind_radius_px: int = 160      # fire 前重找 ROI 半徑（同 shape_roi 半徑量級）
     remote_aim_budget_s: float = 120.0          # 單次 fire 全流程預算（對齊+重掃+驗證）
+    remote_aim_snapshot_wait_s: float = 3.0     # Total wait budget before rendering or directly sending async snapshots.
+    harvest_target_recovery_max: int = 1        # At most one recovery at an accepted/fired absolute direction.
+    harvest_target_recovery_radius_px: int = 240  # Expanded ROI around the historical target coordinate.
 
     # --- Discord 遠端回礦（2026-07-12 spec：重置後發八方位圖，回訊息兩段式指位點傳送面板）---
     reentry_remote_fine_cols: int = 6           # 細網格欄數（放大圖上）
@@ -291,7 +373,7 @@ class Config:
     discord_webhook_url: str = ""
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
-    discord_poll_interval_s: float = 3.0        # Discord 命令輪詢間隔（秒；2026-07-07 10→3 加快遙控器/命令回應）
+    discord_poll_interval_s: float = 1.0        # Discord 命令/反應輪詢間隔（秒；單卡 reaction 摘要已把每輪 GET 壓到 1 次）
 
     # 選單前置切換（Movement Mode）＋聊天框前置檢查
     # docs/superpowers/specs/2026-07-08-menu-preflight-boost-design.md
@@ -302,6 +384,9 @@ class Config:
         # Esc 選單面板整塊（分頁列 People/Settings/... ＋ 內容列表），OCR 找標籤/值/箭頭都在此裁圖裡做
         # （2026-07-08 實機驗證：People(576,156) Settings(774,156) Gallery(976,156) 等分頁文字，
         # Movement Mode 標籤(571,503)／值(1153,503) 皆落在此區內）
+    menu_movement_label_region: Region = field(default_factory=lambda: Region(500, 478, 300, 50))
+    menu_movement_value_region: Region = field(default_factory=lambda: Region(1000, 478, 350, 50))
+    menu_movement_row_y: int = 503       # 固定列快速路徑；辨識不確定時回退全面板 OCR
     menu_arrow_right_x: int = 1425       # 值列右箭頭 x（y 用該列 label 的 y；2026-07-08 實測 1423~1425）
     menu_value_column_x_range: tuple = (1000, 1350)   # 值文字欄 x 範圍（中心約 1153，三個值都置中對齊）
     menu_row_y_tolerance_px: int = 18    # 同一列判定的 y 容差（label 與 value 實測同列時 y 差 0~1px）
@@ -320,10 +405,14 @@ class Config:
         # （實測成功 71~82s、失敗曾燒 170s；2026-07-10 spec 第 4 節）
 
     chat_icon_xy: tuple = (174, 71)      # 左上聊天圖示（收合時點它展開；2026-07-08 實測座標）
-    chat_input_region: Region = field(default_factory=lambda: Region(0, 355, 620, 55))
-        # 展開後固定位置的輸入列「To chat click here or press / key」（2026-07-08 實機截圖量測＋
-        # 真實 tesseract OCR 驗證過：開啟時讀到 "press / key"、收合時讀到雜訊不誤判）
-    chat_input_phrases: tuple = ("to chat click here", "press / key")
+    chat_icon_state_region: Region = field(default_factory=lambda: Region(154, 51, 40, 40))
+        # 左上聊天圖示狀態判定框（H047：開＝實心白泡泡、關＝空心白邊；40x40 含整個圖示；
+        # 任何狀態都看得到，不像輸入列 placeholder 會被自動隱藏——取代舊版輸入列 OCR 信號）
+    chat_icon_probe: tuple = (6, 21, 18, 28)
+        # 泡泡內部補丁（crop 相對 x0,y0,x1,y1；位於泡泡左下內部，避開中央文字筆劃與右上未讀徽章）
+    chat_icon_open_min_gray: float = 180.0    # >= 判開（實心白泡泡）
+        # 實測補丁灰階平均：開 238..255（n=42）、關 81..87（n=19 含未讀徽章「11」樣本）→ 兩側夾
+    chat_icon_closed_max_gray: float = 130.0  # <= 判關（空心、內部暗）；中間 unknown，呼叫端絕不點擊
     chat_open_settle_s: float = 0.8      # 點聊天圖示後等展開動畫（menu_open_settle_s 0.3 偏緊）
     chat_open_max_retries: int = 2       # 首次點擊複檢仍關 → 重新聚焦再點的重試次數
 

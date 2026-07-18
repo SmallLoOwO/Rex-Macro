@@ -1,0 +1,46 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 19 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - name: Prepare pinned English tessdata
+        shell: pwsh
+        run: |
+          $tessdataDir = Join-Path $env:RUNNER_TEMP "tessdata"
+          New-Item -ItemType Directory -Force -Path $tessdataDir | Out-Null
+          $trainedData = Join-Path $tessdataDir "eng.traineddata"
+          $uri = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/65727574dfcd264acbb0c3e07860e4e9e9b22185/eng.traineddata"
+          Invoke-WebRequest -Uri $uri -OutFile $trainedData
+          $expected = "7D4322BD2A7749724879683FC3912CB542F19906C83BCC1A52132556427170B2"
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $trainedData).Hash
+          if ($actual -ne $expected) { throw "eng.traineddata SHA-256 mismatch: $actual" }
+          "TESSDATA_PREFIX=$tessdataDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Sync locked environment
+        run: uv sync --locked
+      - name: Verify OCR engines
+        run: uv run python -c "from miningbot import ocr; from miningbot.config import DEFAULT as cfg; assert ocr.tesserocr_available(cfg.tesseract_path), 'tesserocr unavailable'; assert ocr.rapidocr_available(), 'RapidOCR unavailable'"
+      - name: Static correctness checks
+        run: uv run ruff check .
+      - name: Test suite
+        run: uv run pytest -q
+      - name: Dependency vulnerability audit
+        run: uv audit --locked --preview-features audit

@@ -5,27 +5,23 @@ import ctypes
 import json
 import threading
 import queue
+import itertools
 import winsound
 
 import numpy as np
 
-from .config import DEFAULT as cfg
+from .config import (DEFAULT as cfg, resolve_log_dir,
+                     resolve_runtime_log_path)
 from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining, can_consume_ability,
                      should_notify_spawn_chill, update_capacity_streak,
                      can_accept_manual_reentry)
-from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data
-from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote
+from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
+from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
+from . import calibrate_pitch
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
-
-# Discord 命令清單（小寫）。第一個詞比對此集合才觸發——讓一般聊天訊息不致誤判為命令。
-# 不需 ! 前綴：使用者直接打 `status` 即觸發（打 `!status` 也相容，見 _handle_discord_command）。
-_DISCORD_COMMANDS = frozenset({
-    "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
-    "ability", "回礦", "reenter",
-})
 
 # 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
 # 用 emoji 而非 Discord Components 按鈕：本專案全程 stdlib urllib，無 Websocket/interaction 基礎建設；
@@ -33,6 +29,8 @@ _DISCORD_COMMANDS = frozenset({
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
 _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；等同 `ability` 指令）
+_REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
+_REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 # 遙控器 embed 標題——啟動時靠它掃頻道「認領」跨重啟殘留的遙控器（find_remote_messages），
 # 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
 _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
@@ -41,15 +39,13 @@ _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
 
-    def __init__(self, down_fn, on_stop, on_toggle, on_quit, on_sample=None):
+    def __init__(self, down_fn, on_stop, on_toggle, on_quit):
         self._down = down_fn
         self._on_stop = on_stop
         self._on_toggle = on_toggle
         self._on_quit = on_quit
-        self._on_sample = on_sample        # 'R' 手動取樣視窗（未掛＝功能停用）
         self._prev_ctrlq = False
         self._prev_q = False
-        self._prev_r = False
 
     def tick(self):
         ctrl = self._down(0x11)
@@ -68,10 +64,7 @@ class _HotkeyController:
             self._prev_q = True
         else:
             self._prev_q = False
-        r = self._down(0x52)               # 'R'：手動取樣視窗
-        if r and not self._prev_r and self._on_sample:
-            self._on_sample()
-        self._prev_r = r
+        # R 取樣視窗已退役（2026-07-17）：截圖→遙控器 📷、俯仰→回礦 `仰角` 指令
         # 跳過環境檢查不設專用鍵：F 系多被 Roblox 內建佔用（F8 實測有遊戲功能、
         # 會誤觸），改由 Q 在啟動階段語意分派（states.toggle_pause_action 的 skip_env）
         if f12:
@@ -83,7 +76,13 @@ class Bot:
         self.state = State.MINING
         self.paused = False
         self.human_cleared = False
+        cfg.log_dir = resolve_log_dir(cfg.log_dir)
+        cfg.manual_snapshot_dir = resolve_runtime_log_path(
+            cfg.manual_snapshot_dir, cfg.log_dir)
+        cfg.reentry_remote_ledger = resolve_runtime_log_path(
+            cfg.reentry_remote_ledger, cfg.log_dir)
         self.logger = diagnostics.setup_logging(cfg.log_dir, cfg.log_level)
+        self.logger.info("runtime log directory: %s", cfg.log_dir)
         # 子系統 logger（分檔隔離噪音：心跳/重複動作/採集細節各自獨立檔）
         self.log_hb = diagnostics.get_logger("heartbeat")      # -> heartbeat.log
         self.log_act = diagnostics.get_logger("mining")        # -> actions.log
@@ -102,7 +101,8 @@ class Bot:
                     cfg.discord_bot_token, cfg.discord_channel_id,
                     on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d),
                     log=self.log_discord),
-                log=self.log_discord))
+                log=self.log_discord,
+                max_queue=cfg.discord_sink_queue_max))
             self.logger.info("Discord 通知已啟用 (channel=%s)", cfg.discord_channel_id)
         else:
             self.logger.info("Discord 通知未啟用（.env 未設 token/channel）")
@@ -116,7 +116,8 @@ class Bot:
             on_event=self._on_audio_event, decimate=cfg.audio_match_decimate)
         # 重置完成鈴聲擷取（第一階段：只錄不比對）——與 ChillListener 隔離
         self._reset_chime_active = False
-        self._reset_wait_since = 0.0
+        self._reset_wait_since = 0.0             # RESET_WAIT 進場時刻（HUD/診斷用）
+        self._chime_armed_at = 0.0               # H045 容量錨：觀測到容量歸零的時刻（0=本輪未觀測到）
         self._last_chime_diag = 0.0
         self._reset_chime_recorder = None
         if cfg.reset_chime_capture:
@@ -147,8 +148,11 @@ class Bot:
         self._harvest_start = 0.0
         self._harvest_seq = self._load_harvest_seq()  # 採集流水號（持久化跨 session；每進一次 HARVESTING +1）；格式化成 001 貫穿 log/快照/Discord
         # 非同步快照：主線只丟佇列（即時拿路徑），背景執行緒做 PNG 編碼+寫檔（不卡 aim→D3）
-        self._snap_q: queue.Queue = queue.Queue(maxsize=64)
+        self._snap_q: queue.PriorityQueue = queue.PriorityQueue(maxsize=cfg.snapshot_queue_max)
+        self._snap_seq = itertools.count()
         threading.Thread(target=self._snapshot_worker, daemon=True).start()
+        self._latency = metrics.LatencyTracker(cfg.perf_sample_window)
+        self._last_perf_log = time.monotonic()
         self._prev_frame = None
         self._last_progress = time.time()
         # Q 跳過啟動環境檢查（spec 2026-07-10 第 2 節；原 F8 與 Roblox 內建功能衝突改 Q）：
@@ -160,15 +164,17 @@ class Bot:
         self._manual_reentry = False           # Discord 回礦 指令/STUCK 🏠（輪詢執行緒寫、主迴圈消費）
         self._rr_trigger = "reset"             # 本輪 REENTRY 觸發來源（reset/manual；建 ctx 時寫入）
         self._stuck_alert_mid = None           # STUCK 警告訊息 id（🏠 反應輪詢；進度恢復即作廢）
-        self._stuck_seen = set()               # 🏠 已見使用者基線（含 bot 自己貼的）
+        self._stuck_seen: dict[str, int] = {}  # 🏠 反應數基線（bot 自己貼成功時為 1）
         self._rr_open_first_ts = 0.0           # H044 開場探測：episode 首擊時刻（0=非探測中）
         self._rr_open_last_ts = 0.0            # H044 開場探測：上一次探測時刻
+        self._rr_last_probe = (None, None, 0.0, 0.0)  # 最後一探讀值 (surface, cap, p_mean, p_frac)；give_up 通知附帶
         self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
         self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
         self._antiafk_last = 0.0                   # 防掛機：上次按 Space 的時間（0=未在計時；暫停中才啟用）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
+        self._last_d3_fire_at: float | None = None  # session 級；實際 hold-click 當下起算
         self._last_boost_check = 0.0                 # boost 偵測節流：上次真的 edge-match 的時間
         self._boost_present = False                  # 上次偵測到的 boost 瓶子在否（節流間沿用，避免每幀掃）
         self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
@@ -178,14 +184,14 @@ class Bot:
         # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
         self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
         self._list_current_world: str | None = None     # 該訊息目前顯示的世界（None=全世界聯集）
-        self._list_reactions_seen: dict[str, set[str]] = {}  # 每表情已見使用者 ID（偵測「新點擊」）
+        self._list_reactions_seen: dict[str, int] = {}  # 每表情反應數基線（取消後再點可重新觸發）
         # 遙控器（釘底控制訊息 + 反應按鈕，混合設計 2026-07-09）：狀態變更/按鈕點擊一律
         # edit_message 原地編輯（不產生新訊息、不推播），**只有**被其他訊息擠上去時才刪舊
         # 重貼回頻道底（_repost_remote_control）。啟動時 _ensure_remote_control 先清跨重啟
         # 殘留的舊遙控器（舊設計 id 只在記憶體、重啟後永遠刪不到的根因）再貼新的。
         # 反應 ▶️/⏸️ 由 _poll_remote_reactions 偵測新點擊（seen 採同步語意：使用者取消可再點）。
         self._remote_message_id: str | None = None
-        self._remote_reactions_seen: dict[str, set[str]] = {}
+        self._remote_reactions_seen: dict[str, int] = {}
         self._remote_last_shown: tuple | None = None    # 上次 PATCH 時的 (paused, state)，避免重複 PATCH
         # 狀態小窗用的即時資訊
         self._started = time.time()
@@ -200,6 +206,8 @@ class Bot:
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
+        self._target_observations: list = []     # accepted/fired/seen-once，保留絕對方位與原圖
+        self._target_recovery_attempts = 0       # episode 級有界復原；不在 RESWEEP 重置
         # B3：輪詢執行緒寫 pending、主迴圈讀清；_aim_busy 擋執行中再回覆（不排隊）
         self._pending_aim = None                 # AimReply（輪詢解析結果、主迴圈消費）
         self._aim_busy = False                   # fire 執行中（主迴圈設、輪詢執行緒讀）
@@ -211,11 +219,15 @@ class Bot:
         self._rr_ctx = None                      # RemoteReentryContext（進 REENTRY remote 時建、收尾時清）
         self._pending_reentry = None              # (raw, RemoteReply)：輪詢解析結果、主迴圈消費
         self._rr_busy = False                    # 開場鏈/指令執行中（主迴圈設、輪詢執行緒讀）
+        # Discord 俯仰校準（2026-07-18 spec）：輪詢執行緒只寫 pending，進場/動作/寫檔全在
+        # 主迴圈。session 活著＝強制暫停中（paused 底下的旗標，不是 states.py 新狀態）。
+        self._calib_session = None                # calibrate_pitch.CalibSession | None
+        self._pending_calib_start = None          # "mining"/"reentry"：指令驗收後待主迴圈進場
+        self._pending_calib_action = None         # "up"/…/"exit"：反應輪詢待主迴圈消費
         self._rr_sticky_layer = cfg.reentry_target_layer   # 黏性目標層（`層` 指令改、session 內沿用）
-        self._rr_movement_ready = False           # `走` 懶啟動：session 內只跑一次 Click to Move 鏈
         self._evac_done = False                   # RESET_WAIT 撤離結果（REENTRY embed 僅供 footer 標注，不改流程）
         self._rr_embed_mid = None                 # REENTRY episode embed 訊息 id（_rr_finalize 時刪除，避免殘留死卡）
-        self._rr_reactions_seen = {}              # embed 反應基線（照抄遙控器 seen 同步語意）
+        self._rr_reactions_seen: dict[str, int] = {}  # embed 反應數基線（同步語意）
         self._rr_last_min = -1                    # embed 分鐘數節流：變了才 PATCH（每分鐘最多 1 次，防 rate limit）
         self._last_reset_check = 0.0
         self._mine_resetting = False
@@ -257,12 +269,9 @@ class Bot:
             self._pause,            # Ctrl+Q：只暫停（不繼續）
             self._toggle_pause,     # Q：開關 暫停↔繼續
             self._quit,
-            on_sample=self._toggle_sampler,   # R：手動取樣視窗（校準素材收集）
         )
-        self._sampler = None                  # SamplerWindow（無 HUD 後備；開著時非 None）
-        self._sampler_want = False            # R 熱鍵請求開/關（HUD Tk 執行緒依此同步建/銷 Toplevel）
-        self._sampler_ui = None               # SamplerPanel（只在 HUD Tk 執行緒碰）
-        self._pitch_offset_px = 0             # 目前俯仰距夾限偏移（歸位後＝reentry_pitch_back_px）
+        self._pitch_offset_px = 0             # 目前俯仰距夾限偏移（回礦歸位後＝reentry_pitch_back_px、
+                                              # 挖礦標準角歸位後＝sweep_pitch_center_back_px）
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -315,7 +324,7 @@ class Bot:
                                  len(tmpls), cfg.reentry_panel_dir)
             else:
                 self.logger.warning("reentry_mode=auto 但 %s 無面板模板——自動回礦視同關閉；"
-                                    "先用 R 鍵截圖＋calibrate_surface --import 裁模板",
+                                    "先用遙控器 📷 截編號樣本＋calibrate_surface --import 裁模板",
                                     cfg.reentry_panel_dir)
         return tmpls
 
@@ -479,8 +488,12 @@ class Bot:
                     except OSError:
                         continue
                     entries.append((path, st.st_mtime, st.st_size))
-            doomed = diagnostics.plan_snapshot_cleanup(
-                entries, time.time(), cfg.snapshot_max_age_days, cfg.snapshot_max_total_mb)
+            doomed = diagnostics.plan_snapshot_cleanup_tiered(
+                entries, time.time(), cfg.snapshot_max_age_days, cfg.snapshot_max_total_mb,
+                category_limits={
+                    "trace": (cfg.snapshot_trace_max_age_days,
+                              cfg.snapshot_trace_max_total_mb),
+                })
             freed_bytes = 0
             deleted = 0
             for path in doomed:
@@ -561,22 +574,28 @@ class Bot:
     def _enqueue_snapshot(self, frame, label: str) -> str | None:
         """算好路徑（即時回傳）後把 (frame 複本, 路徑) 丟佇列給背景執行緒寫檔。"""
         snap_dir, path = diagnostics.snapshot_path(cfg.log_dir, label)
+        if not diagnostics.snapshot_enqueue_allowed(
+                label, self._snap_q.qsize(), cfg.snapshot_queue_max,
+                cfg.snapshot_queue_critical_reserve):
+            self.logger.warning("snapshot 佇列保留/已滿，丟棄 %s", label)
+            return None
         try:
             # frame.copy()：主迴圈會覆寫 buffer，背景寫檔前須複製避免讀到髒資料
-            self._snap_q.put_nowait((frame.copy(), snap_dir, path, label))
+            payload = (frame.copy(), snap_dir, path, label)
+            self._snap_q.put_nowait(
+                (diagnostics.snapshot_priority(label), next(self._snap_seq), payload))
             self.logger.info("SNAPSHOT %s -> %s (async)", label, path)
         except queue.Full:
             self.logger.warning("snapshot 佇列滿，丟棄 %s", label)
+            return None
         return path
 
     def _snapshot_worker(self):
         """背景執列緒：從佇列取出畫面寫檔（PNG 編碼+磁碟 I/O 不卡主線）。"""
         import cv2                                  # lazy（同 _save_needs_human_screenshot）
         while True:
-            item = self._snap_q.get()
-            if item is None:                         # 收到哨兵 → 結束
-                break
-            frame, snap_dir, path, label = item
+            _priority, _seq, payload = self._snap_q.get()
+            frame, snap_dir, path, label = payload
             tmp = diagnostics.tmp_snapshot_path(path)  # 保留 .png 給 cv2（見該函式註解）
             try:
                 os.makedirs(snap_dir, exist_ok=True)
@@ -588,6 +607,10 @@ class Bot:
                 if not cv2.imwrite(tmp, frame):
                     raise RuntimeError("cv2.imwrite returned False")
                 os.replace(tmp, path)                # atomic（同磁碟區；Windows 亦保證）
+                try:
+                    diagnostics.append_snapshot_index(cfg.log_dir, label, path)
+                except Exception as e:
+                    self.logger.warning("snapshot index failed (%s): %s", label, e)
             except Exception as e:
                 self.logger.error("async snapshot failed (%s): %s", label, e)
                 # 清掉可能殘留的 .part（imwrite 失敗或例外中斷時避免堆積）
@@ -596,6 +619,87 @@ class Bot:
                         os.remove(tmp)
                 except OSError:
                     pass
+            finally:
+                self._snap_q.task_done()
+
+    def _wait_snapshot_ready(self, path: str, timeout_s: float | None = None) -> bool:
+        """Wait until an async atomic snapshot exists and is non-empty."""
+        if not path:
+            return False
+        timeout_s = (cfg.remote_aim_snapshot_wait_s if timeout_s is None
+                     else max(0.0, timeout_s))
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return True
+            except OSError:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+
+    def _ready_snapshot_paths(self, paths, timeout_s: float | None = None):
+        """Resolve several async snapshot paths within one shared wait budget."""
+        timeout_s = (cfg.remote_aim_snapshot_wait_s if timeout_s is None
+                     else max(0.0, timeout_s))
+        deadline = time.monotonic() + timeout_s
+        ready = []
+        for path in paths:
+            remaining = max(0.0, deadline - time.monotonic())
+            if self._wait_snapshot_ready(path, remaining):
+                ready.append(path)
+            else:
+                self.logger.warning("snapshot not ready before send: %s", path)
+        return ready
+
+    def _drain_snapshot_queue(self, timeout_s: float) -> bool:
+        """Give the daemon writer a bounded shutdown window."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while self._snap_q.unfinished_tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
+
+    def _d3_cooldown_remaining(self) -> float:
+        return harvester.d3_cooldown_remaining(
+            time.monotonic(), self._last_d3_fire_at, cfg.d3_cooldown_s)
+
+    def _fire_d3_at(self, x: int, y: int) -> bool:
+        """Run the single canonical D3 sequence, stamping cooldown at the shot."""
+        remaining = self._d3_cooldown_remaining()
+        if remaining > 0:
+            self.log_harvest.info("D3 cooldown blocked shot at (%d,%d): %.2fs left",
+                                  x, y, remaining)
+            return False
+        ic.key_press("2")
+        time.sleep(0.15)
+        ic.key_press("3")
+        time.sleep(0.3)
+        self._last_d3_fire_at = time.monotonic()
+        ic.click_at(int(x), int(y), hold=0.4)
+        time.sleep(0.5)
+        return True
+
+    def _wait_for_d3_cooldown(self, deadline: float | None = None):
+        """Cooperatively wait for remote fire without ever shooting inside 10s."""
+        while True:
+            remaining = self._d3_cooldown_remaining()
+            if remaining <= 0:
+                return True, ""
+            if not getattr(self, "_running", True):
+                return False, "程式已停止"
+            if getattr(self, "paused", False):
+                return False, "已暫停"
+            if getattr(self, "_mine_resetting", False):
+                return False, "礦坑重置中"
+            if deadline is not None and time.time() >= deadline:
+                return False, "等待 D3 冷卻時預算用盡"
+            self.last_action = f"D3 冷卻 {remaining:.1f}s"
+            time.sleep(min(0.1, remaining))
 
     # ---- 觀察 ---------------------------------------------------------------
     def observe(self, frame) -> Observation:
@@ -754,10 +858,11 @@ class Bot:
                 # capacity_region → parse → 快取＋streak。已確認飽和（streak>=2）後跳過
                 # capacity OCR 省一半開銷——值已釘死不會變，加速輪詢 0.5s 期間可能持續很久；
                 # _capacity_pct 維持舊值供 HUD 顯示與加速間隔判斷（banner OCR 每輪照跑）。
-                if self._capacity_streak < 2:
-                    cap_pct_this = ocr.parse_capacity_pct(
-                        ocr.read_text(capture.crop(frame, cfg.capacity_region),
-                                      cfg.tesseract_path))
+                # H045：RESET_WAIT 期間即使飽和鎖定（streak>=2）也照讀容量——
+                # 100→0 的翻轉就是「重置真的完成」的錨，鈴聲錄音窗靠它開。
+                if self._capacity_streak < 2 or self.state is State.RESET_WAIT:
+                    cap_pct_this = ocr.read_capacity_pct(
+                        capture.crop(frame, cfg.capacity_region), cfg.tesseract_path)
                     if cap_pct_this is not None:
                         self._capacity_pct = cap_pct_this   # 讀成功才更新（失敗沿用舊值）
                     self._capacity_streak, cap_trigger = update_capacity_streak(
@@ -766,6 +871,7 @@ class Bot:
                         self.logger.info("容量已滿（≥%.0f 連續2次），不停機、已加速監看重置橫幅",
                                          cfg.capacity_reset_threshold)
                         self._capacity_full_logged = True
+                    self._maybe_arm_chime(cap_pct_this)
                 # 唯一停機信號是 reset 橫幅；cap_trigger 不再寫 _mine_resetting／_human_reason
                 # （2026-07-12 死鎖實錄：Capacity 假陽性 → 卡死 RESET_WAIT）。
                 resetting = banner_resetting
@@ -923,21 +1029,25 @@ class Bot:
         records = []
         scroll_count = 0
         t0 = time.perf_counter()
-        for i in range(cfg.menu_scroll_max_screens):
-            if should_abort and should_abort():
-                # 不在這裡按 Esc：回 False 後外層「失敗→Esc 回中性」必按一次，這裡再按
-                # 會變兩下（第二下把剛收的選單重新打開、留著吃掉後續挖礦按鍵）
-                self.log_act.info("Movement Mode 切換中止：捲屏階段（選單交外層 Esc 收），總耗時 %.1fs",
-                                  time.perf_counter() - t_start)
-                return False
-            records = self._menu_ocr(f"scroll-{i + 1}")
-            row_y = roblox_menu.find_label_row_y(records, "Movement Mode", cfg.menu_fuzzy_min_ratio)
-            if row_y is not None:
-                break
-            ic.move_to(*cfg.menu_scroll_xy)
-            ic.scroll(cfg.menu_scroll_amount)
-            time.sleep(cfg.menu_open_settle_s)
-            scroll_count += 1
+        fast_row = self._menu_movement_fast("initial")
+        if fast_row is not None:
+            row_y, value_text = fast_row
+        else:
+            for i in range(cfg.menu_scroll_max_screens):
+                if should_abort and should_abort():
+                    # 不在這裡按 Esc：回 False 後外層「失敗→Esc 回中性」必按一次，這裡再按
+                    # 會變兩下（第二下把剛收的選單重新打開、留著吃掉後續挖礦按鍵）
+                    self.log_act.info("Movement Mode 切換中止：捲屏階段（選單交外層 Esc 收），總耗時 %.1fs",
+                                      time.perf_counter() - t_start)
+                    return False
+                records = self._menu_ocr(f"scroll-{i + 1}")
+                row_y = roblox_menu.find_label_row_y(records, "Movement Mode", cfg.menu_fuzzy_min_ratio)
+                if row_y is not None:
+                    break
+                ic.move_to(*cfg.menu_scroll_xy)
+                ic.scroll(cfg.menu_scroll_amount)
+                time.sleep(cfg.menu_open_settle_s)
+                scroll_count += 1
         scroll_s = time.perf_counter() - t0
         if row_y is None:
             self.log_act.warning("Movement Mode 切換：捲動 %d 屏仍找不到標籤",
@@ -950,8 +1060,9 @@ class Bot:
             return False
 
         t0 = time.perf_counter()
-        value_text = roblox_menu.read_row_value(
-            records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
+        if fast_row is None:
+            value_text = roblox_menu.read_row_value(
+                records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
         read_s = time.perf_counter() - t0
         if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
             self.log_act.info("Movement Mode 已是目標值 %s，收工", target)
@@ -976,9 +1087,13 @@ class Bot:
                 return False
             ic.click_at(cfg.menu_arrow_right_x, row_y)
             time.sleep(cfg.menu_arrow_settle_s)
-            records = self._menu_ocr(f"arrow-{click_i + 1}")
-            value_text = roblox_menu.read_row_value(
-                records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
+            fast_row = self._menu_movement_fast(f"arrow-{click_i + 1}")
+            if fast_row is not None:
+                row_y, value_text = fast_row
+            else:
+                records = self._menu_ocr(f"arrow-{click_i + 1}")
+                value_text = roblox_menu.read_row_value(
+                    records, row_y, cfg.menu_value_column_x_range, cfg.menu_row_y_tolerance_px)
             if roblox_menu.value_matches_target(value_text, target, others, cfg.menu_fuzzy_min_ratio):
                 arrow_s = time.perf_counter() - t0
                 self.log_act.info("Movement Mode 切到 %s（點了 %d 次右箭頭）", target, click_i + 1)
@@ -1017,51 +1132,89 @@ class Bot:
                            label, len(records), (t1 - t0) * 1000, (t2 - t1) * 1000)
         return records
 
-    def _ensure_chat_open(self):
-        """啟動 UI 前置檢查：聊天框關著就點圖示開啟；複檢仍關 → 重新聚焦再點（最多 chat_open_max_retries 次）。
+    def _menu_movement_fast(self, label: str = ""):
+        """讀固定 Movement Mode 列；不確定即回 None，呼叫端保留全面板 OCR 後備。"""
+        t0 = time.perf_counter()
+        frame = capture.grab()
+        t1 = time.perf_counter()
+        try:
+            label_text = ocr.read_text_line(
+                capture.crop(frame, cfg.menu_movement_label_region), engine="rapidocr")
+            value_text = ocr.read_text_line(
+                capture.crop(frame, cfg.menu_movement_value_region), engine="rapidocr")
+        except Exception as exc:
+            self.log_act.debug("menu fixed-ROI[%s] 不可用，回退全面板 OCR：%r", label, exc)
+            return None
+        option = roblox_menu.find_matching_option(
+            value_text, cfg.movement_mode_options, cfg.menu_fuzzy_min_ratio)
+        if (not roblox_menu.text_matches_label(
+                label_text, "Movement Mode", cfg.menu_fuzzy_min_ratio)
+                or option is None):
+            self.log_act.debug(
+                "menu fixed-ROI[%s] 不確定，回退全面板 OCR：label=%r value=%r",
+                label, label_text, value_text)
+            return None
+        t2 = time.perf_counter()
+        self.log_act.debug(
+            "menu fixed-ROI[%s]：value=%r grab %.0fms + rec %.0fms",
+            label, option, (t1 - t0) * 1000, (t2 - t1) * 1000)
+        return cfg.menu_movement_row_y, value_text
 
-        點擊被吃的既有對策＝重新聚焦後重送（_focus_roblox；OCR 複檢即驗證，不必如 _rotate_verified 比對幀差）。
-        重試用盡仍關 → 保留 WARNING + HUD，另存快照（snapshots/trace/，label chat_open_fail）供診斷，照常啟動
-        （不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，見 CLAUDE.md）。
+    def _ensure_chat_open(self):
+        """啟動 UI 前置檢查：聊天圖示狀態判定聊天框開關；關閉就點圖示開啟（H047）。
+
+        舊版靠輸入列 placeholder OCR 判斷，但聊天框開著且久無新訊息會被遊戲自動隱藏、
+        placeholder 隨之消失 → 假陰性「關閉」→ 對已開啟的聊天框連點 toggle 圖示，反而
+        關掉（2026-07-17／07-18 兩場實機事故）。改用左上聊天圖示外觀：開＝實心白泡泡、
+        關＝空心白邊，任何狀態都看得到，不受自動隱藏影響。unknown（灰值落兩側夾中間，
+        例如重置白閃過渡幀）絕不點擊——誤判開頂多維持現狀，誤判關點下去才會把開著的
+        聊天框關掉，比照 `_ensure_player_list_closed` 的 toggle 安全方向。
+        點擊被吃的既有對策＝重新聚焦後重送（_focus_roblox）。點擊/重讀額度用盡仍未
+        判開 → 保留 WARNING + HUD，另存快照（snapshots/trace/，label chat_open_fail）
+        供診斷，照常啟動（不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，
+        見 CLAUDE.md）。
         """
-        t0 = time.perf_counter()
-        frame = capture.grab()
-        text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
-        ocr_ms = (time.perf_counter() - t0) * 1000
-        if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟（OCR %.0fms）", ocr_ms)
-            return
-        self.logger.info("UI 前置檢查：聊天框關閉，點擊圖示開啟（OCR %.0fms）", ocr_ms)
-        ic.click_at(*cfg.chat_icon_xy)
-        time.sleep(cfg.chat_open_settle_s)
-        if self._env_check_skip("聊天框複檢"):   # Q 已按 → 省下 ~2-8s 第二次 OCR
-            return
-        t0 = time.perf_counter()
-        frame = capture.grab()
-        text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
-        ocr_ms = (time.perf_counter() - t0) * 1000
-        if ocr.contains_any(text, cfg.chat_input_phrases):
-            self.logger.info("UI 前置檢查：聊天框已開啟（點擊後確認，OCR %.0fms）", ocr_ms)
-            return
-        # 首次點擊仍關 → 重新聚焦再點（輸入被吃的既有對策）；最多 chat_open_max_retries 次
-        for attempt in range(1, cfg.chat_open_max_retries + 1):
-            if self._env_check_skip("聊天框重試"):
+        clicks = 0
+        reads = 0
+        while True:
+            if self._env_check_skip("聊天框檢查"):   # Q 已按 → 略過該輪（含重試/重讀）
                 return
-            self._focus_roblox()
-            self.logger.info("UI 前置檢查：聊天框仍未開啟，第 %d 次重試（重新聚焦再點）", attempt)
-            ic.click_at(*cfg.chat_icon_xy)
-            time.sleep(cfg.chat_open_settle_s)
-            t0 = time.perf_counter()
             frame = capture.grab()
-            text = ocr.read_text(capture.crop(frame, cfg.chat_input_region), cfg.tesseract_path)
-            ocr_ms = (time.perf_counter() - t0) * 1000
-            if ocr.contains_any(text, cfg.chat_input_phrases):
-                self.logger.info("UI 前置檢查：聊天框第 %d 次重試後開啟（OCR %.0fms）", attempt, ocr_ms)
+            crop = capture.crop(frame, cfg.chat_icon_state_region)
+            state = vision.chat_icon_state(
+                crop, cfg.chat_icon_probe,
+                cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray)
+            probe_mean = vision.chat_icon_probe_mean(crop, cfg.chat_icon_probe)
+            action = roblox_menu.plan_chat_open_action(
+                state, clicks, reads,
+                max_clicks=cfg.chat_open_max_retries + 1, max_reads=3)
+            if action == "done":
+                self.logger.info("UI 前置檢查：聊天框已開啟（圖示實心，probe=%.1f）", probe_mean)
                 return
-        self.logger.warning("UI 前置檢查：聊天框仍未開啟，可能影響採集確認；請手動開啟（OCR %.0fms）",
-                            ocr_ms)
-        self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
-        self._snapshot(frame, "chat_open_fail")   # label 無 reentry/sweep/d3/chill 關鍵字 → snapshots/trace/
+            if action == "click":
+                if clicks >= 1:
+                    self._focus_roblox()
+                    self.logger.info(
+                        "UI 前置檢查：聊天圖示仍空心，第 %d 次重試（重新聚焦再點，probe=%.1f）",
+                        clicks, probe_mean)
+                else:
+                    self.logger.info("UI 前置檢查：聊天圖示空心，點擊開啟（probe=%.1f）", probe_mean)
+                ic.click_at(*cfg.chat_icon_xy)
+                time.sleep(cfg.chat_open_settle_s)
+                clicks += 1
+                continue
+            if action == "reread":
+                reads += 1
+                self.logger.debug(
+                    "UI 前置檢查：聊天圖示判定 unknown，重讀（第 %d 次，probe=%.1f）", reads, probe_mean)
+                time.sleep(0.3)
+                continue
+            # give_up：點擊或重讀額度用盡，或防禦性未知 state
+            self.logger.warning(
+                "UI 前置檢查：聊天框未開啟，可能影響採集確認（state=%s, probe=%.1f）", state, probe_mean)
+            self.last_action = "⚠ 聊天框未開啟，採集確認可能失效"
+            self._snapshot(frame, "chat_open_fail")   # label 無 reentry/sweep/d3/chill 關鍵字 → snapshots/trace/
+            return
 
     def _ensure_player_list_closed(self):
         """啟動 UI 前置檢查：右上角玩家列表（Tab toggle）開著就按 Tab 關閉，避免遮擋右側點擊。
@@ -1110,27 +1263,29 @@ class Bot:
         """背景執行緒：定期輪詢 Discord 頻道新訊息，處理 ! 命令。"""
         while self._running:
             try:
-                time.sleep(cfg.discord_poll_interval_s)
                 if self._running:
                     self._poll_discord()
             except Exception:
                 pass                                     # 輪詢失敗不中斷主迴圈
+            time.sleep(cfg.discord_poll_interval_s)      # 啟動即首輪；之後固定退避，失敗時也不空轉
 
     def _poll_discord(self):
         """讀 Discord 新訊息，處理命令；並輪詢 list 分頁與遙控器的反應點擊。"""
         from . import notify
-        # 1. 表情輪詢（list 分頁 + 遙控器按鈕；獨立於新訊息，沒新訊息時也要檢查）
-        if self._list_message_id:
-            self._poll_list_reactions()
-        if self._remote_message_id:
-            self._poll_remote_reactions()       # 觸發動作時內部 _edit_remote_control 會原地更新
-        # Task 4：REENTRY episode embed 反應輪詢（只在 REENTRY 且 embed 存活時跑）
+        # 1. 表情輪詢：先查當前狀態的短命控制卡，再查持久遙控器／低優先 list 分頁。
+        # 每張卡都只做一個 GET；沒有新文字訊息時也必須照常檢查。
         if self._rr_embed_mid and self.state is State.REENTRY:
             self._poll_rr_reactions()
         if self._stuck_alert_mid and self.state is not State.MINING:
             self._stuck_alert_mid = None       # 離開 MINING＝卡住語境失效，🏠 作廢（訊息留著）
         elif self._stuck_alert_mid:
             self._poll_stuck_reaction()
+        if self._remote_message_id:
+            self._poll_remote_reactions()
+        if self._calib_session is not None:
+            self._poll_calib_reactions()
+        if self._list_message_id:
+            self._poll_list_reactions()
         # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
         # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
         # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
@@ -1160,9 +1315,9 @@ class Bot:
             content = msg.get("content", "").strip()
             # 命令不需 ! 前綴：第一個詞（不分大小寫）比對已知命令即觸發。
             # lstrip("!") 保留舊 ! 前綴相容；空白/空字串 = 一般聊天，忽略。
-            first = content.split()[0].lower() if content else ""
-            if first.lstrip("!") in _DISCORD_COMMANDS:
-                self._handle_discord_command(content)
+            command = discord_commands.parse_command(content)
+            if command is not None:
+                self._handle_discord_command(command)
             elif self._aim_context is not None and self.state is State.NEEDS_HUMAN:
                 # B3：NEEDS_HUMAN 且 aim context 存活時，一般訊息當瞄準回覆（無前綴，spec 第 2 節）
                 self._handle_aim_reply(content)
@@ -1173,33 +1328,32 @@ class Bot:
     def _poll_list_reactions(self):
         """輪詢 list 訊息的表情：偵測「新點擊」→ 切換到該世界分頁（編輯同一則訊息）。
 
-        每個表情維護「已見使用者 ID」集合；本次輪詢出現、但不在集合內 = 新點擊 → 切換。
-        機器人自己貼表情時已在 list 基線記錄（含自己 ID），故首輪不會誤觸發。
+        單次抓 Message Object 的 reactions count 摘要；反應數上升 = 新點擊 → 切換。
+        機器人自己貼表情時已把成功的 PUT 記成基線 1，故首輪不會誤觸發。
         一次輪詢最多切一頁（避免連續 PATCH）；點到「目前頁」的同行表情為 no-op。
 
         注意：WORLD_EMOJI = {世界名: 表情}，items() 解包成 (world, emoji)——
-        早期版本寫成 ``for emoji, world``（變數對調），導致 get_reactions 傳入世界名
-        而非表情 → Discord 永遠查無此反應 → 點表情永遠不翻頁（2026-07-05 修復）。
+        早期版本曾把 world/emoji 變數對調（2026-07-05 修復）；現在由 emoji_to_world
+        做單一反向映射，避免輪詢端再重複解包邏輯。
         """
         from . import notify
         token = cfg.discord_bot_token
         ch = cfg.discord_channel_id
         mid = self._list_message_id
-        for world, emoji in game_data.WORLD_EMOJI.items():   # key=世界名, value=表情
-            users = notify.get_reactions(token, ch, mid, emoji)
-            if not users:
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
+            return
+        self._list_reactions_seen, increments = notify.find_reaction_increments(
+            message, self._list_reactions_seen, game_data.WORLD_EMOJI.values())
+        for emoji, delta in increments:
+            world = game_data.emoji_to_world(emoji)
+            if world is None:
                 continue
-            user_ids = {u.get("id") for u in users if u.get("id")}
-            seen = self._list_reactions_seen.setdefault(emoji, set())
-            new_clickers = user_ids - seen
-            if not new_clickers:
-                continue
-            seen.update(user_ids)                  # 標記本次所有按過者為已見
             if world != self._list_current_world:
                 embed = game_data.format_event_list_embed(self._keep_ores, world=world)
                 notify.edit_message(token, ch, mid, embed=embed)
                 self._list_current_world = world
-                self.log_discord.info("list 分頁切換 -> %s（%d 個新點擊）", world, len(new_clickers))
+                self.log_discord.info("list 分頁切換 -> %s（反應 +%d）", world, delta)
                 return                              # 一次輪詢只切一頁
 
     # ---- 遙控器（單一持久訊息 + 反應按鈕）--------------------------------------
@@ -1217,6 +1371,8 @@ class Bot:
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
                 f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內按一次 X；等同 `ability`）\n"
+                f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
+                f" 點 **{_REMOTE_REENTER_EMOJI}** 回礦（等同 `回礦` 指令，重走回礦流程取回正確方位）\n"
                 f"\n"
                 f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
             ),
@@ -1227,8 +1383,8 @@ class Bot:
     def _post_remote_control(self):
         """貼一則新的遙控器到頻道底，貼 ▶️/⏸️ 反應，記基線。失敗靜默（下輪重試）。
 
-        成功時更新 _remote_message_id 與 _remote_reactions_seen 基線（含機器人自己），
-        避免首輪把自己的反應當成新點擊。沿用 !list 已驗證的 send_embed + add_reaction 模式。
+        成功時用 add_reaction 的結果建立 count 基線（成功=1、失敗=0），避免額外三次
+        get_reactions，也避免首輪把機器人自己的反應當成新點擊。
         """
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
@@ -1237,13 +1393,11 @@ class Bot:
         if not (ok and mid):
             self.log_discord.info("remote post FAIL -> %s", detail)
             return
-        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI):
-            notify.add_reaction(token, ch, mid, em)
-        # 基線：機器人自己貼的反應記成「已見」，避免首輪誤觸發
         seen = {}
-        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI):
-            users = notify.get_reactions(token, ch, mid, em)
-            seen[em] = {u.get("id") for u in users if u.get("id")}
+        for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
+                   _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI):
+            added, _ = notify.add_reaction(token, ch, mid, em)
+            seen[em] = 1 if added else 0
         self._remote_message_id = mid
         self._remote_reactions_seen = seen
         # 狀態同步基線：剛貼的 embed 已反映當前 (paused, state)，記下避免下輪重複 PATCH
@@ -1311,73 +1465,136 @@ class Bot:
             self.log_discord.info("remote stale delete mid=%s -> %s", sid, detail)
         self._post_remote_control()
 
+    def _ensure_no_stale_calib(self):
+        """啟動清跨重啟殘留校準卡：session 不跨重啟，殘留卡一律作廢刪除（spec 第 2 節）。
+
+        復用 find_remote_messages 的「bot 作者＋embed 標題」匹配；newest 也不認領——
+        殘留卡的 session 記帳已丟失，認領只會做出角度與記帳脫鉤的卡。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        msgs = notify.fetch_messages(token, ch, limit=20)
+        newest, stale = notify.find_remote_messages(msgs, calibrate_pitch.CALIB_TITLE)
+        for mid in ([newest] if newest else []) + stale:
+            ok, detail = notify.delete_message(token, ch, mid)
+            self.log_discord.info("stale calib card mid=%s deleted -> %s", mid, detail)
+
     def _poll_remote_reactions(self):
         """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並刪舊貼新遙控器。
 
         動作觸發後刪舊貼新（DM 無法清除他人表情 HTTP 403 code 50003，repost 是等效方案：
         新訊息表情歸零可立即再點）；代價＝每次點擊 DM 多一則訊息（使用者已接受）。
 
-        seen 集合採「同步語意」（每輪覆寫成當前反應名單，而非累加 update）：使用者自己取消
-        反應會被移出 seen，下次再點即可再次觸發。
-
-        守門 ``if not users: continue`` 不可省：get_reactions 失敗回空 list，若照樣同步會把
-        seen 清空、下一輪把所有既有反應誤判成新點擊（假觸發）。必須 fetch 有結果才同步。
+        單次抓 Message Object 的 reactions count；count 基線採同步語意，使用者自己取消
+        反應時基線下降，下次再點即可再次觸發。fetch 失敗回 None 時保留舊基線。
         """
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
         mid = self._remote_message_id
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
+            return
+        emojis = (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
+                  _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI)
+        self._remote_reactions_seen, increments = notify.find_reaction_increments(
+            message, self._remote_reactions_seen, emojis)
+        actions = dict(zip(emojis, ("resume", "pause", "ability", "snap", "reenter")))
         action_taken = None
-        for emoji, action in ((_REMOTE_RESUME_EMOJI, "resume"),
-                              (_REMOTE_PAUSE_EMOJI, "pause"),
-                              (_REMOTE_ABILITY_EMOJI, "ability")):
-            users = notify.get_reactions(token, ch, mid, emoji)
-            if not users:
-                continue                            # get_reactions 失敗→不可同步（見 docstring）
-            user_ids = {u.get("id") for u in users if u.get("id")}
-            seen = self._remote_reactions_seen.setdefault(emoji, set())
-            new_clickers = user_ids - seen
-            # 同步成當前名單（取代累加）：使用者取消反應會移出 seen，再點可再次觸發；
-            # 沒有新點擊的輪次也要同步，確保取消狀態即時反映。
-            self._remote_reactions_seen[emoji] = set(user_ids)
-            if not new_clickers:
-                continue
+        for emoji, delta in increments:
+            action = actions[emoji]
             action_taken = action
+            if self._calib_session is not None and action != "snap":
+                # 校準中：▶️/⏸️ 只記離場後意圖；⚡/🏠 拒絕。📷 唯讀照常（fall through）。
+                if action in ("resume", "pause"):
+                    self._calib_session.prev_paused = (action == "pause")
+                    notify.send_message(token, ch,
+                        f"🎯 校準中——離開校準後將"
+                        f"{'保持暫停' if action == 'pause' else '恢復挖礦'}")
+                else:
+                    notify.send_message(token, ch, "❌ 校準中——先按校準卡 ❌ 離開再操作")
+                self.log_discord.info("remote %s during calib -> intent/reject", action)
+                break
             if action == "resume":
                 # 等同 !resume：清人工旗標 + 解暫停；非阻塞狀態下也是 no-op 安全
                 was_blocked = is_blocked_from_mining(self.state, self.paused)
                 self.human_cleared = True
+                self._rr_skip_on_pause_resume("remote ▶️")   # 回礦中繼續＝跳過回挖礦
                 if self.paused:
                     self._resume()
-                self.log_discord.info("remote ▶️ resume by %s（was_blocked=%s）",
-                                      ",".join(sorted(new_clickers)), was_blocked)
+                self.log_discord.info("remote ▶️ resume（反應 +%d, was_blocked=%s）",
+                                      delta, was_blocked)
             elif action == "ability":
                 # 等同 !ability：只寫旗標（輪詢執行緒鐵律——此方法在 Discord 輪詢執行緒跑，
                 # 不碰 input_control），主迴圈 _tick 開頭消費 → 在遊戲內按一次 X。
                 self._pending_ability = True
-                self.log_discord.info("remote ⚡ ability by %s（queued state=%s）",
-                                      ",".join(sorted(new_clickers)), self.state.value)
+                self.log_discord.info("remote ⚡ ability（反應 +%d, queued state=%s）",
+                                      delta, self.state.value)
+            elif action == "snap":
+                # 📷 即時截圖（2026-07-17）：唯讀觀測、零遊戲輸入——鐵律管的是輸入，
+                # capture.grab 每執行緒自持 mss 實例，輪詢執行緒直接抓；主迴圈卡在
+                # sweep/開場探測時也能看到當下畫面（排錯用途的重點就在這）。
+                # 落「編號樣本」（sampler.save_sample）：R 取樣視窗退役後，
+                # calibrate_surface --import NNN 的素材來源就是這裡。
+                frame = capture.grab()
+                stem = sampler.save_sample(frame, cfg.manual_snapshot_dir,
+                                           self._pitch_offset_px)
+                path = os.path.join(cfg.manual_snapshot_dir, f"{stem}.png")
+                ok_send, detail = notify.send_images_message(
+                    token, ch, f"📷 當前畫面 #{stem}（state={self.state.value}"
+                               f"{'，已暫停' if self.paused else ''}）", [path])
+                self.log_discord.info("remote 📷 screenshot #%s -> %s (%s)",
+                                      stem, path, detail)
+            elif action == "reenter":
+                # 🏠 手動回礦（2026-07-17）：與 `回礦` 指令/STUCK 🏠 同一條路——守門
+                # 純函式＋只寫旗標，REENTRY 開場鏈由主迴圈跑（可取回正確方位）。
+                ok_re, reason = can_accept_manual_reentry(
+                    self.state, self._reentry_active())
+                if not ok_re:
+                    notify.send_message(token, ch, f"❌ 回礦（🏠）未接受：{reason}")
+                else:
+                    self._manual_reentry = True
+                    if self.paused:
+                        self.paused = False
+                        self._antiafk_last = 0.0
+                    notify.send_message(
+                        token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
+                self.log_discord.info("remote 🏠 reenter -> accepted=%s state=%s",
+                                      ok_re, self.state.value)
             else:  # pause
                 already = self.paused
                 self._pause()
-                self.log_discord.info("remote ⏸️ pause by %s（already=%s）",
-                                      ",".join(sorted(new_clickers)), already)
+                self.log_discord.info("remote ⏸️ pause（反應 +%d, already=%s）",
+                                      delta, already)
             break                              # 一次輪詢只處理一個動作
         if action_taken:
             # 動作觸發後刪舊貼新：表情歸零＝使用者可立即再點
             # （DM 不能 remove_reaction HTTP 403 code 50003，repost 是等效方案）
             self._repost_remote_control()
 
-    def _handle_discord_command(self, content: str):
+    def _handle_discord_command(self, command: discord_commands.DiscordCommand):
         """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。
 
-        命令不需 ! 前綴（`status` 即觸發）；打 `!status` 仍相容——cmd 會 lstrip("!")。
+        字串正規化與命令白名單在 discord_commands.parse_command；此處只做 I/O dispatch。
         """
         from . import notify
         token = cfg.discord_bot_token
         ch = cfg.discord_channel_id
-        parts = content.split()
-        cmd = parts[0].lower().lstrip("!")               # 接受 list 或 !list
-        args = parts[1:]
+        cmd = command.name
+        args = command.args
+
+        if self._calib_session is not None and cmd in (
+                "pause", "resume", "回礦", "reenter", "ability"):
+            # 校準中（2026-07-18 spec 第 1 節）：pause/resume 只記離場後意圖不解除校準；
+            # 其餘遊戲輸入指令一律拒絕不排隊。📷/shot/status 等唯讀不在此列、照常。
+            if cmd in ("pause", "resume"):
+                self._calib_session.prev_paused = (cmd == "pause")
+                notify.send_message(token, ch,
+                    f"🎯 校準中——已記下：離開校準後將"
+                    f"{'保持暫停' if cmd == 'pause' else '恢復挖礦'}")
+            else:
+                notify.send_message(token, ch, "❌ 校準中——先按校準卡 ❌ 離開再操作")
+            self.log_discord.info("CMD %s during calib -> intent/reject", cmd)
+            return
 
         if cmd == "list":
             # list [世界]：指定分頁；無指定 → 預設 = 偵測到的世界（未偵測 = 全世界聯集）。
@@ -1398,11 +1615,8 @@ class Bot:
                 self._list_current_world = world
                 self._list_reactions_seen = {}
                 for em in game_data.WORLD_EMOJI.values():
-                    notify.add_reaction(token, ch, mid, em)
-                # 基線：把自己貼的表情記成「已見」，避免首輪把自己的反應當成新點擊
-                for em in game_data.WORLD_EMOJI.values():
-                    users = notify.get_reactions(token, ch, mid, em)
-                    self._list_reactions_seen[em] = {u.get("id") for u in users if u.get("id")}
+                    added, _ = notify.add_reaction(token, ch, mid, em)
+                    self._list_reactions_seen[em] = 1 if added else 0
             self.log_discord.info("CMD list -> world=%s mid=%s (%s)", world, mid, detail)
 
         elif cmd == "keep":
@@ -1464,6 +1678,7 @@ class Bot:
             # 避免 inline條件漏掉 RESET_WAIT 或暫停的 case。
             was_blocked = is_blocked_from_mining(self.state, self.paused)
             self.human_cleared = True
+            self._rr_skip_on_pause_resume("cmd resume")   # 回礦中繼續＝跳過回挖礦
             if self.paused:
                 self.paused = False
                 self._antiafk_last = 0.0
@@ -1493,6 +1708,23 @@ class Bot:
                 f"📈 boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}\n"
                 f"📝 保留：{kept}")
             self.log_discord.info("CMD status -> state=%s", self.state.value)
+
+        elif cmd in ("校準", "calib"):
+            # 俯仰校準（2026-07-18 spec）：此處在輪詢執行緒——只驗收＋寫 pending 旗標，
+            # 暫停/pitch_reset/發卡全由主迴圈 _calib_start 執行（遊戲輸入鐵律）。
+            target = calibrate_pitch.parse_calib_target(args)
+            if target is None:
+                notify.send_message(token, ch, "用法：`校準 挖礦`（預設）或 `校準 回礦`")
+            else:
+                ok_c, reason = calibrate_pitch.can_accept_calibration(
+                    self.state is State.REENTRY, self._calib_session is not None)
+                if not ok_c:
+                    notify.send_message(token, ch, f"❌ 校準未接受：{reason}")
+                else:
+                    self._pending_calib_start = target
+                    notify.send_message(token, ch,
+                        "🎯 校準已排入 → 將暫停挖礦、歸位到 config 現值並發校準卡")
+            self.log_discord.info("CMD 校準 -> target=%s state=%s", target, self.state.value)
 
         elif cmd == "shot":
             # 遠端截圖：抓全螢幕傳到 Discord，供遠距檢查當下畫面。
@@ -1549,6 +1781,7 @@ class Bot:
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
                 "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
+                "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
                 "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
@@ -1561,7 +1794,7 @@ class Bot:
         """NEEDS_HUMAN＋aim context 存活時，一般訊息當瞄準回覆解析（無前綴，2026-07-11 spec）。
 
         **此方法在 Discord 輪詢執行緒跑**：只做解析/回覆/寫 self._pending_aim，絕不碰
-        input_control——輸入操作全部由主迴圈 _tick_remote_aim 消費（比照 _sampler_want 旗標）。
+        input_control——輸入操作全部由主迴圈 _tick_remote_aim 消費（背景執行緒只發布意圖）。
         解析不出→回格式提示不動作；執行中→回「稍候」忽略（不排隊，避免舊指令補刀）。
         """
         from . import notify
@@ -1583,17 +1816,29 @@ class Bot:
             notify.send_message(token, ch, "⏳ 上一發還在執行，稍候")
             return
         if reply.kind == "all":
+            rendered = self._render_aim_shots(ctx)
             sent = 0
-            for s in ctx.shots:
-                if s.snapshot_path and sent < 8:
-                    notify.send_images_message(token, ch,
-                        f"方位{s.dir_idx}（層 {s.layer}）", [s.snapshot_path])
-                    sent += 1
+            for caption, path in rendered[:8]:
+                notify.send_images_message(token, ch, caption, [path])
+                sent += 1
             self.log_discord.info("AIM all -> 補發 %d 張", sent)
             return
         self._pending_aim = reply          # skip/candidate/grid：主迴圈消費
         notify.send_message(token, ch, f"✅ 收到（{reply.kind}），主迴圈執行中…")
         self.log_discord.info("AIM reply=%s -> pending", reply)
+
+    def _queue_reentry_reply(self, raw: str, reply, *, source: str) -> bool:
+        """排入主迴圈並立刻回 ACK；Discord poller 絕不執行遊戲輸入。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if self._rr_busy or self._pending_reentry is not None:
+            notify.send_message(token, ch, "⏳ 上一則指令還在執行，稍候")
+            self.log_discord.info("RR %s ignored（busy/pending, kind=%s）", source, reply.kind)
+            return False
+        self._pending_reentry = (raw, reply)
+        _, detail = notify.send_message(token, ch, reentry_remote.format_pending_ack(reply))
+        self.log_discord.info("RR %s reply=%s -> pending; ack=%s", source, reply, detail)
+        return True
 
     def _handle_reentry_reply(self, content: str):
         """REENTRY(remote) 等待時，一般訊息當回礦指令解析（無前綴，2026-07-12 spec）。
@@ -1608,14 +1853,11 @@ class Bot:
         reply = reentry_remote.parse_reply(content)
         if reply is None:
             notify.send_message(token, ch,
-                "❓ 看不懂。可用：`3 C2`（方位+粗格）、`B3`／`B3 <層名>`（細格）、"
-                "`走 C2`、`遠 [n]`/`近 [n]`（鏡頭）、`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`")
+                "❓ 看不懂。可用：`3 C2`（方位 1-8+粗格）、`B3`／`B3 <層名>`（細格）、"
+                "`放大 <細格>`、`遠 [n]`/`近 [n]`（鏡頭）、`仰角 歸位|上|下 [px]`、"
+                "`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`（回挖礦）")
             return
-        if self._rr_busy or self._pending_reentry is not None:
-            notify.send_message(token, ch, "⏳ 上一則指令還在執行，稍候")
-            return
-        self._pending_reentry = (content, reply)
-        self.log_discord.info("RR reply=%s -> pending", reply)
+        self._queue_reentry_reply(content, reply, source="text")
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
@@ -1671,6 +1913,15 @@ class Bot:
         else:
             self.logger.info("Movement Mode 檢查停用（備用：auto_reenter 未啟用，設定不會被動到）")
         self._startup_phase = False
+        # 挖礦標準角歸位（spec 2026-07-17）：人啟動前留的角度不受控，進第一輪掃描前
+        # 歸位；未校準（<=0）維持現狀只警告。不納入 Q 跳過——只要 2~3s，且跳過會讓
+        # 「啟動角度不可靠」的動機靜默失效。
+        self.last_action = "俯仰歸位（挖礦標準角）"
+        homed = self._pitch_home_mining("啟動")
+        # 啟動仰角顯示（2026-07-18 使用者要求）：log＋Discord 啟動訊息各一行
+        self._startup_pitch_status = harvester.format_startup_pitch_status(
+            cfg.sweep_pitch_center_back_px, homed, self._pitch_offset_px)
+        self.logger.info("啟動仰角：%s", self._startup_pitch_status)
         miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
         threading.Thread(target=self._snapshot_cleanup_once, daemon=True).start()
@@ -1688,25 +1939,36 @@ class Bot:
             if cfg.discord_bot_token and cfg.discord_channel_id:
                 from . import notify
                 kept = game_data.format_keep_by_world(self._keep_ores)
-                text = f"🤖 Bot 已啟動\n目前保留事件：\n{kept}"
+                text = (f"🤖 Bot 已啟動｜仰角：{self._startup_pitch_status}\n"
+                        f"目前保留事件：\n{kept}")
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
                 # 遙控器：啟動訊息貼完後清掉跨重啟殘留的舊遙控器、貼新的到頻道底。
                 # 之後每輪 _poll_discord 偵測按鈕點擊、狀態變更原地編輯；被擠上去才重貼。
                 self._ensure_remote_control()
+                self._ensure_no_stale_calib()
         threading.Thread(target=_preflight_and_notify, daemon=True).start()
         # 啟動耗時不算「無進度」：_last_progress 在 __init__ 設定，啟動 3.5 分鐘曾被算成
         # 「無進度」→ 一進主迴圈就 STUCK 假警報（spec 2026-07-10 第 5 節）。
         self._last_progress = time.time()
         try:
             while self._running:
+                if self._pending_calib_start is not None:
+                    self._consume_calib_start()
                 if self.paused:
+                    if self._calib_session is not None:
+                        self._tick_calibration()  # 校準動作只在 paused 分支消費（session 活著＝必暫停）
                     # 防掛機踢除：暫停中每 antiafk_interval_s 按一次 Space
                     self._antiafk_tick("暫停")
                     time.sleep(0.05); continue
+                loop_started = time.perf_counter()
                 tick_started = time.time()
+                stage_started = time.perf_counter()
                 frame = capture.grab()
+                self._latency.observe("capture", time.perf_counter() - stage_started)
                 self._latest_frame = frame       # 發佈給背景 banner OCR worker（唯讀共享）
+                stage_started = time.perf_counter()
                 obs = self.observe(frame)
+                self._latency.observe("observe", time.perf_counter() - stage_started)
                 decided = decide_transition(self.state, obs)
                 if obs.manual_reentry:
                     if decided is State.REENTRY:
@@ -1732,7 +1994,9 @@ class Bot:
                     new_state = decided
                 self.state = new_state
                 self._check_spawn_chill(obs, frame)
+                stage_started = time.perf_counter()
                 self._tick(frame)
+                self._latency.observe("tick", time.perf_counter() - stage_started)
                 self._heartbeat()
                 # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工
                 # 期間閒置過久會被 Roblox 踢出）。恢復挖礦/採集時歸 0，下次等待重新計時。
@@ -1743,6 +2007,8 @@ class Bot:
                     self._antiafk_tick("需人工/重置等待" if not rr_waiting else "回礦等待指令")
                 elif self._antiafk_last and not self.paused:
                     self._antiafk_last = 0.0
+                self._latency.observe("loop", time.perf_counter() - loop_started)
+                self._log_latency_if_due()
                 # sleep 補償：tick 本身已花掉的時間（grab ~106ms 起跳）從 50ms 目標
                 # 節奏裡扣掉，長 tick 後不再多睡滿 50ms；保留 10ms 下限讓出 GIL
                 # 給音訊/熱鍵/OCR worker。
@@ -1751,7 +2017,23 @@ class Bot:
             self._running = False
             self._audio_cap.stop()
             ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
+            if not self._drain_snapshot_queue(cfg.snapshot_shutdown_drain_s):
+                self.logger.warning(
+                    "snapshot shutdown drain timed out: %d unfinished",
+                    self._snap_q.unfinished_tasks)
             self.logger.info("bot stopped")
+
+    def _log_latency_if_due(self):
+        """定期輸出有界視窗的主迴圈分位數，供 profiler 前先定位真正熱點。"""
+        now = time.monotonic()
+        if now - self._last_perf_log < cfg.perf_log_interval_s:
+            return
+        self._last_perf_log = now
+        for name, summary in sorted(self._latency.snapshot(reset=True).items()):
+            self.log_hb.info(
+                "latency stage=%s n=%d p50=%.1fms p95=%.1fms p99=%.1fms max=%.1fms",
+                name, summary.count, summary.p50_ms, summary.p95_ms,
+                summary.p99_ms, summary.max_ms)
 
     def _heartbeat(self):
         """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。"""
@@ -2009,6 +2291,8 @@ class Bot:
             # remote-aim：新一輪採集 episode 重置 context＋sweep 記錄（跨層/跨 RESWEEP 累積）
             self._aim_context = None
             self._sweep_shots = []
+            self._target_observations = []
+            self._target_recovery_attempts = 0
             chill_path = self._hsnap_crop(frame, cfg.chill_text_region, "chill_closeup")
             self._hsnap(frame, "rare_found")
             # 錄下 chill 音訊樣本（供分析/重錄參考 wav 用）；檔名帶編號與截圖對齊
@@ -2063,8 +2347,8 @@ class Bot:
             if self._remote_reenter_active():
                 # remote 模式（2026-07-12 spec）：開場鏈（按回到地表→傳送等待→俯仰歸位→
                 # 八方位拍照→Discord 發送）由 _tick_reentry_remote → _rr_open_episode 在主迴圈
-                # 同步跑；Movement Mode 走 _rr_walk 懶啟動（首次走位才切 Click to Move，
-                # 省 71-82s 選單鏈）。此處只建 ReentryState 佔位（共用路徑防禦性讀）＋清快取。
+                # 同步跑（`走` 走位指令 2026-07-18 退役，Movement Mode 不再切換）。
+                # 此處只建 ReentryState 佔位（共用路徑防禦性讀）＋清快取。
                 self._reentry = reentry.ReentryState(phase_started=now, attempt_started=now)
                 self._rr_ctx = None
                 self._pending_reentry = None
@@ -2125,7 +2409,8 @@ class Bot:
             self._aim_context = None          # remote-aim context 作廢（礦坑重置＝局勢已變）
             self._rr_ctx = None               # remote reentry context 作廢（_rr_abort_reset 已 finalize，保險清掃）
             self._pending_reentry = None
-            self._reset_wait_since = time.time()     # reset-chime 擷取的 arm 計時起點
+            self._reset_wait_since = time.time()
+            self._chime_armed_at = 0.0               # H045：新一輪重置，容量錨重新觀測
             # Movement Mode 前置檢查延後到此：session 內第一次重置才標 due，
             # 等 _on_enter(MINING) 恢復挖礦時消費（2026-07-11 需求）。
             # 再閘一層 _auto_reenter_active（同日追加需求）：Movement Mode 只為回礦
@@ -2133,11 +2418,13 @@ class Bot:
             # ——挖礦本身的設定不會被動到，跑選單鏈只是浪費 71-82s 還多一次搶輸入風險。
             if not self._movement_mode_checked and self._auto_reenter_active():
                 self._movement_check_due = True
-            # Task 1：RESET_WAIT 進場即撤離（根因修復）。banner 出現時 礦體還在（倒數 26-28s）、
-            # 玩家狀態正常、點擊可靠；等重置完成才按，人已在虛空、按鈕幾乎不回應（2026-07-13 實機：
-            # 瞬間點/hold/懸停全失敗，僅偶發成功）。remote 模式才撤；off/auto 與手動玩家不受影響。
+            # H043 對策「進場即撤離」改由 cfg.reentry_evac_on_banner 控制，H045 起預設關：
+            # 撤離＝重置那一刻人在地表，遊戲不記錄坑內位置（記錄前提是重置當下人在礦坑內），
+            # 臨時挖到的稀有礦回不去原位。留坑內的代價（墜虛空/重生凍結）由 H044 探測式
+            # 開場吸收（點擊當探針、預算 300s 收口）。開回 True 即恢復 H043 行為。
             self._evac_done = False
-            if self._remote_reenter_active() and not self.paused:
+            if (cfg.reentry_evac_on_banner and self._remote_reenter_active()
+                    and not self.paused):
                 if self._focus_roblox():
                     time.sleep(cfg.reentry_evac_settle_s)   # focus 後沉澱再點（輸入被吃家族教訓）
                     if self._click_surface_verified("重置撤離"):
@@ -2176,22 +2463,44 @@ class Bot:
         # RESET_WAIT / 其餘 NEEDS_HUMAN: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
     def _update_reset_chime_active(self):
-        """依 state＋計時決定 reset-chime recorder 是否收音；離開 RESET_WAIT 清空重錄。
+        """依 state＋計時決定 reset-chime recorder 是否收音；窗外（含回 MINING）清空重錄。
 
         先把旗標設 False 再 reset() recorder，避免音訊執行緒在 reset 當下還餵 chunk
         （競態最壞＝邊界丟一個 chunk，對校準無害）。"""
         rec = self._reset_chime_recorder
         if rec is None:
             return
-        active = (self.state is State.RESET_WAIT
-                  and self._reset_wait_since > 0.0
-                  and time.time() - self._reset_wait_since >= cfg.reset_chime_arm_delay_s)
+        # H045：容量錨開窗（_maybe_arm_chime 觀測到容量歸零才起算）、窗跨
+        # RESET_WAIT/REENTRY（舊版離開 RESET_WAIT 即停錄＝實際窗僅 1~3s，鈴聲
+        # 永遠在窗外）；上限 reset_chime_capture_max_s 收口。純決策在 audio。
+        active = (self.state in (State.RESET_WAIT, State.REENTRY)
+                  and audio.capture_window_active(
+                      self._chime_armed_at, time.time(),
+                      cfg.reset_chime_capture_max_s))
         if active and not self._reset_chime_active:
             self._reset_chime_active = True
-            self.logger.info("🔔 重置鈴聲擷取啟動（RESET_WAIT 滿 %.0fs）", cfg.reset_chime_arm_delay_s)
+            self.logger.info("🔔 重置鈴聲擷取啟動（容量錨，窗 %.0fs）",
+                             cfg.reset_chime_capture_max_s)
         elif not active and self._reset_chime_active:
             self._reset_chime_active = False
             rec.reset()
+
+    def _maybe_arm_chime(self, cap_pct):
+        """H045 容量錨：重置流程中觀測到容量歸零→開鈴聲錄音窗（一輪只開一次）。
+
+        兩個讀值來源共用：RESET_WAIT 的 banner worker、REENTRY 開場閘的容量 OCR。
+        只在 RESET_WAIT/REENTRY 內生效——MINING 的容量讀值（例如剛開機容量本來
+        就低）不該開窗。
+        """
+        if self._chime_armed_at != 0.0:
+            return
+        if self.state not in (State.RESET_WAIT, State.REENTRY):
+            return
+        if audio.chime_capacity_armed(cap_pct, cfg.reset_chime_capacity_arm_pct):
+            self._chime_armed_at = time.time()
+            self.logger.info("🔔 容量已歸零（%.0f%% ≤ %.0f%%）→ 鈴聲錄音窗開啟 %.0fs",
+                             cap_pct, cfg.reset_chime_capacity_arm_pct,
+                             cfg.reset_chime_capture_max_s)
 
     def _tick_mining(self, frame):
         if getattr(self, '_post_harvest_watch', 0) > 0:
@@ -2371,113 +2680,239 @@ class Bot:
         self.logger.warning("旋轉鍵 %s 重試用盡仍未生效——不計入 net_rotations（視角未轉）", key)
         return False
 
-    def _sweep_for_tracker(self, excl, ref):
-        """全 8 方位掃描：rotate_right×7 → 每方位雙幀穩定偵測 → 旋轉回最佳方位。
-        回傳 (最佳追蹤框螢幕座標 (cx, cy) | None, 掃描過程是否看過穩定候選)。
-        had_candidates 讓呼叫端分流 sweep 失敗（H019）：全程沒看到→人工；
-        看到過但 verify 失敗（FOV 位移/邊緣裁切）→ 重掃一次。
+    def _record_target_observation(self, *, layer, dir_idx, pos, score,
+                                   status, source, snapshot_path):
+        observation = remote_aim.TargetObservation(
+            layer=layer, dir_idx=int(dir_idx) % 8,
+            pos=(int(pos[0]), int(pos[1])), score=float(score),
+            status=status, source=source, snapshot_path=snapshot_path or "")
+        self._target_observations.append(observation)
+        self.log_harvest.info(
+            "[%s] target observation status=%s source=%s layer=%s dir=%d pos=%s score=%.3f image=%s",
+            self.harvest.harvest_id, status, source, layer, observation.dir_idx,
+            observation.pos, observation.score, observation.snapshot_path)
+        return observation
 
-        早停：某方位雙幀穩定且 edge ≥ tracker_shape_early_exit（遠高於裝備上限）→ 人已在
-        該方位，直接確定、免掃完剩餘方位也免轉回 verify。分數不夠高者仍收集，掃完選
-        「x 最居中」的候選（pick_sweep_candidate，H019 對策）+ verify（保留「不確定就繼續掃」）。
-        """
-        hid = self.harvest.harvest_id   # 本輪編號；sweep 偵測敘事行前綴 [Hxxx]（誤判常源於此階段）
-        NUM_DIRS = 8
-        candidates = []  # [(dir_idx, position)]
-        sweep_frames = []  # 各方位全幀（.copy——grab buffer 會被下一幀覆寫）；全空→交人工時落盤診斷
-        sweep_rejects_by_dir = {}  # remote-aim：各方位近失候選（collect_rejects 收集）
-        for i in range(NUM_DIRS):
-            f = capture.grab()
-            # ★ boost 守門（H026）：sweep 一輪 ~10-19s，D5 常在中段到期。到期即補則各方位
-            #   都在同一（有 buff）FOV 下偵測，候選座標彼此一致、也與稍後開火時一致。
-            if self._harvest_boost_guard(f):
-                f = capture.grab()
+    def _sweep_for_tracker(self, excl, ref):
+        """Scan eight directions while retaining absolute-direction target evidence."""
+        hid = self.harvest.harvest_id
+        num_dirs = 8
+        candidates = []
+        sweep_frames = []
+        for local_index in range(num_dirs):
+            abs_dir = self.harvest.net_rotations % num_dirs
+            frame = capture.grab()
+            if self._harvest_boost_guard(frame):
+                frame = capture.grab()
+            rejects = [] if cfg.remote_aim_enabled else None
+            first = self._find_tracker(
+                frame, excl, ref, log=self._tracker_log, with_score=True,
+                collect_rejects=rejects)
             if cfg.sweep_empty_snapshot:
-                sweep_frames.append((i, f.copy()))
-            rejs = [] if cfg.remote_aim_enabled else None
-            r1 = self._find_tracker(f, excl, ref, log=self._tracker_log, with_score=True,
-                                    collect_rejects=rejs)
-            sweep_rejects_by_dir[i] = rejs or []
-            if r1:
-                m1 = (r1[0], r1[1])
+                sweep_frames.append((abs_dir, frame.copy(), rejects or []))
+            if first:
+                first_pos = (first[0], first[1])
                 time.sleep(0.08)
-                gf = capture.grab()
-                r2 = self._find_tracker(gf, excl, ref, log=self._tracker_log, with_score=True)
-                m2 = (r2[0], r2[1]) if r2 else None
-                if m2 and abs(m1[0] - m2[0]) < 8 and abs(m1[1] - m2[1]) < 8:
-                    # ★ 高吻合度早停：雙幀穩定 + edge 很高 → 直接確定（人已在 dir i，net=i）
-                    # 僅在有實機模板時早停（此時 r2[2] 是 edge 分數）；純 HSV 的 colored_frac
-                    # 尺度不同（裝備可達 0.75-0.88），不可用同門檻，故 gate 在 shape_templates。
-                    if self._shape_templates and r2[2] >= cfg.tracker_shape_early_exit:
+                second_frame = capture.grab()
+                second = self._find_tracker(
+                    second_frame, excl, ref, log=self._tracker_log, with_score=True)
+                second_pos = (second[0], second[1]) if second else None
+                stable = (second_pos is not None
+                          and abs(first_pos[0] - second_pos[0]) < 8
+                          and abs(first_pos[1] - second_pos[1]) < 8)
+                if stable:
+                    if self._shape_templates and second[2] >= cfg.tracker_shape_early_exit:
+                        path = self._hsnap(
+                            second_frame,
+                            "sweep_confirmed_dir%d_%d_%d" %
+                            (abs_dir, second_pos[0], second_pos[1]))
+                        self._record_target_observation(
+                            layer=self.harvest.pitch_layer, dir_idx=abs_dir,
+                            pos=second_pos, score=second[2], status="accepted",
+                            source="sweep_early_exit", snapshot_path=path)
                         self.log_harvest.info(
-                            "[%s] sweep dir=%d: 高吻合 edge=%.2f ≥%.2f，早停確定 %s（免掃完/免轉回）",
-                            hid, i, r2[2], cfg.tracker_shape_early_exit, m2)
-                        path = self._hsnap(gf, "sweep_confirmed_%d_%d" % m2)
-                        self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(m2), image_path=path)
-                        return m2, True
-                    self.log_harvest.info("[%s] sweep dir=%d: 穩定追蹤框 %s (edge=%.2f)", hid, i, m2, r2[2])
-                    candidates.append((i, m2))
+                            "[%s] sweep abs_dir=%d(local=%d): high edge=%.2f, early accept %s",
+                            hid, abs_dir, local_index, second[2], second_pos)
+                        self.log.log("TRACKER_FOUND", harvest_id=hid,
+                                     direction=abs_dir, pos=str(second_pos),
+                                     image_path=path)
+                        return second_pos, True
+                    path = self._hsnap(
+                        second_frame,
+                        "sweep_accepted_dir%d_%d_%d" %
+                        (abs_dir, second_pos[0], second_pos[1]))
+                    self._record_target_observation(
+                        layer=self.harvest.pitch_layer, dir_idx=abs_dir,
+                        pos=second_pos, score=second[2], status="accepted",
+                        source="sweep_stable", snapshot_path=path)
+                    candidates.append((abs_dir, second_pos))
+                    self.log_harvest.info(
+                        "[%s] sweep abs_dir=%d(local=%d): stable %s edge=%.2f",
+                        hid, abs_dir, local_index, second_pos, second[2])
                 else:
-                    self.log_harvest.info("[%s] sweep dir=%d: 不穩定 m1=%s m2=%s", hid, i, m1, m2)
+                    path = self._hsnap(
+                        frame, "sweep_seen_once_dir%d_%d_%d" %
+                        (abs_dir, first_pos[0], first_pos[1]))
+                    self._record_target_observation(
+                        layer=self.harvest.pitch_layer, dir_idx=abs_dir,
+                        pos=first_pos, score=first[2], status="seen_once",
+                        source="double_frame_unstable", snapshot_path=path)
+                    self.log_harvest.info(
+                        "[%s] sweep abs_dir=%d(local=%d): seen once m1=%s m2=%s",
+                        hid, abs_dir, local_index, first_pos, second_pos)
             else:
-                self.log_harvest.info("[%s] sweep dir=%d: 未偵測到追蹤框", hid, i)
-            if i < NUM_DIRS - 1:
-                # 驗證式旋轉：settle 含在內；沒轉成不計數（計數＝實際角度，restore 才準）。
-                # 沒轉成時 dir 索引會與實際方位錯一格——頂多重看同方位，偵測不受影響。
-                if self._rotate_verified(+1):
-                    self.harvest.net_rotations += 1
+                self.log_harvest.info(
+                    "[%s] sweep abs_dir=%d(local=%d): no tracker",
+                    hid, abs_dir, local_index)
+            if local_index < num_dirs - 1 and self._rotate_verified(+1):
+                self.harvest.net_rotations += 1
 
         if not candidates:
-            self.log_harvest.info("[%s] sweep: 全 8 方位均未找到追蹤框", hid)
+            self.log_harvest.info("[%s] sweep: all directions lacked a stable tracker", hid)
             if cfg.sweep_empty_snapshot and sweep_frames:
-                # 每個方位落盤全幀：這類交人工的真框常薄/暗/被遮、shape-edge 低到 hard_rej，
-                # 過去只有觸發幀可查（看不到 sweep 各方位實況）→ 存下來供事後跑 find_tracker
-                # 診斷、或裁成模板補進 assets/markers（見 project_sweep_all_empty_giveups）。
-                for di, fr in sweep_frames:
-                    path = self._hsnap(fr, harvester.sweep_snapshot_label(self.harvest.pitch_layer, di))
+                for abs_dir, frame, rejects in sweep_frames:
+                    path = self._hsnap(
+                        frame, harvester.sweep_snapshot_label(
+                            self.harvest.pitch_layer, abs_dir))
                     self._sweep_shots.append(remote_aim.SweepShot(
-                        layer=self.harvest.pitch_layer, dir_idx=di,
-                        snapshot_path=path or "", rejects=sweep_rejects_by_dir.get(di, [])))
-                self.log_harvest.info("[%s] sweep 全空：已存 %d 張各方位全幀供診斷",
-                                      hid, len(sweep_frames))
+                        layer=self.harvest.pitch_layer, dir_idx=abs_dir,
+                        snapshot_path=path or "", rejects=rejects))
+                self.log_harvest.info(
+                    "[%s] sweep empty: queued %d absolute-direction frames",
+                    hid, len(sweep_frames))
             return None, False
 
-        # 同一顆框常橫跨相鄰 2~3 個方位（45° 視野重疊）→ 選 x 最居中者（H019 對策）：
-        # 舊版 candidates[0]（最先看到的方位）可能離中心 500px+，轉回期間 D5 到期 FOV
-        # 收縮把框往外推 → 撞進 find_tracker 邊緣 10% 排除帶 → verify 整幀找不到。
         best_dir, best_pos = harvester.pick_sweep_candidate(candidates, cfg.screen_w)
-        # 目前在 dir 7（rotate_right × 7）→ 走最短方向回 best_dir（plan_return_rotations，
-        # 正=右轉 wrap 360°、負=左轉）：舊版一律左轉 (7-best_dir) 次，best_dir=0 要白轉
-        # 7 次 ~2.4s；右轉 1 次 wrap 就到。net_rotations 照實累計（restore_actions 會再
-        # normalize 取最短，淨 8 ≡ 回原角不轉）。
-        delta = harvester.plan_return_rotations(NUM_DIRS - 1, best_dir, NUM_DIRS)
-        self.log_harvest.info("[%s] sweep: 最佳方位 dir=%d pos=%s，往%s轉 %d 次對齊（最短路徑）",
-                              hid, best_dir, best_pos, "右" if delta > 0 else "左", abs(delta))
+        current_dir = self.harvest.net_rotations % num_dirs
+        delta = harvester.plan_return_rotations(current_dir, best_dir, num_dirs)
+        self.log_harvest.info(
+            "[%s] sweep best abs_dir=%d pos=%s; current=%d rotate=%+d",
+            hid, best_dir, best_pos, current_dir, delta)
         for _ in range(abs(delta)):
-            d = 1 if delta > 0 else -1
-            # 驗證式旋轉（settle 含在內）；沒轉成不計數。轉不到 best_dir 時下方 verify
-            # 會失敗 → 走既有「看過框但 verify 失敗」重掃分流，不會誤射。
-            if self._rotate_verified(d):
-                self.harvest.net_rotations += d
+            direction = 1 if delta > 0 else -1
+            if self._rotate_verified(direction):
+                self.harvest.net_rotations += direction
 
-        # 對齊後驗證追蹤框仍在
         time.sleep(0.2)
-        verify_f = capture.grab()
-        vm = self._find_tracker(verify_f, excl, ref, log=self._tracker_log)
-        if vm and abs(vm[0] - best_pos[0]) < 30 and abs(vm[1] - best_pos[1]) < 30:
-            self.log_harvest.info("[%s] sweep: 驗證成功 %s", hid, vm)
-            path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
-            self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
-            return vm, True
-        elif vm:
-            self.log_harvest.info("[%s] sweep: 位置偏移 %s→%s，用新位置", hid, best_pos, vm)
-            path = self._hsnap(verify_f, "sweep_confirmed_%d_%d" % vm)
-            self.log.log("TRACKER_FOUND", harvest_id=hid, pos=str(vm), image_path=path)
-            return vm, True
-        else:
-            self.log_harvest.info("[%s] sweep: 驗證時追蹤框消失（掃描位置 %s 未通過 verify），重試",
-                                 hid, best_pos)
-            return None, True
+        verify_frame = capture.grab()
+        verified = self._find_tracker(
+            verify_frame, excl, ref, log=self._tracker_log, with_score=True)
+        if verified:
+            verified_pos = (verified[0], verified[1])
+            verified_dir = self.harvest.net_rotations % num_dirs
+            path = self._hsnap(
+                verify_frame, "sweep_confirmed_dir%d_%d_%d" %
+                (verified_dir, verified_pos[0], verified_pos[1]))
+            self._record_target_observation(
+                layer=self.harvest.pitch_layer, dir_idx=verified_dir,
+                pos=verified_pos, score=verified[2], status="accepted",
+                source="sweep_verify", snapshot_path=path)
+            self.log_harvest.info(
+                "[%s] sweep verify accepted abs_dir=%d %s (desired=%d prior=%s)",
+                hid, verified_dir, verified_pos, best_dir, best_pos)
+            self.log.log("TRACKER_FOUND", harvest_id=hid, direction=verified_dir,
+                         pos=str(verified_pos), image_path=path)
+            return verified_pos, True
+        self.log_harvest.info(
+            "[%s] sweep verify lost target at abs_dir=%d prior=%s",
+            hid, best_dir, best_pos)
+        return None, True
+
+    def _recover_historical_target(self, excl) -> bool:
+        """Try one bounded D2/ROI recovery at the best retained absolute target."""
+        if self._target_recovery_attempts >= cfg.harvest_target_recovery_max:
+            return False
+        observation = remote_aim.pick_recovery_observation(
+            self._target_observations)
+        if observation is None:
+            return False
+        self._target_recovery_attempts += 1
+        hid = self.harvest.harvest_id
+        self.log_harvest.info(
+            "[%s] historical recovery %d/%d: status=%s layer=%s dir=%d pos=%s",
+            hid, self._target_recovery_attempts,
+            cfg.harvest_target_recovery_max, observation.status,
+            observation.layer, observation.dir_idx, observation.pos)
+        if not self._focus_roblox() or self._mine_resetting:
+            return False
+
+        current_dir = self.harvest.net_rotations % 8
+        steps = harvester.plan_return_rotations(
+            current_dir, observation.dir_idx, 8)
+        moved = 0
+        for _ in range(abs(steps)):
+            direction = 1 if steps > 0 else -1
+            if self._rotate_verified(direction):
+                self.harvest.net_rotations += direction
+                moved += direction
+        if moved != steps:
+            self.log_harvest.warning(
+                "[%s] historical recovery yaw incomplete %d/%d", hid, moved, steps)
+            return False
+
+        if observation.layer != self.harvest.pitch_layer:
+            if cfg.sweep_pitch_center_back_px <= 0:
+                self.log_harvest.info(
+                    "[%s] historical recovery skipped: pitch calibration unavailable", hid)
+                return False
+            nudge = {"mid": 0, "up": -cfg.sweep_pitch_step_px,
+                     "down": cfg.sweep_pitch_step_px}[observation.layer]
+            self.harvest.pitch_touched = True
+            ok = self._pitch_drag_verified(
+                f"[{hid}] recovery pitch reset",
+                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                       cfg.sweep_pitch_center_back_px))
+            if ok and nudge:
+                ok = self._pitch_drag_verified(
+                    f"[{hid}] recovery pitch nudge {nudge}px",
+                    lambda: ic.pitch_nudge(nudge))
+            if not ok:
+                return False
+            self.harvest.pitch_layer = observation.layer
+
+        harvester.prepare_scan()
+        scan_reference = capture.grab()
+        if self._harvest_boost_guard(scan_reference):
+            scan_reference = capture.grab()
+        harvester.execute_scan()
+        self._confirm_scan("historical-recovery")
+        reference = getattr(self, "_pre_scan_ref", None)
+        if reference is None:
+            reference = scan_reference
+        recovered = None
+        recovered_score = 0.0
+        for threshold in (cfg.tracker_shape_threshold, 0.0):
+            current = capture.grab()
+            result = vision.find_tracker_near(
+                current, observation.pos, cfg.harvest_target_recovery_radius_px,
+                frame_margin_frac=0.0, exclude=excl,
+                reference_bgr=reference,
+                shape_templates=self._shape_templates,
+                shape_threshold=threshold, shape_hard_floor=0.0,
+                shape_scales=cfg.tracker_shape_scales,
+                shape_roi_px=cfg.tracker_shape_roi_px, with_score=True)
+            if result:
+                recovered = (result[0], result[1])
+                recovered_score = result[2]
+                break
+        if recovered is None:
+            self.log_harvest.info("[%s] historical recovery found no fresh tracker", hid)
+            return False
+        path = self._hsnap(
+            current, "sweep_accepted_recovery_dir%d_%d_%d" %
+            (observation.dir_idx, recovered[0], recovered[1]))
+        self._record_target_observation(
+            layer=observation.layer, dir_idx=observation.dir_idx,
+            pos=recovered, score=recovered_score, status="accepted",
+            source="historical_recovery", snapshot_path=path)
+        self._target_marker = recovered
+        self._harvest_start = time.time()
+        self.harvest.elapsed_s = 0.0
+        self.last_action = "歷史目標方位復原成功"
+        self.logger.info(
+            "[%s] historical recovery restored tracker at dir=%d pos=%s",
+            hid, observation.dir_idx, recovered)
+        return True
 
     def _harvest_giveup(self, reason: str, *, face_tracker: bool = False):
         """採集放棄 → 依「有無追蹤框」決定視角處置 + 截圖，交人工（需求 A+C）。
@@ -2536,13 +2971,15 @@ class Bot:
         # 遠端瞄準 context（2026-07-11 spec）：記「giveup 收尾後」的絕對姿態——
         # restore_view 路徑歸位完 net=0/mid；face_tracker 路徑保持面對框（net/層照舊）
         self._aim_context = None
-        if cfg.remote_aim_enabled and self._sweep_shots:
+        if (cfg.remote_aim_enabled
+                and (self._sweep_shots or self._target_observations)):
             ctx = remote_aim.build_aim_context(
                 self._sweep_shots, self.harvest.net_rotations,
                 self.harvest.pitch_layer, self.harvest.harvest_id,
-                now=time.time(), max_candidates=cfg.remote_aim_max_candidates)
-            self._aim_context = ctx
+                now=time.time(), max_candidates=cfg.remote_aim_max_candidates,
+                observations=self._target_observations)
             aim_paths = self._render_aim_shots(ctx)      # 疊圖＋落盤，回 [(caption, path)]
+            self._aim_context = ctx
             if aim_paths:
                 groups.insert(0, ("aim", [p for _, p in aim_paths[:4]]))
         if groups:
@@ -2552,32 +2989,51 @@ class Bot:
         self._on_enter(State.NEEDS_HUMAN, frame)
 
     def _render_aim_shots(self, ctx):
-        """把有候選的 SweepShot 疊圖（候選編號＋網格）另存，回 [(caption, path)]。
-
-        只發「有候選的方位」防洗版（spec）；讀快照→疊圖→寫檔都在 giveup 當下同步做
-        （一次性、非熱路徑）。讀檔失敗跳過該張（快照是非同步寫檔，極端下可能還沒落盤）。
-        依「該方位最高分候選」排序，最像框的方位先發；最多 4 張。
-        """
+        """Render direction-labelled overlays after async source snapshots are ready."""
         import cv2
-        by_shot = {}
-        for c in ctx.candidates:
-            by_shot.setdefault((c.layer, c.dir_idx), []).append(c)
         out = []
+        deadline = time.monotonic() + cfg.remote_aim_snapshot_wait_s
         for shot in ctx.shots:
-            key = (shot.layer, shot.dir_idx)
-            cands = by_shot.get(key)
-            if not cands or not shot.snapshot_path:
+            exact = [candidate for candidate in ctx.candidates
+                     if candidate.snapshot_path
+                     and candidate.snapshot_path == shot.snapshot_path]
+            legacy = [candidate for candidate in ctx.candidates
+                      if not candidate.snapshot_path
+                      and (candidate.layer, candidate.dir_idx) ==
+                      (shot.layer, shot.dir_idx)]
+            candidates = exact or legacy
+            if not candidates or not shot.snapshot_path:
                 continue
-            img = cv2.imread(shot.snapshot_path)
-            if img is None:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not self._wait_snapshot_ready(shot.snapshot_path, remaining):
+                self.logger.warning("AIM source snapshot missing: %s", shot.snapshot_path)
                 continue
-            overlaid = remote_aim.draw_overlay(img, cands, grid=True)
-            path = shot.snapshot_path.replace(".png", "_aim.png")
-            cv2.imwrite(path, overlaid)
-            best = max(c.score for c in cands)
-            out.append((best, f"方位{shot.dir_idx}（層 {shot.layer}）", path))
-        out.sort(key=lambda t: -t[0])
-        return [(caption, path) for _, caption, path in out[:4]]
+            image = cv2.imread(shot.snapshot_path)
+            if image is None:
+                self.logger.warning("AIM source snapshot unreadable: %s", shot.snapshot_path)
+                continue
+            overlaid = remote_aim.draw_overlay(image, candidates, grid=True)
+            statuses = ",".join(dict.fromkeys(c.status for c in candidates))
+            cv2.rectangle(overlaid, (0, 0), (overlaid.shape[1], 38), (0, 0, 0), -1)
+            cv2.putText(
+                overlaid,
+                f"DIR {shot.dir_idx} | LAYER {shot.layer.upper()} | STATUS {statuses.upper()}",
+                (12, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 215, 255), 2)
+            path = os.path.splitext(shot.snapshot_path)[0] + "_aim.png"
+            if not cv2.imwrite(path, overlaid):
+                self.logger.warning("AIM overlay write failed: %s", path)
+                continue
+            label = (f"{ctx.harvest_id}_aim_overlay_dir{shot.dir_idx}_"
+                     f"{shot.layer}_{statuses}")
+            try:
+                diagnostics.append_snapshot_index(cfg.log_dir, label, path)
+            except Exception as exc:
+                self.logger.warning("AIM overlay index failed (%s): %s", path, exc)
+            best = max(candidate.score for candidate in candidates)
+            caption = (f"方位 {shot.dir_idx}｜層 {shot.layer}｜狀態 {statuses}")
+            out.append((best, caption, path))
+        out.sort(key=lambda item: -item[0])
+        return [(caption, path) for _, caption, path in out]
 
     # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
     def _tick_remote_aim(self, frame, reply):
@@ -2610,11 +3066,17 @@ class Bot:
         if ok:
             self._aim_context = None           # 成功收尾（_execute 內已切 MINING）
         else:
-            # 失敗：留在 NEEDS_HUMAN、context 續命，附當下截圖讓使用者再決定
+            # 失敗：把這次 fired observation 納入下一輪候選，再附當下截圖。
+            ctx = remote_aim.build_aim_context(
+                ctx.shots, ctx.pose_net_rotations, ctx.pose_pitch_layer,
+                ctx.harvest_id, now=time.time(),
+                max_candidates=cfg.remote_aim_max_candidates,
+                observations=self._target_observations)
+            self._aim_context = ctx
             cur = capture.grab()
             p1 = self._snapshot(cur, "aim_fail_scene")
             p2 = self._snapshot_crop(cur, cfg.chat_review_region, "aim_fail_chat")
-            paths = [p for p in (p1, p2) if p]
+            paths = self._ready_snapshot_paths([p for p in (p1, p2) if p])
             msg = f"❌ 未確認命中（{detail}）。可再回編號/格子重試，或 `跳過` 回挖礦"
             if paths:
                 notify.send_images_message(token, ch, msg, paths)
@@ -2630,6 +3092,9 @@ class Bot:
         from . import notify
         deadline = time.time() + cfg.remote_aim_budget_s
         hid = ctx.harvest_id
+        ready, detail = self._wait_for_d3_cooldown(deadline)
+        if not ready:
+            return False, detail
         if not self._focus_roblox():
             return False, "無法聚焦 Roblox"
         if self._mine_resetting:
@@ -2673,6 +3138,7 @@ class Bot:
         self._confirm_scan("remote-aim")
         # 3. ROI 放寬重找：先正常門檻，再 shape_threshold=0（colored 過即收、edge 排序）
         pos = None
+        pos_score = -1.0
         for thr in (cfg.tracker_shape_threshold, 0.0):
             if time.time() > deadline:
                 return False, "預算用盡"
@@ -2683,19 +3149,23 @@ class Bot:
                 reference_bgr=ref, shape_templates=self._shape_templates,
                 shape_threshold=thr, shape_hard_floor=0.0,
                 shape_scales=cfg.tracker_shape_scales,
-                shape_roi_px=cfg.tracker_shape_roi_px)
+                shape_roi_px=cfg.tracker_shape_roi_px, with_score=True)
             if pos:
+                pos_score = pos[2]
                 self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
                 break
         if not pos:
             pos = prior                        # 4c. 直接朝先驗點開火（miss 代價＝一發）
             self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
-        # 4. 開火（既有 D3 序列：2 → 0.15s → 3 → 0.3s → click hold 0.4 → 0.5s）
-        self._hsnap(capture.grab(), "aim_fire_%dx%d" % tuple(pos[:2]))
-        ic.key_press("2"); time.sleep(0.15)
-        ic.key_press("3"); time.sleep(0.3)
-        ic.click_at(int(pos[0]), int(pos[1]), hold=0.4)
-        time.sleep(0.5)
+        pos = (int(pos[0]), int(pos[1]))
+        # 4. 開火；共用 session 冷卻由實際 hold-click 當下起算。
+        fire_frame = capture.grab()
+        fire_path = self._hsnap(fire_frame, "aim_fire_%dx%d" % pos)
+        if not self._fire_d3_at(*pos):
+            return False, f"D3 冷卻尚餘 {self._d3_cooldown_remaining():.1f}s"
+        self._record_target_observation(
+            layer=tgt_layer, dir_idx=tgt_dir, pos=pos, score=pos_score,
+            status="fired", source="remote_d3", snapshot_path=fire_path)
         # 5. 驗證：基準 OCR（開火後才跑）＋窗口輪詢（幀差閘）＋最終確認
         common = game_data.common_ore_names()
         rare_names = game_data.rare_ore_names()
@@ -2771,7 +3241,9 @@ class Bot:
                                      hid, self.harvest.elapsed_s)
                     self._harvest_resume_mining()
                     return
-                self.logger.info("[%s] sweep 超時 -> 人工 (t=%.1f)", hid, self.harvest.elapsed_s)
+                self.logger.info("[%s] sweep 超時 -> 歷史目標復原/人工 (t=%.1f)", hid, self.harvest.elapsed_s)
+                if self._recover_historical_target(_excl):
+                    return
                 self._harvest_giveup("全方位掃描超時，請手動處理")
                 return
             self.last_action = "全方位掃描（8方位）"
@@ -2809,8 +3281,10 @@ class Bot:
                     if self._pitch_layer_transition():
                         return          # 下個 tick 在新層重跑 8 方位（sweep 計時已重置）
                     # 層全部被吃/重置中 → 落到 giveup
-                self.logger.info("[%s] sweep 未找到追蹤框（俯仰層剩 %d）-> 人工",
+                self.logger.info("[%s] sweep 未找到追蹤框（俯仰層剩 %d）-> 歷史目標復原/人工",
                                  hid, len(self.harvest.pitch_layers_left))
+                if self._recover_historical_target(_excl):
+                    return
                 self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
             # ★ 聊天基準是 episode 級（2026-07-04 起在進場時拍、RESWEEP 不作廢，見 _on_enter）：
@@ -2859,26 +3333,36 @@ class Bot:
         # ★ 開火前重定位（H015 第一槍對策）：D5 boost 到期會收縮 FOV，畫面上所有座標整批位移
         #   （H015：sweep 座標 (1564,433) 到實際點擊時已是不同牆面 → 點空牆 miss）。開火永遠用
         #   「當下」幀重新偵測的座標；找不到＝框已消失/跑位出視野 → 立即重掃，不浪費一發。
+        cooldown_left = self._d3_cooldown_remaining()
+        if cooldown_left > 0:
+            self.last_action = f"D3 冷卻 {cooldown_left:.1f}s"
+            self.log_harvest.info("[%s] D3 cooldown %.2fs; defer refind/fire",
+                                  hid, cooldown_left)
+            return
         aim_frame = capture.grab()
-        refind = self._find_tracker(aim_frame, _excl, reference_bgr=_ref)
+        refind = self._find_tracker(
+            aim_frame, _excl, reference_bgr=_ref, with_score=True)
         if refind is None:
             self.logger.info("[%s] 開火前重定位失敗（框已消失/FOV 變動）-> 重新 D2 掃描＋全方位重掃", hid)
             self._reharvest_sweep()
             return
         if abs(refind[0] - cx) >= 8 or abs(refind[1] - cy) >= 8:
             self.log_harvest.info("[%s] 開火前重定位: (%d,%d) -> (%d,%d)（FOV/視角位移已吸收）",
-                             hid, cx, cy, refind[0], refind[1])
-        cx, cy = refind
+                                  hid, cx, cy, refind[0], refind[1])
+        cx, cy, refind_score = refind
         self._target_marker = (cx, cy)
         self.log_harvest.info("[%s] 採集: 追蹤框當下位置 (%d,%d) -> D3 點選 (attempt=%d)",
-                         hid, cx, cy, self.harvest.d3_attempts + 1)
-        self._hsnap(aim_frame, "d3_fire_%dx%d" % (cx, cy))  # 關鍵診斷截圖：開火用的「當下」幀（含追蹤框）
-        ic.key_press("2")           # 先切回 D2，確保 D3 不在裝備狀態（再按 3 是切入非 toggle）
-        time.sleep(0.15)
-        ic.key_press("3")
-        time.sleep(0.3)          # 等 D3 裝備動畫（實測 0.3s 即足夠，原 0.6s 過長）
-        ic.click_at(cx, cy, hold=0.4)  # hold click 才能觸發 D3（實測瞬間點無效）
-        time.sleep(0.5)          # 等伺服器初步回應（後續交給輪詢，不再單幀判生死）
+                              hid, cx, cy, self.harvest.d3_attempts + 1)
+        fire_path = self._hsnap(
+            aim_frame, "d3_fire_dir%d_%dx%d" %
+            (self.harvest.net_rotations % 8, cx, cy))
+        if not self._fire_d3_at(cx, cy):
+            return
+        self._record_target_observation(
+            layer=self.harvest.pitch_layer,
+            dir_idx=self.harvest.net_rotations % 8,
+            pos=(cx, cy), score=refind_score, status="fired",
+            source="normal_d3", snapshot_path=fire_path)
 
         # ★ 輪詢驗證（H015 第二槍對策）：實機追蹤框是擊中後 2~10s 才消失、聊天成功行更晚到
         #   （且聊天無新訊息 ~15s 會整個淡出、唯有新訊息會讓它重新顯示）→ 舊「固定等 0.5s 抓
@@ -3226,9 +3710,11 @@ class Bot:
                 path = self._rr_sync_write(
                     snap, f"reentry_ep{self._rr_ctx.episode_id}_open_nochange")
                 self._rr_notify(
-                    f"⚠ 回礦 #{self._rr_ctx.episode_id}：「回到地表」點了 "
-                    f"{int(cfg.reentry_open_budget_s)}s 畫面都無變化"
-                    "（全黑＝虛空；有畫面＝凍結或按鈕失效）。回 `重骰` 重試或 `跳過`",
+                    f"⚠ 回礦 #{self._rr_ctx.episode_id}：開場探了 "
+                    f"{int(cfg.reentry_open_budget_s)}s 仍未全過驗證。\n"
+                    f"最後一探：{reentry_remote.format_gate_readings(*self._rr_last_probe)}\n"
+                    "（depth=NNNm/讀不到＋pitch 有動＝虛空；pitch 0.00/0.0000＝凍結；"
+                    "Surface＋容量未歸零＝重置未完成或按鈕失效）。回 `重骰` 重試或 `跳過`",
                     image_paths=[path])
                 return
             # act == "wait" → 落到下方等待分支更新 HUD
@@ -3281,6 +3767,20 @@ class Bot:
         world = game_data.current_world_name()   # 已鎖定世界才記；未鎖回 None
         self._rr_ledger_append(reentry_remote.ledger_entry(
             ctx, outcome, world, time.time() - ctx.created_at))
+
+    def _rr_skip_on_pause_resume(self, source: str):
+        """REENTRY 遠端 episode 進行中收到 暫停/繼續 → 視同 `跳過`（2026-07-18 需求）。
+
+        遠端回礦本就是人工操作，暫停/繼續＝人要收回控制權。只排入 pending skip
+        （指令/熱鍵執行緒鐵律：不碰遊戲輸入、不 finalize），主迴圈下個 tick 消費後
+        finalize 直接回正常挖礦。暫停中主迴圈不 tick → skip 等恢復後才執行，
+        整體行為＝「恢復即回挖礦」。布林/tuple 指派在 GIL 下原子，與既有旗標同模式。
+        """
+        if self._rr_ctx is None:
+            return
+        self._pending_reentry = (f"({source})", reentry_remote.RemoteReply("skip"))
+        self.log_discord.info("RR %s -> queued skip (episode #%s)",
+                              source, self._rr_ctx.episode_id)
 
     def _rr_ledger_append(self, d):
         """append-only JSONL：一行一筆（episode 收尾行／void 作廢行）。"""
@@ -3359,8 +3859,8 @@ class Bot:
     def _rr_post_embed(self):
         """貼 REENTRY episode embed + 反應鈕 + 建基線（照抄 _post_remote_control）。
 
-        成功時更新 _rr_embed_mid 與 _rr_reactions_seen 基線（含 bot 自己貼的反應），
-        避免首輪把自己的反應當成新點擊。失敗靜默（下輪重試）。
+        成功時用 add_reaction 結果建立 count 基線，避免額外三次 GET，並防首輪把 bot
+        自己的反應當成新點擊。失敗靜默（下輪重試）。
         """
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
@@ -3368,18 +3868,16 @@ class Bot:
         if ctx is None:
             return
         embed = reentry_remote.build_reentry_embed(
-            ctx, self._rr_sticky_layer, time.time(), self._evac_done)
+            ctx, self._rr_sticky_layer, time.time(), self._evac_done,
+            pitch_offset_px=self._pitch_offset_px)
         ok, detail, mid = notify.send_embed(token, ch, embed)
         if not (ok and mid):
             self.log_discord.info("RR embed post FAIL -> %s", detail)
             return
-        for em in reentry_remote.REENTRY_REACTIONS:
-            notify.add_reaction(token, ch, mid, em)
-        # 基線：bot 自己貼的反應記成已見（避免首輪誤觸發）
         seen = {}
         for em in reentry_remote.REENTRY_REACTIONS:
-            users = notify.get_reactions(token, ch, mid, em)
-            seen[em] = {u.get("id") for u in users if u.get("id")}
+            added, _ = notify.add_reaction(token, ch, mid, em)
+            seen[em] = 1 if added else 0
         self._rr_embed_mid = mid
         self._rr_reactions_seen = seen
         self._rr_last_min = int((time.time() - ctx.created_at) // 60)
@@ -3394,7 +3892,8 @@ class Bot:
         if not mid or ctx is None:
             return
         embed = reentry_remote.build_reentry_embed(
-            ctx, self._rr_sticky_layer, time.time(), self._evac_done)
+            ctx, self._rr_sticky_layer, time.time(), self._evac_done,
+            pitch_offset_px=self._pitch_offset_px)
         ok, detail = notify.edit_message(token, ch, mid, embed=embed)
         if ok:
             self._rr_last_min = int((time.time() - ctx.created_at) // 60)
@@ -3409,8 +3908,8 @@ class Bot:
     def _poll_rr_reactions(self):
         """輪詢 REENTRY embed 反應：偵測新點擊 → 轉 RemoteReply → 寫 _pending_reentry。
 
-        同步語意照抄 _poll_remote_reactions（含「fetch 失敗回空不可清 seen」的守門）。
-        走與文字回覆完全相同的入口（_pending_reentry），主迴圈消費路徑零改動。
+        單次抓 Message Object reaction count；偵測後與文字回覆共用 _queue_reentry_reply，
+        先回「已收到」再由主迴圈執行，避免 H044 的八方位掃完才第一次回覆。
         只在 _rr_embed_mid 非 None 且 state 是 REENTRY 時跑（呼叫端已閘）。
         """
         from . import notify
@@ -3418,28 +3917,18 @@ class Bot:
         mid = self._rr_embed_mid
         if not mid:
             return
-        for emoji in reentry_remote.REENTRY_REACTIONS:
-            users = notify.get_reactions(token, ch, mid, emoji)
-            if not users:
-                continue                        # fetch 失敗→不可同步（見 _poll_remote_reactions 守門）
-            user_ids = {u.get("id") for u in users if u.get("id")}
-            seen = self._rr_reactions_seen.setdefault(emoji, set())
-            new_clickers = user_ids - seen
-            # 同步成當前名單（取代累加）：使用者取消反應會移出 seen，再點可再次觸發
-            self._rr_reactions_seen[emoji] = set(user_ids)
-            if not new_clickers:
-                continue
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
+            return
+        self._rr_reactions_seen, increments = notify.find_reaction_increments(
+            message, self._rr_reactions_seen, reentry_remote.REENTRY_REACTIONS)
+        for emoji, delta in increments:
             reply = reentry_remote.reaction_to_reentry_reply(emoji)
             if reply is None:
                 continue
-            if self._rr_busy or self._pending_reentry is not None:
-                self.log_discord.info("RR %s 反應 by %s 忽略（busy/pending）",
-                                      emoji, ",".join(sorted(new_clickers)))
-                break                            # 一次輪詢只處理一個
-            self._pending_reentry = (f"reaction:{emoji}", reply)
-            self.log_discord.info("RR %s 反應 by %s -> pending (%s)",
-                                  emoji, ",".join(sorted(new_clickers)), reply.kind)
-            break
+            self._queue_reentry_reply(
+                f"reaction:{emoji}", reply, source=f"reaction:{emoji}+{delta}")
+            break                                # 一次輪詢只處理一個
 
     def _notify_stuck(self, reason: str):
         """STUCK Discord 警告＋🏠 手動回礦反應鈕（H044 spec 第 3 節）。
@@ -3457,30 +3946,31 @@ class Bot:
         self.log_discord.info("STUCK alert -> %s (mid=%s)", detail, mid)
         if not (ok and mid and active):
             return
-        notify.add_reaction(token, ch, mid, "🏠")
-        users = notify.get_reactions(token, ch, mid, "🏠")
+        added, _ = notify.add_reaction(token, ch, mid, "🏠")
         self._stuck_alert_mid = mid
-        self._stuck_seen = {u.get("id") for u in users if u.get("id")}   # 基線含 bot 自己
+        self._stuck_seen = {"🏠": 1 if added else 0}
 
     def _poll_stuck_reaction(self):
         """輪詢 STUCK 警告的 🏠：新點擊＝手動回礦（與 `回礦` 指令同一旗標）。
 
         Discord 輪詢執行緒：只寫旗標/回覆，絕不碰 input_control。
-        fetch 失敗回空 list → 不同步 seen（照抄 _poll_remote_reactions 守門）。
+        單次抓 Message Object reaction count；fetch 失敗時保留舊基線。
         """
+        if self._calib_session is not None:
+            return  # 校準中不消費 STUCK 🏠——防殘留卡點擊繞過守門
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
         mid = self._stuck_alert_mid
         if not mid:
             return
-        users = notify.get_reactions(token, ch, mid, "🏠")
-        if not users:
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
             return
-        user_ids = {u.get("id") for u in users if u.get("id")}
-        new_clickers = user_ids - self._stuck_seen
-        self._stuck_seen = set(user_ids)
-        if not new_clickers:
+        self._stuck_seen, increments = notify.find_reaction_increments(
+            message, self._stuck_seen, ("🏠",))
+        if not increments:
             return
+        _, delta = increments[0]
         ok, reason = can_accept_manual_reentry(self.state, self._reentry_active())
         if not ok:
             notify.send_message(token, ch, f"❌ 回礦（🏠）未接受：{reason}")
@@ -3491,13 +3981,16 @@ class Bot:
             self._antiafk_last = 0.0
         self._stuck_alert_mid = None       # 一次性：觸發後按鈕作廢（訊息留著）
         notify.send_message(token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
-        self.log_discord.info("STUCK 🏠 by %s -> manual_reentry", ",".join(sorted(new_clickers)))
+        self.log_discord.info("STUCK 🏠 反應 +%d -> manual_reentry", delta)
 
     def _rr_open_episode(self, reroll: bool = False):
-        """按回到地表 → 等傳送 → 俯仰歸位 → 八方位拍照 → Discord 發送 → 建/續 context。
+        """按回到地表 →（狀態閘）→ 俯仰歸位 → 八方位拍照 → Discord 發送 → 建/續 context。
 
         同步阻塞主迴圈 ~20-30s（比照 _sweep_for_tracker 慣例）；步驟間查 _mine_resetting。
-        點擊改用 _click_surface_verified（會重試；虛空下單發點擊幾乎無效——2026-07-13 實機）。
+        點擊用 _click_surface_verified（會重試；虛空下單發點擊幾乎無效——2026-07-13 實機），
+        但其幀差結果只是**輔助訊號**：人已在地表時再點「回到地表」畫面可能毫無變化，
+        轉移式驗證會把真成功判成失敗、卡死重骰（H046(b) 2026-07-17 ep2 實錄）。
+        開場成立與否全看狀態錨（plan_opening_gate）：凍結探針＋Depth=Surface＋容量歸零。
         """
         if not self._focus_roblox():
             self._rr_notify("⚠ 無法聚焦 Roblox，回 `重骰` 重試或 `跳過`")
@@ -3509,22 +4002,59 @@ class Bot:
         teleported = self._click_surface_verified("開場")
         self._rr_ensure_ctx(reroll)
         self._rr_open_last_ts = time.time()
-        if not teleported:
-            # H044 探測式開場：未傳送（凍結/虛空/按鈕失效）→ 不通知、不拍圖，排下一次探測；
-            # 預算用盡才通知一次（_tick_reentry_remote 依 plan_open_retry 決策）。
-            self.logger.info("[RR#%s] 開場點擊無反應（可能凍結/虛空）——%.0fs 後再探（預算剩 %.0fs）",
-                             self._rr_ctx.episode_id, cfg.reentry_open_retry_wait_s,
-                             max(0.0, cfg.reentry_open_budget_s
-                                 - (time.time() - self._rr_open_first_ts)))
-            self.last_action = "回礦開場探測中（畫面可能凍結）"
+        if teleported:
+            time.sleep(1.0)                      # 傳送落地沉澱
+        # H045/H046 開場狀態閘（點擊幀差不在條件內）：
+        # (1) 凍結探針＝俯仰拖曳前後幀「逐位元相同」（probe_frozen 專用門檻；
+        #     ⚠ 不可用 pitch_eaten_*——H046(a) 夜間地表拖曳 mean 0.93~5.13 被它鎖 300s）；
+        # (2) Depth=Surface＝人真的在地表（NNNm＝礦內/虛空墜落中→繼續探測點擊）；
+        # (3) 容量歸零＝重置真完成（凍結舊幀 78% vs 重置後 0%；僅 reset 觸發）。
+        # 讀值全與俯仰結果解耦（H046(a)：耦合造成 capacity=None 十一連發）。
+        # 任一未過→不拍照不發圖，回 H044 探測迴圈（預算 300s 收口）。
+        # 俯仰「被吃但沒凍結」只警告不擋拍照（可回 `仰角` 指令遠端修正）。
+        # H048：開場鏈俯仰歸位比照其他俯仰路徑——prepare（聚焦＋游標進畫面＋settle）
+        # ＋被吃重試一次（歸位冪等，重做無害）。凍結判定取末次量測（凍結＝兩次都 0.00）。
+        self._sampler_pitch_prepare()
+        pitch_ok, p_mean, p_frac = False, 0.0, 0.0
+        for attempt in (1, 2):
+            pitch_ok, p_mean, p_frac = self._pitch_drag_measured(
+                f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位(attempt {attempt})",
+                lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
+                                       cfg.reentry_pitch_back_px))
+            if pitch_ok:
+                break
+            self._sampler_pitch_prepare()
+        frozen = reentry_remote.probe_frozen(
+            p_mean, p_frac, cfg.reentry_frozen_mean_max, cfg.reentry_frozen_frac_max)
+        on_surface = None
+        cap_pct = None
+        if not frozen:
+            state_frame = capture.grab()
+            on_surface = ocr.read_depth_is_surface(
+                capture.crop(state_frame, cfg.depth_region), cfg.tesseract_path)
+            if self._rr_ctx.trigger == "reset":
+                cap_pct = ocr.read_capacity_pct(
+                    capture.crop(state_frame, cfg.capacity_region),
+                    cfg.tesseract_path)
+                self._maybe_arm_chime(cap_pct)   # H045：REENTRY 中 worker 不跑，錨靠這裡的讀值
+        self._rr_last_probe = (on_surface, cap_pct, p_mean, p_frac)
+        gate = reentry_remote.plan_opening_gate(
+            frozen, on_surface, self._rr_ctx.trigger, cap_pct,
+            cfg.reentry_open_capacity_max_pct)
+        if gate != "proceed":
+            self.logger.info(
+                "[RR#%s] 開場閘未過（%s：teleported=%s pitch=%.2f/%.4f surface=%s capacity=%s）"
+                "——%.0fs 後再探（預算剩 %.0fs）",
+                self._rr_ctx.episode_id, gate, teleported, p_mean, p_frac,
+                on_surface, cap_pct, cfg.reentry_open_retry_wait_s,
+                max(0.0, cfg.reentry_open_budget_s
+                    - (time.time() - self._rr_open_first_ts)))
+            self.last_action = f"回礦開場閘未過（{gate}），等畫面活過來"
             return
-        self._rr_open_first_ts = 0.0             # 傳送成功：清探測狀態
-        time.sleep(1.0)                          # 傳送落地沉澱
-        ok = self._pitch_drag_verified(
-            f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位",
-            lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px, cfg.reentry_pitch_back_px))
-        if not ok:
-            self._rr_notify("⚠ 俯仰歸位被吃（已重試）；圖照發，角度可能偏")
+        self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
+        if not pitch_ok:
+            self._rr_notify("⚠ 俯仰歸位疑似被吃；圖照發，角度可能偏"
+                            "（回 `仰角 歸位` 或 `仰角 上/下 [像素]` 修正後 📷 重掃）")
         self._rr_sweep_and_send()
         # Task 4：sweep 發圖後貼 embed 卡片（首次貼；reroll 時 edit 同一則）
         if self._rr_embed_mid:
@@ -3558,7 +4088,7 @@ class Bot:
     def _rr_sweep_and_send(self, prefix_msg: str = ""):
         """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""
         ctx = self._rr_ctx
-        # 對齊座標系：sweep 標號固定 0-7＝相對開場面向（cur_dir=0）。zoom/走位後 cur_dir
+        # 對齊座標系：sweep 內部標號固定 0-7＝相對開場面向（cur_dir=0）。zoom 後 cur_dir
         # 可能非 0，先轉回 dir 0 再掃——否則「方位 N」標籤與之後 `N 粗格` 的轉向計畫錯位。
         back = harvester.plan_return_rotations(ctx.cur_dir % 8, 0)
         for _ in range(abs(back)):
@@ -3574,21 +4104,23 @@ class Bot:
             if self._mine_resetting:
                 return                            # 上層 tick 下一輪處理 reset
             f = capture.grab()
-            path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i}{zs}")
+            # 檔名/標籤一律 1 起算（2026-07-18 使用者要求；ctx.shots 內部仍 0-based）
+            path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i + 1}{zs}")
             ctx.shots.append((i, path or ""))
             grid_img = f.copy()
             remote_aim.draw_grid(grid_img, 6, 4)
-            gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_dir{i}_grid{zs}")
+            gpath = self._rr_sync_write(grid_img,
+                                        f"reentry_ep{ctx.episode_id}_dir{i + 1}_grid{zs}")
             pairs.append((i, gpath))
             self._rotate_verified(1)              # 8 次右轉＝轉滿一圈回原向；cur_dir 座標系不變
         head = (prefix_msg or
                 f"⛏ 回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}\n"
-                f"回 `方位 粗格`（如 `3 C2`）指位；`走 C2` 走近；`重骰` 換重生點；"
-                f"`層 <名>` 改目標層；`跳過` 交人工")
+                f"回 `方位 粗格`（如 `3 C2`，方位 1-8）指位；`重骰` 換重生點；"
+                f"`仰角 歸位`/`仰角 上|下 [px]` 調視角；`層 <名>` 改目標層；`跳過` 回挖礦")
         batch = [p for _, p in pairs if p]
-        self._rr_notify(head + "\n方位 0-3", image_paths=batch[:4])
+        self._rr_notify(head + "\n方位 1-4", image_paths=batch[:4])
         if len(batch) > 4:
-            self._rr_notify("方位 4-7", image_paths=batch[4:8])
+            self._rr_notify("方位 5-8", image_paths=batch[4:8])
 
     # ---- Task 5：指令執行鏈（主迴圈執行緒，輸入全在此）-----------------------
     def _rr_execute(self, reply):
@@ -3602,17 +4134,23 @@ class Bot:
         elif k == "void":
             self._rr_void_last(ctx)
         elif k == "skip":
+            # 2026-07-18：遠端已是人工，跳過不再交 NEEDS_HUMAN——直接回正常挖礦
             self._rr_finalize("skip")
-            self._reentry_failed = True           # decide_transition → NEEDS_HUMAN
-            self._rr_notify("⏭ 跳過，交人工（NEEDS_HUMAN）")
+            self._reentry_done = True             # decide_transition → MINING → init 序列
+            self._rr_notify("⏭ 跳過，回正常挖礦")
         elif k == "reroll":
             self._rr_open_episode(reroll=True)
         elif k == "sweep":
             self._rr_sweep_and_send(prefix_msg=f"🔁 回礦 #{ctx.episode_id} 重新八方位掃描")
+        elif k in ("pitch_reset", "pitch"):
+            self._rr_pitch(ctx, reply)
         elif k in ("zoom_out", "zoom_in"):
             self._rr_zoom_cam(ctx, reply)
-        elif k == "walk":
-            self._rr_walk(ctx, reply.cell)
+        elif k == "magnify":
+            if ctx.phase != "awaiting_fine":
+                self._rr_notify("❓ 先 `方位 粗格`（如 `3 C2`）放大後才能 `放大 <細格>`")
+                return
+            self._rr_magnify(ctx, reply.cell)
         elif k == "coarse":
             self._rr_zoom(ctx, reply.dir_idx, reply.cell)
         elif k == "fine":
@@ -3630,6 +4168,37 @@ class Bot:
         # reroll 已在 _rr_open_episode 內 edit 過 → 這裡再 edit 一次同資料，無害的 no-op PATCH。
         if k not in ("skip", "reroll"):
             self._rr_edit_embed()
+
+    def _rr_pitch(self, ctx, reply):
+        """Discord 仰角指令（2026-07-17：R 取樣視窗退役，俯仰控制移進回礦流程）。
+
+        歸位＝拖到夾限飽和再回拉（冪等，被吃重試一次安全）；微調沿用取樣視窗
+        語意（上=dy<0、下=dy>0；不重送——40px 幀差天然偏小，誤重送＝角度脫鉤）。
+        _pitch_offset_px 記帳照舊（快照檔名/校準流程讀它）。
+        """
+        self._sampler_pitch_prepare()
+        if reply.kind == "pitch_reset":
+            for attempt in (1, 2):
+                if self._pitch_drag_verified(
+                        f"[RR#{ctx.episode_id}] 仰角歸位(attempt {attempt})",
+                        lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
+                                               cfg.reentry_pitch_back_px)):
+                    self._pitch_offset_px = cfg.reentry_pitch_back_px
+                    self._rr_notify(f"✅ 仰角已歸位（夾限上 {self._pitch_offset_px}px；"
+                                    f"可 📷 重掃確認）")
+                    return
+                self._sampler_pitch_prepare()
+            self._rr_notify("⚠ 仰角歸位疑似被吃（已重試）；再回一次 `仰角 歸位` 或 📷 看現況")
+            return
+        px = reply.steps or cfg.sample_pitch_step_px
+        dy = px if reply.cell == "down" else -px
+        ok = self._pitch_drag_verified(f"[RR#{ctx.episode_id}] 仰角微調 dy={dy}",
+                                       lambda: ic.pitch_nudge(dy))
+        self._pitch_offset_px -= dy
+        arrow = "▼ 下" if dy > 0 else "▲ 上"
+        self._rr_notify((f"✅ 仰角{arrow} {px}px" if ok
+                         else f"⚠ 仰角{arrow} {px}px 疑似被吃（記帳照調；懷疑沒動就 `仰角 歸位`）")
+                        + f"；目前=夾限上 {self._pitch_offset_px}px；📷 可重掃確認")
 
     def _rr_zoom(self, ctx, tgt_dir, cell):
         """轉到目標方位、裁粗格放大＋細網格回傳，進「等細格」。"""
@@ -3651,7 +4220,7 @@ class Bot:
             cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
         zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         base = os.path.join(self._rr_snap_dir(),
-                            f"ep{ctx.episode_id}_zoom_{tgt_dir}{cell}{zs}")
+                            f"ep{ctx.episode_id}_zoom_{tgt_dir + 1}{cell}{zs}")
         os.makedirs(self._rr_snap_dir(), exist_ok=True)
         x, y, rw, rh = region
         cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])   # 漂移守門基準（同步寫）
@@ -3661,8 +4230,50 @@ class Bot:
         ctx.zoom_region = region
         ctx.zoom_base = base                      # _rr_click 讀回（不重組字串）
         self._rr_notify(
-            f"🔍 方位 {tgt_dir} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
-            f"要換層回 `B3 <層名>`；太粗回 `走 {cell}` 走近",
+            f"🔍 方位 {tgt_dir + 1} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
+            f"要換層回 `B3 <層名>`；太小回 `放大 <細格>` 再放大",
+            image_paths=[base + ".png"])
+
+    def _rr_magnify(self, ctx, cell):
+        """再放大（2026-07-18 需求）：細格子區域變成新的 zoom_region 重裁重發，可連鎖。
+
+        點擊解析度每層 ×fine 格數——D5 傳送板在首層放大仍太小點不準時逐層逼近。
+        scale 依子區域寬自動補償（輸出貼齊首次放大尺寸）；子格小於 1px＝位圖極限，拒絕。
+        漂移守門基準（_src）同步換成子區域，_rr_click 沿用不變。
+        """
+        import cv2
+        sub = reentry_remote.fine_cell_subregion(
+            ctx.zoom_region, cell,
+            cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        if sub is None:
+            self._rr_notify("❓ 細格代碼不合法（A1–F6）")
+            return
+        if sub[2] < cfg.reentry_remote_fine_cols or sub[3] < cfg.reentry_remote_fine_rows:
+            self._rr_notify("⚠ 已到放大極限（子格不足 1px），直接回細格點擊或 `重骰`")
+            return
+        if not self._focus_roblox():
+            self._rr_notify("⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        f = capture.grab()
+        scale = reentry_remote.magnify_scale(
+            sub[2], cfg.screen_w // 6 * cfg.reentry_remote_zoom_scale,
+            cfg.reentry_remote_zoom_scale)
+        zoom = reentry_remote.render_zoom(
+            f, sub, scale=scale,
+            cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
+        base = os.path.join(
+            self._rr_snap_dir(),
+            f"ep{ctx.episode_id}_zoom_{ctx.zoom_dir + 1}{cell}_x{scale}{zs}_{int(time.time())}")
+        os.makedirs(self._rr_snap_dir(), exist_ok=True)
+        x, y, rw, rh = sub
+        cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])
+        cv2.imwrite(base + ".png", zoom)
+        ctx.zoom_region = sub
+        ctx.zoom_base = base
+        self._rr_notify(
+            f"🔍 已再放大 {cell}（×{scale}）。回細格（如 `B3`）點擊；"
+            f"可再 `放大 <細格>`；重掃回 📷",
             image_paths=[base + ".png"])
 
     def _rr_click(self, ctx, fine_cell, layer_override):
@@ -3706,17 +4317,36 @@ class Bot:
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         reentry_remote.record_click(ctx, pos, layer, ctx.zoom_region, time.time())
         ic.click_at(int(pos[0]), int(pos[1]))
-        # 驗證：等傳送幀差
+        # 驗證（H046(c)）：狀態錨輪詢——Depth 從 Surface 翻成 NNNm＝真下礦。
+        # 幀差降為輔助訊號：重複點已成功的傳送板畫面可能不動（假失敗）、地表→
+        # 地表換重生點畫面大動（假成功），轉移式驗證兩頭都會判錯。
         deadline = time.time() + cfg.reentry_teleport_wait_s
-        teleported = False
-        while time.time() < deadline:
+        frame_changed = False
+        while True:
             time.sleep(0.4)
-            if vision.frame_mean_diff(cur, capture.grab()) >= cfg.reentry_teleport_diff:
-                teleported = True
+            now_f = capture.grab()
+            if not frame_changed and vision.frame_mean_diff(
+                    cur, now_f) >= cfg.reentry_teleport_diff:
+                frame_changed = True
+            on_surface = ocr.read_depth_is_surface(
+                capture.crop(now_f, cfg.depth_region), cfg.tesseract_path)
+            verdict = reentry_remote.plan_click_verdict(
+                on_surface, frame_changed, time.time() >= deadline)
+            if verdict != "wait":
                 break
-        if not teleported:
+        self.logger.info("[RR#%s] 點擊驗證：%s（depth_surface=%s frame_changed=%s）",
+                         ctx.episode_id, verdict, on_surface, frame_changed)
+        if verdict == "still_surface":
             self._rr_notify(
-                "❌ 點了畫面無變化（紅圈＝實際點擊處）。重指細格、或 `走`/`重骰`",
+                "❌ 點了但 Depth 仍是 Surface＝沒下礦"
+                + ("（畫面有動，可能只換了重生點）" if frame_changed else "")
+                + "（紅圈＝實際點擊處）。重指細格、`放大 <細格>` 或 `重骰`",
+                image_paths=[mpath])
+            return                                # 留在 awaiting_fine
+        if verdict == "no_change":
+            self._rr_notify(
+                "❌ 點了畫面無變化、Depth 也讀不到（紅圈＝實際點擊處）。"
+                "重指細格、`放大 <細格>` 或 `重骰`",
                 image_paths=[mpath])
             return                                # 留在 awaiting_fine
         time.sleep(1.5)                          # 傳送落地
@@ -3724,25 +4354,36 @@ class Bot:
         lpath = os.path.join(self._rr_snap_dir(),
                              f"ep{ctx.episode_id}_click{len(ctx.clicks) - 1}_landing{zs}.png")
         cv2.imwrite(lpath, land)
-        # 礦內亮度：照抄 auto 版 _tick_reentry CLICK_VERIFY（不另加 vision API）
-        r = cfg.stuck_region
-        in_mine = float(np.mean(land[r.y:r.y + r.h, r.x:r.x + r.w])) <= cfg.reentry_mine_max_brightness
-        if cfg.reentry_remote_auto_resume and in_mine:
+        if verdict == "moved_unconfirmed":
+            # 降級路徑：Depth OCR 讀不到（區域被蓋/引擎故障）退回舊幀差訊號，
+            # 一律交人工確認、不自動開挖（寧問勿假成功）；警告讓故障浮上來
+            self.logger.warning("[RR#%s] Depth OCR 讀不到，點擊驗證退回幀差＋人工確認",
+                                ctx.episode_id)
+            ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"✅ 回礦 #{ctx.episode_id} 傳送成功（層：{layer}）。紅圈＝點擊處；自動開挖",
+                f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（層標籤：{layer}）。"
+                f"左圖紅圈＝點擊處、右圖＝落點。沒問題回 `好` 開挖；點錯回 `重骰`；"
+                f"資料要作廢回 `作廢`",
+                image_paths=[mpath, lpath])
+            return
+        # verdict == "descended"：Depth=NNNm 已直接證明在礦內；礦內亮度檢查退役
+        # （夜間暗景會騙亮度——H046(a) 同源誤判；狀態錨嚴格更強）
+        if cfg.reentry_remote_auto_resume:
+            self._rr_notify(
+                f"✅ 回礦 #{ctx.episode_id} 下礦成功（Depth 已離開 Surface；層：{layer}）。"
+                f"紅圈＝點擊處；自動開挖",
                 image_paths=[mpath, lpath])
             self._rr_success(ctx, "success")
         else:
             ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"❓ 已傳送（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
+                f"❓ 已下礦（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
                 f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
 
     def _rr_success(self, ctx, outcome):
-        """成功收尾：movement mode 復原（若走過位）→ ledger → 回 MINING。"""
-        if ctx.walked:
-            self._set_movement_mode(cfg.movement_mode_mining)
+        """成功收尾：挖礦標準角歸位 → ledger → 回 MINING。"""
+        self._pitch_home_mining(f"[RR#{ctx.episode_id}] 回礦收尾")
         self._rr_finalize(outcome)
         self._reentry_done = True                 # decide_transition → MINING → init 序列
         self._rr_notify("⛏ 回礦完成，開挖")
@@ -3756,44 +4397,6 @@ class Bot:
         ctx.clicks[idx]["invalid"] = True
         self._rr_ledger_append(reentry_remote.void_entry(ctx.episode_id, idx, time.time()))
         self._rr_notify(f"🗑 已作廢本輪第 {idx + 1} 筆點擊資料")
-
-    def _rr_walk(self, ctx, cell):
-        """右鍵 click-to-move 到當前面向的粗格中心，走完重拍回傳（其餘方位圖視為過期）。"""
-        import cv2
-        if not self._rr_movement_ready:
-            self._rr_notify("⏳ 首次走位：切換移動模式（最多 ~90s）…")
-            if not self._set_movement_mode(cfg.movement_mode_reentry):
-                self._rr_notify("⚠ 移動模式切換失敗，走位不可用；請 `重骰` 或 `跳過`")
-                return
-            self._rr_movement_ready = True
-        if not self._focus_roblox():
-            self._rr_notify("⚠ 無法聚焦 Roblox，稍後重試")
-            return
-        target = remote_aim.grid_cell_center(cell)          # 粗網格 6×4 格中心
-        ic.click_at(target[0], target[1], button="right")
-        ctx.walked = True
-        # 到位偵測：連續 N tick 幀差近零＝停下（沿用 auto 版門檻）
-        diffs, prev = [], capture.grab()
-        deadline = time.time() + cfg.reentry_nav_timeout_s
-        while time.time() < deadline:
-            time.sleep(0.5)
-            f = capture.grab()
-            diffs.append(vision.frame_mean_diff(prev, f))
-            prev = f
-            if reentry.movement_status(diffs, cfg.reentry_move_diff,
-                                       cfg.reentry_move_stable_ticks) == "stopped":
-                break
-        f = capture.grab()
-        grid_img = f.copy()
-        remote_aim.draw_grid(grid_img, 6, 4)
-        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
-        gpath = self._rr_sync_write(grid_img, f"reentry_ep{ctx.episode_id}_walk_{cell}{zs}")
-        ctx.phase = "awaiting_cmd"
-        ctx.zoom_region = ()
-        ctx.zoom_base = ""
-        self._rr_notify(
-            f"🚶 已走位（其餘方位圖已過期）。回 `{ctx.cur_dir % 8} 粗格` 繼續指位，或 `掃` 重掃八方位",
-            image_paths=[gpath])
 
     def _rr_zoom_cam(self, ctx, reply):
         """`遠`/`近`：I/O 鍵逐步驗證式 zoom → 其餘方位快照過期、重拍當前面向回傳。
@@ -3827,7 +4430,7 @@ class Bot:
         ctx.zoom_base = ""
         self._rr_notify(
             f"🔭 鏡頭{'拉遠' if out else '拉近'} {done}/{steps} 步（淨 {ctx.net_zoom:+d}；"
-            f"其餘方位圖已過期）。回 `{ctx.cur_dir % 8} 粗格` 指位、`掃` 重掃、`遠`/`近` 微調",
+            f"其餘方位圖已過期）。回 `{ctx.cur_dir % 8 + 1} 粗格` 指位、`掃` 重掃、`遠`/`近` 微調",
             image_paths=[gpath])
 
     def _tick_reentry(self, frame):
@@ -3941,6 +4544,7 @@ class Bot:
                         self.state = State.NEEDS_HUMAN
                         self._on_enter(State.NEEDS_HUMAN, frame)
                         return
+                    self._pitch_home_mining("REENTRY(auto) 回礦收尾")
                     self._reentry_done = True
                     self._snapshot(frame, "reentry_success")
                     self.log.log("REENTRY_SUCCESS", attempts=st.attempts + 1)
@@ -4171,6 +4775,7 @@ class Bot:
         Ctrl+Q 與 Q 的暫停走同一條路徑——兩者暫停行為完全一致，差別只在 Q 能再按一次
         繼續、Ctrl+Q 只暫停（見 _toggle_pause / on_stop 接線）。不再有獨立的「強制停止」。
         """
+        self._rr_skip_on_pause_resume("pause")     # 回礦中暫停＝跳過（恢復後直接回挖礦）
         if not self.paused:
             self.paused = True
             ic.key_up("w"); ic.mouse_up()
@@ -4180,6 +4785,12 @@ class Bot:
 
     def _resume(self):
         """繼續：清除暫停並重新握住 W + 左鍵（與啟動/_on_enter(MINING) 相同的完整序列）。"""
+        if self._calib_session is not None:
+            # 校準中不准恢復挖礦（▶️/resume 只記離場後意圖；_calib_exit 先清 session 再
+            # 呼叫 _resume 所以離場路徑不受此擋）。
+            self.logger.info("RESUMED 被忽略：校準中（校準卡 ❌ 離開後才恢復）")
+            return
+        self._rr_skip_on_pause_resume("resume")    # 回礦中繼續＝跳過，直接回正常挖礦
         self.paused = False
         self._antiafk_last = 0.0                   # 重置防掛機計時（下次暫停重新從 0 開始）
         self.log.log("RESUMED")
@@ -4233,76 +4844,13 @@ class Bot:
             return True
         return False
 
-    # ---- R 鍵手動取樣（校準素材收集；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）--
-    def _toggle_sampler(self):
-        """R：開/關取樣視窗。開啟時若正在挖礦先自動暫停——取樣的俯仰拖曳/截圖
-        不能跟挖礦的 W+左鍵互搶輸入。關閉不自動 resume（使用者取樣完自己按 Q，
-        視角多半已被拖歪，直接恢復挖礦反而糟）。
-
-        HUD 模式（hud_enabled=True）：本方法跑在熱鍵執行緒，只翻 _sampler_want 旗標，
-        實際建/銷窗由 HUD 的 Tk 主執行緒 _poll→sync_sampler_ui 負責（背景執行緒建
-        第二個 tk.Tk() 會靜默失敗，OS 層無窗，實機驗證 2026-07-10）。
-        無 HUD 模式：沿用執行緒版 SamplerWindow（主執行緒沒有別的 Tk root）。
-        """
-        if cfg.hud_enabled:
-            self._sampler_want = not self._sampler_want
-            if self._sampler_want:
-                if not self.paused and self.state not in (State.NEEDS_HUMAN, State.RESET_WAIT):
-                    self._pause()
-                self.logger.info("取樣視窗開啟請求 (R)：HUD 執行緒將建窗（≤0.3s）")
-            else:
-                self.logger.info("取樣視窗關閉請求 (R)")
-            return
-        if self._sampler is not None and self._sampler.alive:
-            self._sampler.close()
-            self._sampler = None
-            self.logger.info("取樣視窗關閉 (R)")
-            return
-        if not self.paused and self.state not in (State.NEEDS_HUMAN, State.RESET_WAIT):
-            self._pause()
-        self._sampler = sampler.SamplerWindow(
-            on_capture=self._sampler_capture,
-            on_pitch_reset=self._sampler_pitch_reset,
-            on_pitch_nudge=self._sampler_pitch_nudge,
-            step_px=cfg.sample_pitch_step_px,
-            initial_offset=self._pitch_offset_px)
-        self.logger.info("取樣視窗開啟 (R)：俯仰歸位/微調＋編號截圖")
-
-    def sync_sampler_ui(self, tk_root):
-        """HUD _poll 每 300ms 在 Tk 主執行緒呼叫：把取樣視窗實際狀態同步到 R 熱鍵請求。
-
-        為何不能在熱鍵執行緒直接開窗：主執行緒已有 HUD 的 Tk mainloop 時，
-        背景執行緒建第二個 tk.Tk() 的視窗永遠不會出現在 OS 層（實機驗證 2026-07-10），
-        所以 Tk 物件只能由 HUD 執行緒建立/銷毀，熱鍵只翻 _sampler_want 旗標。
-        """
-        alive = self._sampler_ui is not None and self._sampler_ui.alive
-        act = sampler.sync_action(self._sampler_want, alive)
-        if act == "open":
-            self._sampler_ui = sampler.SamplerPanel(
-                tk_root,
-                on_capture=self._sampler_capture,
-                on_pitch_reset=self._sampler_pitch_reset,
-                on_pitch_nudge=self._sampler_pitch_nudge,
-                step_px=cfg.sample_pitch_step_px,
-                initial_offset=self._pitch_offset_px,
-                on_user_close=self._sampler_user_closed)
-            self.logger.info("取樣視窗開啟 (R)：俯仰歸位/微調＋編號截圖")
-        elif act == "close":
-            self._sampler_ui.close()
-            self._sampler_ui = None
-            self.logger.info("取樣視窗關閉 (R)")
-
-    def _sampler_user_closed(self):
-        """使用者按視窗 X 關閉（Tk 執行緒進來）：旗標歸位，避免下一輪 poll 重開。"""
-        self._sampler_want = False
-
+    # ---- 俯仰拖曳共用前置（原 R 取樣視窗家族；視窗已退役，前置留給 仰角 指令）----
     def _sampler_pitch_prepare(self):
-        """R 視窗俯仰鈕共用前置：聚焦回遊戲＋游標移進畫面＋沉澱。
+        """俯仰拖曳共用前置：聚焦回遊戲＋游標移進畫面＋沉澱。
 
-        滑鼠事件送到「游標所在」視窗（鍵盤才看焦點）：點按鈕當下游標還停在
-        取樣小視窗上，右鍵拖曳會落在 Tk 視窗、Roblox 收不到 → 先把游標移進遊戲畫面。
-        settle（2026-07-11 實機）：log 三次「聚焦成功」但俯仰全沒生效——焦點剛從
-        小視窗切回遊戲就送右鍵拖曳會被吃（與旋轉鍵在焦點切換後被吃同家族）→
+        滑鼠事件送到「游標所在」視窗（鍵盤才看焦點）→ 先把游標移進遊戲畫面。
+        settle（2026-07-11 實機）：log 三次「聚焦成功」但俯仰全沒生效——焦點剛
+        切回遊戲就送右鍵拖曳會被吃（與旋轉鍵在焦點切換後被吃同家族）→
         拖曳前必須沉澱 sampler_pitch_focus_settle_s。
         """
         self._focus_roblox()
@@ -4347,27 +4895,250 @@ class Bot:
             return True
         return False
 
+    # ---- Discord 俯仰校準 session（2026-07-18 spec；paused 底下的旗標模式）----
+    def _consume_calib_start(self):
+        """消費校準進場 pending（主迴圈）。消費點重驗 REENTRY——驗收（輪詢執行緒）與
+        消費之間可能剛好開了回礦 episode，直接進場會把它 skip 掉（比照 _pending_ability
+        在消費點過 can_consume_ability 的慣例）。"""
+        from . import notify
+        target, self._pending_calib_start = self._pending_calib_start, None
+        if self.state is State.REENTRY:
+            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                                "❌ 校準取消：回礦 episode 已開始——結束後再下 `校準`")
+            self.log_discord.info("校準 pending 消費點拒絕：state=REENTRY")
+            return
+        self._calib_start(target)
+
+    def _calib_start(self, target: str):
+        """進校準模式（主迴圈）：記原 paused → 強制暫停 → 歸位到 config 現值 → 發卡＋首圖。
+
+        從現值起算（不從夾限歸零）：微調通常是「現值附近找更好」，歸零反而每次重校。
+        進場歸位被吃只在卡上警告不擋（🧭 可重新絕對定位；比照 H046 慣例）。
+        """
+        fld, clamp_fld = calibrate_pitch.calib_field_names(target)
+        cur = getattr(cfg, fld)
+        sess = calibrate_pitch.CalibSession(target=target, offset=cur,
+                                            prev_paused=self.paused)
+        self._pause()                             # idempotent；放開 W/左鍵
+        self._calib_session = sess
+        self._stuck_alert_mid = None               # 進校準＝卡住語境失效，STUCK 🏠 作廢
+                                                     # （比照「離開 MINING＝作廢」語意；否則
+                                                     # 🏠 會繞過校準守門直接改 paused）
+        self._sampler_pitch_prepare()
+        warn = ""
+        if not self._pitch_drag_verified(
+                f"[校準] 進場歸位 {fld}={cur}",
+                lambda: ic.pitch_reset(getattr(cfg, clamp_fld), cur)):
+            warn = "進場歸位疑似被吃——🧭 可重新絕對定位"
+        self._pitch_offset_px = cur
+        self._post_calib_embed(warn)
+        self._calib_snapshot()
+        self.logger.info("校準開始 target=%s 現值=%d prev_paused=%s",
+                         target, cur, sess.prev_paused)
+
+    def _calib_exit(self, sess):
+        """❌ 離場：不寫檔；有未存變更附最終值供手抄；恢復進場前 paused 狀態。
+
+        先清 session 再 _resume——_resume 的校準守門靠 session 判斷，順序反了會被擋。
+        """
+        from . import notify
+        fld, _ = calibrate_pitch.calib_field_names(sess.target)
+        unsaved = sess.offset != getattr(cfg, fld)
+        if sess.message_id:
+            notify.delete_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                                  sess.message_id)
+        self._calib_session = None
+        self._pending_calib_action = None
+        msg = "🏁 校準結束"
+        if unsaved:
+            msg += f"（⚠ 未存檔：最終 夾限上 {sess.offset}px；要保留請手動改 `{fld}`）"
+        if not sess.prev_paused:
+            msg += "｜恢復挖礦"
+            self._resume()
+        else:
+            msg += "｜維持暫停（進場前即暫停）"
+        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, msg)
+        self.logger.info("校準結束 unsaved=%s prev_paused=%s", unsaved, sess.prev_paused)
+
+    def _calib_save(self, sess, path: str | None = None) -> bool:
+        """💾 寫回 config.py＋記憶體 cfg（spec 第 3 節）。
+
+        錨點恰一次才寫（rewrite_config_value 回 None＝不硬寫）；任何失敗都不動記憶體
+        cfg——檔案與記憶體不分岔。成功後挖礦標準角本次執行立即生效（>0 解鎖啟動歸位
+        /mid 層），回礦標準角下次 episode 生效。
+        """
+        from . import notify
+        from . import config as config_module
+        fld, _ = calibrate_pitch.calib_field_names(sess.target)
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        path = path or config_module.__file__
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                text = f.read()
+            new_text = calibrate_pitch.rewrite_config_value(text, fld, sess.offset)
+            if new_text is None:
+                notify.send_message(token, ch,
+                    f"❌ 寫檔失敗：config.py 找不到唯一 `{fld}` 錨點——"
+                    f"請手抄 `{fld} = {sess.offset}`")
+                return False
+            # newline="" 保行尾 byte-level 不變——預設轉換會把整檔 LF 洗成 CRLF
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_text)
+        except OSError as e:
+            notify.send_message(token, ch,
+                f"❌ 寫檔失敗：{e}——請手抄 `{fld} = {sess.offset}`")
+            return False
+        old = getattr(cfg, fld)
+        setattr(cfg, fld, sess.offset)
+        notify.send_message(token, ch,
+            f"💾 已寫回 `{fld}`：{old} → {sess.offset}（記憶體同步，本次執行立即生效）")
+        self.logger.info("校準存檔 %s: %d -> %d", fld, old, sess.offset)
+        return True
+
+    def _post_calib_embed(self, warn: str = ""):
+        """貼校準卡＋全套反應、記 count 基線（照抄 _post_remote_control 模式）。"""
+        from . import notify
+        sess = self._calib_session
+        fld, _ = calibrate_pitch.calib_field_names(sess.target)
+        embed = calibrate_pitch.build_calib_embed(
+            sess.target, sess.offset, getattr(cfg, fld), sess.step, warn)
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ok, detail, mid = notify.send_embed(token, ch, embed)
+        if not (ok and mid):
+            self.log_discord.info("calib post FAIL -> %s", detail)
+            return
+        seen = {}
+        for em in calibrate_pitch.CALIB_EMOJIS:
+            added, _ = notify.add_reaction(token, ch, mid, em)
+            seen[em] = 1 if added else 0
+        sess.message_id = mid
+        sess.reactions_seen = seen
+
+    def _repost_calib_embed(self, warn: str = ""):
+        """刪舊卡貼新卡：DM 無法清他人反應（HTTP 403 code 50003），repost 讓反應歸零
+        可立即再點（與遙控器同一條已驗證路徑）。"""
+        from . import notify
+        old = self._calib_session.message_id
+        if old:
+            notify.delete_message(cfg.discord_bot_token, cfg.discord_channel_id, old)
+        self._post_calib_embed(warn)
+
+    def _poll_calib_reactions(self):
+        """輪詢校準卡反應（**Discord 輪詢執行緒**）：只寫 _pending_calib_action。
+
+        pending 佔用中不覆蓋（一次一動作；主迴圈消費完才收下一個）——快速連點不會
+        疊加成失控的連環拖曳。
+        """
+        from . import notify
+        sess = self._calib_session
+        if sess is None or not sess.message_id or self._pending_calib_action is not None:
+            return
+        message = notify.fetch_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                                       sess.message_id)
+        if message is None:
+            return
+        sess.reactions_seen, increments = notify.find_reaction_increments(
+            message, sess.reactions_seen, calibrate_pitch.CALIB_EMOJIS)
+        for emoji, delta in increments:
+            self._pending_calib_action = calibrate_pitch.CALIB_ACTIONS[emoji]
+            self.log_discord.info("calib %s -> action=%s (+%d)",
+                                  emoji, self._pending_calib_action, delta)
+            break                                 # 一次輪詢只收一個動作
+
+    def _tick_calibration(self):
+        """消費校準動作（主迴圈、paused 分支）。⬆️⬇️🧭 執行後重貼卡＋附新截圖。"""
+        if self._pending_calib_action is None:
+            return
+        action, self._pending_calib_action = self._pending_calib_action, None
+        sess = self._calib_session
+        _, clamp_fld = calibrate_pitch.calib_field_names(sess.target)
+        if action == "step":
+            sess.step = calibrate_pitch.next_step(sess.step)
+            self._repost_calib_embed()
+        elif action in ("up", "down"):
+            self._sampler_pitch_prepare()
+            dy = -sess.step if action == "up" else sess.step   # 上＝dy<0（取樣視窗語意）
+            ok = self._pitch_drag_verified(f"[校準] {action} {sess.step}px",
+                                           lambda: ic.pitch_nudge(dy))
+            sess.offset = calibrate_pitch.apply_calib_step(sess.offset, action, sess.step)
+            self._pitch_offset_px = sess.offset
+            self._repost_calib_embed(
+                "" if ok else "拖曳疑似被吃（記帳照調；懷疑沒動就 🧭 重新絕對定位）")
+            self._calib_snapshot()
+        elif action == "home":
+            self._sampler_pitch_prepare()
+            ok = self._pitch_drag_verified(
+                "[校準] 歸位到夾限",
+                lambda: ic.pitch_reset(getattr(cfg, clamp_fld), 0))
+            sess.offset = 0
+            self._pitch_offset_px = 0
+            self._repost_calib_embed("" if ok else "歸位疑似被吃——再按一次 🧭")
+            self._calib_snapshot()
+        elif action == "snap":
+            self._calib_snapshot()
+        elif action == "save":
+            self._calib_save(sess)
+            self._repost_calib_embed()
+        elif action == "exit":
+            self._calib_exit(sess)
+
+    def _calib_snapshot(self):
+        """校準截圖：落編號樣本（sidecar 記俯仰偏移）＋回傳 Discord（含 offset/幅度標註）。"""
+        from . import notify
+        sess = self._calib_session
+        frame = capture.grab()
+        stem = sampler.save_sample(frame, cfg.manual_snapshot_dir, self._pitch_offset_px)
+        path = os.path.join(cfg.manual_snapshot_dir, f"{stem}.png")
+        ok, detail = notify.send_images_message(
+            cfg.discord_bot_token, cfg.discord_channel_id,
+            f"🎯 校準 #{stem}｜夾限上 {sess.offset}px｜幅度 {sess.step}px", [path])
+        self.log_discord.info("calib snapshot #%s -> %s", stem, detail)
+
+    def _pitch_home_mining(self, label: str) -> bool:
+        """歸位到挖礦標準角（sweep_pitch_center_back_px；spec 2026-07-17 兩套具名標準俯角）。
+
+        未校準（<=0）跳過並警告、維持現狀角度（「未校準＝停用」慣例，缺校準不
+        靜默改變行為）；被吃重試一次後只警告不擋流程（比照 H046「俯仰被吃不擋
+        拍照」——歸位失敗頂多回到「角度不受控」的現狀，不值得為它擋掛機）。
+        """
+        if not harvester.mining_pitch_home_enabled(cfg.sweep_pitch_center_back_px):
+            self.logger.warning(
+                "%s：挖礦標準角未校準（sweep_pitch_center_back_px<=0）——跳過歸位", label)
+            return False
+        self._sampler_pitch_prepare()
+        for attempt in (1, 2):
+            if self._pitch_drag_verified(
+                    f"{label} 挖礦標準角歸位(attempt {attempt})",
+                    lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                           cfg.sweep_pitch_center_back_px)):
+                self._pitch_offset_px = cfg.sweep_pitch_center_back_px
+                return True
+            self._sampler_pitch_prepare()
+        self.logger.warning("%s：挖礦標準角歸位兩輪皆疑似被吃——視角可能非標準角，人工留意",
+                            label)
+        return False
+
     def _pitch_restore_if_touched(self):
         """採集收尾俯仰歸位：動過俯仰層（含轉換失敗——reset 可能已改角度）才歸位到置中標準角。
 
         使用者挖礦視角習慣＝置中（2026-07-11 確認），center_back_px 即校準成置中 → 歸位＝
-        回到平常挖礦角度。沒動過（絕大多數採集）零成本零風險。
+        回到平常挖礦角度。沒動過（絕大多數採集）零成本零風險。重試/警告收斂進
+        _pitch_home_mining（pitch_touched 只在 sweep_pitch 已校準時可能為 True，
+        歸位閘在此路徑必過）。
         """
         if not self.harvest.pitch_touched:
             return
-        for attempt in (1, 2):
-            if self._pitch_drag_verified(
-                    f"[{self.harvest.harvest_id}] 收尾俯仰歸位(attempt {attempt})",
-                    lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
-                                           cfg.sweep_pitch_center_back_px)):
-                return
-            self._focus_roblox()
-            ic.settle(cfg.sampler_pitch_focus_settle_s)
-        self.logger.warning("[%s] 收尾俯仰歸位兩輪皆疑似被吃——視角可能非置中，人工留意",
-                            self.harvest.harvest_id)
+        self._pitch_home_mining(f"[{self.harvest.harvest_id}] 收尾")
 
     def _pitch_drag_verified(self, label: str, drag) -> bool:
+        ok, _, _ = self._pitch_drag_measured(label, drag)
+        return ok
+
+    def _pitch_drag_measured(self, label: str, drag) -> tuple:
         """執行俯仰拖曳並用前後幀驗證是否生效（量測與 _rotate_verified 同一套）。
+
+        回 (生效與否, mean_diff, changed_frac)——H046 起開場閘要拿原始量測值判
+        「凍結」（0.00 逐位元相同）；「被吃」與「凍結」是不同門檻不可混用。
 
         俯仰改變會讓中央場景帶整片位移；被吃則幾乎逐位元相同。回 True＝有生效。
         前後全幀落盤 snapshots/trace/（2026-07-11 使用者要求）：上次只有「聚焦成功」
@@ -4396,7 +5167,7 @@ class Bot:
         self.logger.info("%s：前後幀 mean=%s frac=%s -> %s（前後全幀已落盤 trace/pitch_%s_*）",
                          label, mean_diff, changed,
                          "疑似被吃" if eaten else "生效", verdict)
-        return not eaten
+        return (not eaten, mean_diff, changed)
 
     def _zoom_key_verified(self, key: str) -> bool:
         """I/O 一步＋前後幀驗證被吃（獨立 zoom_eaten_* 門檻）；被吃重聚焦重送一次。
@@ -4441,49 +5212,6 @@ class Bot:
         ctx.net_zoom = 0
         self.logger.info("[RR#%s] zoom 歸位完成（I 飽和→O 回拉 %d 步）",
                          ctx.episode_id, cfg.zoom_reset_pullback_steps)
-
-    def _sampler_pitch_reset(self) -> int:
-        """俯仰歸位（Tk 執行緒進來）：聚焦＋游標移入＋settle 後拖，前後幀驗證。
-
-        歸位＝拖到夾限飽和再回拉固定量 → 冪等，被吃可安全重做一次（不會過轉）。
-        """
-        self._sampler_pitch_prepare()
-        for attempt in (1, 2):
-            if self._pitch_drag_verified(
-                    f"俯仰歸位(attempt {attempt})",
-                    lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
-                                           cfg.reentry_pitch_back_px)):
-                self.last_action = "▲ 俯仰歸位完成"
-                break
-            self._sampler_pitch_prepare()        # 重新聚焦＋沉澱後重試
-        else:
-            self.last_action = "⚠ 俯仰歸位疑似沒生效，點一下遊戲畫面再按一次"
-        self._pitch_offset_px = cfg.reentry_pitch_back_px
-        return self._pitch_offset_px
-
-    def _sampler_pitch_nudge(self, dy: int) -> int:
-        """微調一步。dy>0 向下拖＝靠近夾限→偏移量減少（偏移＝距夾限的回拉量）。
-
-        微調不自動重試：40px 位移的幀差可能天然偏小，誤判被吃而重送＝多拖一步、
-        記帳跟實際角度脫鉤（與旋轉「誤重送比漏判糟」同取捨）——只記 log＋HUD 警示，
-        懷疑沒生效就按「俯仰歸位」重新對齊。
-        """
-        self._sampler_pitch_prepare()
-        ok = self._pitch_drag_verified(f"俯仰微調 dy={dy}",
-                                       lambda: ic.pitch_nudge(dy))
-        self.last_action = ("▼ 俯仰微調生效" if ok
-                            else "⚠ 俯仰微調疑似沒生效（記帳照減，可按歸位重對齊）")
-        self._pitch_offset_px -= dy
-        return self._pitch_offset_px
-
-    def _sampler_capture(self) -> str:
-        frame = capture.grab()
-        stem = sampler.save_sample(frame, cfg.manual_snapshot_dir, self._pitch_offset_px)
-        self.logger.info("📸 手動截圖 #%s pitch=%d", stem, self._pitch_offset_px)
-        # last_action 會進 HUD 的 Tk label：不可含 astral emoji（📸 會卡死 Tk
-        # 事件迴圈，見 status_hud._bmp_safe）；HUD 端已有防線，這裡源頭也不放
-        self.last_action = f"◉ 手動截圖 #{stem}"
-        return stem
 
 
 def _set_dpi_aware():

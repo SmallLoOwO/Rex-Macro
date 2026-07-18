@@ -173,6 +173,36 @@ def slot_selected(scene_bgr, region, threshold: float) -> bool:
     return region_greenness(scene_bgr, region) >= threshold
 
 
+def chat_icon_probe_mean(icon_bgr, probe) -> float:
+    """聊天圖示補丁（泡泡內部，見 chat_icon_state）灰階平均值（H047）。
+
+    拆出數值版供呼叫端 log 用（事後 grep probe 實測值），也讓 chat_icon_state 內部共用
+    同一份切片邏輯——比照 region_greenness/slot_selected、frames_mean_diff/frames_differ
+    的拆法。probe=(x0,y0,x1,y1) 為 icon_bgr 內的相對座標。
+    """
+    x0, y0, x1, y1 = probe
+    patch = icon_bgr[y0:y1, x0:x1]
+    return float(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).mean())
+
+
+def chat_icon_state(icon_bgr, probe, open_min_gray: float, closed_max_gray: float) -> str:
+    """聊天圖示開關判定（H047）。回 'open' | 'closed' | 'unknown'。
+
+    icon_bgr：chat_icon_state_region 裁圖（BGR）。probe=(x0,y0,x1,y1) 為 crop 內相對座標，
+    取泡泡內部補丁（左下內部，避開中央文字筆劃與右上未讀徽章）灰階平均：
+    >=open_min_gray 判開（實心白泡泡）、<=closed_max_gray 判關（空心、內部暗）、
+    其間 unknown（呼叫端絕不能點擊——誤判開頂多維持現狀，誤判關點下去會把開著的
+    聊天框關掉，才是破壞性動作，方向必須保守）。
+    兩側夾：開 238..255 / 關 81..87（docs/incidents.md H047）。
+    """
+    mean = chat_icon_probe_mean(icon_bgr, probe)
+    if mean >= open_min_gray:
+        return "open"
+    if mean <= closed_max_gray:
+        return "closed"
+    return "unknown"
+
+
 # 各階級追蹤框外框 HSV 顏色範圍（wiki 量測 ± 余量）
 # 橘/黃/綠：Exotic(H22), Enigmatic(H34), Exquisite(H64) → H18-78
 # 藍系：Transcendent(H105), Unfathomable(H109) → H88-130

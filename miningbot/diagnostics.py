@@ -3,15 +3,21 @@
 目的：稀有礦很久才出現一次、需要長時間盯著；一旦偵測出錯或出狀況，
 能從 log 與截圖快速找出病因（機器人「當下看到什麼、判斷了什麼」）。
 """
+import itertools
+import json
 import logging
 import os
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 
 import cv2
 
 LOGGER_NAME = "miningbot"
+_SNAPSHOT_INDEX_LOCK = threading.Lock()
+_SNAPSHOT_NAME_LOCK = threading.Lock()
+_SNAPSHOT_NAME_SEQ = itertools.count()
 
 # 子系統 logger（propagate=False，訊息只進自己檔，不污染主 log）
 # key=子系統名（ miningbot.<key>），value=輸出檔名
@@ -87,7 +93,10 @@ def snapshot_subdir(label: str) -> str:
         return "reentry"
     if "sweep_confirmed" in label:
         return "trackers"
-    if any(k in label for k in ("needs_human", "d3_fire", "d3_miss", "stuck")):
+    if any(k in label for k in (
+            "needs_human", "d3_fire", "d3_miss", "stuck",
+            "sweep_empty", "sweep_seen_once", "sweep_accepted",
+            "aim_")):
         return "review"
     if any(k in label for k in ("chill", "rare_found", "audio")):
         return "events"
@@ -100,9 +109,32 @@ def snapshot_path(log_dir: str, label: str, ts: str = None):
     給非同步存圖用：主線即時拿到路徑（事件 log 用），實際 imwrite 丟背景執行緒。
     """
     snap_dir = os.path.join(log_dir, "snapshots", snapshot_subdir(label))
-    ts = ts or time.strftime("%Y%m%d_%H%M%S")
+    if ts is None:
+        now_ns = time.time_ns()
+        with _SNAPSHOT_NAME_LOCK:
+            sequence = next(_SNAPSHOT_NAME_SEQ)
+        ts = time.strftime(
+            "%Y%m%d_%H%M%S", time.localtime(now_ns // 1_000_000_000))
+        ts += "_%09d_%06d" % (now_ns % 1_000_000_000, sequence)
     return snap_dir, os.path.join(snap_dir, f"{ts}_{label}.png")
 
+
+def append_snapshot_index(log_dir: str, label: str, path: str,
+                          written_at: float | None = None) -> str:
+    """Append a searchable JSONL entry after a snapshot is fully written."""
+    prefix = (label or "").split("_", 1)[0]
+    record = {
+        "written_at": time.time() if written_at is None else written_at,
+        "label": label,
+        "path": os.path.abspath(path),
+        "harvest_id": prefix if prefix.isdigit() else None,
+    }
+    index_path = os.path.join(os.path.abspath(log_dir), "snapshot_index.jsonl")
+    os.makedirs(os.path.dirname(index_path), exist_ok=True)
+    with _SNAPSHOT_INDEX_LOCK:
+        with open(index_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return index_path
 
 def tmp_snapshot_path(path: str) -> str:
     """原子寫入用的暫存檔路徑：在最後副檔名前插 .part（**保留副檔名**）。
@@ -124,7 +156,9 @@ def save_snapshot(frame, log_dir: str, label: str) -> str:
     """
     snap_dir, path = snapshot_path(log_dir, label)
     os.makedirs(snap_dir, exist_ok=True)
-    cv2.imwrite(path, frame)
+    if not cv2.imwrite(path, frame):
+        raise RuntimeError("cv2.imwrite returned False")
+    append_snapshot_index(log_dir, label, path)
     return path
 
 
@@ -144,3 +178,34 @@ def plan_snapshot_cleanup(entries, now_ts, max_age_days, max_total_mb):
         total -= keep[i][2]
         i += 1
     return doomed
+
+
+def plan_snapshot_cleanup_tiered(entries, now_ts, max_age_days, max_total_mb,
+                                 category_limits=None):
+    """先套分類保留政策，再對剩餘檔案套全域期限/容量上限。"""
+    category_limits = category_limits or {}
+    doomed = set()
+    for category, (age_days, total_mb) in category_limits.items():
+        group = [entry for entry in entries
+                 if os.path.basename(os.path.dirname(entry[0])).lower() == category.lower()]
+        doomed.update(plan_snapshot_cleanup(group, now_ts, age_days, total_mb))
+    remaining = [entry for entry in entries if entry[0] not in doomed]
+    doomed.update(plan_snapshot_cleanup(
+        remaining, now_ts, max_age_days, max_total_mb))
+    return [path for path, _mtime, _size in entries if path in doomed]
+
+
+def snapshot_priority(label: str) -> int:
+    """數字越小越優先；trace 可丟，事件/人工/reentry 等先寫。"""
+    return 1 if snapshot_subdir(label) == "trace" else 0
+
+
+def snapshot_enqueue_allowed(label: str, qsize: int, maxsize: int,
+                             critical_reserve: int) -> bool:
+    """trace 不得占用保留槽；關鍵類別可使用完整有界佇列。"""
+    if maxsize < 1 or qsize >= maxsize:
+        return False
+    reserve = min(max(0, critical_reserve), maxsize)
+    if snapshot_priority(label) > 0 and qsize >= maxsize - reserve:
+        return False
+    return True

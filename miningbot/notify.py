@@ -4,7 +4,7 @@
 - `format_message`：純函式，決定「哪些事件要送、送什麼字」（有單元測試）。
 - `make_discord_sink`：給 `EventLog.add_sink` 用的 sink；網路錯誤只記 log，絕不中斷主迴圈。
 - `send_message`：直接送一則訊息（測試連線用）。回 (ok, detail)。
-- `send_image_message`：送訊息 + 附加一張 PNG 圖片（multipart/form-data 上傳）。
+- `send_images_message`：送訊息 + 一或多張 PNG 圖片（multipart/form-data 上傳）。
 
 用 stdlib urllib，不額外依賴 requests。
 """
@@ -220,6 +220,67 @@ def fetch_messages(token: str, channel_id: str, after: str | None = None,
         return []
 
 
+def fetch_message(token: str, channel_id: str, message_id: str,
+                  timeout: float = 10.0) -> dict | None:
+    '''取單一 Discord 訊息（含 reactions 摘要）；失敗回 None。'''
+    if not token or not channel_id or not message_id:
+        return None
+    url = MESSAGE_API.format(channel_id=channel_id, message_id=message_id)
+    req = urllib.request.Request(
+        url, method='GET',
+        headers={
+            'Authorization': f'Bot {token}',
+            'User-Agent': 'miningbot (local automation, 1.0)',
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+            return body if isinstance(body, dict) else None
+    except Exception:
+        return None
+
+
+def find_reaction_increments(message: dict, previous_counts: dict[str, int],
+                             emojis) -> tuple[dict[str, int], list[tuple[str, int]]]:
+    '''從 Message Object 的 reactions 摘要找出本輪增加的已知 emoji。
+
+    基線採 count 同步語意：取消反應時會下降，之後再點上升即可再次觸發。
+    malformed/未知欄位一律忽略，避免 Discord 回傳缺欄時打斷輪詢執行緒。
+    '''
+    available: dict[str, int] = {}
+    for reaction in message.get('reactions') or []:
+        if not isinstance(reaction, dict):
+            continue
+        emoji = reaction.get('emoji') or {}
+        if not isinstance(emoji, dict):
+            continue
+        name = emoji.get('name')
+        count = reaction.get('count')
+        if not isinstance(name, str) or isinstance(count, bool):
+            continue
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            continue
+        if count < 0:
+            continue
+        available[name] = max(available.get(name, 0), count)
+
+    # 成功抓到訊息但 reactions 暫時省略某項時，保留正基線；否則 bot 自己的 count=1
+    # 下一輪重現會被誤判成新點擊。正常取消仍是 2→1（bot 反應留著），不影響重新武裝。
+    current = {
+        emoji: available.get(emoji, previous_counts.get(emoji, 0))
+        for emoji in emojis
+    }
+    increments = []
+    for emoji, count in current.items():
+        delta = count - previous_counts.get(emoji, 0)
+        if delta > 0:
+            increments.append((emoji, delta))
+    return current, increments
+
+
 def find_remote_messages(msgs: list[dict], title: str):
     """從 fetch_messages 回傳（newest-first）中認領既有遙控器訊息。回 (newest_id | None, stale_ids)。
 
@@ -423,15 +484,16 @@ def edit_message(token: str, channel_id: str, message_id: str,
         return False, f"{type(e).__name__}: {e}"
 
 
-def make_async_sink(inner, log=None):
+def make_async_sink(inner, log=None, max_queue: int = 64):
     """把同步 sink 包成非同步：record 入佇列，背景 worker 執行緒處理，呼叫端立即返回。
 
-    根因：Discord 圖片通知走 send_image_message（multipart 上傳，timeout 最長 15s），
+    根因：Discord 圖片通知走 send_images_message（multipart 上傳，timeout 最長 15s），
     若在 EventLog.log → _on_enter 同步跑，會阻塞主迴圈數秒——chill 偵測後遲遲不開始
     採集、HARVESTING 期間 sweep/D3 之間卡頓。包成非同步後主迴圈丟進佇列即返回（~µs），
     上傳在背景進行。單一 worker（保序）、inner 拋例外只記 log 不殺執行緒、daemon 隨主程式結束。
     """
-    q: "queue.Queue" = queue.Queue()
+    q: "queue.Queue" = queue.Queue(maxsize=max_queue)
+    dropped = 0
 
     def _worker():
         while True:
@@ -446,8 +508,17 @@ def make_async_sink(inner, log=None):
 
     threading.Thread(target=_worker, daemon=True, name="discord-sink").start()
 
-    def sink(rec) -> None:
-        q.put(rec)
+    def sink(rec) -> bool:
+        nonlocal dropped
+        try:
+            q.put_nowait(rec)
+            return True
+        except queue.Full:
+            dropped += 1
+            if log and (dropped == 1 or dropped % 10 == 0):
+                log.warning("Discord async sink 佇列滿，已丟棄 %d 筆（最新=%s）",
+                            dropped, getattr(rec, "type", "?"))
+            return False
 
     return sink
 

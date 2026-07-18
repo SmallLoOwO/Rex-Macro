@@ -1,3 +1,5 @@
+# Legacy runtime-only install path. Prefer `uv sync --locked` so transitive
+# dependencies and development tools come from pyproject.toml + uv.lock.
 mss==9.0.1
 opencv-python==4.10.0.84
 numpy==2.1.2
@@ -15,7 +17,5 @@ pytesseract==0.3.13
 rapidocr==3.9.1
 onnxruntime==1.27.0
 pydirectinput==1.0.4
-keyboard==0.13.5
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 imageio-ffmpeg==0.5.1
-pytest==8.3.3

@@ -118,7 +118,7 @@ def test_format_group_messages_empty_groups_yields_nothing():
 
 
 # --- make_async_sink：把阻塞的 Discord 上傳移出主迴圈 ---------------------------
-# 根因：send_image_message 在 EventLog.log→_on_enter 同步跑（multipart 上傳，
+# 根因：send_images_message 在 EventLog.log→_on_enter 同步跑（multipart 上傳，
 # timeout 最長 15s），阻塞主迴圈 → chill 偵測後延遲、HARVESTING 期間卡頓。
 
 def test_async_sink_returns_immediately_even_if_inner_blocks():
@@ -163,6 +163,22 @@ def test_async_sink_inner_error_does_not_kill_worker():
     sink(rec("OK"))
     assert second.wait(2.0), "worker 應在前一事件出錯後仍處理後續事件"
     assert "OK" in seen
+
+
+def test_async_sink_is_bounded_and_reports_drop_without_blocking():
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_inner(_rec):
+        started.set()
+        release.wait(2.0)
+
+    sink = make_async_sink(blocked_inner, max_queue=1)
+    assert sink(rec("FIRST")) is True
+    assert started.wait(1.0)
+    assert sink(rec("SECOND")) is True
+    assert sink(rec("THIRD")) is False
+    release.set()
 
 def test_format_group_messages_tracker_group_has_caption():
     # H015：D3 超時（有框）路徑改用分組發送＝追蹤框現況一則＋聊天/背包前後對比各一則，

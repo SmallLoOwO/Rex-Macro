@@ -200,8 +200,8 @@ def test_update_world_from_event_keeps_none_on_unknown(restore_world_state):
 
 
 # ---- 世界偵測（透過礦名反推，2026-07-07 Task 4.1）----
-# 7/9 世界 events 空 → 事件式 detect_world 永遠鎖不了它們；common_ores（被動聊天礦名，
-# Surreal/Mythic）是更高頻的信號，verify OCR 已在讀聊天行、零額外 OCR 成本。
+# 事件訊號尚未出現時，common_ores（被動聊天礦名，Surreal/Mythic）提供另一個
+# 高頻世界訊號；verify OCR 已在讀聊天行，無額外 OCR 成本。
 # 結構同 detect_world：唯一命中一個世界才回傳（世界名字串，None=未知/跨世界撞名）。
 
 def test_detect_world_from_ore_unique_name_locks_world():
@@ -265,7 +265,7 @@ def test_common_ore_names_excludes_rare_ores():
         assert rare not in names
 
 
-# ---- Lucernia 世界（低稀有度礦；事件待補）----
+# ---- Lucernia 世界（事件與低稀有度礦）----
 
 def test_world_lucernia_registered():
     assert "Lucernia" in WORLDS

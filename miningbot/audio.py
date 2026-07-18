@@ -180,6 +180,31 @@ class ResetChimeRecorder:
             self._log(path, self._pending_rms)
 
 
+def chime_capacity_armed(capacity_pct, arm_pct: float) -> bool:
+    """reset-chime 錄音窗開啟條件（純函式）：容量 OCR 讀到低值＝重置真的完成。
+
+    H045 使用者裁決（2026-07-17）：時間錨（RESET_WAIT 滿 N 秒）是猜的——banner
+    倒數到真重置完成的耗時不定（凍結可拖 1~2.5 分鐘），改用容量當錨，與開場
+    容量閘同一訊號源。兩側夾：重置前／凍結舊幀 78~100%、真重置完成後 0%
+    （2026-07-14 ep3 實機幀）。None＝OCR 沒讀到，不開窗（等下一輪讀值）。
+    """
+    return capacity_pct is not None and capacity_pct <= arm_pct
+
+
+def capture_window_active(armed_since: float, now: float, max_s: float) -> bool:
+    """reset-chime 錄音窗（純函式）：容量歸零觀測時刻起算，max_s 內收音。
+
+    H045：舊邏輯「RESET_WAIT 滿 30s 開錄、離開 RESET_WAIT 即停錄」，但 banner
+    倒數只有 26~28s＋沉澱 5s 就轉 REENTRY——實際錄音窗僅 1~3s，鈴聲永遠在窗外。
+    改法：容量錨開窗（chime_capacity_armed）＋窗跨 RESET_WAIT/REENTRY；max_s
+    收口防 REENTRY 等指令期間（可達數十分鐘）遊戲音效洗版 max_clips。
+    armed_since<=0＝本輪尚未觀測到容量歸零，不收音。
+    """
+    if armed_since <= 0.0:
+        return False
+    return 0.0 <= now - armed_since <= max_s
+
+
 def save_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
     """把樣本忠實存成 16-bit WAV。samples 已是 int16 值域的 float（loopback int16→float32），
     故**直接轉 int16，不可再乘 32767**（乘了會溢位繞回成雜訊——舊 save_buffer_wav 的 bug）。

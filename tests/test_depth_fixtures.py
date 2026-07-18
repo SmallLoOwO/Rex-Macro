@@ -1,0 +1,55 @@
+"""Depth OCR 回歸測試：對「實機 Depth: ... 裁圖」跑真實引擎，鎖住地表/礦內判定。
+
+H046 開場狀態錨：回礦開場成立與否看「人在不在地表」（Depth: Surface）而非
+「點擊有沒有造成幀差」。本檔對 3 張實機裁圖（Region(890,92,210,45)；
+2026-07-17 Surface 幀＋2026-07-14 488m/25790m 幀）跑 read_depth_is_surface，
+斷言 True/False/False。尾端 "$..." 金額是裁圖右緣固定拖尾雜訊，parse 必須容忍。
+比照 test_capacity_fixtures.py 慣例：引擎不可用時整檔 skip。
+"""
+import os
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+import numpy as np  # noqa: E402
+
+from miningbot import ocr  # noqa: E402
+from miningbot.config import DEFAULT as cfg  # noqa: E402
+
+FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "reentry")
+
+
+def _engine_ready() -> bool:
+    try:
+        ocr.read_text(np.zeros((20, 120, 3), dtype=np.uint8), cfg.tesseract_path)
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not _engine_ready(), reason="tesseract 引擎不可用")
+
+
+def _load(name: str):
+    # cv2.imread 在 Windows 吃不了非 ASCII 路徑（專案資料夾是中文名）→ fromfile+imdecode
+    data = np.fromfile(os.path.join(FIXTURES, name), dtype=np.uint8)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    assert img is not None, f"fixture 讀不到: {name}"
+    return img
+
+
+def test_depth_surface_frame_reads_true():
+    # 2026-07-17 17:24:55 ep1 實機幀：人已在地表（H046(b) 誤鎖現場）
+    assert ocr.read_depth_is_surface(_load("h046_depth_surface.png"),
+                                     cfg.tesseract_path) is True
+
+
+def test_depth_488m_frame_reads_false():
+    # 2026-07-14 凍結舊幀：礦內深度 488m
+    assert ocr.read_depth_is_surface(_load("h046_depth_488m.png"),
+                                     cfg.tesseract_path) is False
+
+
+def test_depth_25790m_frame_reads_false():
+    # 2026-07-14 18:28:50 幀：已傳送下礦後的深度
+    assert ocr.read_depth_is_surface(_load("h046_depth_25790m.png"),
+                                     cfg.tesseract_path) is False

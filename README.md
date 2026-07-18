@@ -1,22 +1,74 @@
-# Roblox 挖礦自動化
+# Roblox REX 挖礦自動化
+
+Windows-only Python 3.11+ 自動化程式。主要流程包含挖礦、D5 boost、D4 活動刷新、chill
+音訊偵測、稀有礦掃描/瞄準/採集、聊天驗證、Discord 遙控，以及手動／遠端／實驗性自動回礦。
 
 ## 安裝
-1. 安裝 Python 3.11+（python.org，勾選 "Add Python to PATH"）
-2. 安裝 Tesseract OCR：下載 UB-Mannheim build，安裝後記下路徑（預設 `C:\Program Files\Tesseract-OCR\tesseract.exe`），填入 `miningbot/config.py` 的 `tesseract_path`
-3. `pip install -r requirements.txt`
-4. 複製 `.env.example` 成 `.env`，填入 Discord token（Phase 2 用，可先留空）
-5. 把 chill 音檔轉成 wav：`python -m miningbot.convert_audio "你的chill.mp3"` → 產生 `assets/chill_reference.wav`
-6. 下載階級標記模板：`python -m miningbot.fetch_trackers`（高階級；`--all` 含低階級）
-7. 執行校準：`python -m miningbot.calibrate`
-8. 啟動：`python -m miningbot.main`
+
+1. 安裝 Python 3.11+、Tesseract OCR，並保持 Roblox 為工作列可見的 1920×1080 最大化視窗。
+2. 安裝 [uv](https://docs.astral.sh/uv/) 後，在專案根目錄執行：
+
+   ```powershell
+   uv sync --locked
+   ```
+
+   `ocr-native` 會安裝已鎖定 hash 的 Windows/Python 3.11 tesserocr wheel；無法使用時程式仍會
+   回退 pytesseract。舊環境可使用 `pip install -r requirements.txt`，但該檔只保留 runtime
+   相依；完整可重現環境以 `pyproject.toml + uv.lock` 為準。
+3. 複製 `.env.example` 為 `.env`，填入 Discord token/channel；不用 Discord 可留空。
+4. 準備 chill 參考與本機模板：
+
+   ```powershell
+   uv run python -m miningbot.convert_audio "你的chill.mp3"
+   uv run python -m miningbot.fetch_trackers
+   uv run python -m miningbot.calibrate
+   ```
+
+5. 啟動：雙擊 `啟動挖礦bot.bat`，或執行 `uv run python -m miningbot`。有主控台需求時可用
+   `uv run python -m miningbot.main`。
 
 ## 熱鍵
-- **Ctrl+Q**：緊急停止（**不結束程式**）— 放開所有按鍵、停在原地，等你按 Q 重新啟動
-- **Q**：手動切換 暫停 ↔ 繼續（緊急停止後、或 NEEDS_HUMAN 處理完，也按 Q 重新啟動）
-- **F12**：真正結束程式
 
-## 記錄與除錯
-- `logs/miningbot.log`：完整執行記錄（時間戳、狀態切換、偵測動作、提醒）。會自動輪替。
-- `logs/events.log`：結構化事件記錄。
-- `logs/snapshots/`：關鍵時刻（偵測到 chill、採集成功/失敗、卡住、音訊觸發但文字沒對上）的畫面截圖，方便事後查「機器人當下看到什麼」。
-- 想看更細的每幀偵測（音訊分數、標記座標）：把 `config.py` 的 `log_level` 改成 `"DEBUG"`。
+- **Ctrl+Q**：只暫停並放開按鍵。
+- **Q**：暫停／恢復；在啟動檢查期間代表跳過目前檢查。
+- **F12**：結束程式。
+- **R**：開啟手動校準取樣器。
+
+## Discord 與回礦
+
+支援 `pause`、`resume`、`status`、`shot`、`ability`、`list`、`keep`、`unkeep`、`clear`、
+`回礦`／`reenter` 等命令。`reentry_mode` 可設為 `off`、`remote`、`auto`；預設為 `remote`，
+`auto` 必須先完成本機 surface template 校準。
+
+## 記錄、效能與除錯
+
+新安裝預設把執行期資料放在 `%LOCALAPPDATA%\RexMacro\logs`，避免 OneDrive 同步大量 PNG。
+可在 `.env` 設 `REX_MININGBOT_LOG_DIR` 覆寫。舊的 repo `logs/` 不會被自動搬動或刪除。
+
+- `miningbot.log`：狀態切換、警告、里程碑。
+- `actions.log`／`harvest.log`／`discord.log`：子系統細節。
+- `heartbeat.log`：心跳以及 capture/observe/tick/loop 的 p50、p95、p99。
+- `snapshots/`：依 trace、review、events、reentry、trackers 分類；trace 預設保留 7 天／256MB，
+  全部快照總量上限 1GB。
+
+真實 session 的取樣 profiler：
+
+```powershell
+uv run py-spy record -o profile.svg -- python -m miningbot.main
+```
+
+先讀 `heartbeat.log` 的分位數與 `profile.svg`，再決定是否 A/B 測試其他 capture backend；不要直接
+替換 `mss`。
+
+## 開發驗證
+
+```powershell
+uv run ruff check .
+uv run pytest -q
+uv audit --locked --preview-features audit
+```
+
+GitHub Actions 使用 `windows-latest + Python 3.11` 執行同一組 locked checks。OCR、座標或視覺門檻
+變更必須以真實 fixture 做正反兩側回歸；預設測試不會操作 Roblox、Discord 或實體音訊裝置。
+Python 相依更新交給 `renovate.json5`（會同步更新 `pyproject.toml` 與 `uv.lock`；需在 repository
+啟用 Renovate），GitHub Actions 版本則由 Dependabot 追蹤。

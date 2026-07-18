@@ -1,34 +1,61 @@
-# assets
+# Runtime assets and tracked data
 
-執行時需要的素材（皆由使用者準備；.wav/.png 已被 .gitignore 排除，不進版控）。
+`assets/` 同時包含 Git 追蹤資料與機器本地校準素材。兩者用途不同，不能把
+本機存在的 PNG/WAV 當成乾淨 checkout 一定具備的檔案。
 
-- `chill_reference.wav`：chill boom 參考音。轉檔最簡單用內建工具：
-  - `python -m miningbot.convert_audio "你的chill.mp3"`（自動轉單聲道 48kHz，並裁出能量最強的 1 秒）
-  - 也可手動：`ffmpeg -i chill.mp3 -ac 1 -ar 48000 chill_reference.wav`（記得裁短到約 1 秒，要比 audio_window_seconds 小）
-- `markers/*.png`：各**階級**的 D2 掃描標記模板（採集時定位用）。每個階級一張圖。
-  - **自動下載 wiki 圖**：`python -m miningbot.fetch_trackers`（高階級 Exotic 以上；加 `--all` 連低階級）→ 存到 `assets/markers/`。
-  - 比對方式：**多模板 + 形狀/邊緣（忽略顏色）+ 多尺度**。所以填色（Normal/Ionized/Spectral）不影響，不同階級形狀也都能比中，還會回報是哪一級（log 裡看得到）。
-  - wiki 圖只是「起點」。若實機對不準（看 `logs/snapshots/` 的失敗截圖），改用**遊戲內掃描後截圖、裁緊標記**最可靠，並調 `config.py` 的 `marker_edge_threshold`。
-  - 後備：若 `assets/markers/` 是空的，程式會改用單張 `assets/marker.png`。
+## Git 追蹤資料
 
-- `markers/exotic_tracker_real.png`：Exotic 追蹤框**實機截圖**（2026-06-27，25×26px）。
-  **偵測設計原則（用戶確認）**：
-  - **只有外框顏色是絕對參考**——中心色隨礦物種類（Normal/Ionized/Spectral）而變，不可作為依據
-  - **礦坑背景顏色也會改變**，不可作為依據（今天紅色礦坑不代表永遠是紅色）
-  - `vision.find_tracker` 的顏色範圍應以**外框 HSV 為主**
+- `rare_ores.json`：active worlds 的高階礦物白名單。
+- `ores_all.json`：wiki 同步的完整相關礦物資料。
+- `README.md`：本素材契約。
 
-  **Exotic 外框實測 HSV（wiki 與實機高度吻合）：**
-  | 量測來源 | H | S | V |
-  |----------|-----|-----|-----|
-  | wiki 圖   | 22.9 | 186.9 | 231.1 |
-  | 實機截圖  | 23.0 | 189.1 | 230.2 |
+更新資料：
 
-  現行 `_TRACKER_COLORS[0]` 範圍 `H=18~78, S≥80, V≥50` 已完整涵蓋此值。
-- `boost_active.png`：右下角 boost **生效中**的瓶子圖（框形狀、**不要框數字**，數字會變）。
-  邏輯：偵測到瓶子**消失**才重上 D5（D5+點擊 → 回 D1+W+左鍵）。用 `capture_template boost` 擷取。
-- `activity_event.png`：頂部中央「D4 控制活動」事件的模板截圖（觸發按 D4）。注意此模板需與 chill 文字明顯不同，避免誤判。
-- `scan_event.png`：SCAN 變體事件的模板截圖（觸發 D2/Z/D5 組合）。
-- `cave_event.png`：洞穴入口事件的模板截圖（觸發 F 進出洞穴）。
+```powershell
+uv run python -m miningbot.fetch_ores
+```
 
-> 只啟用你實際會用到的變體：若不跑 scan/cave，請放一張**隨機雜訊**的小圖（不要用純色！）。
-> 偵測用 TM_SQDIFF_NORMED，純色模板會與純色背景區域吻合而恆為「偵測到」，效果相反；雜訊圖才不會比中任何畫面。
+同步後必須檢查 world 集合、低／高階衝突報告與 `tests/test_game_data.py`、
+`tests/test_fetch_ores.py`。
+
+## 機器本地 runtime 素材
+
+這些檔案通常被 `.gitignore` 排除。缺少時程式必須發出 preflight/log 警告，
+並走有界、可觀察的 fail-safe；不得靜默改變行為。
+
+| 素材 | 用途／來源 |
+|---|---|
+| `chill_reference.wav`、`chill_refs/*.wav` | chill 音訊參考；用 `convert_audio`／`add_chill_ref` 建立 |
+| `boost_active.png` | D5 生效中的瓶子外觀，不包含倒數數字；用 `capture_template boost` |
+| `d4_cooldown.png` | D4 readiness 的目前 cooldown 模板 |
+| `markers/*_tracker_real.png` | 從實機 tracker 裁出的 shape 模板 |
+| `marker.png` | `markers/` 無可用模板時的單張相容後備 |
+| `surface/panel_*.png` | `reentry_mode=auto` 的地表面板模板 |
+
+Tracker 原則：
+
+- Wiki icon 只能作為資料或初始參考，不是可靠的 runtime shape 模板。
+- 外框 HSV 依 range 分開；中心顏色與礦坑背景都不是固定特徵。
+- 使用遊戲內完整畫面裁出真框，門檻調整必須同時保留 TP 與裝備/UI 負樣本。
+- 現行 tracker 參數讀 `Config.tracker_*`，不要依本檔複製數字。
+
+舊的 `activity_event.png`、`scan_event.png`、`cave_event.png` 不是一般 mining
+tick 的現行觸發契約。不要用隨機雜訊檔假裝功能已校準；未啟用功能應由
+程式模式明確關閉。
+
+## 測試素材邊界
+
+- Regression 所需圖片／音訊放在 Git 追蹤的 `tests/fixtures/`。
+- 測試不得直接依賴本機 `assets/*.png` 或 `assets/**/*.wav`。
+- Runtime 校準素材可以保持本機專用，但 preflight 必須清楚列出缺失與影響。
+- 新視覺門檻先增加具名 incident fixture，再修改設定或偵測器。
+
+## 常用命令
+
+```powershell
+uv run python -m miningbot.convert_audio chill.mp3
+uv run python -m miningbot.add_chill_ref --scan
+uv run python -m miningbot.fetch_trackers
+uv run python -m miningbot.capture_template boost
+uv run python -m miningbot.calibrate_surface --import NNN
+```

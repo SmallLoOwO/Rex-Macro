@@ -95,19 +95,40 @@ def rotate_right():
 def rotate_left():
     key_press(",")
 
-def _drag_vertical(total_px: int, chunk: int = 180):
-    """右鍵按住的垂直拖曳，拆 chunk 段送（單次過大會被遊戲的滑鼠加速/取樣吃掉）。"""
+def _screen_center() -> tuple:
+    u = ctypes.windll.user32
+    return u.GetSystemMetrics(0) // 2, u.GetSystemMetrics(1) // 2
+
+def _drag_vertical(total_px: int, chunk: int = 75):
+    """右鍵垂直拖曳（H048 重寫）：拆成多次短 hold，每次 hold 前游標重新置中＋沉澱。
+
+    H048 實機兩側量測（2026-07-18）：合成右鍵拖曳時 Roblox 不一定鎖游標，實體游標
+    被 Windows 指標加速（實測 ~2.0-2.3x）甩到螢幕邊緣——起手點落在 UI 按鈕/工作列上
+    整段被吞、右鍵在標題列放開會彈出視窗系統選單吃掉後續輸入；且前一段拖曳結束後
+    0.15~0.2s 內起手的下一段右鍵也會被吃（0.55s 以上生效）。因此：
+    - 每次 hold 注入量 ≤ pitch_drag_hold_budget_px（加速後仍甩不到邊緣）；
+    - 每次 hold 從畫面中央起手（永遠蓋在遊戲 3D 視口上）；
+    - hold 之間沉澱 pitch_drag_hold_settle_s（含第一段——覆蓋「點完 UI 立刻拖」的
+      開場鏈時序）。校準量以「注入 px 總和」計，與舊版一致。
+    """
+    from .config import DEFAULT as cfg
+    cx, cy = _screen_center()
     sign = 1 if total_px >= 0 else -1
     remaining = abs(total_px)
-    pydirectinput.mouseDown(button="right")
-    time.sleep(0.04)
     while remaining > 0:
-        step = min(chunk, remaining)
-        pydirectinput.moveRel(0, sign * step, relative=True)
-        time.sleep(0.03)
-        remaining -= step
-    pydirectinput.mouseUp(button="right")
-    time.sleep(_STEP)
+        move_to(cx, cy)
+        time.sleep(cfg.pitch_drag_hold_settle_s)
+        hold_budget = min(cfg.pitch_drag_hold_budget_px, remaining)
+        pydirectinput.mouseDown(button="right")
+        time.sleep(0.04)
+        while hold_budget > 0:
+            step = min(chunk, hold_budget)
+            pydirectinput.moveRel(0, sign * step, relative=True)
+            time.sleep(0.03)
+            hold_budget -= step
+            remaining -= step
+        pydirectinput.mouseUp(button="right")
+        time.sleep(_STEP)
 
 def pitch_reset(down_px: int, back_px: int):
     """俯仰歸位：先向下拖到夾限（飽和，量多無妨）、再回拉固定量。
@@ -122,5 +143,5 @@ def pitch_reset(down_px: int, back_px: int):
     settle()
 
 def pitch_nudge(dy: int):
-    """俯仰微調一步（R 取樣視窗的上/下鈕用）。dy>0 向下拖。"""
+    """俯仰微調一步（回礦 `仰角 上/下` 指令用；原 R 取樣視窗上/下鈕）。dy>0 向下拖。"""
     _drag_vertical(dy)

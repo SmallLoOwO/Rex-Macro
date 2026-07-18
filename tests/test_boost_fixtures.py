@@ -5,9 +5,9 @@
 不會消失。舊 boost_indicator_region 涵蓋到它 → 判定邏輯（瓶子消失=該補 D5）
 永遠看到一顆「瓶子」→ 永遠判生效中、永遠不補 D5。
 
-對策：boost_indicator_region 右緣縮到永久計數圖示左緣（Task 1 已改）；模板換成
-從新截圖裁的倒數圖示（2026-07-08 logs/d5_active.png，bbox 用像素差分實測鎖定：
-(1676,1010)-(1734,1068)，58x58）。
+對策：boost_indicator_region 右緣縮到永久計數圖示左緣（Task 1 已改）；模板取自
+已追蹤的 active_47 fixture 內倒數圖示，原始全幀 bbox 經像素差分鎖定為
+(1676,1010)-(1734,1068)，換算到 fixture 是 (526,75)-(584,133)，58x58。
 
 fixtures 是三個真實遊戲畫面狀態，直接裁 cfg.boost_indicator_region 那塊區域
 （即 find_template_edges 在正式程式碼裡實際會收到的輸入）：
@@ -27,6 +27,7 @@ from miningbot import vision  # noqa: E402
 from miningbot.config import DEFAULT as cfg  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "boost")
+BOOST_TEMPLATE_RECT = (526, 75, 58, 58)
 
 
 def _load(name):
@@ -37,10 +38,9 @@ def _load(name):
 
 
 def _template():
-    path = os.path.join(os.path.dirname(__file__), "..", "assets", "boost_active.png")
-    assert os.path.exists(path), "assets/boost_active.png 不存在——先跑素材準備腳本"
-    data = np.fromfile(path, dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    scene = _load("active_47.png")
+    x, y, w, h = BOOST_TEMPLATE_RECT
+    return scene[y:y + h, x:x + w].copy()
 
 
 def test_only_permanent_counter_icon_is_not_detected_as_boost():

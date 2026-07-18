@@ -27,6 +27,9 @@ def test_movement_mode_options_are_three_known_values():
 
 def test_menu_panel_region_is_region():
     assert isinstance(cfg.menu_panel_region, Region)
+    assert isinstance(cfg.menu_movement_label_region, Region)
+    assert isinstance(cfg.menu_movement_value_region, Region)
+    assert cfg.menu_movement_row_y > 0
 
 
 def test_menu_numeric_fields_present_and_sane():
@@ -37,9 +40,12 @@ def test_menu_numeric_fields_present_and_sane():
     assert cfg.menu_value_column_x_range[0] < cfg.menu_value_column_x_range[1]
 
 
-def test_chat_input_region_and_phrases():
-    assert isinstance(cfg.chat_input_region, Region)
-    assert len(cfg.chat_input_phrases) >= 1
+def test_chat_icon_state_fields_present_and_sane():
+    # H047：舊輸入列 placeholder OCR 信號已退役，改用聊天圖示狀態判定
+    # （見 tests/test_chat_icon.py 的分類/邊界/動作規劃測試）。
+    assert isinstance(cfg.chat_icon_state_region, Region)
+    assert len(cfg.chat_icon_probe) == 4
+    assert cfg.chat_icon_closed_max_gray < cfg.chat_icon_open_min_gray
 
 
 def test_player_list_region_and_phrases():

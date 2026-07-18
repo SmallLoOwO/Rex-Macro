@@ -46,6 +46,28 @@ def plan_pitch_layers(enabled: bool, step_px: int, center_back_px: int) -> list:
     return [PitchLayer("up", -step_px), PitchLayer("down", step_px)]
 
 
+def mining_pitch_home_enabled(center_back_px: int) -> bool:
+    """挖礦標準角歸位是否啟用（純函式；spec 2026-07-17 兩套具名標準俯角）。
+
+    與 plan_pitch_layers 同慣例：center_back_px <= 0＝未校準＝停用——缺校準
+    不靜默改變行為（維持現狀角度，呼叫端記警告）。
+    """
+    return center_back_px > 0
+
+
+def format_startup_pitch_status(center_back_px: int, homed: bool, offset_px: int) -> str:
+    """啟動仰角一行字（2026-07-18 使用者要求：啟動時在 log＋Discord 顯示目前仰角）。
+
+    homed＝啟動歸位是否成功；成功時 offset_px＝距夾限回拉量（可重現的絕對角度）。
+    未校準＝角度不明（沿用啟動前角度，_pitch_home_mining 已記警告不靜默）。
+    """
+    if homed:
+        return f"夾限上 {offset_px}px（挖礦標準角）"
+    if mining_pitch_home_enabled(center_back_px):
+        return "歸位疑似被吃，角度可能不受控"
+    return "挖礦標準角未校準（沿用啟動前角度，角度不明）"
+
+
 def format_harvest_id(seq: int) -> str:
     """把採集流水號格式化成可搜尋編號 "007"（純數字、零填充三位；純函式）。
 
@@ -103,6 +125,19 @@ def decide_harvest_result(gone: bool, confirmed: bool) -> str:
     if gone:
         return "RESWEEP"
     return "RETRY"
+
+def d3_cooldown_remaining(now_s: float, last_fire_s: float | None,
+                          cooldown_s: float) -> float:
+    """Return seconds remaining before D3 may fire again.
+
+    ``last_fire_s`` is recorded when the shot is actually fired. Callers supply
+    monotonic timestamps and the configured cooldown duration; this decision does
+    no sleeping or I/O.
+    """
+    if last_fire_s is None:
+        return 0.0
+    return max(0.0, cooldown_s - (now_s - last_fire_s))
+
 
 def pick_sweep_candidate(candidates, screen_w: int):
     """sweep 多方位候選中選「x 最接近畫面中心」者（純函式，H019 對策）。

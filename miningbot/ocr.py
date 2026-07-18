@@ -49,6 +49,37 @@ def parse_capacity_pct(text: str) -> float | None:
         return None
     return v
 
+_DEPTH_SURFACE_RE = re.compile(r"depth\W*surface", re.IGNORECASE)
+_DEPTH_METERS_RE = re.compile(r"depth\W*([\d,]+)\s*m", re.IGNORECASE)
+
+
+def parse_depth_surface(text: str) -> bool | None:
+    """從頂部列文字判斷人是否在地表（H046 開場狀態錨）。
+
+    True＝讀到 "Depth: Surface"；False＝讀到 "Depth: NNNm"（礦內/墜落中）；
+    None＝完全沒有 depth 資訊（OCR 失敗/區域被蓋）。尾端 "$..." 金額雜訊
+    （實機裁圖固定拖尾）不影響前綴比對。
+    """
+    if not text:
+        return None
+    if _DEPTH_SURFACE_RE.search(text):
+        return True
+    if _DEPTH_METERS_RE.search(text):
+        return False
+    return None
+
+
+def read_depth_is_surface(image_bgr, tesseract_path=None):
+    """讀頂部 Depth 固定列（比照 read_capacity_pct）：回 True/False/None。"""
+    text = read_text_line(
+        image_bgr,
+        tesseract_path,
+        psm=7,
+        validator=lambda value: parse_depth_surface(value) is not None,
+    )
+    return parse_depth_surface(text)
+
+
 def count_found(text: str, phrases) -> int:
     """計 phrases 在 text 中出現的總次數（正規化後比對）。
 
@@ -719,17 +750,18 @@ def read_text(image_bgr: np.ndarray, tesseract_path: str | None = None,
     return pytesseract.image_to_string(processed, config=f"--psm {psm}")
 
 
-# ---------- RapidOCR 聊天引擎（2026-07-04 起首選；tesseract 三 pass 融合為後備） ----------
+# ---------- RapidOCR 引擎（聊天全文＋固定 ROI 單行快速路徑） ----------
 # 動機：Tesseract 是文件掃描引擎，對彩色遊戲背景上的抗鋸齒 UI 文字天生弱——H014（亮粉背景
 # 彩色行全滅）、H020（has found 讀成 hee foumel）兩次「真採到卻誤交人工」都源於此，專案為它
 # 堆了三前處理融合＋fuzzy 兜底＋final-check 多層補丁。RapidOCR（PaddleOCR 模型轉 ONNX，
 # 深度學習偵測+辨識）對這類文字拼字精準（benchmark：H020 精確匹配直接過、Saerylium 全對），
 # 從源頭消滅「關鍵字讀歪」假陰性；速度與三 pass 打平（滿版 ~3s、空圖 ~0.3s，實機 fixtures）。
-# 只用於聊天 verify（read_text_multi）；banner/事件列等小圖仍走 tesserocr（夠快夠準、不動）。
+# 聊天 verify 用完整偵測；固定 ROI 單行可略過 det/cls，失敗或驗證不通過時回退 tesseract。
 PREFER_RAPIDOCR = True           # 強制退回 tesseract 融合（A/B 或除錯）時設 False
 # Det.limit_type=max：偵測不把短邊放大到 736（460x280 聊天裁圖被放大 2.6x 是預設慢 3 倍的主因）
 _RAPIDOCR_PARAMS = {"Det.limit_type": "max", "Det.limit_side_len": 960.0}
 _rapid_lock = threading.Lock()
+_rapid_infer_lock = threading.Lock()
 _rapid_engine = None
 _rapidocr_unavailable = False    # import/init 失敗一次即全程退回 tesseract 融合
 
@@ -739,7 +771,7 @@ def _get_rapid_engine():
 
     首次呼叫載模型（實機 6~7s，常駐後免費；勿信 benchmark 機的 ~2.5s）——故 main 啟動時
     用背景執行緒預熱，別讓 init 落在第一次採集的基準 OCR 前。onnxruntime session
-    執行緒安全，單例即可（聊天 OCR 只在主迴圈 verify 路徑呼叫）。
+    模型單例常駐；RapidOCR 的呼叫參數會寫回引擎狀態，因此所有推論另以鎖序列化。
     """
     global _rapid_engine, _rapidocr_unavailable
     if not PREFER_RAPIDOCR or _rapidocr_unavailable:
@@ -754,17 +786,31 @@ def _get_rapid_engine():
                 t0 = time.perf_counter()
                 from rapidocr import RapidOCR
                 _rapid_engine = RapidOCR(params=dict(_RAPIDOCR_PARAMS))
-                log.info("聊天 OCR 引擎＝RapidOCR（init %.1fs，常駐）",
+                log.info("RapidOCR 引擎初始化完成（init %.1fs，常駐）",
                          time.perf_counter() - t0)
             except Exception as e:
                 _rapidocr_unavailable = True
-                log.warning("RapidOCR 初始化失敗→聊天 OCR 退回 tesseract 三前處理融合：%r", e)
+                log.warning("RapidOCR 初始化失敗→OCR 退回 tesseract：%r", e)
                 return None
     return _rapid_engine
 
 
 def rapidocr_available() -> bool:
     return _get_rapid_engine() is not None
+
+
+def _run_rapid(image_bgr: np.ndarray, *, use_det: bool):
+    """以完整、明確的模式呼叫共用引擎，避免 recognition-only 狀態污染下一次推論。"""
+    engine = _get_rapid_engine()
+    if engine is None:
+        raise RuntimeError("rapidocr 引擎不可用")
+    with _rapid_infer_lock:
+        return engine(
+            image_bgr,
+            use_det=use_det,
+            use_cls=False,
+            use_rec=True,
+        )
 
 
 _rapid_last_diag = None          # 最近一次 rapid 呼叫的逐行分數/耗時（pop 即清）
@@ -778,12 +824,59 @@ def _read_text_rapid(image_bgr: np.ndarray) -> str:
     """
     global _rapid_last_diag
     t0 = time.perf_counter()
-    out = _get_rapid_engine()(image_bgr, use_cls=False)   # use_cls=False：遊戲字不旋轉
+    out = _run_rapid(image_bgr, use_det=True)
     txts = list(out.txts) if out.txts else []
     scores = list(out.scores) if out.scores else [0.0] * len(txts)
     _rapid_last_diag = {"lines": list(zip(txts, scores)),
                         "elapse": time.perf_counter() - t0}
     return "\n".join(txts)
+
+
+def _read_text_rapid_line(image_bgr: np.ndarray) -> str:
+    """固定單行 ROI 的 recognition-only OCR；不做文字框偵測與方向分類。"""
+    out = _run_rapid(image_bgr, use_det=False)
+    txts = getattr(out, "txts", None) or []
+    if isinstance(txts, str):
+        txts = [txts]
+    return " ".join(str(text).strip() for text in txts if str(text).strip())
+
+
+def read_text_line(image_bgr: np.ndarray, tesseract_path: str | None = None,
+                   preprocess: str = "gray", psm: int = 7,
+                   validator=None, engine: str | None = None) -> str:
+    """讀固定單行 ROI；自動模式優先 RapidOCR recognition-only，必要時安全回退。
+
+    validator 接收辨識文字並回 bool。RapidOCR 空字串、推論例外或 validator 拒絕時，
+    自動模式改走既有 tesseract 路徑。engine="rapidocr" 用於 fixture/benchmark，
+    不會偷偷混入另一引擎；engine="tesseract" 則強制既有路徑。
+    """
+    if engine not in (None, "rapidocr", "tesseract"):
+        raise ValueError(f"未知 OCR 引擎：{engine}")
+    if engine == "tesseract":
+        return read_text(image_bgr, tesseract_path, preprocess=preprocess, psm=psm)
+    if engine == "rapidocr":
+        return _read_text_rapid_line(image_bgr)
+
+    if _get_rapid_engine() is not None:
+        try:
+            text = _read_text_rapid_line(image_bgr)
+            if text.strip() and (validator is None or validator(text)):
+                return text
+        except Exception as exc:
+            logging.getLogger("miningbot").debug(
+                "RapidOCR 單行快速路徑失敗，退回 tesseract：%r", exc)
+    return read_text(image_bgr, tesseract_path, preprocess=preprocess, psm=psm)
+
+
+def read_capacity_pct(image_bgr: np.ndarray, tesseract_path: str | None = None):
+    """讀 Capacity 固定列；RapidOCR 結果必須可解析，否則以 tesseract 複核。"""
+    text = read_text_line(
+        image_bgr,
+        tesseract_path,
+        psm=7,
+        validator=lambda value: parse_capacity_pct(value) is not None,
+    )
+    return parse_capacity_pct(text)
 
 
 def pop_rapid_diagnostics():
@@ -859,10 +952,9 @@ def read_text_boxes(image_bgr: np.ndarray, region_offset=(0, 0)) -> list:
     只有 rapidocr 路徑有框資訊；不可用回 []——呼叫端（reentry）據此走
     遮擋階梯/reroll，不做 tesseract 後備（無框＝無從點擊，硬湊必亂點）。
     """
-    eng = _get_rapid_engine()
-    if eng is None:
+    if _get_rapid_engine() is None:
         return []
-    out = eng(image_bgr, use_cls=False)
+    out = _run_rapid(image_bgr, use_det=True)
     recs = parse_rapid_boxes(out.boxes, out.txts, out.scores)
     ox, oy = region_offset
     for r in recs:

@@ -1,6 +1,7 @@
 import numpy as np
 from miningbot import remote_aim
-from miningbot.remote_aim import (AimCandidate, SweepShot, build_aim_context,
+from miningbot.remote_aim import (AimCandidate, SweepShot, TargetObservation,
+                                  build_aim_context, pick_recovery_observation,
                                   grid_cell_center, draw_overlay, parse_reply,
                                   plan_alignment)
 
@@ -34,6 +35,62 @@ class TestBuildAimContext:
         ctx = build_aim_context([], 3, "up", "073", now=0.0)
         assert ctx.candidates == [] and ctx.pose_net_rotations == 3
         assert ctx.pose_pitch_layer == "up"
+
+    def test_accepted_and_fired_observations_rank_before_near_misses(self):
+        shots = [_shot("mid", 1, [_rej(100, 200, 0.99)])]
+        observations = [
+            TargetObservation("up", 6, (600, 300), 0.10, "accepted",
+                              "sweep_confirmed", "accepted.png"),
+            TargetObservation("mid", 4, (400, 500), 0.05, "fired",
+                              "d3_fire", "fired.png"),
+        ]
+
+        ctx = build_aim_context(shots, 0, "mid", "079", now=1.0,
+                                observations=observations)
+
+        assert [c.source for c in ctx.candidates] == [
+            "sweep_confirmed", "d3_fire", "near_miss"]
+        assert [c.status for c in ctx.candidates] == [
+            "accepted", "fired", "rejected"]
+        assert ctx.candidates[2].score == 0.99
+
+    def test_observations_consume_cap_before_rejects(self):
+        shots = [_shot("mid", 0, [_rej(10, 20, 0.99)])]
+        observations = [
+            TargetObservation("mid", 2, (200, 200), 0.20, "accepted",
+                              "confirmed", "confirmed.png"),
+            TargetObservation("down", 7, (700, 700), 0.10, "fired",
+                              "fire", "fire.png"),
+        ]
+
+        ctx = build_aim_context(shots, 0, "mid", "079", now=1.0,
+                                max_candidates=2, observations=observations)
+
+        assert len(ctx.candidates) == 2
+        assert {c.status for c in ctx.candidates} == {"accepted", "fired"}
+
+    def test_observation_retains_absolute_direction_and_snapshot(self):
+        observation = TargetObservation(
+            "up", 7, (720, 360), 0.42, "fired", "d3_fire", "d3_fire.png")
+
+        ctx = build_aim_context([_shot("up", 1, [])], 5, "up", "079",
+                                now=1.0, observations=[observation])
+
+        assert ctx.candidates[0].dir_idx == 7
+        assert ctx.candidates[0].snapshot_path == "d3_fire.png"
+        assert any((s.layer, s.dir_idx, s.snapshot_path) ==
+                   ("up", 7, "d3_fire.png") for s in ctx.shots)
+
+    def test_existing_call_and_candidate_constructor_keep_defaults(self):
+        ctx = build_aim_context([_shot("mid", 3, [_rej(30, 40, 0.3)])],
+                                0, "mid", "legacy", 2.0, 1)
+        candidate = AimCandidate(1, "mid", 2, (640, 400), 0.3, "hard_rej")
+
+        assert len(ctx.candidates) == 1
+        assert ctx.candidates[0].snapshot_path == "snap_mid_3.png"
+        assert candidate.source == "near_miss"
+        assert candidate.status == "rejected"
+        assert candidate.snapshot_path == ""
 
 
 class TestGridCellCenter:
@@ -132,3 +189,14 @@ class TestPlanAlignment:
 
     def test_same_layer_no_pitch(self):
         assert plan_alignment(0, "up", 0, "up") == (0, None)
+
+
+def test_recovery_prefers_latest_fired_then_accepted_then_seen_once():
+    observations = [
+        TargetObservation("mid", 1, (100, 100), 0.9, "seen_once", "s1", "1.png"),
+        TargetObservation("mid", 2, (200, 200), 0.8, "fired", "f1", "2.png"),
+        TargetObservation("mid", 3, (300, 300), 0.7, "accepted", "a1", "3.png"),
+        TargetObservation("mid", 4, (400, 400), 0.1, "fired", "f2", "4.png"),
+    ]
+    assert pick_recovery_observation(observations) is observations[3]
+    assert pick_recovery_observation([]) is None

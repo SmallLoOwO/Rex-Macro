@@ -15,6 +15,26 @@ class AimCandidate:
     pos: tuple       # (cx, cy) 拍攝當時的螢幕座標（位置先驗，非實彈座標）
     score: float     # 排序鍵（edge 優先；無 edge 用 colored-1.0 墊底排 edge 後）
     reason: str      # find_tracker 被拒原因（診斷顯示）
+    source: str = 'near_miss'
+    status: str = 'rejected'
+    snapshot_path: str = ''
+
+
+@dataclass(frozen=True)
+class TargetObservation:
+    '''Episode-level evidence for a tracker that was accepted or fired at.
+
+    dir_idx is the absolute direction relative to the episode origin, rather
+    than the local index of a later resweep.
+    '''
+
+    layer: str
+    dir_idx: int
+    pos: tuple
+    score: float
+    status: str
+    source: str
+    snapshot_path: str
 
 
 @dataclass
@@ -44,21 +64,72 @@ def _rank_key(rej: dict) -> float:
 
 
 def build_aim_context(shots, pose_net_rotations: int, pose_pitch_layer: str,
-                      harvest_id: str, now: float, max_candidates: int = 9) -> AimContext:
+                      harvest_id: str, now: float, max_candidates: int = 9,
+                      observations=None) -> AimContext:
     """把各 (層,方位) 的近失候選攤平、依分數降冪編號 1..n（上限 max_candidates 防洗版）。"""
-    flat = []
-    for s in shots:
+    shot_list = list(shots)
+    observation_list = list(observations or ())
+
+    # Accepted/fired evidence is more actionable than a detector near miss, even
+    # when its numeric score is lower. Rank within each evidence class by score.
+    observed = sorted(observation_list, key=lambda o: o.score, reverse=True)
+    rejected = []
+    for s in shot_list:
         for r in s.rejects or []:
-            flat.append((_rank_key(r), s.layer, s.dir_idx, r))
-    flat.sort(key=lambda t: t[0], reverse=True)
-    cands = [AimCandidate(number=i + 1, layer=layer, dir_idx=d,
-                          pos=tuple(r["pos"]), score=key, reason=r["reason"])
-             for i, (key, layer, d, r) in enumerate(flat[:max_candidates])]
-    return AimContext(candidates=cands, shots=list(shots),
+            rejected.append((_rank_key(r), s.layer, s.dir_idx,
+                             s.snapshot_path, r))
+    rejected.sort(key=lambda t: t[0], reverse=True)
+
+    ranked = [AimCandidate(number=0, layer=o.layer, dir_idx=o.dir_idx,
+                           pos=tuple(o.pos), score=float(o.score),
+                           reason=o.source, source=o.source, status=o.status,
+                           snapshot_path=o.snapshot_path)
+              for o in observed]
+    ranked.extend(
+        AimCandidate(number=0, layer=layer, dir_idx=d,
+                     pos=tuple(r["pos"]), score=key, reason=r["reason"],
+                     source=r.get("source", "near_miss"),
+                     status=r.get("status", "rejected"),
+                     snapshot_path=snapshot_path)
+        for key, layer, d, snapshot_path, r in rejected
+    )
+    cands = [AimCandidate(number=i + 1, layer=c.layer, dir_idx=c.dir_idx,
+                          pos=c.pos, score=c.score, reason=c.reason,
+                          source=c.source, status=c.status,
+                          snapshot_path=c.snapshot_path)
+             for i, c in enumerate(ranked[:max_candidates])]
+
+    # The current renderer operates on AimContext.shots. Mirror observation
+    # snapshots there so accepted/fired evidence is immediately renderable.
+    shot_keys = {(s.layer, s.dir_idx, s.snapshot_path) for s in shot_list}
+    for o in observation_list:
+        key = (o.layer, o.dir_idx, o.snapshot_path)
+        if o.snapshot_path and key not in shot_keys:
+            shot_list.append(SweepShot(layer=o.layer, dir_idx=o.dir_idx,
+                                       snapshot_path=o.snapshot_path, rejects=[]))
+            shot_keys.add(key)
+
+    return AimContext(candidates=cands, shots=shot_list,
                       pose_net_rotations=pose_net_rotations,
                       pose_pitch_layer=pose_pitch_layer,
                       harvest_id=harvest_id, created_at=now)
 
+
+
+def pick_recovery_observation(observations):
+    """Pick the newest strongest evidence class for one bounded recovery.
+
+    A fired target outranks an accepted target, which outranks a one-frame sighting.
+    Within the same class the newest observation wins because it best reflects the
+    latest FOV and tracker position.
+    """
+    priority = {"seen_once": 1, "accepted": 2, "fired": 3}
+    eligible = [(index, observation) for index, observation in enumerate(observations)
+                if observation.status in priority]
+    if not eligible:
+        return None
+    return max(eligible,
+               key=lambda item: (priority[item[1].status], item[0]))[1]
 
 def grid_cell_center(cell: str, w: int = 1920, h: int = 1080,
                      cols: int = 6, rows: int = 4):

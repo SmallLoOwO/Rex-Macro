@@ -56,3 +56,24 @@ def test_capacity_101pct_a():
 def test_capacity_101pct_b():
     text = ocr.read_text(_load("capacity_101pct_b.png"), cfg.tesseract_path)
     assert ocr.parse_capacity_pct(text) == 101.0
+
+
+@pytest.mark.ocr
+@pytest.mark.fixture
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    (
+        ("capacity_14pct.png", 14.0),
+        ("capacity_100pct.png", 100.0),
+        ("capacity_101pct_a.png", 101.0),
+        ("capacity_101pct_b.png", 101.0),
+    ),
+)
+def test_capacity_recognition_only_fast_path(name, expected):
+    if not ocr.rapidocr_available():
+        pytest.skip("rapidocr 引擎不可用")
+    image = _load(name)
+    rapid_text = ocr.read_text_line(image, engine="rapidocr")
+
+    assert ocr.parse_capacity_pct(rapid_text) == expected
+    assert ocr.read_capacity_pct(image, cfg.tesseract_path) == expected

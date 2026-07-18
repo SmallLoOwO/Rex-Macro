@@ -1,87 +1,70 @@
-# R 鍵手動取樣使用說明
+# 手動取樣使用說明
 
-R 鍵開一個小視窗，讓你在遊戲裡「看到值得留檔的畫面」時按幾下就存成**編號截圖**，
-之後用編號餵給校準工具（`calibrate_surface`）或裁模板/補 OCR fixture。
+手動取樣把「值得當樣本的畫面」存成編號截圖與 sidecar，供回礦校準、tracker
+模板或 OCR regression 使用。實際輸出根目錄由 `Config.log_dir` 決定，不假設
+一定在 repository 的 `logs/`。
+
+> 2026-07-17 起 R 鍵取樣視窗（Tk 面板）退役，功能移到 Discord：
+> 截圖＝遙控器 📷 反應鈕；俯仰控制＝回礦流程的 `仰角` 指令。
 
 ## 基本操作
 
 | 操作 | 效果 |
-|------|------|
-| 按 **R**（bot 執行中，焦點在遊戲也有效） | 開啟取樣視窗；**正在挖礦會自動暫停**（避免 W+左鍵跟取樣拖曳互搶輸入） |
-| 再按 **R** 或點視窗 X | 關閉取樣視窗（**不會自動恢復挖礦**——視角多半已被拖歪） |
-| 取樣完 | 自己把視角調回去，按 **Q** 恢復挖礦 |
+|---|---|
+| 遙控器點 📷 | 立即抓當前畫面，存 `snapshots/manual/NNN.png`＋`NNN.json` sidecar，並回傳 Discord（訊息含編號） |
+| 回礦中回 `仰角 歸位` | 右鍵拖到俯仰夾限，再回拉 `reentry_pitch_back_px`（冪等，被吃自動重試一次） |
+| 回礦中回 `仰角 上 [px]`／`仰角 下 [px]` | 微調視角；省略像素時用 `sample_pitch_step_px`。微調不重送（誤重送＝角度記帳脫鉤），懷疑沒動就 `仰角 歸位` |
+| 回礦中點 📷（episode embed） | 重新八方位掃描（與遙控器 📷 不同：那是單張即時截圖） |
 
-視窗開在螢幕左側（HUD 上方），置頂。實際建窗由 HUD 執行緒處理，按 R 後最多 ~0.3s 出現。
+Sidecar 保存時間與俯仰偏移，讓校準值可重現而不是靠目測。
 
-### 視窗按鈕
+注意：`仰角` 指令目前只在 REENTRY（回礦流程）內消費；一般挖礦中要調視角
+請先 `回礦`（手動回礦）或暫停後人工調整。
 
-| 按鈕 | 做什麼 |
-|------|--------|
-| **俯仰歸位** | 按住右鍵把視角俯仰拖到夾限飽和、再回拉固定量（`reentry_pitch_back_px`）→ 得到**可重現**的已知仰角 |
-| **▲ 上 / ▼ 下** | 俯仰微調一步（`sample_pitch_step_px`，預設 40px）；label 即時顯示目前偏移量 |
-| **📸 截圖** | 全幀存 `logs/snapshots/manual/NNN.png`＋sidecar `NNN.json`（記俯仰偏移量與時間） |
+## 自動回礦校準
 
-sidecar 的意義：找到「合適的仰角」後，那個偏移量是個數字，可直接寫回 config
-（例如調 `reentry_pitch_back_px`），不用憑感覺重調。
+在把 `reentry_mode` 設成 `auto` 前，先收下列實機樣本。模板未完成時保持
+`off` 或 `remote`。
 
-點按鈕時焦點會先切回 Roblox 再送鍵/拖曳（約 1 秒），是正常延遲。
+1. **礦內亮度**：仍在礦坑時用遙控器 📷 截圖，記下編號。
+2. **地表／傳送面板**：手動回地表（或 `回礦`），`仰角 歸位` 並微調到看得見
+   傳送面板後 📷。隨機重生點、距離和角度應各留數張。
+3. **傳送 UI**：走近面板讓層級按鈕出現後 📷，用來核對
+   `reentry_target_layer` 與 `reentry_decoy_buttons` 的實際文字。
+4. **匯入與亮度校準**：
 
-## 回礦校準（reentry）取樣流程
-
-`auto_reenter` 開起來之前要先收三種樣本。**建議順序**：
-
-1. **礦內亮度樣本**——人還在礦坑裡時：按 R → 📸。
-   記下編號（例 `005`），供步驟 4 的 `--brightness` 當「礦內」組。
-2. **地表面板樣本（第一次：go to surface 後拍）**——遊戲選單按「回到地表」，
-   出生在地表後：按 R → **俯仰歸位** →（可用 ▲▼ 微調到能看清傳送面板的視角）→ 📸。
-   畫面裡要**看得到傳送面板**（不用很近）。這張是面板模板與「地表」亮度樣本的來源。
-   - 重生點是隨機的（reroll 就是再按一次回到地表換點）：**多拍幾張不同重生點/距離/角度**，
-     模板多張比對更穩（`assets/surface/` 內全部 `panel_*.png` 都會拿來掃）。
-3. **傳送面板 UI 樣本（第二次：走到傳送板上拍）**——走近傳送面板讓傳送選單打開
-   （顯示 Mantle Layer 等各層按鈕）→ 📸。
-   這張用來人工核對按鈕文字：`reentry_target_layer`（要去的層）與
-   `reentry_decoy_buttons`（絕不能誤點的按鈕，如 "Back to pre-reset location"）
-   拼字要跟畫面一模一樣，OCR 才能嚴格分勝負（寧漏勿誤：分不出就 reroll 不點）。
-4. **把截圖變成資產**：
+   ```powershell
+   uv run python -m miningbot.calibrate_surface --import NNN
+   uv run python -m miningbot.calibrate_surface --brightness NNN
    ```
-   python -m miningbot.calibrate_surface --import NNN      # 開步驟 2 的圖，框出面板 → assets/surface/panel_NNN.png
-   python -m miningbot.calibrate_surface --brightness NNN  # 步驟 1（礦內）與步驟 2（地表）各跑一次
-   ```
-   兩組亮度取中間值填 `config.reentry_mine_max_brightness`（礦內應遠低於地表）。
+
+   第一個命令裁出 `assets/surface/panel_NNN.png`；第二個分別量礦內與地表
+   亮度。把兩組實測值的安全分界寫回 `Config`，不可憑感覺猜門檻。
 
 ## 其他用途
 
-- **裁追蹤框模板**：漏抓的真框畫面（新階礦）按 R 留檔，之後裁進 `assets/markers/`。
-- **補聊天 OCR fixture**：新背景（糖果礦壁等）下的聊天框畫面留檔，
-  裁進 `tests/fixtures/chat/` 跑回歸。
+- Tracker：保留漏抓真框的完整畫面；runtime 裁圖放在本機
+  `assets/markers/`，要成為 regression 的場景則放進追蹤的 `tests/fixtures/`。
+- OCR：保留新背景下的聊天框，裁成具名 fixture 並記錄對應 H 事故。
+- Reset/menu：保留 banner 或選單 OCR 近失畫面，新增 TP 與對應負樣本。
 
-## 踩坑備忘（2026-07-10 修復，兩個獨立 bug 疊加）
+## Tk 限制（HUD 仍適用）
 
-取樣視窗曾經完全不顯示（按 R 沒任何反應、log 卻顯示開啟/關閉交替）：
+- 不要建立第二個 `tk.Tk()`；Tk 物件只能由 HUD 主執行緒建立/銷毀。
+- 這台 Tcl/Tk 8.6 的 widget 文字不能包含 astral emoji。`◉`、`▲`、`▼`、
+  `⚠` 可用；自由文字仍要經過 `_bmp_safe`。
+- 熱鍵／輪詢執行緒只發布意圖，Tk 與遊戲輸入由各自擁有的主迴圈處理
+  （唯讀截圖除外：capture 每執行緒自持 mss 實例）。
 
-1. **第二個 Tk root 靜默失敗**：舊版 `SamplerWindow` 自己開執行緒跑第二個 `tk.Tk()`，
-   但主執行緒已有 HUD 的 Tk mainloop 時，第二個 root 的 OS 視窗**永遠不會建立**
-   （執行緒活著、after 回呼有跑、EnumWindows 卻列不到視窗）。
-   修法：改成 HUD 執行緒上的 `Toplevel`（`sampler.SamplerPanel`），
-   熱鍵只翻 `_sampler_want` 旗標、HUD `_poll` 每 300ms `sync_sampler_ui` 同步建/銷視窗。
-   `hud_enabled=False`（無 HUD）時仍走舊執行緒版視窗（該情境沒有第二 root 問題）。
-2. **astral-plane emoji 卡死 Tk 事件迴圈**：按鈕文字裡的 📸（U+1F4F8，超出 BMP）
-   會讓這台 Tcl/Tk 8.6 的**整個事件迴圈無聲卡死**（無例外、無崩潰；二分實驗定位）。
-   修法：按鈕改 ◉（BMP 安全）；`last_action` 等會流進 HUD label 的自由文字，
-   HUD 端統一過 `status_hud._bmp_safe` 剝掉 >U+FFFF 字元當防線。
-    **教訓：任何要進 Tk widget 的字串都別放 emoji**（📸🔔🤖🎮 全是 astral；
-    ● ⚠ ▲ ▼ ◉ 是 BMP 安全的）。log/Discord 文字不受限。
+## Zoom 歸位校準
 
-## 回礦 zoom 歸位校準（zoom_reset_pullback_steps）
+`zoom_reset_pullback_steps=0` 時遠／近指令停用。量測方式：
 
-遠端回礦的 `遠`/`近` 指令在 `zoom_reset_pullback_steps=0` 時整組停用——先照下面量出 K：
+1. 把鏡頭調到平常挖礦距離並截圖留參考。
+2. 重複按 I 到第一人稱夾限。
+3. 一步一步按 O，數到畫面回到參考距離；步數就是 K。
+4. 把 K 寫入 `zoom_reset_pullback_steps`。
+5. 實機跑一次遠距調整再跳過，確認歸位畫面與參考圖一致。
 
-1. 進遊戲，把鏡頭手動調到**平常挖礦的距離**（記住這個畫面感覺；可先按 R 開取樣視窗截一張留參考）。
-2. 狂按 I 直到進第一人稱（夾限飽和，多按無妨）。
-3. 一步一步按 O，數步數，直到畫面回到步驟 1 的距離——這個步數＝K。
-4. 填進 `config.py` 的 `zoom_reset_pullback_steps`。之後 bot 歸位＝「按 I 飽和 → 按 O K 步」，
-   與俯仰歸位同手法（夾限＝絕對基準，中途被吃/記帳錯都不影響落點）。
-5. 驗證：實機讓 bot 跑一次 `遠 5` → `跳過`，確認歸位後畫面與步驟 1 參考圖一致。
-
-`zoom_eaten_*` 門檻初值抄俯仰（mean 8.0 / frac 0.15）；若實機出現「明明有 zoom 卻判被吃而重送」
-或反之，比照俯仰事故兩側夾實測值再調（docs/incidents.md 俯仰門檻分家一節）。
+`zoom_eaten_*` 門檻只能依兩側實測值調整。門檻來由與 pitch/zoom 事故證據
+留在 `docs/incidents.md`。

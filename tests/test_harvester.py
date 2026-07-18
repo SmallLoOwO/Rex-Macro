@@ -1,6 +1,7 @@
 from miningbot import harvester
 from miningbot.harvester import (next_harvest_step, HarvestState, restore_actions,
                                  decide_harvest_result, decide_verify_poll,
+                                 d3_cooldown_remaining,
                                  pick_sweep_candidate, decide_sweep_failure,
                                  decide_post_success,
                                  format_rotation_hint,
@@ -30,6 +31,27 @@ def test_centered_marker_fires_d3():
     st = HarvestState(rotations=0, elapsed_s=1.0)
     step = next_harvest_step(marker=(965, 545), state=st, cfg=DEFAULT)
     assert step.action == "FIRE_D3"
+
+def test_d3_cooldown_no_previous_fire_is_ready():
+    assert d3_cooldown_remaining(now_s=100.0, last_fire_s=None,
+                                 cooldown_s=10.0) == 0.0
+
+
+def test_d3_cooldown_starts_when_shot_is_fired():
+    assert d3_cooldown_remaining(now_s=100.0, last_fire_s=100.0,
+                                 cooldown_s=10.0) == 10.0
+
+
+def test_d3_cooldown_reports_remaining_time():
+    assert d3_cooldown_remaining(now_s=104.25, last_fire_s=100.0,
+                                 cooldown_s=10.0) == 5.75
+
+
+def test_d3_cooldown_exact_boundary_and_later_are_ready():
+    assert d3_cooldown_remaining(now_s=110.0, last_fire_s=100.0,
+                                 cooldown_s=10.0) == 0.0
+    assert d3_cooldown_remaining(now_s=112.0, last_fire_s=100.0,
+                                 cooldown_s=10.0) == 0.0
 
 def test_vertical_extreme_human():
     st = HarvestState(rotations=0, elapsed_s=1.0)
@@ -434,3 +456,28 @@ def test_sweep_failure_default_behavior_unchanged_without_extra_mode():
     assert decide_sweep_failure(had_candidates=True, resweeps_done=1) == "HUMAN"
     assert decide_sweep_failure(had_candidates=False, resweeps_done=0,
                                 pitch_layers_left=2) == "NEXT_LAYER"
+
+def test_mining_pitch_home_enabled_requires_calibration():
+    # <=0＝未校準＝停用（與 plan_pitch_layers 同慣例）；>0＝已校準
+    assert harvester.mining_pitch_home_enabled(0) is False
+    assert harvester.mining_pitch_home_enabled(-40) is False
+    assert harvester.mining_pitch_home_enabled(300) is True
+
+
+# ===== 啟動仰角顯示（2026-07-18 使用者要求：啟動時 log＋Discord 顯示目前仰角）=====
+def test_format_startup_pitch_status_homed():
+    from miningbot.harvester import format_startup_pitch_status
+    s = format_startup_pitch_status(300, homed=True, offset_px=300)
+    assert "夾限上 300px" in s and "標準角" in s
+
+
+def test_format_startup_pitch_status_eaten():
+    from miningbot.harvester import format_startup_pitch_status
+    s = format_startup_pitch_status(300, homed=False, offset_px=0)
+    assert "被吃" in s or "不受控" in s
+
+
+def test_format_startup_pitch_status_uncalibrated():
+    from miningbot.harvester import format_startup_pitch_status
+    s = format_startup_pitch_status(0, homed=False, offset_px=0)
+    assert "未校準" in s and "角度不明" in s

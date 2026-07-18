@@ -5,11 +5,15 @@ from miningbot.reentry_remote import (RemoteReply, parse_reply, coarse_cell_regi
 
 class TestParseReply:
     def test_coarse(self):
+        # 訊息面 1-8（2026-07-18 使用者要求 1 起算）→ 內部 0-based
         r = parse_reply("3 C2")
-        assert (r.kind, r.dir_idx, r.cell) == ("coarse", 3, "C2")
+        assert (r.kind, r.dir_idx, r.cell) == ("coarse", 2, "C2")
+        assert parse_reply("1 A1").dir_idx == 0
+        assert parse_reply("8 C2").dir_idx == 7
 
     def test_coarse_invalid(self):
-        assert parse_reply("8 C2") is None       # 方位只有 0-7
+        assert parse_reply("0 C2") is None       # 方位 1-8，0 不合法
+        assert parse_reply("9 C2") is None
         assert parse_reply("3 G2") is None       # 欄超界
         assert parse_reply("3 C5") is None       # 粗網格列只有 1-4
 
@@ -23,11 +27,19 @@ class TestParseReply:
         assert parse_reply("B7") is None          # 細網格列只有 1-6
         assert parse_reply("G3") is None
 
-    def test_walk(self):
-        r = parse_reply("走 C2")
-        assert (r.kind, r.cell) == ("walk", "C2")
-        assert parse_reply("walk d4").cell == "D4"
-        assert parse_reply("走 C5") is None       # walk 用粗網格（列 1-4）
+    def test_walk_retired(self):
+        # `走` 走位指令 2026-07-18 退役（遠端本就人工，不需要走近）
+        assert parse_reply("走 C2") is None
+        assert parse_reply("walk d4") is None
+
+    def test_magnify(self):
+        # `放大 <細格>`（2026-07-18）：等細格時再裁一層
+        r = parse_reply("放大 B3")
+        assert (r.kind, r.cell) == ("magnify", "B3")
+        assert parse_reply("magnify f6").cell == "F6"
+        assert parse_reply("放大") is None        # 缺細格
+        assert parse_reply("放大 G3") is None     # 細格超界
+        assert parse_reply("放大 B7") is None
 
     def test_keywords(self):
         assert parse_reply("掃").kind == "sweep"
@@ -71,6 +83,29 @@ class TestGeometry:
 
     def test_fine_cell_invalid(self):
         assert fine_cell_to_screen((0, 0, 320, 270), "B7") is None
+
+    def test_fine_cell_subregion(self):
+        from miningbot.reentry_remote import fine_cell_subregion
+        region = (640, 540, 320, 270)             # 粗格 C3；細 6×6 子格 53×45
+        assert fine_cell_subregion(region, "A1") == (640, 540, 53, 45)
+        assert fine_cell_subregion(region, "F6") == (640 + 5 * 53, 540 + 5 * 45, 53, 45)
+        # 連鎖：子區域再裁一層
+        sub = fine_cell_subregion(region, "A1")
+        assert fine_cell_subregion(sub, "B2") == (640 + 8, 540 + 7, 8, 7)
+
+    def test_fine_cell_subregion_invalid(self):
+        from miningbot.reentry_remote import fine_cell_subregion
+        assert fine_cell_subregion((0, 0, 320, 270), "G1") is None
+        assert fine_cell_subregion((0, 0, 320, 270), "B7") is None
+        assert fine_cell_subregion((), "B3") is None      # 尚未放大（無 zoom_region）
+
+    def test_magnify_scale(self):
+        from miningbot.reentry_remote import magnify_scale
+        # 首層放大輸出 320*3=960 寬；53px 子區域 → round(960/53)=18
+        assert magnify_scale(53, 960, 3) == 18
+        assert magnify_scale(8, 960, 3) == 24             # cap 防爆圖
+        assert magnify_scale(500, 960, 3) == 3            # 不小於 base_scale
+        assert magnify_scale(0, 960, 3) == 3              # 異常回 base
 
 
 class TestRender:
@@ -230,6 +265,14 @@ class TestReentryEmbed:
         assert "照片訊息在上方" in e["footer"]["text"]
         assert "原地更新" in e["footer"]["text"]
 
+    def test_pitch_offset_line(self):
+        # 2026-07-18 使用者要求：目前角度顯示在回礦卡（`仰角` 功能所在處）
+        e = build_reentry_embed(self._ctx(), "L", 100.0, False, pitch_offset_px=400)
+        assert "夾限上 400px" in e["description"]
+        assert "仰角" in e["description"]
+        e2 = build_reentry_embed(self._ctx(), "L", 100.0, False)   # 未傳＝不顯示該行
+        assert "夾限上" not in e2["description"]
+
 
 class TestReactionToReply:
     def test_known_emojis(self):
@@ -283,4 +326,175 @@ def test_embed_footer_marks_manual_trigger():
     ctx.trigger = "reset"
     embed = build_reentry_embed(ctx, "Mantle Layer", 60.0, False)
     assert "手動觸發" not in embed["footer"]["text"]
+
+
+# ===== 仰角指令（2026-07-17：R 取樣視窗退役，俯仰控制移進 Discord 回礦流程）=====
+def test_parse_pitch_reset():
+    assert parse_reply("仰角 歸位").kind == "pitch_reset"
+    assert parse_reply("pitch reset").kind == "pitch_reset"
+
+
+def test_parse_pitch_nudge_direction_and_px():
+    r = parse_reply("仰角 上")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "up", 0)    # steps=0＝用預設步長
+    r = parse_reply("仰角 下 120")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "down", 120)
+    r = parse_reply("pitch up 40")
+    assert (r.kind, r.cell, r.steps) == ("pitch", "up", 40)
+
+
+def test_parse_pitch_rejects_garbage():
+    assert parse_reply("仰角") is None            # 缺方向
+    assert parse_reply("仰角 斜") is None
+    assert parse_reply("仰角 上 -5") is None      # 像素只收正整數（方向由 上/下 表達）
+    assert parse_reply("仰角 上 0") is None
+
+
+# ===== H045/H046：開場雙閘（凍結探針＋容量歸零）＝傳送驗證過後、拍照前的最後守門 =====
+from miningbot.reentry_remote import plan_opening_gate, probe_frozen
+
+# 凍結探針門檻（config 預設；兩側夾見 probe_frozen docstring）
+_FROZEN_MEAN_MAX = 0.02
+_FROZEN_FRAC_MAX = 0.0002
+
+
+def test_probe_frozen_on_bitwise_identical_frames():
+    # 凍結＝逐位元相同（H044 量測＋2026-07-17 17:23:01 ep1 實錄）
+    assert probe_frozen(0.0, 0.0, _FROZEN_MEAN_MAX, _FROZEN_FRAC_MAX) is True
+
+
+def test_probe_frozen_rejects_alive_static_scene():
+    # 活著但靜止（H044 07-12 夜間地表無輸入量測）：mean 0.09/frac 0.0004
+    assert probe_frozen(0.09, 0.0004, _FROZEN_MEAN_MAX, _FROZEN_FRAC_MAX) is False
+
+
+def test_probe_frozen_rejects_dark_surface_drag():
+    # H046 根因幀：夜間地表拖曳後 mean 0.93~5.13 被 pitch_eaten 門檻（8.0）誤鎖
+    # 300s——凍結探針必須放行（2026-07-17 17:27:47 最小值 0.9267/0.0185）
+    assert probe_frozen(0.9266653645833334, 0.0184921875,
+                        _FROZEN_MEAN_MAX, _FROZEN_FRAC_MAX) is False
+    assert probe_frozen(1.63851953125, 0.0273984375,
+                        _FROZEN_MEAN_MAX, _FROZEN_FRAC_MAX) is False
+
+
+def test_opening_gate_frozen_defers():
+    # 凍結中不拍照不發圖，回 H044 探測迴圈（H045 實錄 2026-07-14 18:26:40）
+    assert plan_opening_gate(True, True, "reset", 0.0, 0.0) == "frozen"
+
+
+def test_opening_gate_defers_when_not_on_surface():
+    # H046(b)：狀態錨——Depth 讀到 NNNm＝礦內/虛空墜落中，繼續探測點擊
+    assert plan_opening_gate(False, False, "reset", 0.0, 0.0) == "not_surface"
+    assert plan_opening_gate(False, None, "reset", 0.0, 0.0) == "depth_unread"
+
+
+def test_opening_gate_defers_on_stale_capacity():
+    # 凍結舊幀 Capacity 78%（2026-07-14 18:26:41 reentry_ep3_dir0 實機幀）
+    assert plan_opening_gate(False, True, "reset", 78.0, 0.0) == "capacity"
+
+
+def test_opening_gate_defers_when_capacity_unreadable():
+    # OCR 讀不到＝資訊不足，保守等下一探（H044 預算 300s 收口，有界）
+    assert plan_opening_gate(False, True, "reset", None, 0.0) == "capacity_unread"
+
+
+def test_opening_gate_proceeds_on_surface_zero_capacity():
+    # H046(b) 修正核心：人在地表＋容量 0＝開場成立，「點擊有沒有造成幀差」不再是條件
+    # （2026-07-17 17:24:55 實機幀：Depth: Surface / Capacity: 0%）
+    assert plan_opening_gate(False, True, "reset", 0.0, 0.0) == "proceed"
+
+
+def test_opening_gate_frozen_wins_over_everything():
+    # 凍結時其他讀值全來自凍結舊幀，本就不可信
+    assert plan_opening_gate(True, False, "reset", 78.0, 0.0) == "frozen"
+
+
+def test_opening_gate_manual_trigger_skips_capacity():
+    # 手動回礦（挖礦中觸發）容量本來就非 0：容量閘不適用；地表錨仍要過
+    assert plan_opening_gate(False, True, "manual", 78.0, 0.0) == "proceed"
+    assert plan_opening_gate(False, True, "manual", None, 0.0) == "proceed"
+    assert plan_opening_gate(False, False, "manual", None, 0.0) == "not_surface"
+    assert plan_opening_gate(True, True, "manual", None, 0.0) == "frozen"
+
+
+# ===== H046 depth 錨解析（實機拖尾雜訊全來自裁圖右緣的金額 "$..."）=====
+from miningbot.ocr import parse_depth_surface
+
+
+def test_parse_depth_surface_true_on_surface():
+    assert parse_depth_surface("Depth: Surface $i1C\n") is True     # 2026-07-17 實機讀值
+    assert parse_depth_surface("depth surface") is True
+
+
+def test_parse_depth_surface_false_in_mine():
+    assert parse_depth_surface("Depth: 488m = $10\n") is False      # 2026-07-14 實機讀值
+    assert parse_depth_surface("Depth: 25790m_ $1\n") is False
+    assert parse_depth_surface("Depth: 33,290,005m") is False       # H043 虛空墜落深度
+
+
+def test_parse_depth_surface_none_without_depth():
+    assert parse_depth_surface("") is None
+    assert parse_depth_surface("Capacity: 78%") is None
+    assert parse_depth_surface("$108,770.35") is None
+
+
+# ===== H046(c) 預防性修正：下礦點擊驗證改狀態錨（Depth Surface→NNNm）=====
+# 開場閘已改狀態制（plan_opening_gate），但 _rr_click 的成功驗證仍是轉移式幀差
+# ——同一型結構缺陷（重複點已成功的傳送板畫面可能毫無變化）。兩側夾證據沿用
+# h046_depth_* fixtures（真實引擎 Surface/488m/25790m 3/3，tests/test_depth_fixtures.py）。
+from miningbot.reentry_remote import plan_click_verdict
+
+
+def test_click_verdict_depth_flip_is_success():
+    # Depth 翻成 NNNm＝真下礦；幀差有沒有動、窗到沒到期都不是條件
+    assert plan_click_verdict(False, False, False) == "descended"
+    assert plan_click_verdict(False, True, False) == "descended"
+    assert plan_click_verdict(False, False, True) == "descended"
+
+
+def test_click_verdict_waits_within_window():
+    # 窗內 Surface（傳送尚未發生）或讀不到（載入中）都繼續輪詢
+    assert plan_click_verdict(True, False, False) == "wait"
+    assert plan_click_verdict(None, False, False) == "wait"
+    assert plan_click_verdict(None, True, False) == "wait"
+
+
+def test_click_verdict_still_surface_after_timeout():
+    # H046(b) 同構：畫面大動（地表→地表換重生點 diff ≥26.8）但 Depth 仍 Surface
+    # ＝沒下礦——舊轉移式驗證在這裡假成功，狀態錨必須判失敗
+    assert plan_click_verdict(True, True, True) == "still_surface"
+    assert plan_click_verdict(True, False, True) == "still_surface"
+
+
+def test_click_verdict_depth_unread_falls_back_to_frame_diff():
+    # 降級路徑（CLAUDE.md fail-safe 邊界）：Depth OCR 讀不到時退回舊幀差訊號
+    # ——有動＝交人工確認（寧問勿假成功）、沒動＝點擊無效留 awaiting_fine
+    assert plan_click_verdict(None, True, True) == "moved_unconfirmed"
+    assert plan_click_verdict(None, False, True) == "no_change"
+
+
+# ===== 開場探測 give_up 通知附讀值（遠端一眼判虛空/凍結/按鈕失效）=====
+from miningbot.reentry_remote import format_gate_readings
+
+
+def test_format_gate_readings_all_present():
+    s = format_gate_readings(True, 0.0, 0.93, 0.0185)
+    assert "Surface" in s
+    assert "0%" in s
+    assert "0.93" in s
+    assert "0.0185" in s
+
+
+def test_format_gate_readings_in_mine():
+    # Depth=NNNm（虛空墜落中）＋容量凍結舊幀 78%
+    s = format_gate_readings(False, 78.0, 0.0, 0.0)
+    assert "NNNm" in s
+    assert "78%" in s
+    assert "0.00" in s
+
+
+def test_format_gate_readings_unreadable():
+    # 全讀不到（H046 ep1 capacity=None 十一連發型）：不可拋例外、要標「讀不到」
+    s = format_gate_readings(None, None, 0.0, 0.0)
+    assert s.count("讀不到") == 2
 

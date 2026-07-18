@@ -324,7 +324,57 @@ fixture 位置慣例：
 - **一句話根因**：開場鏈在凍結畫面上全數空轉，因為 (a) 觸發條件只驗 banner 字樣、凍結幀恰無該字樣；且 (b) 傳送驗證量**全幀**、被螢幕中央覆蓋視窗（Claude 視窗）重繪灌爆門檻 12（全幀 11.3~13.2 全來自覆蓋視窗區 35.3＋頂部橫幅 7.5）誤判「已傳送」。
 - **關鍵量測**（`reentry_game_region` x1100-1790/y200-850 裁圖）：凍結對 5s/12s＝**0.00 整**（逐位元相同）；活著但靜止（07-12 夜間地表）0.35s/4s/10s＝mean ≤0.09/frac ≤0.0004；真傳送（礦內→地表）＝mean 57.73/frac 0.9966。
 - **重要否決**：「被動活性閘（遊戲區連續 N 秒無變化＝凍結）」被量測否決——活著靜止畫面與凍結像素上不可分（0.0004 vs 0.0000），硬上會在靜止地表假凍結卡到超時。
-- **對策**：(1) **傳送驗證區域化＋雙訊號**——`_click_surface_verified` 改量 `reentry_game_region`，`mean ≥ 12` OR `frac ≥ 0.05`（兩側餘裕 4.8x/20x 起）；(2) **探測式開場**——點擊當探針：判「未傳送」不通知不拍圖，每 `reentry_open_retry_wait_s=20s` 再點一次，解凍後下一擊自然傳送成功流程續走；`reentry_open_budget_s=300s` 用盡才通知一次附截圖（全黑＝虛空、有畫面＝凍結）；H043 虛空偶發成功也被同一迴圈吸收；(3) 同輪新增**手動回礦**：Discord `回礦`/`reenter` 指令＋STUCK 警告 🏠 反應鈕（`states.decide_transition` 新旗標 `manual_reentry`；MINING/NEEDS_HUMAN/RESET_WAIT 可觸發、RESET_WAIT 下＝繞過 reset_complete 的人工強制；用途不限卡死，ledger 記 `trigger` 來源）。
+- **對策**：(1) **傳送驗證區域化＋雙訊號**——`_click_surface_verified` 改量 `reentry_game_region`，`mean ≥ 12` OR `frac ≥ 0.05`（兩側餘裕 4.8x/20x 起）；(2) **探測式開場**——點擊當探針：判「未傳送」不通知不拍圖，每 `reentry_open_retry_wait_s=20s` 再點一次，解凍後下一擊自然傳送成功流程續走；`reentry_open_budget_s=300s` 用盡才通知一次附截圖（全黑＝虛空、有畫面＝凍結）；H043 虛空偶發成功也被同一迴圈吸收；(3) 同輪新增**手動回礦**：Discord `回礦`/`reenter` 指令＋STUCK 警告 🏠 反應鈕（`states.decide_transition` 新旗標 `manual_reentry`；MINING/NEEDS_HUMAN/RESET_WAIT 可觸發、RESET_WAIT 下＝繞過 reset_complete 的人工強制；用途不限卡死，ledger 記 `trigger` 來源）；(4) **互動先 ACK、結果後送**（2026-07-16）：本事故 📷 重掃在 18:28:35 已偵測、18:28:55 才送結果，故反應／文字排入 pending 後立即回「已收到」，reaction 輪詢改單張訊息 count 摘要並把間隔 3s→1s；八方位結果仍於安全的主迴圈完成後送。
 - **fixture**：`tests/fixtures/reentry/h044_{frozen,alive_static,teleport}_{a,b}.png`＋`tests/test_reentry_fixtures.py` 兩側夾回歸。
 - **設計**：`docs/superpowers/specs/2026-07-14-manual-reentry-and-freeze-gate-design.md`。
+- **commit**：（本輪工作樹）
+
+## H045（2026-07-14 ep3 追加根因，2026-07-17 裁決）：提前撤離丟位置記憶＋開場閘漏「傳送後才凍結」
+- **症狀（使用者回報）**：(1) 重置回礦「不知為何提前點 Go to surface」——遊戲只在**重置當下人在礦坑內**才記錄玩家位置，提前撤到地表＝臨時挖到的稀有礦回不去原位；(2) 回礦 Discord 照片「速度過快、大多重複」——照片全是凍結舊幀，容量還沒歸 0、也沒收到重置鈴聲，操作全被吃。
+- **時間線（07-14 18:25 ep3，與 H044 同輪）**：18:25:43 banner「reset in 28 seconds」→ 18:25:47 **banner+4s 即撤離**（H043 對策，離真重置還有 ~24s）→ 18:26:15 REENTRY → 18:26:19 開場點擊**真的傳送成功**（點在凍結開始前、幀差真過門檻）→ 18:26:40 俯仰歸位 mean=0.0/frac=0.0（凍結已開始）→ 程式只說「圖照發，角度可能偏」**照樣拍**：18:26:41~18:27:10 八張方位圖全同一張凍結舊幀（Capacity 78%）→ 18:28:42 旋轉才恢復（凍結 ~2 分鐘，H044 型態）。
+- **一句話根因**：(1) H043「進場即撤離」無條件執行，位置記憶被無條件犧牲；(2) H044 探測閘只設在**開場點擊**上——點擊落在凍結開始前時驗證真過，其後的俯仰 0.0 訊號已量到凍結卻沒拿來中止拍照鏈。
+- **附帶發現（鈴聲樣本存不到的結構性原因）**：`reset_chime_arm_delay_s=30` > banner 倒數 26~28s，且離開 RESET_WAIT 即停錄——實錄 18:26:14 錄音啟動、18:26:15 就轉 REENTRY，**錄音窗僅 1s**，鈴聲（重置當下）永遠在窗外。
+- **對策（使用者 2026-07-17 裁決：留坑內記位置，回位仍走 Discord 選傳送板）**：(1) 撤離改 `reentry_evac_on_banner` 總開關、**預設關**——重置當下人在坑內讓遊戲記位置，墜虛空/重生凍結交 H044 探測預算（300s）吸收；實機若虛空卡死率不可接受可開回 True 復原 H043 行為；(2) **開場雙閘**（`reentry_remote.plan_opening_gate` 純函式）：傳送驗證過後、拍照前再閘「俯仰歸位幀差」（凍結探針：凍結 0.00 vs 傳送 57.73）＋「容量歸零」（`reentry_open_capacity_max_pct=0`；兩側夾：凍結舊幀 **78%** vs 真重置後 **0%**，ep3 實機幀）——任一未過不拍照不發圖、回探測迴圈；容量閘僅 reset 觸發（手動回礦挖礦中容量本來就非 0）、OCR 讀不到＝保守等下一探（預算收口有界）；(3) **錄音窗改容量錨**（使用者同日追加裁決：時間錨是猜的，banner 到真重置完成耗時不定）——`audio.chime_capacity_armed`＋`capture_window_active` 純函式：RESET_WAIT/REENTRY 期間容量 OCR 讀到 ≤ `reset_chime_capacity_arm_pct=10` 才開窗（與開場容量閘同訊號源；兩側夾同 78/0），窗自觀測時刻起 `reset_chime_capture_max_s=120s` 收口、跨 RESET_WAIT/REENTRY；讀值來源＝banner worker（RESET_WAIT 期間解除飽和鎖定照讀容量）＋REENTRY 開場閘的容量 OCR。
+- **回歸**：`tests/test_reentry_remote.py` H045 區塊（雙閘兩側夾 78/0、手動觸發跳過容量閘）＋`tests/test_audio.py` 錄音窗四例。
+- **下輪實機驗證預期**：miningbot.log 不再出現「重置撤離：已傳送至地表」；凍結輪看到「開場閘未過（frozen/capacity…）——20s 後再探」且該期間 **零** `reentry_epN_dir*` 快照；解凍後一次過閘才出現 8 張方位圖；重置完成後出現「🔔 容量已歸零（…）→ 鈴聲錄音窗開啟 120s」＋「🔔 重置鈴聲擷取啟動（容量錨…）」且窗內 `logs/snapshots/audio/` 有 reset-chime 片段落盤。
+- **部分實機驗證（2026-07-17 ep1/ep2，H046 同輪 16:43 程序）**：對策 (1) 撤離預設關已生效——兩輪重置（17:22、18:51）皆無「重置撤離」行；其餘預期（過閘拍照、鈴聲容量錨開窗）被 H046 誤鎖擋住沒走到，隨 H046 版下輪一併驗證。
+- **commit**：（本輪工作樹）
+
+## H046（2026-07-17 ep1/ep2 實測，同日修正）：H045 開場閘首戰翻車——活人被鎖 300s＋真成功地表被判未成功
+- **症狀（使用者回報＋log）**：ep1（17:22）與 ep2（18:51）重置回礦全程「開場閘未過（frozen：capacity=None）」20s 一發直到預算 300s 用盡；`重骰` 有被消費但走同一條誤鎖的閘→不拍照（「重骰失敗、沒有重新掃描」）；只能跳過交人工。實機幀（17:24:55 pitch_eaten_before）打臉：頂部明寫 **Capacity: 0% / Depth: Surface**——人活著站在地表、重置早已完成。
+- **一句話根因（三個，環環相扣）**：(a) **凍結判定誤用 pitch_eaten 門檻**（8.0/0.15 是「拖曳生效」兩側夾：被吃 ≤3.29 vs 生效 ≥32.5）——夜間地表場景暗，俯仰拖曳真的動了 mean 也只有 **0.93~5.13/frac 0.018~0.096**，全被判「frozen」；(b) **容量 OCR 被耦合在 pitch_ok 之後**——pitch 不過就永遠不讀容量（capacity=None 十一連發），畫面上的 0% 從沒被消費，鈴聲容量錨也因此從沒開窗；(c) **轉移式驗證的結構缺陷**（使用者點名）：開場成立與否綁在「點擊造成幀差」上——人已真的在地表時再點「回到地表」畫面可能毫無變化，真成功被判未成功、卡死重骰。
+- **對策（開場閘全面改「狀態制」）**：(1) 凍結判定改 `probe_frozen` 專用門檻 `reentry_frozen_mean_max=0.02`/`frac_max=0.0002`（AND 語意；兩側夾：凍結 **0.00/0.0000** 逐位元相同 vs 活著靜止 0.09/0.0004 vs 夜間地表拖曳最小 0.93/0.018——⚠ 永遠不可拿 pitch_eaten_* 當凍結判定）；(2) **Depth 狀態錨**：頂部「Depth: Surface / NNNm」列（`depth_region=Region(890,92,210,45)`，實機 3 幀 Surface/488m/25790m 實測 3/3）——Surface＝人真的在地表才拍照，NNNm＝礦內/虛空墜落中繼續探測點擊；(3) 容量/深度讀值與俯仰結果**解耦**（同一幀 grab 一次裁兩區）；(4) `plan_opening_gate` 改判 frozen→not_surface/depth_unread→capacity→proceed，**點擊幀差降為輔助訊號**（未傳送不再提前 return）；(5) 俯仰「被吃但沒凍結」只警告不擋拍照，遠端可用新 `仰角 歸位`/`仰角 上|下 [px]` 指令修正後 📷 重掃。
+- **同輪**：R 取樣視窗（Tk 面板＋R 熱鍵）退役——截圖→遙控器 📷（落編號樣本供 `calibrate_surface --import`）、俯仰→`仰角` 指令；`_pitch_drag_measured` 拆出原始量測值供凍結探針用。
+- **fixture**：`tests/fixtures/reentry/h046_depth_{surface,488m,25790m}.png`＋`tests/test_depth_fixtures.py`（真實引擎 3/3）；純函式回歸 `tests/test_reentry_remote.py` H046 區塊（probe_frozen 兩側夾、狀態閘各 verdict、仰角解析）。
+- **附帶發現（追 log 一小時）**：`pythonw -m miningbot`＝Microsoft Store/MSIX Python，`%LOCALAPPDATA%\RexMacro\logs` 被虛擬化重導到 `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\Local\RexMacro\logs`——log 內印的路徑直接查會撲空（已記入 CLAUDE.md 實機排錯）。
+- **同日追加（2026-07-17 晚，預防性收尾＋通知強化）**：(1) `_rr_click` 下礦驗證是同型轉移式缺陷（點擊後等幀差）——改狀態錨 `plan_click_verdict`：Depth 從 Surface 翻成 NNNm＝唯一成功條件（重複點已成功的傳送板畫面不動＝舊版假失敗；地表→地表換重生點 diff ≥26.8 畫面大動＝舊版假成功），幀差降輔助訊號——Depth OCR 讀不到時退回幀差降級（有動＝交人工確認寧問勿假成功、沒動＝判無效留 awaiting_fine，皆有 log 警告不靜默）；礦內亮度檢查退役（夜間暗景騙亮度，H046(a) 同源）。(2) 開場探測 give_up 通知附最後一探讀值（`format_gate_readings`：depth/capacity/pitch 幀差）——遠端一眼分型：depth=NNNm/讀不到＋pitch 有動＝虛空、pitch 0.00/0.0000＝凍結、Surface＋容量未歸零＝重置未完成/按鈕失效。純函式回歸 `tests/test_reentry_remote.py` H046(c) 區塊（7 例）。
+- **下輪實機驗證預期**（⚠ 先重啟 bot——**19:31 前所有程序載的都是修正前的碼**；07-17 16:43~18:53 那輪是事故本身不是驗證）：重置回礦 log 出現「開場閘未過（…surface=False…）」（傳送前）→ 傳送成功後一輪內「surface=True capacity=0.0」過閘拍照；人已在地表的輪（點擊無幀差）**不再**卡 300s，一樣過閘；`重骰` 後 20-30s 內出現新八方位圖；`仰角 上 100` 回「✅ 仰角▲ 上 100px」；細格點擊後 log 出現「[RR#N] 點擊驗證：descended（depth_surface=False…）」且 Discord 回「✅ …下礦成功（Depth 已離開 Surface…）」；探測預算用盡時通知帶「最後一探：depth=…｜capacity=…｜pitch幀差=…」。
+- **commit**：（本輪工作樹）
+
+## H047（2026-07-17 14:47＋2026-07-18 02:15 兩場啟動）：開場聊天框檢查假陰性——bot 親手把開著的聊天框關掉
+
+- **症狀（使用者發現）**：實機掛機中左上聊天框是關的，懷疑是 bot 關的、開場檢測沒真的驗證。log 佐證：兩場啟動的聊天框檢查都以「連點 3 次仍未開啟」WARNING 收場；關閉期間聊天 verify 鏈全瞎；02:46 快照的聊天圖示掛未讀徽章「11」＝訊息持續進來沒人看見。
+- **時間線（02:15 場，14:47 場同劇本）**：02:15:39 首檢 OCR 判「關閉」→ 點擊 #1 → 02:15:43 複檢仍「關」（聚焦成功）→ 點擊 #2 → 02:15:47 仍「關」→ 點擊 #3 → 02:15:50 WARNING＋`chat_open_fail` 快照（終幀聊天框確實關閉）。過去 5 次啟動首檢**全部**判「關閉」。
+- **一句話根因**：REX 聊天框**開著且過久沒訊息會把整個視窗自動隱藏**（使用者證實；實驗當場重現——手動開啟數分鐘後再截圖，`chat_input_region` OCR 讀到的是背包面板標題 `'NYVAMNMAL\nwww'`）→ placeholder 文字信號假陰性「關閉」→ toggle 圖示被當單向開啟鈕點下去，**第一擊就把開著的聊天框關掉**；複檢用同一個瞎掉的信號，重試連點奇數次、終態必關。
+- **奇偶推理（初態=開的證明）**：三擊皆有「Roblox 聚焦成功」（點擊落地）＋終幀=關 ⇒ 初態=開；且上一場（20:16）結束時聊天框由 bot 確認開啟過、之後無人關它。
+- **新信號（使用者指出）＋兩側夾**：左上聊天圖示開啟（含自動隱藏）＝**實心白**泡泡、關閉＝**空心白邊**泡泡（可帶右上未讀徽章）；40×40 裁圖（全幀 (154,51)）取泡泡內部補丁（crop 相對 x∈[6,18) y∈[21,28)，避開中央筆劃與徽章）gray mean：**開 238..255（n=42）vs 關 81..87（n=19 含徽章樣本 83）**→ 門檻 ≥180 開／≤130 關／中間 unknown。
+- **對策**：檢查改「圖示狀態制」——`vision.chat_icon_state`（open/closed/unknown 純分類）＋`roblox_menu.plan_chat_open_action`（純決策）；**unknown 絕不點擊**（比照玩家列表「絕不按第二次 Tab」：誤判開＝不點無害、誤判關＝點下去會關掉開著的，破壞性動作只在明確判關時執行；白閃全白判開＝安全方向）；placeholder 信號（`chat_input_region`/`chat_input_phrases`）退役。通知維持 log＋HUD＋trace 快照、不上 Discord（使用者 2026-07-18 裁決）。
+- **fixture**：`tests/fixtures/chat_icon/h047_icon_{open_solid,closed_hollow,closed_hollow_badge11}.png`＋分類/決策純函式回歸。
+- **設計**：`docs/superpowers/specs/2026-07-18-chat-open-icon-check-design.md`。
+- **下輪實機驗證預期**：啟動 log 出現「聊天框已開啟（圖示實心，probe=…）」（或明確判關後一擊即轉實心）；不得再出現「仍未開啟，第 N 次重試」連鎖與奇數擊終態關閉。
+- **commit**：（本輪工作樹）
+
+## H048（2026-07-17 17:24 RR#1／18:51 RR#2／2026-07-18 03:35 RR#2 連三場）：回礦開場俯仰歸位「重置後第一次必被吃」——右鍵拖曳游標甩出視口＋拖曳間距不足
+
+- **症狀（使用者發現）**：`仰角` 指令調好的視角，每次重置後開場鏈第一次俯仰歸位都沒作用。log 佐證：三場開場歸位全判「疑似被吃」（mean 0.51~5.54），07-17 21:00 兩次「生效 19.7/17.4」實為下拉段假陽性；trace 前後幀快照證實拖曳前後畫面逐位元幾乎相同。
+- **實機兩側實驗（2026-07-18 04:0x~04:2x，遊戲開著逐段量測）**：
+  - 游標軌跡：中央 (960,540) 起手下拉 1500 → 游標實走到底邊 (1200,1079)；回拉 400 → 游標飛到頂邊 (1200,0)，右鍵在標題列放開**彈出視窗系統選單**（還原/移動/…）吃掉後續輸入。指標加速實測：注入 40→實走 78、80→174、120→271、180→416（~2.0-2.3x）。
+  - 拖曳間距：前段拖完 0.15~0.2s 內起手的下一段右鍵被吃（回拉段緊接下拉段 settle 0.15s → **回拉長期失效、歸位實停在下夾限**）；0.55s 以上生效。
+  - 起手位置：游標蓋在 3D 視口上的單段上拉 400px → full-frame mean 86.98 大動；起手在「回到地表」按鈕/工作列上→整段被吞（開場鏈點完按鈕游標就停在按鈕上，正是「第一次必被吃」的直接原因）。
+- **一句話根因**：合成右鍵拖曳時 Roblox 不一定鎖游標，`pitch_reset` 兩段拖曳都從「游標當下位置」起手且一次 hold 注入過大——起手點落在 UI 按鈕/工作列上整段被吞、指標加速把游標甩到標題列彈系統選單、兩段間 0.15s 的下一段右鍵必被吃。
+- **對策**：(1) `input_control._drag_vertical` 人式分段重寫——單次 hold 注入 ≤`pitch_drag_hold_budget_px`(150，加速後實走 ~345px 甩不出視口)、每次 hold 前游標置中＋`pitch_drag_hold_settle_s`(0.8) 沉澱（含首段，覆蓋「點完 UI 立刻拖」時序）；校準量仍以注入 px 總和計。(2) 開場鏈歸位比照其他俯仰路徑：`_sampler_pitch_prepare`＋被吃重試一次（冪等）。實機驗證：修後 `ic.pitch_reset` 連跑兩次最終幀差 0.621（冪等成立）、游標活動範圍 [270,743] 全程視口內、單次歸位 ~18s。
+- **fixture/回歸**：`tests/test_input_control.py` H048 區塊（hold 預算/置中/沉澱/總量守恆/飽和→回拉順序）＋`tests/test_main_pitch_home.py` 開場鏈重試兩例。
+- **同日指令面調整（使用者需求）**：方位改 1-8（訊息/檔名 1 起算、內部 0-based）；新增 `放大 <細格>` 再放大（細格子區域變新 zoom_region 可連鎖，scale 自動補償，`fine_cell_subregion`/`magnify_scale` 純函式）；`走` 走位退役；`跳過` 改直接回正常挖礦（不再交 NEEDS_HUMAN）；REENTRY 中收到 暫停/繼續（指令或遙控器鈕）視同跳過。
+- **仰角可視化（使用者需求，位置指定在「有仰角功能的回礦區」）**：回礦互動卡新增「俯仰：夾限上 Npx（`仰角 上/下 [px]` 調）」行（每指令 PATCH 即時更新，`build_reentry_embed` 帶 `pitch_offset_px`）；`仰角` 指令回覆帶調整後讀值；啟動時 log「啟動仰角：…」＋Discord 啟動訊息「🤖 Bot 已啟動｜仰角：…」（`harvester.format_startup_pitch_status`：歸位成功=夾限上 Npx／被吃=不受控警示／未校準=角度不明）。標準角裁決：`reentry_pitch_back_px=400` 實測後使用者接受（E2E：兩個擾動起始角歸位後最終幀差 0.83＝收斂；~18s/次亦接受）。使用者預告將以本輪資訊為底做新功能。
+- **下輪實機驗證預期**：`miningbot.log` 開場出現「俯仰歸位(attempt 1)…-> 生效」（mean 應遠大於個位數；夜間可能仍標被吃但角度實際正確，看 trace 快照）；不得再出現整場歸位全滅；Discord 照片訊息標「方位 1-4／5-8」。
 - **commit**：（本輪工作樹）
