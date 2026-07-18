@@ -182,6 +182,7 @@ class Bot:
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._d4_unknown_at = 0.0                    # D4 事件文字認不得的 hold 起點（0=沒在 hold；雙樣本確認用）
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
+        self._poll_fail_logged_at = 0.0               # 輪詢失敗警告節流（60s 一則，避免斷網洗版）
         # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
         self._list_message_id: str | None = None        # 最新一則 !list 訊息 ID（表情分頁標的）
         self._list_current_world: str | None = None     # 該訊息目前顯示的世界（None=全世界聯集）
@@ -580,7 +581,10 @@ class Bot:
         verdict = miner.plan_d4(
             kept=bool(ev) and game_data.is_kept(event_text, self._keep_ores),
             matched=ev is not None,
-            unknown_confirmed=self._d4_unknown_at > 0.0)
+            unknown_confirmed=self._d4_unknown_at > 0.0,
+            resetting=self._mine_resetting)
+        if verdict == "skip":
+            return          # 重置倒數：事件列被重置公告蓋掉，讀值無效、不進 hold 記帳
         if verdict == "hold":
             self._d4_unknown_at = now
             self.logger.info("D4: 事件文字認不得，hold 一輪等新樣本再確認 (text=%r)",
@@ -1313,8 +1317,14 @@ class Bot:
             try:
                 if self._running:
                     self._poll_discord()
-            except Exception:
-                pass                                     # 輪詢失敗不中斷主迴圈
+            except Exception as e:
+                # 輪詢失敗不中斷主迴圈，但要留痕（節流 60s）：07-19 RR#2 頻道
+                # 01:37~02:17 全靜默，事後無法分辨「沒人打字」還是「輪詢死了」。
+                now = time.time()
+                if now - self._poll_fail_logged_at >= 60.0:
+                    self._poll_fail_logged_at = now
+                    self.log_discord.warning("discord poll failed: %s: %s",
+                                             type(e).__name__, e)
             time.sleep(cfg.discord_poll_interval_s)      # 啟動即首輪；之後固定退避，失敗時也不空轉
 
     def _poll_discord(self):

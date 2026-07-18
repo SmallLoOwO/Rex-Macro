@@ -95,3 +95,12 @@ def test_plan_d4_first_unknown_holds():
 def test_plan_d4_unknown_confirmed_by_second_sample_rerolls():
     # 新樣本仍認不得 → 維持舊巨集語意刷新（未知事件通常是無事件/低價值）
     assert plan_d4(kept=False, matched=False, unknown_confirmed=True) == "reroll"
+
+
+def test_plan_d4_resetting_skips_regardless():
+    # 重置倒數：事件列被重置公告蓋掉（07-19 01:32:24 未知白刷）→ 一律 skip，
+    # 連 keep/matched 都不信——讀到的字根本不是事件文字
+    assert plan_d4(kept=True, matched=True, unknown_confirmed=False,
+                   resetting=True) == "skip"
+    assert plan_d4(kept=False, matched=False, unknown_confirmed=True,
+                   resetting=True) == "skip"

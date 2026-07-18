@@ -44,13 +44,20 @@ def d4_text_fresh(now: float, banner_at: float, last_press: float,
     """
     return now - banner_at <= interval_s * 2 and banner_at > last_press
 
-def plan_d4(kept: bool, matched: bool, unknown_confirmed: bool) -> str:
-    """D4 事件決策：keep（左鍵確認）/ reroll（右鍵刷新）/ hold（本輪不動作）。
+def plan_d4(kept: bool, matched: bool, unknown_confirmed: bool,
+            resetting: bool = False) -> str:
+    """D4 事件決策：keep（左鍵確認）/ reroll（右鍵刷新）/ hold（本輪不動作）/
+    skip（重置中不碰、不進 hold 記帳）。
 
+    重置倒數中事件列被重置公告蓋掉（與 reset 偵測共用 chill_text_region；
+    07-19 01:32:24 實機「未知」白刷、2s 後即偵測到重置）→ skip：讀值無效
+    且事件馬上被重置，按什麼都沒意義。
     認不得的文字第一次先 hold：單次誤讀（換場動畫、OCR 噪音）就右鍵會把
     keep 清單事件不可逆刷掉；等下一份新樣本仍認不得才刷新（雙樣本確認，
     比照 tracker 雙幀穩定／capacity streak 慣例）。
     """
+    if resetting:
+        return "skip"
     if kept:
         return "keep"
     if matched:

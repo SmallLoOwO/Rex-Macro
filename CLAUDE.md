@@ -71,6 +71,11 @@ uv run python -m miningbot.calibrate_pitch
   `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\Local\RexMacro\logs`
   ——log 內印的路徑直接 Test-Path 會撲空，查實機證據去 LocalCache 這份；
   `uv run` 啟動則不受影響。
+- ⚠ LocalCache 這份的**目錄列表中繼資料會過期**：`Get-ChildItem` 顯示的
+  mtime/size 可能停在數小時前（07-19 實測：列表顯示 01:08/71KB，實際內容
+  已寫到 02:02/81KB；讀過內容後列表才會跟上）。判斷「最新一場跑到幾點」
+  一律 `Get-Content -Tail` 看內容時間戳，不可信目錄時間，也不要用窄時間
+  窗 grep 下「之後沒東西」的結論。
 - 先看 `miningbot.log`，再依問題查看 `actions.log`、`harvest.log`、
   `discord.log` 與分類快照。
 - 門檻或座標只根據實機 frame／crop 與對應 H 事故調整；不可用目測猜值。
