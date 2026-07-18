@@ -275,6 +275,9 @@ class Bot:
         )
         self._pitch_offset_px = 0             # 目前俯仰距夾限偏移（回礦歸位後＝reentry_pitch_back_px、
                                               # 挖礦標準角歸位後＝sweep_pitch_center_back_px）
+        self._rr_pitch_back_px = None         # REENTRY session 期望回拉量（None＝本 episode 沒調過→
+                                              # config 標準角；`上|下`/`歸位` 更新，重骰/重探開場沿用——
+                                              # 2026-07-19 使用者反映重骰洗掉已設定仰角）
         # boost_active = boost 生效中的瓶子圖；邏輯「瓶子消失才重上」（見 _boost_needs_refresh）。
         # 缺圖不擋啟動，只是停用 boost 自動重上。D4 改用定時、D2 採集流程、Z 擱置，皆不需模板。
         self._templates = {}
@@ -1347,7 +1350,12 @@ class Bot:
         # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
         # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
         # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
-        if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
+        # REENTRY 中整組凍結（2026-07-19 使用者需求）：遙控器功能回礦時用不上（暫停/繼續
+        # ＝跳過、📷 有回礦卡自己的），而八方位發圖會讓釘底邏輯每輪刪舊重貼＝洗版。
+        # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；離開 REENTRY 後第一輪輪詢自動補 PATCH＋重貼。
+        remote_frozen = self.state is State.REENTRY
+        if (self._remote_message_id and not remote_frozen
+                and self._remote_last_shown != (self.paused, self.state.value)):
             self._edit_remote_control()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
@@ -1358,7 +1366,8 @@ class Bot:
         # 2a. 釘底（混合設計 2026-07-09）：狀態更新/按鈕點擊都原地編輯（不產生新訊息），
         # **只有**被其他訊息擠上去時才刪舊重貼回頻道底——重貼次數從「每次狀態變」降到
         # 「每次頻道有新訊息」，兼顧「滑到最底就是遙控器」與不洗版。
-        if self._remote_message_id and msgs[0]["id"] != self._remote_message_id:
+        if (self._remote_message_id and not remote_frozen
+                and msgs[0]["id"] != self._remote_message_id):
             self._repost_remote_control()
         newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
         if self._last_discord_msg_id is None:
@@ -4059,16 +4068,21 @@ class Bot:
         # 俯仰「被吃但沒凍結」只警告不擋拍照（可回 `仰角` 指令遠端修正）。
         # H048：開場鏈俯仰歸位比照其他俯仰路徑——prepare（聚焦＋游標進畫面＋settle）
         # ＋被吃重試一次（歸位冪等，重做無害）。凍結判定取末次量測（凍結＝兩次都 0.00）。
+        # 回拉量帶 session 記帳值（2026-07-19：重骰/重探不可洗掉 `上|下` 已調好的仰角）。
+        back_px = reentry_remote.effective_pitch_back(
+            self._rr_pitch_back_px, cfg.reentry_pitch_back_px,
+            cfg.reentry_pitch_clamp_px)
         self._sampler_pitch_prepare()
         pitch_ok, p_mean, p_frac = False, 0.0, 0.0
         for attempt in (1, 2):
             pitch_ok, p_mean, p_frac = self._pitch_drag_measured(
                 f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位(attempt {attempt})",
-                lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
-                                       cfg.reentry_pitch_back_px))
+                lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px, back_px))
             if pitch_ok:
                 break
             self._sampler_pitch_prepare()
+        if pitch_ok:
+            self._pitch_offset_px = back_px  # 記帳同步：回礦卡俯仰行/快照 sidecar 讀它
         frozen = reentry_remote.probe_frozen(
             p_mean, p_frac, cfg.reentry_frozen_mean_max, cfg.reentry_frozen_frac_max)
         on_surface = None
@@ -4129,6 +4143,7 @@ class Bot:
             episode_id=reentry_remote.next_episode_id(last),
             created_at=time.time(), sticky_layer=self._rr_sticky_layer,
             trigger=self._rr_trigger)
+        self._rr_pitch_back_px = None        # 新 episode：session 仰角記帳歸零（用 config 標準角）
 
     def _rr_sweep_and_send(self, prefix_msg: str = ""):
         """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""
@@ -4229,6 +4244,7 @@ class Bot:
                         lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
                                                cfg.reentry_pitch_back_px)):
                     self._pitch_offset_px = cfg.reentry_pitch_back_px
+                    self._rr_pitch_back_px = None   # 歸位＝回 config 標準角，重骰改用現值
                     self._rr_notify(f"✅ 仰角已歸位（夾限上 {self._pitch_offset_px}px；"
                                     f"可 📷 重掃確認）")
                     return
@@ -4240,6 +4256,7 @@ class Bot:
         ok = self._pitch_drag_verified(f"[RR#{ctx.episode_id}] 仰角微調 dy={dy}",
                                        lambda: ic.pitch_nudge(dy))
         self._pitch_offset_px -= dy
+        self._rr_pitch_back_px = self._pitch_offset_px  # 重骰/重探開場沿用（不被標準角洗掉）
         arrow = "▼ 下" if dy > 0 else "▲ 上"
         self._rr_notify((f"✅ 仰角{arrow} {px}px" if ok
                          else f"⚠ 仰角{arrow} {px}px 疑似被吃（記帳照調；懷疑沒動就 `仰角 歸位`）")

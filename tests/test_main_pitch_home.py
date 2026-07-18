@@ -90,6 +90,7 @@ def test_rr_open_pitch_retry_on_eaten(monkeypatch):
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
         episode_id=3, created_at=0.0, sticky_layer="L", trigger="manual")
     bot._rr_ensure_ctx = lambda reroll: None
+    bot._rr_pitch_back_px = None
     prepares, attempts, notes = [], [], []
     bot._sampler_pitch_prepare = lambda: prepares.append(1)
 
@@ -123,6 +124,7 @@ def test_rr_open_pitch_no_retry_when_ok(monkeypatch):
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
         episode_id=4, created_at=0.0, sticky_layer="L", trigger="manual")
     bot._rr_ensure_ctx = lambda reroll: None
+    bot._rr_pitch_back_px = None
     attempts, notes = [], []
     bot._sampler_pitch_prepare = lambda: None
     bot._pitch_drag_measured = lambda label, drag: attempts.append(label) or (True, 19.7, 0.31)
@@ -139,3 +141,92 @@ def test_rr_open_pitch_no_retry_when_ok(monkeypatch):
 
     assert len(attempts) == 1              # 生效即停，不重複拖
     assert not any("疑似被吃" in n for n in notes)
+
+
+# ===== 重骰保留 session 仰角＋開場記帳同步（2026-07-19 使用者反映）=====
+def _rr_open_bot(monkeypatch, session_back, drags):
+    """開場鏈最小 Bot：俯仰量測必成功，drag 實跑以記錄 pitch_reset 參數。"""
+    bot = Bot.__new__(Bot)
+    bot.logger = _LogRecorder()
+    bot._focus_roblox = lambda: True
+    bot._rr_open_first_ts = 0.0
+    bot._click_surface_verified = lambda tag: False
+    bot._rr_ctx = reentry_remote.RemoteReentryContext(
+        episode_id=6, created_at=0.0, sticky_layer="L", trigger="manual")
+    bot._rr_ensure_ctx = lambda reroll: None
+    bot._rr_pitch_back_px = session_back
+    bot._pitch_offset_px = 0
+    bot._sampler_pitch_prepare = lambda: None
+
+    def measured(label, drag):
+        drag()
+        return (True, 19.7, 0.31)
+    bot._pitch_drag_measured = measured
+    bot._maybe_arm_chime = lambda pct: None
+    bot._rr_notify = lambda msg, **kw: None
+    bot._rr_sweep_and_send = lambda **kw: None
+    bot._rr_embed_mid = None
+    bot._rr_post_embed = lambda: None
+    monkeypatch.setattr(main.ic, "pitch_reset",
+                        lambda down, back: drags.append((down, back)))
+    monkeypatch.setattr(main.cfg, "reentry_pitch_clamp_px", 1500)
+    monkeypatch.setattr(main.cfg, "reentry_pitch_back_px", 400)
+    monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
+    monkeypatch.setattr(main.capture, "crop", lambda f, region: f)
+    monkeypatch.setattr(main.ocr, "read_depth_is_surface", lambda img, path: True)
+    return bot
+
+
+def test_rr_open_default_homes_to_config_and_syncs_accounting(monkeypatch):
+    """episode 內沒調過：歸位到 config 標準角，且記帳同步（卡面俯仰行讀它）。"""
+    drags = []
+    bot = _rr_open_bot(monkeypatch, None, drags)
+    bot._rr_open_episode()
+    assert drags == [(1500, 400)]
+    assert bot._pitch_offset_px == 400
+
+
+def test_rr_open_reroll_applies_session_pitch(monkeypatch):
+    """`上|下` 調過後重骰：開場歸位回拉量＝使用者記帳值，不被 config 標準角洗掉。"""
+    drags = []
+    bot = _rr_open_bot(monkeypatch, 260, drags)
+    bot._rr_open_episode(reroll=True)
+    assert drags == [(1500, 260)]
+    assert bot._pitch_offset_px == 260
+
+
+def _rr_pitch_bot(monkeypatch):
+    bot = Bot.__new__(Bot)
+    bot.logger = _LogRecorder()
+    bot._sampler_pitch_prepare = lambda: None
+    bot._pitch_drag_verified = lambda label, drag: True
+    bot._rr_notify = lambda msg, **kw: None
+    bot._pitch_offset_px = 400
+    bot._rr_pitch_back_px = None
+    monkeypatch.setattr(main.cfg, "reentry_pitch_clamp_px", 1500)
+    monkeypatch.setattr(main.cfg, "reentry_pitch_back_px", 400)
+    monkeypatch.setattr(main.cfg, "sample_pitch_step_px", 40)
+    monkeypatch.setattr(main.ic, "pitch_reset", lambda down, back: None)
+    monkeypatch.setattr(main.ic, "pitch_nudge", lambda dy: None)
+    return bot
+
+
+def test_rr_pitch_nudge_records_session_back(monkeypatch):
+    """`上 120` 後 session 記帳＝新偏移；之後重骰開場沿用（不回 config）。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch", cell="up", steps=120))
+    assert bot._pitch_offset_px == 520
+    assert bot._rr_pitch_back_px == 520
+
+
+def test_rr_pitch_reset_clears_session_back(monkeypatch):
+    """`歸位` ＝回 config 標準角：session 記帳清空，重骰開場改用 config 現值。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    bot._rr_pitch_back_px = 520
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
+    assert bot._pitch_offset_px == 400
+    assert bot._rr_pitch_back_px is None

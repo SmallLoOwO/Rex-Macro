@@ -142,6 +142,19 @@ def effective_zoom_steps(requested: int, default: int, max_steps: int) -> int:
     return min(n, max_steps)
 
 
+def effective_pitch_back(session_back, default_back: int, clamp_px: int) -> int:
+    """開場/重骰俯仰歸位的回拉量（2026-07-19 使用者反映：重骰後被拉回 config 標準角）。
+
+    歸位本身不能省——夾限飽和是唯一絕對角度基準、拖曳兼任凍結探針（H044/H046）——
+    但回拉量要沿用 episode 內 `上|下 [px]` 的記帳值（session_back；None＝本 episode
+    沒調過→config 標準角）。記帳可能被 `下` 調成負值（實際已飽和在夾限）或超過
+    飽和拖曳量，clamp 到 [0, clamp_px] 保持可重現。
+    """
+    if session_back is None:
+        return default_back
+    return max(0, min(session_back, clamp_px))
+
+
 def plan_zoom_restore(net_zoom: int, saturate: int, pullback: int):
     """絕對歸位按鍵計畫：I 飽和進第一人稱（冪等）→ O 回拉 K 步＝標準挖礦距離。
 

@@ -329,6 +329,30 @@ def test_embed_footer_marks_manual_trigger():
     assert "手動觸發" not in embed["footer"]["text"]
 
 
+# ===== 重骰保留 session 仰角（2026-07-19 使用者反映：重骰後被拉回 config 標準角）=====
+from miningbot.reentry_remote import effective_pitch_back
+
+
+def test_effective_pitch_back_none_session_uses_config_default():
+    # episode 內沒調過（session=None）→ config 標準角
+    assert effective_pitch_back(None, 400, 1500) == 400
+
+
+def test_effective_pitch_back_keeps_user_adjustment():
+    # `上|下 [px]` 調過 → 重骰/重探開場沿用使用者記帳值
+    assert effective_pitch_back(260, 400, 1500) == 260
+
+
+def test_effective_pitch_back_negative_saturates_at_clamp():
+    # 記帳被 `下` 調到負值＝實際已在夾限 → 回拉 0（不可回退 config 洗掉使用者意圖）
+    assert effective_pitch_back(-100, 400, 1500) == 0
+
+
+def test_effective_pitch_back_caps_at_clamp_px():
+    # 記帳超過飽和拖曳量 → cap 在 clamp（拉滿即止，不放大成脫韁值）
+    assert effective_pitch_back(5000, 400, 1500) == 1500
+
+
 # ===== 仰角指令（2026-07-17：R 取樣視窗退役，俯仰控制移進 Discord 回礦流程）=====
 def test_parse_pitch_reset():
     assert parse_reply("仰角 歸位").kind == "pitch_reset"

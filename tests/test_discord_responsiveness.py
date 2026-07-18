@@ -229,6 +229,45 @@ def test_remote_control_snap_reaction_sends_screenshot(monkeypatch):
     assert reposted == [True]
 
 
+# ===== 2026-07-19：REENTRY 中遙控器停止即時更新（功能用不上、發圖每輪觸發刪舊重貼）=====
+def _poll_bot(monkeypatch, state):
+    bot = Bot.__new__(Bot)
+    bot.state = state
+    bot.paused = False
+    bot._rr_embed_mid = None
+    bot._stuck_alert_mid = None
+    bot._calib_session = None
+    bot._list_message_id = None
+    bot._remote_message_id = "remote-message"
+    bot._remote_last_shown = (True, "stale")     # 與現況不符 → 未閘門時必 PATCH
+    bot._last_discord_msg_id = "old"
+    bot.log_discord = _LogRecorder()
+    bot._poll_remote_reactions = lambda: None
+    calls = {"edit": 0, "repost": 0}
+    bot._edit_remote_control = lambda: calls.__setitem__("edit", calls["edit"] + 1)
+    bot._repost_remote_control = lambda: calls.__setitem__("repost", calls["repost"] + 1)
+    monkeypatch.setattr(
+        notify, "fetch_messages",
+        lambda *a, **kw: [{"id": "newest", "author": {"bot": True}, "content": ""}])
+    monkeypatch.setattr("miningbot.main.cfg.discord_bot_token", "token")
+    monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
+    return bot, calls
+
+
+def test_remote_control_frozen_during_reentry(monkeypatch):
+    """回礦流程中遙控器不同步 PATCH、不刪舊重貼（八方位發圖會每輪觸發重貼＝洗版）。"""
+    bot, calls = _poll_bot(monkeypatch, State.REENTRY)
+    bot._poll_discord()
+    assert calls == {"edit": 0, "repost": 0}
+
+
+def test_remote_control_syncs_outside_reentry(monkeypatch):
+    """離開 REENTRY 後第一輪輪詢自動補上：狀態 PATCH＋被新訊息擠上去就重貼回頻道底。"""
+    bot, calls = _poll_bot(monkeypatch, State.MINING)
+    bot._poll_discord()
+    assert calls == {"edit": 1, "repost": 1}
+
+
 def test_discord_poll_default_targets_one_second_response_window():
     assert Config().discord_poll_interval_s <= 1.0
 
