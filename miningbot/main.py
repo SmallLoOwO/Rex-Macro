@@ -2038,6 +2038,11 @@ class Bot:
         # 挖礦標準角歸位（spec 2026-07-17）：人啟動前留的角度不受控，進第一輪掃描前
         # 歸位；未校準（<=0）維持現狀只警告。不納入 Q 跳過——只要 2~3s，且跳過會讓
         # 「啟動角度不可靠」的動機靜默失效。
+        # 鏡頭距離歸位（2026-07-19）：boost FOV 隨使用次數漂移，啟動時人留下的鏡頭
+        # 距離不受控——先歸一距離再歸位俯仰（順序固定：zoom 進出第一人稱萬一擾動
+        # 俯仰，後跑的俯仰歸位會蓋掉）。
+        self.last_action = "鏡頭距離歸位（I 飽和→O 回拉）"
+        self._zoom_normalize("啟動")
         self.last_action = "俯仰歸位（挖礦標準角）"
         homed = self._pitch_home_mining("啟動")
         # 啟動仰角顯示（2026-07-18 使用者要求）：log＋Discord 啟動訊息各一行
@@ -2399,6 +2404,9 @@ class Bot:
                 ok = self._set_movement_mode(cfg.movement_mode_mining)
                 if not ok:
                     self.logger.warning("Movement Mode 切換失敗，可能影響操作，請手動確認後繼續")
+            # 鏡頭距離歸位（2026-07-19）：從 NEEDS_HUMAN/RESET_WAIT/REENTRY 回來，
+            # 等待期間人可能滾輪動過鏡頭、且 boost FOV 隨次數漂移——每輪開挖前歸一。
+            self._zoom_normalize("MINING 入口")
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -4338,6 +4346,11 @@ class Bot:
     def _rr_sweep_and_send(self, prefix_msg: str = ""):
         """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""
         ctx = self._rr_ctx
+        # 鏡頭距離歸位（2026-07-19）：每次 sweep（開場/📷 重掃/重骰）前無條件歸一，
+        # 快照之間才可比對；使用者 `遠`/`近` 調過的距離會被重置（刻意——快照一致性
+        # 優先），net_zoom 同步歸零＝收尾 _zoom_restore_if_touched 不再重複歸位。
+        if self._zoom_normalize(f"[RR#{ctx.episode_id}] sweep 前") and ctx.net_zoom:
+            ctx.net_zoom = 0
         # 對齊座標系：sweep 內部標號固定 0-7＝相對開場面向（cur_dir=0）。zoom 後 cur_dir
         # 可能非 0，先轉回 dir 0 再掃——否則「方位 N」標籤與之後 `N 粗格` 的轉向計畫錯位。
         back = harvester.plan_return_rotations(ctx.cur_dir % 8, 0)
@@ -5141,6 +5154,8 @@ class Bot:
             # 先重新聚焦 Roblox。失敗不交人工——使用者正在按 Q 注視著，下次 mining
             # tick 的視窗跑位偵測會接手（REFOCUS action；那條路徑失敗才交人工）。
             self._focus_roblox()
+            # 暫停期間人最可能滾輪動過鏡頭距離——恢復挖礦前歸一（2026-07-19）。
+            self._zoom_normalize("暫停恢復")
             miner.init_mining_sequence(rotate=self._rotate_verified)
 
     def _toggle_pause(self):
@@ -5572,17 +5587,19 @@ class Bot:
             self._focus_roblox()
         return False
 
-    def _zoom_restore_if_touched(self, ctx):
-        """碰過 zoom 才歸位：I 飽和進第一人稱（冪等、量多無妨）→ O 回拉 K 步。
+    def _zoom_normalize(self, label: str) -> bool:
+        """鏡頭距離歸位：I 飽和進第一人稱（冪等、量多無妨）→ O 回拉 K 步＝標準距離。
 
-        掛在 _rr_finalize＝三個出口（成功回 MINING/跳過交人工/重置作廢）的共同漏斗；
-        回拉段逐步驗證被吃、被吃重送無害（歸位冪等，同俯仰歸位 attempt-2 語意）。
+        boost FOV 隨使用次數累積漂移（作用中變大/到期變小、重進伺服器才重製——
+        2026-07-19 使用者確認），鏡頭距離是唯一可歸一的相機自由度：啟動、回礦
+        sweep 拍照前、回 MINING、暫停恢復都跑一次，讓偵測幀的鏡頭距離一致。
+        未校準（pullback<=0）跳過回 False。回拉段逐步驗證被吃、誤判重送無害
+        （歸位冪等，同俯仰歸位 attempt-2 語意）。
         """
-        plan = reentry_remote.plan_zoom_restore(
-            ctx.net_zoom, cfg.zoom_reset_saturate_presses, cfg.zoom_reset_pullback_steps)
+        plan = reentry_remote.plan_zoom_normalize(
+            cfg.zoom_reset_saturate_presses, cfg.zoom_reset_pullback_steps)
         if not plan:
-            return
-        self._focus_roblox()
+            return False
         for key, count in plan:
             for _ in range(count):
                 if key == "i":
@@ -5590,9 +5607,21 @@ class Bot:
                 else:
                     self._zoom_key_verified(key)         # 回拉段逐步驗證
             ic.settle(0.4)
-        ctx.net_zoom = 0
-        self.logger.info("[RR#%s] zoom 歸位完成（I 飽和→O 回拉 %d 步）",
-                         ctx.episode_id, cfg.zoom_reset_pullback_steps)
+        self.logger.info("%s：鏡頭距離歸位完成（I 飽和→O 回拉 %d 步）",
+                         label, cfg.zoom_reset_pullback_steps)
+        return True
+
+    def _zoom_restore_if_touched(self, ctx):
+        """碰過 zoom（net_zoom≠0）才歸位；執行段共用 _zoom_normalize。
+
+        掛在 _rr_finalize＝三個出口（成功回 MINING/跳過交人工/重置作廢）的共同漏斗。
+        sweep 前已無條件歸位過的 episode 這裡 net_zoom 已是 0＝直接跳過。
+        """
+        if ctx.net_zoom == 0:
+            return
+        self._focus_roblox()
+        if self._zoom_normalize(f"[RR#{ctx.episode_id}] zoom 歸位"):
+            ctx.net_zoom = 0
 
 
 def _set_dpi_aware():

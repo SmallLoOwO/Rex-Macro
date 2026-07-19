@@ -174,15 +174,27 @@ def effective_pitch_back(session_back, default_back: int, clamp_px: int) -> int:
     return max(0, min(session_back, clamp_px))
 
 
+def plan_zoom_normalize(saturate: int, pullback: int):
+    """無條件鏡頭距離歸位計畫：I 飽和進第一人稱（冪等）→ O 回拉 K 步＝標準距離。
+
+    不看 net_zoom——boost FOV 隨使用次數累積漂移（2026-07-19 使用者確認：作用中
+    變大/到期變小、重進才重製），拍照/開挖前的鏡頭距離要每次重定，與有沒有下過
+    `遠`/`近` 指令無關。未校準（pullback<=0）回空＝跳過。
+    """
+    if pullback <= 0:
+        return []
+    return [("i", saturate), ("o", pullback)]
+
+
 def plan_zoom_restore(net_zoom: int, saturate: int, pullback: int):
-    """絕對歸位按鍵計畫：I 飽和進第一人稱（冪等）→ O 回拉 K 步＝標準挖礦距離。
+    """絕對歸位按鍵計畫：碰過 zoom（net_zoom≠0）才歸位版本。
 
     沒碰過（net_zoom=0）或未校準（pullback<=0）回空。記帳誤差/步進不對稱
     都不影響歸位正確性——這是選絕對基準而非反向記帳的理由（spec 第 3 節）。
     """
-    if net_zoom == 0 or pullback <= 0:
+    if net_zoom == 0:
         return []
-    return [("i", saturate), ("o", pullback)]
+    return plan_zoom_normalize(saturate, pullback)
 
 
 def render_zoom(frame_bgr, region, scale: int = 3, cols: int = 6, rows: int = 6):

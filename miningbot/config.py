@@ -301,7 +301,7 @@ class Config:
     #   活著靜止 0.09/0.0004 vs 夜間地表拖曳最小 0.93/0.018（2026-07-17 ep1）。⚠ 不可改用
     #   pitch_eaten_*（那是「拖曳生效」門檻 8.0/0.15）——H046 就是誤用它把活人鎖 300s
     reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
-    reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
+    reentry_pitch_back_px: int = 370            # 回拉量（R 視窗校準出、寫回這裡）
     reentry_attempt_warn_every: int = 5         # 人工重骰每 N 次提醒可跳過/調視角（0=關；attempt 無上限不變）
     # --- H048 俯仰拖曳人式分段（2026-07-18 實機兩側量測）---
     pitch_drag_hold_budget_px: int = 150        # 單次右鍵 hold 的注入上限。指標加速實測 40→78/80→174/
@@ -356,9 +356,12 @@ class Config:
     reentry_zoom_step_default: int = 4          # `遠`/`近` 省略步數時的預設
     reentry_zoom_max_steps: int = 12            # 單指令步數上限（防手滑打 99；超過 clamp 不拒收）
     zoom_reset_saturate_presses: int = 30       # 歸位飽和段按 I 次數（須大於最大可能累積步數）
-    zoom_reset_pullback_steps: int = 0          # 歸位回拉 K 步；0＝未校準＝遠/近指令整組停用。
-                                                # 校準：鏡頭調到平常挖礦距離→狂按 I 進第一人稱→
-                                                # 一步步按 O 數到回到熟悉距離＝K（docs/manual-sampling.md）
+    zoom_reset_pullback_steps: int = 2          # 歸位回拉 K 步；0＝未校準＝遠/近指令整組停用。
+                                                # 2026-07-19 使用者實機經驗校準：連點 I 進第一人稱後
+                                                # O×2＝標準挖礦距離。boost FOV 隨使用次數累積漂移
+                                                # （作用中變大/到期變小、重進伺服器才重製），鏡頭距離
+                                                # 是唯一可歸一的相機自由度——啟動/回礦 sweep 前/回
+                                                # MINING/暫停恢復都做一次歸位（_zoom_normalize）。
     zoom_eaten_mean_diff: float = 8.0           # zoom 送鍵被吃判定（初值抄 pitch_eaten_*；獨立門檻，
     zoom_eaten_changed_frac: float = 0.15       # 不可共用旋轉門檻——歸位冪等、誤判重做無害，方向安全性與旋轉相反）
 

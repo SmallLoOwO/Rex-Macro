@@ -193,7 +193,7 @@ class TestZoomParse:
         assert effective_zoom_steps(99, 4, 12) == 12      # 超上限 clamp、不拒收
 
 
-from miningbot.reentry_remote import plan_zoom_restore
+from miningbot.reentry_remote import plan_zoom_normalize, plan_zoom_restore
 
 
 class TestZoomRestore:
@@ -202,6 +202,11 @@ class TestZoomRestore:
         assert plan_zoom_restore(5, 30, 7) == [("i", 30), ("o", 7)]
         assert plan_zoom_restore(-2, 30, 7) == [("i", 30), ("o", 7)]   # 拉近過也歸位
         assert plan_zoom_restore(5, 30, 0) == []                       # 未校準防禦（上游已擋）
+
+    def test_plan_zoom_normalize(self):
+        # 無條件歸位（2026-07-19 boost FOV 漂移）：不看 net_zoom，只看有沒有校準
+        assert plan_zoom_normalize(30, 2) == [("i", 30), ("o", 2)]
+        assert plan_zoom_normalize(30, 0) == []                        # 未校準＝跳過
 
     def test_zoom_recorded_in_log_and_click(self):
         ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="L")
