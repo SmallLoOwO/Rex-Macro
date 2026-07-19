@@ -375,6 +375,7 @@ class Config:
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
     discord_poll_interval_s: float = 1.0        # Discord 命令/反應輪詢間隔（秒；單卡 reaction 摘要已把每輪 GET 壓到 1 次）
+    discord_repin_quiet_s: float = 4.0          # 釘底防抖安靜窗（秒）：頻道最後一則新訊息後安靜滿此秒數，才把遙控器/回礦卡刪舊貼新到頻道底（輪詢 1s ≈ 4 輪安靜；2026-07-19 spec）
 
     # 選單前置切換（Movement Mode）＋聊天框前置檢查
     # docs/superpowers/specs/2026-07-08-menu-preflight-boost-design.md

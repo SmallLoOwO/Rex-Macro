@@ -195,6 +195,12 @@ class Bot:
         self._remote_message_id: str | None = None
         self._remote_reactions_seen: dict[str, int] = {}
         self._remote_last_shown: tuple | None = None    # 上次 PATCH 時的 (paused, state)，避免重複 PATCH
+        # 釘底防抖（2026-07-19 spec）：看到新訊息只立旗標，頻道安靜滿
+        # cfg.discord_repin_quiet_s 才刪舊貼新（_repin_tick）；回礦收尾由 _rr_finalize
+        # 主動立遙控器旗標——修「回礦完成後要等使用者發話遙控器才出現」的消費競態。
+        from . import notify as _notify
+        self._remote_repin = _notify.RepinDebouncer()   # 遙控器（非 REENTRY 時作用）
+        self._rr_repin = _notify.RepinDebouncer()       # 回礦卡（REENTRY 中作用）
         # 狀態小窗用的即時資訊
         self._started = time.time()
         self.last_action = "—"
@@ -1499,6 +1505,7 @@ class Bot:
         self._remote_reactions_seen = seen
         # 狀態同步基線：剛貼的 embed 已反映當前 (paused, state)，記下避免下輪重複 PATCH
         self._remote_last_shown = (self.paused, self.state.value)
+        self._remote_repin.clear()   # 已貼到頻道底：清殘留 pending，防剛貼完又被防抖多刪貼一次
         self.log_discord.info("remote posted -> mid=%s (state=%s paused=%s)",
                               mid, self.state.value, self.paused)
 
@@ -1542,6 +1549,33 @@ class Bot:
                 cfg.discord_bot_token, cfg.discord_channel_id, old)
             self.log_discord.info("remote repost delete mid=%s -> %s", old, detail)
         self._post_remote_control()
+
+    def _repin_tick(self, msgs: list, now: float):
+        """釘底防抖一輪：立旗標＋執行到期重貼（只做 Discord I/O，輪詢執行緒呼叫）。
+
+        看到新訊息（含 bot 自己發的）只刷活動時間、立「待重貼」旗標；距頻道最後
+        活動安靜滿 cfg.discord_repin_quiet_s 才真的刪舊貼新（RepinDebouncer）——
+        連發期間不反覆刪貼，安靜後一次到位。REENTRY 中遙控器旗標不因新訊息立
+        （釘底由回礦卡接手），改由 _rr_finalize 收尾主動立；回礦卡照舊受
+        _rr_busy 擋（發圖/指令執行中不搬卡，掃完下一輪一次到位）。
+        """
+        frozen = self.state is State.REENTRY
+        if msgs:
+            self._remote_repin.note_activity(now)
+            self._rr_repin.note_activity(now)
+            newest = msgs[0]["id"]
+            if (not frozen and self._remote_message_id
+                    and newest != self._remote_message_id):
+                self._remote_repin.mark_pending()
+            if (frozen and self._rr_embed_mid and self._rr_ctx is not None
+                    and newest != self._rr_embed_mid):
+                self._rr_repin.mark_pending()
+        quiet = cfg.discord_repin_quiet_s
+        if not frozen and self._remote_repin.due(now, quiet):
+            self._repost_remote_control()
+        if (frozen and self._rr_ctx is not None and not self._rr_busy
+                and self._rr_repin.due(now, quiet)):
+            self._rr_repost_embed()
 
     def _ensure_remote_control(self):
         """啟動時清掉跨重啟殘留的舊遙控器，再貼一則新的到頻道底。取代直接 _post_remote_control。
@@ -4049,6 +4083,7 @@ class Bot:
         self._rr_embed_mid = mid
         self._rr_reactions_seen = seen
         self._rr_last_min = int((time.time() - ctx.created_at) // 60)
+        self._rr_repin.clear()       # 已貼到頻道底：清殘留 pending（同 _post_remote_control）
         self.log_discord.info("RR embed posted -> mid=%s (ep=%s)", mid, ctx.episode_id)
 
     def _rr_repost_embed(self):

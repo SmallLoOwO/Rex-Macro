@@ -1,4 +1,5 @@
 import os
+import time
 
 from miningbot import notify, reentry_remote
 from miningbot.config import Config
@@ -380,3 +381,68 @@ def test_repin_debouncer_waits_for_quiet_window():
     assert d.due(107.9, 4.0) is False
     d.clear()
     assert d.due(999.0, 4.0) is False          # 已貼回頻道底
+
+
+def _bare_repin_bot(monkeypatch, state=State.MINING):
+    """_repin_tick 專用最小 Bot；repost stub 模擬真品「貼底成功後 clear」語意。"""
+    monkeypatch.setattr("miningbot.main.cfg.discord_repin_quiet_s", 4.0)
+    bot = Bot.__new__(Bot)
+    bot.state = state
+    bot._remote_message_id = "remote-message"
+    bot._rr_embed_mid = None
+    bot._rr_ctx = None
+    bot._rr_busy = False
+    bot._remote_repin = notify.RepinDebouncer()
+    bot._rr_repin = notify.RepinDebouncer()
+    bot.reposted = []
+
+    def _fake_remote_repost():
+        bot.reposted.append("remote")
+        bot._remote_repin.clear()      # 模擬 _post_remote_control 成功後 clear
+
+    def _fake_rr_repost():
+        bot.reposted.append("rr")
+        bot._rr_repin.clear()          # 模擬 _rr_post_embed 成功後 clear
+
+    bot._repost_remote_control = _fake_remote_repost
+    bot._rr_repost_embed = _fake_rr_repost
+    return bot
+
+
+def test_repin_tick_debounces_until_channel_quiet(monkeypatch):
+    """連發期間不刪貼；安靜滿 quiet_s 才重貼；clear 後不重複。"""
+    bot = _bare_repin_bot(monkeypatch)
+    bot._repin_tick([{"id": "newer"}], 100.0)          # 新訊息：只立旗標
+    assert bot.reposted == []
+    bot._repin_tick([{"id": "even-newer"}], 102.0)     # 連發：重置計時
+    assert bot.reposted == []
+    bot._repin_tick([], 105.9)                          # 距最後活動 3.9s，還不到
+    assert bot.reposted == []
+    bot._repin_tick([], 106.0)                          # 安靜滿 4.0s → 重貼
+    assert bot.reposted == ["remote"]
+    bot._repin_tick([], 120.0)                          # clear 後不再重複
+    assert bot.reposted == ["remote"]
+
+
+def test_repin_tick_ignores_when_remote_already_bottom(monkeypatch):
+    """頻道最新一則就是遙控器自己 → 不立旗標、永不重貼。"""
+    bot = _bare_repin_bot(monkeypatch)
+    bot._repin_tick([{"id": "remote-message"}], 50.0)
+    bot._repin_tick([], 999.0)
+    assert bot.reposted == []
+
+
+def test_repin_tick_reentry_rr_card_and_busy_gate(monkeypatch):
+    """REENTRY：回礦卡走同一安靜窗；_rr_busy 中即使 due 也不搬；遙控器旗標不因新訊息立。"""
+    bot = _bare_repin_bot(monkeypatch, state=State.REENTRY)
+    bot._rr_embed_mid = "rr-message"
+    bot._rr_ctx = object()
+    bot._repin_tick([{"id": "photo-1"}], 200.0)
+    assert bot.reposted == []
+    bot._rr_busy = True
+    bot._repin_tick([], 210.0)                          # due 但發圖/指令執行中
+    assert bot.reposted == []
+    bot._rr_busy = False
+    bot._repin_tick([], 211.0)
+    assert bot.reposted == ["rr"]
+    assert bot._remote_repin.pending is False           # REENTRY 中遙控器旗標由收尾立
