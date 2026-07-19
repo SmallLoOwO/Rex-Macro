@@ -157,6 +157,49 @@ def grid_cell_of(pos, w: int = 1920, h: int = 1080,
     return f"{GRID_COLS[ci]}{GRID_ROWS[ri]}"
 
 
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨"
+
+
+def circled(n: int) -> str:
+    """候選編號顯示字：1..9 → ①..⑨；超出回 "(n)"（防禦，現行上限 9）。"""
+    return _CIRCLED[n - 1] if 1 <= n <= 9 else f"({n})"
+
+
+# 原因/狀態代碼 → 中文短語（總表與 caption 用；圖上標頭仍英文——cv2 無中文字型）。
+# near-miss 用 reason（vision.find_tracker collect_rejects）；觀測證據用 status。
+REASON_LABELS = {
+    "hard_rej": "形狀分不足", "soft": "形狀弱訊號", "margin": "太靠邊",
+    "exclude": "在排除區", "preexist": "掃描前已存在",
+    "fired": "射過未確認", "accepted": "曾鎖定", "seen_once": "單幀目擊",
+}
+
+_OBS_STATUSES = ("fired", "accepted", "seen_once")
+
+
+def format_candidate_summary(candidates) -> str:
+    """候選總表（一行一候選）：編號↔DIR↔格子↔分數↔原因，一眼可對圖。
+
+    - ① 是觀測證據（掃到過但沒採到）→「（最優）…回 1 快速重採」提示行。
+    - score ≥ 0（有 edge）顯示「分數x.xx」；< 0（HSV-only，排序鍵 colored−1.0）
+      顯示「色x.xx」，不出現負數。
+    - 未知代碼原樣顯示（清單漂移要浮出來，不吞）。
+    """
+    lines = []
+    for c in candidates:
+        cell = grid_cell_of(c.pos) or "?"
+        key = c.status if c.status in _OBS_STATUSES else c.reason
+        label = REASON_LABELS.get(key, key)
+        if c.number == 1 and c.status in _OBS_STATUSES:
+            lines.append(f"①（最優）DIR{c.dir_idx}・約{cell}・{label}"
+                         f"——回 1 快速重採")
+        else:
+            score = (f"分數{c.score:.2f}" if c.score >= 0
+                     else f"色{c.score + 1.0:.2f}")
+            lines.append(f"{circled(c.number)} DIR{c.dir_idx}・約{cell}・"
+                         f"{score}・{label}")
+    return "\n".join(lines)
+
+
 def draw_grid(img, cols: int = 6, rows: int = 4) -> None:
     """in-place 疊半透明格線＋格代碼（A1..）。draw_overlay 與 reentry_remote 共用。"""
     import cv2

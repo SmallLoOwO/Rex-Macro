@@ -56,7 +56,7 @@
 `remote_aim.format_candidate_summary(candidates) -> str`，一行一候選：
 
 ```
-①（最優）DIR5・約C4・曾鎖定未採到——回 1 快速重採
+①（最優）DIR5・約C4・曾鎖定——回 1 快速重採
 ② DIR2・約D2・分數0.38・形狀分不足
 ③ DIR7・約B3・色0.52・太靠邊
 ```

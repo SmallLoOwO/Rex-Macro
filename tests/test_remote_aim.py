@@ -3,7 +3,7 @@ from miningbot import remote_aim
 from miningbot.remote_aim import (AimCandidate, SweepShot, TargetObservation,
                                   build_aim_context, pick_recovery_observation,
                                   grid_cell_center, draw_overlay, parse_reply,
-                                  plan_alignment)
+                                  plan_alignment, circled, format_candidate_summary)
 
 
 def _shot(layer, d, rejects):
@@ -210,6 +210,58 @@ class TestPlanAlignment:
 
     def test_same_layer_no_pitch(self):
         assert plan_alignment(0, "up", 0, "up") == (0, None)
+
+
+def _cand(number, dir_idx, pos, score, reason,
+          status="rejected", source="near_miss"):
+    return AimCandidate(number=number, layer="mid", dir_idx=dir_idx, pos=pos,
+                        score=score, reason=reason, source=source, status=status)
+
+
+class TestCircled:
+    def test_1_to_9(self):
+        assert [circled(n) for n in (1, 5, 9)] == ["①", "⑤", "⑨"]
+
+    def test_out_of_range_fallback(self):
+        assert circled(10) == "(10)"
+
+
+class TestFormatCandidateSummary:
+    def test_observation_first_line_quick_reharvest(self):
+        # ① 是觀測證據（掃到未採）→ 最優提示行；② 一般近失行
+        cands = [_cand(1, 5, (800, 675), 0.42, "sweep_stable",
+                       status="accepted", source="sweep_stable"),
+                 _cand(2, 2, (1100, 400), 0.38, "hard_rej")]
+        lines = format_candidate_summary(cands).splitlines()
+        assert lines[0] == "①（最優）DIR5・約C3・曾鎖定——回 1 快速重採"
+        assert lines[1] == "② DIR2・約D2・分數0.38・形狀分不足"
+
+    def test_number_one_near_miss_is_plain_line(self):
+        # ① 不是觀測證據 → 不加（最優）提示（規則綁狀態、不綁編號）
+        text = format_candidate_summary([_cand(1, 0, (10, 10), 0.44, "soft")])
+        assert text == "① DIR0・約A1・分數0.44・形狀弱訊號"
+
+    def test_hsv_only_candidate_shows_colored_not_negative(self):
+        # 無 edge 候選排序鍵＝colored−1.0（負數）→ 顯示「色0.55」不出現負號
+        text = format_candidate_summary([_cand(1, 7, (330, 700), -0.45, "margin")])
+        assert text == "① DIR7・約B3・色0.55・太靠邊"
+        assert "-" not in text
+
+    def test_fired_and_seen_once_labels(self):
+        cands = [_cand(1, 4, (400, 500), 0.05, "d3_fire",
+                       status="fired", source="d3_fire"),
+                 _cand(2, 6, (600, 300), 0.10, "double_frame_unstable",
+                       status="seen_once", source="double_frame_unstable")]
+        lines = format_candidate_summary(cands).splitlines()
+        assert lines[0] == "①（最優）DIR4・約B2・射過未確認——回 1 快速重採"
+        assert "單幀目擊" in lines[1]
+
+    def test_unknown_reason_falls_through_as_is(self):
+        assert "weird_code" in format_candidate_summary(
+            [_cand(1, 0, (10, 10), 0.5, "weird_code")])
+
+    def test_empty_candidates(self):
+        assert format_candidate_summary([]) == ""
 
 
 def test_recovery_prefers_latest_fired_then_accepted_then_seen_once():
