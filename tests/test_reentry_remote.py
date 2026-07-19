@@ -501,6 +501,25 @@ def test_opening_gate_manual_trigger_skips_capacity():
     assert plan_opening_gate(True, True, "manual", None, 0.0) == "frozen"
 
 
+def test_opening_gate_default_tolerates_post_reset_capacity_residual():
+    # H053（2026-07-20 RR#7 02:38~02:48 實錄）：真重置完成後容量 OCR 穩定讀到 1%
+    # （非 0%）——連續 17 次開場閘全因 capacity=1.0 > 門檻 0.0 判 "capacity"、
+    # 預算 300s 耗盡卡死、使用者手動關 bot。Config 預設門檻須容忍此殘留。
+    # 兩側夾：真重置完成（地表）0~1% vs 重置進行中（地表）56~71%（RR#2 01:33~01:34）
+    # vs 凍結舊幀 78%（H045）。門檻取 10.0＝與 reset_chime_capacity_arm_pct 同概念
+    # （同一幀鈴聲路徑 02:37:13 早已用「1% ≤ 10%」接受）。
+    from miningbot.config import Config
+    th = Config().reentry_open_capacity_max_pct
+    # 真重置完成（地表＋殘留 1%，RR#7 連續 17 次實讀）→ 拍照
+    assert plan_opening_gate(False, True, "reset", 1.0, th) == "proceed"
+    # 真重置完成（地表＋0%，H046 17:24:55 實機幀）→ 拍照
+    assert plan_opening_gate(False, True, "reset", 0.0, th) == "proceed"
+    # 重置進行中（地表＋56%，RR#2 01:34:04 實讀）→ 續探
+    assert plan_opening_gate(False, True, "reset", 56.0, th) == "capacity"
+    # 凍結舊幀（H045 ep3 78%）→ 續探
+    assert plan_opening_gate(False, True, "reset", 78.0, th) == "capacity"
+
+
 # ===== H046 depth 錨解析（實機拖尾雜訊全來自裁圖右緣的金額 "$..."）=====
 from miningbot.ocr import parse_depth_surface
 
