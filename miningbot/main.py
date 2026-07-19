@@ -1907,21 +1907,13 @@ class Bot:
         reply = remote_aim.parse_reply(content, len(ctx.candidates), layers)
         if reply is None:
             notify.send_message(token, ch,
-                "❓ 看不懂。可用：`2`（射候選②）、`5 C3` / `5U C3`（方位+格子）、"
-                "`跳過`（回挖礦）、`全部`（補發其餘方位圖）")
+                "❓ 看不懂。可用：`2`（射候選②）、`跳過`（回挖礦）、"
+                "`手動`（最後手段：重掃＋全方位圖＋格子瞄準說明）")
             return
         if self._aim_busy:
             notify.send_message(token, ch, "⏳ 上一發還在執行，稍候")
             return
-        if reply.kind == "all":
-            rendered = self._render_aim_shots(ctx)
-            sent = 0
-            for caption, path in rendered[:8]:
-                notify.send_images_message(token, ch, caption, [path])
-                sent += 1
-            self.log_discord.info("AIM all -> 補發 %d 張", sent)
-            return
-        self._pending_aim = reply          # skip/candidate/grid：主迴圈消費
+        self._pending_aim = reply          # skip/candidate/grid/manual：主迴圈消費
         notify.send_message(token, ch, f"✅ 收到（{reply.kind}），主迴圈執行中…")
         self.log_discord.info("AIM reply=%s -> pending", reply)
 
@@ -3056,18 +3048,33 @@ class Bot:
                 self.harvest.pitch_layer, self.harvest.harvest_id,
                 now=time.time(), max_candidates=cfg.remote_aim_max_candidates,
                 observations=self._target_observations)
-            aim_paths = self._render_aim_shots(ctx)      # 疊圖＋落盤，回 [(caption, path)]
+            rendered = self._render_aim_shots(ctx)   # 疊圖＋落盤
             self._aim_context = ctx
-            if aim_paths:
-                groups.insert(0, ("aim", [p for _, p in aim_paths[:4]]))
+            if rendered:
+                # 全候選圖都發（4 張/組批次）；caption 由純函式組（群標題＋總表）。
+                # 組名即 caption——走 format_group_messages 的 fallback。
+                summary = remote_aim.format_candidate_summary(ctx.candidates)
+                groups = remote_aim.build_aim_groups(rendered, summary) + groups
         if groups:
             self._needs_human_extra_meta["image_groups"] = groups
 
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
 
+    def _draw_aim_header(self, img, text: str) -> None:
+        """疊圖上緣黑條＋大字標頭——縮圖牆也能辨認 DIR（2026-07-19 spec §3）。"""
+        import cv2
+        cv2.rectangle(img, (0, 0), (img.shape[1], 56), (0, 0, 0), -1)
+        cv2.putText(img, text, (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.1,
+                    (0, 215, 255), 3)
+
     def _render_aim_shots(self, ctx):
-        """Render direction-labelled overlays after async source snapshots are ready."""
+        """Render direction-labelled overlays after async source snapshots are ready.
+
+        回 [(候選編號 tuple, dir_idx, layer, 疊圖路徑)]；排序、批次與 caption
+        交給 remote_aim.build_aim_groups（純函式）。候選圖一律用偵測當下原幀
+        （D2 效果保證，spec 核心不變量）。
+        """
         import cv2
         out = []
         deadline = time.monotonic() + cfg.remote_aim_snapshot_wait_s
@@ -3092,11 +3099,9 @@ class Bot:
                 continue
             overlaid = remote_aim.draw_overlay(image, candidates, grid=True)
             statuses = ",".join(dict.fromkeys(c.status for c in candidates))
-            cv2.rectangle(overlaid, (0, 0), (overlaid.shape[1], 38), (0, 0, 0), -1)
-            cv2.putText(
+            self._draw_aim_header(
                 overlaid,
-                f"DIR {shot.dir_idx} | LAYER {shot.layer.upper()} | STATUS {statuses.upper()}",
-                (12, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 215, 255), 2)
+                f"DIR {shot.dir_idx} | {shot.layer.upper()} | {statuses.upper()}")
             path = os.path.splitext(shot.snapshot_path)[0] + "_aim.png"
             if not cv2.imwrite(path, overlaid):
                 self.logger.warning("AIM overlay write failed: %s", path)
@@ -3107,11 +3112,9 @@ class Bot:
                 diagnostics.append_snapshot_index(cfg.log_dir, label, path)
             except Exception as exc:
                 self.logger.warning("AIM overlay index failed (%s): %s", path, exc)
-            best = max(candidate.score for candidate in candidates)
-            caption = (f"方位 {shot.dir_idx}｜層 {shot.layer}｜狀態 {statuses}")
-            out.append((best, caption, path))
-        out.sort(key=lambda item: -item[0])
-        return [(caption, path) for _, caption, path in out]
+            numbers = tuple(sorted(c.number for c in candidates))
+            out.append((numbers, shot.dir_idx, shot.layer, path))
+        return out
 
     # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
     def _tick_remote_aim(self, frame, reply):

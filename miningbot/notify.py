@@ -66,11 +66,12 @@ def format_message(rec) -> str | None:
 
 # 人工介入分組截圖的群標題（Discord「先聊天框、再背包」分開發送用；
 # D3 超時（有框）路徑另有 tracker 群＝追蹤框現況，排最前）
+# 近失候選（aim）群改由 remote_aim.build_aim_groups 直接產 caption，
+# 走本表 fallback（get(region, region)），不再登記於此。
 _REGION_CAPTIONS = {
     "tracker": "🎯 追蹤框（現況）",
     "chat": "📨 聊天框（前 / 後）",
     "backpack": "🎒 背包（前 / 後）",
-    "aim": "🎯 近失候選（回編號射擊，如 `2`；或 `方位 格子` 如 `5 C3`；`跳過` 回挖礦）",
 }
 
 
