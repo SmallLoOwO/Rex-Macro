@@ -3950,6 +3950,10 @@ class Bot:
 
     def _rr_finalize(self, outcome):
         """episode 收尾：刪 embed 卡片、寫 ledger 一行、清 context/pending。"""
+        # 收尾主動立遙控器重貼旗標（2026-07-19 spec）：完成訊息若在狀態仍是 REENTRY
+        # 的輪次被輪詢消費，解凍後頻道再無新訊息、「看到新訊息才重貼」永不成立——
+        # 遙控器一直埋在上面。旗標制不依賴輪詢看到哪則訊息，競態消失。
+        self._remote_repin.mark_pending()
         self._rr_open_first_ts = 0.0             # episode 收尾清探測狀態
         # Task 4：episode 結束收走 embed 卡片（避免殘留一堆死卡）。放在 ctx 清除前，
         # 即使 ctx 已 None（防禦性呼叫）也能清掉殘留 embed。

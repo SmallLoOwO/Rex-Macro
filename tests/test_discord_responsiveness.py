@@ -446,3 +446,32 @@ def test_repin_tick_reentry_rr_card_and_busy_gate(monkeypatch):
     bot._repin_tick([], 211.0)
     assert bot.reposted == ["rr"]
     assert bot._remote_repin.pending is False           # REENTRY 中遙控器旗標由收尾立
+
+
+def test_rr_finalize_marks_remote_repin_pending():
+    """回礦收尾必須主動立遙控器重貼旗標——完成訊息被 REENTRY 輪次消費後頻道
+    再無新訊息，舊「看到新訊息才重貼」永不觸發（2026-07-19 使用者實測）。"""
+    bot = Bot.__new__(Bot)
+    bot._rr_open_first_ts = 1.0
+    bot._rr_embed_mid = None                  # 無殘留卡 → 不走 delete_message
+    bot._rr_reactions_seen = {}
+    bot._rr_last_min = 3
+    bot._rr_ctx = None                        # ctx=None 防禦路徑也要立旗標
+    bot._pending_reentry = None
+    bot._remote_repin = notify.RepinDebouncer()
+    bot.log_discord = _LogRecorder()
+
+    bot._rr_finalize("success")
+
+    assert bot._remote_repin.pending is True
+
+
+def test_remote_reposts_after_reentry_finalize_without_new_message(monkeypatch):
+    """收尾旗標＋安靜窗：完成後即使頻道再無新訊息，安靜滿也自動重貼遙控器。"""
+    bot = _bare_repin_bot(monkeypatch)                 # state=MINING（已離開 REENTRY）
+    bot._remote_repin.note_activity(300.0)             # 「⛏ 回礦完成」被輪詢看到的那輪
+    bot._remote_repin.mark_pending()                   # ＝_rr_finalize 立的旗標
+    bot._repin_tick([], 303.9)
+    assert bot.reposted == []
+    bot._repin_tick([], 304.0)
+    assert bot.reposted == ["remote"]
