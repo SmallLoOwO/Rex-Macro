@@ -3118,7 +3118,8 @@ class Bot:
 
     # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
     def _tick_remote_aim(self, frame, reply):
-        """消費一則瞄準回覆（主迴圈執行緒）。skip→回挖礦；candidate/grid→對齊+重掃+開火+驗證。
+        """消費一則瞄準回覆（主迴圈執行緒）。skip→回挖礦；manual→重掃＋全方位圖；
+        candidate/grid→對齊+重掃+開火+驗證。
 
         一發＝一次 D3＋一個 verify 窗口，不自動 RETRY/RESWEEP（spec：要不要再射由使用者決定，
         每次回報附最新截圖）。全程 remote_aim_budget_s 預算防卡死。
@@ -3131,6 +3132,13 @@ class Bot:
             self._aim_context = None
             self.human_cleared = True          # 下 tick decide_transition 回 MINING（同 resume）
             notify.send_message(token, ch, "▶️ 跳過這顆，回挖礦")
+            return
+        if reply.kind == "manual":
+            self._aim_busy = True
+            try:
+                self._execute_manual_survey(ctx)
+            finally:
+                self._aim_busy = False
             return
         # 解目標 (層, 方位, 位置先驗)
         if reply.kind == "candidate":
@@ -3163,6 +3171,85 @@ class Bot:
                 notify.send_images_message(token, ch, msg, paths)
             else:
                 notify.send_message(token, ch, msg)
+
+    def _execute_manual_survey(self, ctx):
+        """手動最後手段（2026-07-19 spec §4）：現場重按 D2＋確認生效 → 8 方位各拍一張
+        （效果窗內＝手動圖的 D2 保證）→ 疊網格＋DIR 標頭 → 4 張/則發送＋格子瞄準說明。
+
+        只拍 mid 層（`5U C3`/`5D C3` 盲射語法仍可用）、不開火；失敗回報後不自動重試
+        （有界），_aim_context 保留等下一則回覆。姿態記帳走 ctx.pose_net_rotations，
+        旋轉被吃不計（同 fire 路徑慣例）——轉滿 8 次回原方位。
+        """
+        from . import notify
+        import cv2
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        hid = ctx.harvest_id
+        deadline = time.time() + cfg.remote_aim_budget_s
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "❌ 無法聚焦 Roblox，可再回 `手動` 重試或 `跳過`")
+            return
+        if self._mine_resetting:
+            notify.send_message(token, ch, "❌ 礦坑重置中，`跳過` 回挖礦")
+            return
+        if ctx.pose_pitch_layer != "mid":
+            ok = self._pitch_drag_verified(
+                f"[{hid}] MANUAL 俯仰歸位",
+                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                       cfg.sweep_pitch_center_back_px))
+            ctx.pose_pitch_layer = "mid"   # reset 至少跑過，保守記歸位（同 fire 路徑）
+            if not ok:
+                notify.send_message(token, ch, "❌ 俯仰歸位被吃，可再回 `手動` 重試或 `跳過`")
+                return
+        harvester.prepare_scan()
+        harvester.execute_scan()           # 重按 D2：手動圖必須在掃描效果窗內拍
+        if not self._confirm_scan("remote-aim-manual"):
+            notify.send_message(token, ch, "❌ 掃描未生效，可再回 `手動` 重試或 `跳過`")
+            return
+        snaps = {}                          # {abs_dir: 原幀快照路徑}；被吃重拍同方位保留最新
+        for _ in range(8):
+            if time.time() > deadline:
+                self.logger.warning("[%s] MANUAL survey 預算用盡（拍到 %d 方位）",
+                                    hid, len(snaps))
+                break
+            abs_dir = ctx.pose_net_rotations % 8
+            frame = capture.grab()
+            path = self._hsnap(frame, f"manual_survey_dir{abs_dir}")
+            if path:
+                snaps[abs_dir] = path
+            if self._rotate_verified(1):
+                ctx.pose_net_rotations += 1
+        rendered = []
+        wait_deadline = time.monotonic() + cfg.remote_aim_snapshot_wait_s
+        for abs_dir in sorted(snaps):
+            path = snaps[abs_dir]
+            remaining = max(0.0, wait_deadline - time.monotonic())
+            if not self._wait_snapshot_ready(path, remaining):
+                self.logger.warning("MANUAL snapshot missing: %s", path)
+                continue
+            image = cv2.imread(path)
+            if image is None:
+                self.logger.warning("MANUAL snapshot unreadable: %s", path)
+                continue
+            remote_aim.draw_grid(image)
+            self._draw_aim_header(image, f"DIR {abs_dir} | MID")
+            out_path = os.path.splitext(path)[0] + "_manual.png"
+            if not cv2.imwrite(out_path, image):
+                self.logger.warning("MANUAL overlay write failed: %s", out_path)
+                continue
+            try:
+                diagnostics.append_snapshot_index(
+                    cfg.log_dir, f"{hid}_manual_survey_dir{abs_dir}", out_path)
+            except Exception as exc:
+                self.logger.warning("MANUAL overlay index failed (%s): %s", out_path, exc)
+            rendered.append(out_path)
+        if not rendered:
+            notify.send_message(token, ch, "❌ 全方位快照失敗，可再回 `手動` 重試或 `跳過`")
+            return
+        for i in range(0, len(rendered), 4):
+            caption = (remote_aim.MANUAL_SURVEY_HELP if i == 0
+                       else "🧭 手動瞄準（續）")
+            notify.send_images_message(token, ch, caption, rendered[i:i + 4])
+        self.log_discord.info("MANUAL survey -> %d 方位圖已發", len(rendered))
 
     def _execute_remote_fire(self, ctx, tgt_layer, tgt_dir, prior):
         """對齊姿態 → 重新 D2 掃描 → ROI 放寬重找 → 開火 → 聊天驗證。回 (confirmed, 說明)。
