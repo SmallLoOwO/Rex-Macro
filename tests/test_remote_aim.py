@@ -3,7 +3,9 @@ from miningbot import remote_aim
 from miningbot.remote_aim import (AimCandidate, SweepShot, TargetObservation,
                                   build_aim_context, pick_recovery_observation,
                                   grid_cell_center, draw_overlay, parse_reply,
-                                  plan_alignment, circled, format_candidate_summary)
+                                  plan_alignment, circled, format_candidate_summary,
+                                  build_aim_groups, AIM_GROUP_HEADER,
+                                  MANUAL_SURVEY_HELP)
 
 
 def _shot(layer, d, rejects):
@@ -262,6 +264,42 @@ class TestFormatCandidateSummary:
 
     def test_empty_candidates(self):
         assert format_candidate_summary([]) == ""
+
+
+class TestBuildAimGroups:
+    def test_sorted_by_min_number_and_batched_by_four(self):
+        # 依各圖最小候選編號升冪 → ① 的圖必在首組首張（最優快速重採入口）
+        rendered = [((5, 6), 3, "mid", "d3.png"),
+                    ((1,), 5, "mid", "d5.png"),
+                    ((2, 3), 0, "mid", "d0.png"),
+                    ((4,), 7, "up", "d7.png"),
+                    ((7,), 2, "mid", "d2.png")]
+        groups = build_aim_groups(rendered, "總表內容")
+        assert len(groups) == 2
+        cap0, paths0 = groups[0]
+        assert paths0 == ["d5.png", "d0.png", "d7.png", "d3.png"]
+        assert cap0 == f"{AIM_GROUP_HEADER}\n總表內容"
+        cap1, paths1 = groups[1]
+        assert paths1 == ["d2.png"]
+        assert cap1.startswith("🎯 近失候選（續）")
+        assert "⑦" in cap1 and "DIR2" in cap1
+
+    def test_single_group_header_and_summary(self):
+        groups = build_aim_groups([((1,), 0, "mid", "a.png")], "line")
+        assert groups == [(f"{AIM_GROUP_HEADER}\nline", ["a.png"])]
+
+    def test_empty_summary_header_only(self):
+        groups = build_aim_groups([((1,), 0, "mid", "a.png")], "")
+        assert groups == [(AIM_GROUP_HEADER, ["a.png"])]
+
+    def test_empty_rendered(self):
+        assert build_aim_groups([], "x") == []
+
+    def test_header_offers_number_skip_manual_but_not_grid(self):
+        # 指令降級（spec §1/§5）：格子語法不在群標題，只在手動模式 caption
+        assert "手動" in AIM_GROUP_HEADER and "跳過" in AIM_GROUP_HEADER
+        assert "C3" not in AIM_GROUP_HEADER
+        assert "C3" in MANUAL_SURVEY_HELP and "5U C3" in MANUAL_SURVEY_HELP
 
 
 def test_recovery_prefers_latest_fired_then_accepted_then_seen_once():

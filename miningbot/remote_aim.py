@@ -200,6 +200,35 @@ def format_candidate_summary(candidates) -> str:
     return "\n".join(lines)
 
 
+AIM_GROUP_HEADER = ("🎯 近失候選——回編號（如 `2`）腳本自動對齊射擊；"
+                    "`跳過` 回挖礦；`手動` 最後手段（重掃＋全方位圖）")
+MANUAL_SURVEY_HELP = ("🧭 手動瞄準（D2 已重掃、效果窗內實況）——回 `方位 格子` 射擊："
+                      "`5 C3`＝DIR5 的 C3 格；`5U C3`/`5D C3`＝上/下層（盲射）；"
+                      "`跳過` 回挖礦")
+
+
+def build_aim_groups(rendered, summary: str, batch: int = 4) -> list:
+    """疊圖批次切分（4 張/組）＋caption 組字（純函式）。
+
+    rendered = [(candidate_numbers, dir_idx, layer, path), ...]（numbers 非空）。
+    依各圖最小候選編號升冪——① 的圖必在首組首張。首組 caption＝群標題＋總表
+    （notify.format_group_messages 的 fallback 直接把組名當 caption 用），
+    續組列出該批編號與 DIR，解決「不知道哪個數字是哪張圖」。
+    """
+    items = sorted(rendered, key=lambda r: min(r[0]))
+    out = []
+    for i in range(0, len(items), batch):
+        chunk = items[i:i + batch]
+        if i == 0:
+            caption = AIM_GROUP_HEADER + (f"\n{summary}" if summary else "")
+        else:
+            nums = "".join(circled(n) for r in chunk for n in sorted(r[0]))
+            dirs = "・".join(f"DIR{r[1]}" for r in chunk)
+            caption = f"🎯 近失候選（續）：{nums}｜{dirs}"
+        out.append((caption, [r[3] for r in chunk]))
+    return out
+
+
 def draw_grid(img, cols: int = 6, rows: int = 4) -> None:
     """in-place 疊半透明格線＋格代碼（A1..）。draw_overlay 與 reentry_remote 共用。"""
     import cv2
