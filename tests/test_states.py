@@ -24,6 +24,19 @@ def test_harvesting_done_returns_to_mining():
 def test_harvesting_failed_goes_human():
     assert decide_transition(State.HARVESTING, obs(harvest_failed=True)) == State.NEEDS_HUMAN
 
+def test_harvesting_during_reset_returns_to_reset_wait():
+    # H051（2026-07-19 092 實錄）：重置倒數中 chill 轉 HARVESTING，掃描時礦坑已清場
+    # → giveup 走 NEEDS_HUMAN 卡死 36 分鐘，重置回礦鏈斷頭。重置 pending 時採集收尾
+    # （成敗皆然）回 RESET_WAIT，讓既有 reset_complete → REENTRY 鏈接手。
+    assert decide_transition(State.HARVESTING,
+                             obs(harvest_failed=True, mine_resetting=True)) == State.RESET_WAIT
+    assert decide_transition(State.HARVESTING,
+                             obs(harvest_done=True, mine_resetting=True)) == State.RESET_WAIT
+
+def test_harvesting_in_progress_stays_despite_reset():
+    # H051 邊界：採集進行中（尚無成敗）不被重置旗標打斷——episode 有自己的 giveup 時限
+    assert decide_transition(State.HARVESTING, obs(mine_resetting=True)) == State.HARVESTING
+
 def test_human_stays_until_cleared():
     assert decide_transition(State.NEEDS_HUMAN, obs()) == State.NEEDS_HUMAN
     assert decide_transition(State.NEEDS_HUMAN, obs(human_cleared=True)) == State.MINING

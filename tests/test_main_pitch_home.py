@@ -79,9 +79,9 @@ def test_rr_success_order_home_finalize(monkeypatch):
     assert bot._reentry_done is True
 
 
-# ===== H048：開場鏈俯仰歸位 prepare＋被吃重試（2026-07-18）=====
-def test_rr_open_pitch_retry_on_eaten(monkeypatch):
-    """開場鏈與其他俯仰路徑同規格：prepare → 量測 → 被吃再 prepare 重試一次。"""
+# ===== H048/H052：開場鏈俯仰歸位——重試與成敗只認凍結探針（2026-07-19）=====
+def _rr_open_gate_bot(monkeypatch, measured_results):
+    """開場鏈最小 Bot：俯仰量測按 measured_results 依序回，記錄 prepare/attempt/notify。"""
     bot = Bot.__new__(Bot)
     bot.logger = _LogRecorder()
     bot._focus_roblox = lambda: True
@@ -91,28 +91,50 @@ def test_rr_open_pitch_retry_on_eaten(monkeypatch):
         episode_id=3, created_at=0.0, sticky_layer="L", trigger="manual")
     bot._rr_ensure_ctx = lambda reroll: None
     bot._rr_pitch_back_px = None
-    prepares, attempts, notes = [], [], []
-    bot._sampler_pitch_prepare = lambda: prepares.append(1)
+    bot._pitch_offset_px = 0
+    bot.prepares, bot.attempts, bot.notes, bot.sweeps = [], [], [], []
+    bot._sampler_pitch_prepare = lambda: bot.prepares.append(1)
 
     def measured(label, drag):
-        attempts.append(label)
-        return (False, 2.0, 0.03)          # 被吃但非凍結（夜間地表家族）
+        bot.attempts.append(label)
+        return measured_results[len(bot.attempts) - 1]
     bot._pitch_drag_measured = measured
     bot._maybe_arm_chime = lambda pct: None
-    bot._rr_notify = lambda msg, **kw: notes.append(msg)
-    bot._rr_sweep_and_send = lambda **kw: None
+    bot._rr_notify = lambda msg, **kw: bot.notes.append(msg)
+    bot._rr_sweep_and_send = lambda **kw: bot.sweeps.append(1)
     bot._rr_embed_mid = None
     bot._rr_post_embed = lambda: None
+    bot.last_action = ""
+    monkeypatch.setattr(main.cfg, "reentry_pitch_back_px", 400)
     monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
     monkeypatch.setattr(main.capture, "crop", lambda f, region: f)
     monkeypatch.setattr(main.ocr, "read_depth_is_surface", lambda img, path: True)
+    return bot
 
+
+def test_rr_open_pitch_dark_low_diff_is_success(monkeypatch):
+    """H052（RR#7 實錄 mean=4.64/2.34 誤判被吃）：eaten 門檻是白天礦內兩側夾
+    （被吃 ≤3.29 vs 生效 ≥32.5），夜間地表真動只有 0.93~5.13 落在中間——歸位冪等，
+    生效後重做畫面必然不變，eaten 判定對歸位無意義。開場鏈成敗只認凍結探針
+    （H046 兩側夾：凍結 0.00/0.0000 vs 活著最小 0.09/0.0004）：非凍結＝生效，
+    不重試、不發「疑似被吃」、記帳照同步。"""
+    bot = _rr_open_gate_bot(monkeypatch, [(False, 2.0, 0.03)])
     bot._rr_open_episode()
+    assert len(bot.attempts) == 1          # 非凍結＝生效，不再白拖第二輪（RR#7 每輪 ~20s）
+    assert not any("疑似被吃" in n for n in bot.notes)
+    assert bot._pitch_offset_px == 400     # 記帳同步（誤判被吃時曾脫鉤——卡面/存檔讀它）
+    assert bot.sweeps == [1]
 
-    assert len(attempts) == 2              # 被吃重試一次即止
-    assert "attempt 1" in attempts[0] and "attempt 2" in attempts[1]
-    assert len(prepares) == 3              # 首次 prepare＋兩次失敗後各一次
-    assert any("疑似被吃" in n for n in notes)   # 只警告不擋拍照（H046 語意不變）
+
+def test_rr_open_pitch_frozen_retries_then_defers(monkeypatch):
+    """真凍結（H044/H046：逐位元 0.00）才 prepare 重試；兩次都凍結 → 開場閘擋拍照。"""
+    bot = _rr_open_gate_bot(monkeypatch, [(False, 0.0, 0.0), (False, 0.0, 0.0)])
+    bot._rr_open_episode()
+    assert len(bot.attempts) == 2          # 凍結重試一次即止
+    assert "attempt 1" in bot.attempts[0] and "attempt 2" in bot.attempts[1]
+    assert len(bot.prepares) == 3          # 首次 prepare＋兩次凍結後各一次
+    assert bot.sweeps == []                # gate=frozen：不拍照，回探測迴圈
+    assert bot._pitch_offset_px == 0       # 凍結不記帳
 
 
 def test_rr_open_pitch_no_retry_when_ok(monkeypatch):
@@ -200,6 +222,7 @@ def _rr_pitch_bot(monkeypatch):
     bot.logger = _LogRecorder()
     bot._sampler_pitch_prepare = lambda: None
     bot._pitch_drag_verified = lambda label, drag: True
+    bot._pitch_drag_measured = lambda label, drag: (True, 19.7, 0.31)
     bot.notes = []                               # [(msg, kwargs)]
     bot._rr_notify = lambda msg, **kw: bot.notes.append((msg, kw))
     bot._rr_sync_write = lambda img, label: "shot.png"
@@ -233,6 +256,43 @@ def test_rr_pitch_reset_clears_session_back(monkeypatch):
     bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
     assert bot._pitch_offset_px == 400
     assert bot._rr_pitch_back_px is None
+
+
+def test_rr_pitch_reset_dark_low_diff_is_success(monkeypatch):
+    """H052：`歸位` 指令與開場鏈同語意——非凍結（夜間地表 mean 2.0 級）＝生效，
+    一次即止、✅ 回覆、記帳同步；不再回「⚠ 仰角歸位疑似被吃」誤導。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    calls = []
+
+    def measured(label, drag):
+        calls.append(label)
+        return (False, 2.0, 0.03)          # eaten 門檻下「被吃」、凍結探針下活著
+    bot._pitch_drag_measured = measured
+    bot._pitch_offset_px = 111
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
+    assert len(calls) == 1
+    assert bot._pitch_offset_px == 400
+    assert bot.notes and "✅" in bot.notes[-1][0]
+
+
+def test_rr_pitch_reset_frozen_warns_after_retry(monkeypatch):
+    """真凍結（0.00 逐位元）：重試一次仍凍結 → ⚠ 警告、不動記帳。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    calls = []
+
+    def measured(label, drag):
+        calls.append(label)
+        return (False, 0.0, 0.0)
+    bot._pitch_drag_measured = measured
+    bot._pitch_offset_px = 111
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
+    assert len(calls) == 2
+    assert bot._pitch_offset_px == 111
+    assert bot.notes and "疑似被吃" in bot.notes[-1][0]
 
 
 def test_rr_pitch_attaches_confirm_shot(monkeypatch):

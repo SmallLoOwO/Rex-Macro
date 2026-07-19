@@ -47,3 +47,36 @@ def test_teleport_pair_above_both_thresholds():
     a, b = _pair("h044_teleport_a.png", "h044_teleport_b.png")
     assert vision.frame_mean_diff(a, b) >= cfg.reentry_teleport_diff
     assert vision.frames_changed_frac(a, b) >= cfg.reentry_teleport_frac
+
+
+# ===== H050：放大圖漂移守門（2026-07-19 ep7 實錄裁圖）=====
+# sweep 快照（19:35:44 dir1）與 `1 E2` 現場截圖（19:38:33）面向差 ~6°：使用者按
+# 快照選的 E2 格（傳送板）在現場放大圖裡跑到右緣外——「放大圖不是指定的放大圖」。
+# 兩側夾（E2 粗格 320×270，vision 實作重現）：真漂移 29.66（F2 側 21.6）vs
+# 同面向差 3 秒 E2 0.04、idle 晃動最大格 D2 3.14。門檻沿用 reentry_remote_drift_diff
+# =12.0（_rr_click 點擊守門同語意同區域大小）。
+
+def test_h050_zoom_drift_detected_on_facing_offset():
+    snap, live = _pair("h050_zoom_dir1_e2_snap.png", "h050_zoom_dir1_e2_live_drift.png")
+    from miningbot import reentry_remote
+    assert reentry_remote.zoom_drifted(snap, live, cfg.reentry_remote_drift_diff) is True
+
+
+def test_h050_zoom_no_drift_on_static_cell_3s_apart():
+    snap, later = _pair("h050_zoom_dir1_e2_snap.png", "h050_zoom_dir1_e2_snap_3s.png")
+    from miningbot import reentry_remote
+    assert reentry_remote.zoom_drifted(snap, later, cfg.reentry_remote_drift_diff) is False
+
+
+def test_h050_zoom_no_drift_on_idle_wobble_cell():
+    # D2＝角色 idle 晃動所在格（無漂移側最高 3.14）——不可誤判成漂移
+    snap, later = _pair("h050_zoom_dir1_d2_snap.png", "h050_zoom_dir1_d2_snap_3s.png")
+    from miningbot import reentry_remote
+    assert reentry_remote.zoom_drifted(snap, later, cfg.reentry_remote_drift_diff) is False
+
+
+def test_h050_zoom_drift_none_snapshot_is_not_drift():
+    # 快照讀不到（檔案被清/佇列滿沒寫）→ 不守門，照現行行為發圖
+    live = _read("h050_zoom_dir1_e2_live_drift.png")
+    from miningbot import reentry_remote
+    assert reentry_remote.zoom_drifted(None, live, cfg.reentry_remote_drift_diff) is False

@@ -850,8 +850,13 @@ class Bot:
                 return
 
     def _check_reset(self, frame) -> bool:
-        """讀重置偵測快取。OCR 本體已移背景 worker（_banner_ocr_loop），不再卡主迴圈。"""
-        if self.state is not State.MINING:
+        """讀重置偵測快取。OCR 本體已移背景 worker（_banner_ocr_loop），不再卡主迴圈。
+
+        H051：HARVESTING 也讀——worker 在該狀態不跑，快取凍住＝「進採集前重置已偵測」，
+        decide_transition 靠它把採集收尾導回 RESET_WAIT（RESET_WAIT/REENTRY/NEEDS_HUMAN
+        各分支不讀此旗標，維持 False 不影響）。
+        """
+        if self.state not in (State.MINING, State.HARVESTING):
             return False
         return self._mine_resetting
 
@@ -3085,6 +3090,18 @@ class Bot:
         if groups:
             self._needs_human_extra_meta["image_groups"] = groups
 
+        # H051（092 實錄）：重置倒數中 chill 搶先採集，掃描期間礦坑清場 → 掃描全空
+        # 是重置的正常結果，不是「礦被挖走」。NEEDS_HUMAN 會卡死（banner worker 不在
+        # 該狀態跑、無人清旗標、reset_complete 永不成立）——回 RESET_WAIT 讓既有
+        # reset_complete → REENTRY 鏈接手（比照 _rr_abort_reset）。
+        if self._mine_resetting:
+            self._needs_human_extra_meta = {}
+            self.logger.info("[%s] 採集放棄但礦坑重置 pending -> 回 RESET_WAIT（不交人工）",
+                             self.harvest.harvest_id)
+            self.state = State.RESET_WAIT
+            self._on_enter(State.RESET_WAIT, frame)
+            return
+
         self.state = State.NEEDS_HUMAN
         self._on_enter(State.NEEDS_HUMAN, frame)
 
@@ -3813,6 +3830,14 @@ class Bot:
         遠端 fire 用 _pitch_drag_verified 直跑）。pickup 動畫等待也由呼叫端先跑。
         """
         harvester.restore_view(net_rotations, rotate=self._rotate_verified)
+        # H051：重置 pending（RESET_WAIT/MINING 因 chill 搶先採集）時採到了也不回
+        # MINING——礦坑倒數中/已清場，init_mining 會對著重置後畫面空挖且 _on_enter(MINING)
+        # 會清 _mine_resetting 旗標、重置回礦鏈斷頭。回 RESET_WAIT 等 reset_complete。
+        if self._mine_resetting:
+            self.logger.info("採集收尾但礦坑重置 pending -> 回 RESET_WAIT（不 init 挖礦）")
+            self.state = State.RESET_WAIT
+            self._on_enter(State.RESET_WAIT, capture.grab())
+            return
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
         miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
@@ -4234,18 +4259,23 @@ class Bot:
             self._rr_pitch_back_px, cfg.reentry_pitch_back_px,
             cfg.reentry_pitch_clamp_px)
         self._sampler_pitch_prepare()
-        pitch_ok, p_mean, p_frac = False, 0.0, 0.0
+        # H052（RR#7 實錄 mean=4.64/2.34 誤判）：重試與成敗只認凍結探針，不用 eaten
+        # 門檻——eaten 是白天礦內兩側夾（被吃 ≤3.29 vs 生效 ≥32.5），夜間地表真動
+        # 只有 0.93~5.13 落在「被吃」區間；且歸位冪等，生效後重做畫面必然不變，
+        # eaten 判定對歸位無意義。誤判的實害＝白拖一輪 ~20s、「角度可能偏」誤導
+        # 警告、_pitch_offset_px 記帳脫鉤（卡面俯仰行/`存檔` 讀它）。
+        frozen, p_mean, p_frac = True, 0.0, 0.0
         for attempt in (1, 2):
-            pitch_ok, p_mean, p_frac = self._pitch_drag_measured(
+            _eaten_ok, p_mean, p_frac = self._pitch_drag_measured(
                 f"[RR#{self._rr_ctx.episode_id}] 俯仰歸位(attempt {attempt})",
                 lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px, back_px))
-            if pitch_ok:
+            frozen = reentry_remote.probe_frozen(
+                p_mean, p_frac, cfg.reentry_frozen_mean_max, cfg.reentry_frozen_frac_max)
+            if not frozen:                   # 非凍結＝歸位生效（凍結 0.00 vs 活著 ≥0.09）
                 break
             self._sampler_pitch_prepare()
-        if pitch_ok:
+        if not frozen:
             self._pitch_offset_px = back_px  # 記帳同步：回礦卡俯仰行/快照 sidecar 讀它
-        frozen = reentry_remote.probe_frozen(
-            p_mean, p_frac, cfg.reentry_frozen_mean_max, cfg.reentry_frozen_frac_max)
         on_surface = None
         cap_pct = None
         if not frozen:
@@ -4272,9 +4302,8 @@ class Bot:
             self.last_action = f"回礦開場閘未過（{gate}），等畫面活過來"
             return
         self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
-        if not pitch_ok:
-            self._rr_notify("⚠ 俯仰歸位疑似被吃；圖照發，角度可能偏"
-                            "（回 `歸位` 或 `上|下 [px]` 修正後 📷 重掃）")
+        # H052：舊「俯仰歸位疑似被吃」警告已移除——非凍結＝生效（誤報來源），
+        # 真凍結由 plan_opening_gate 擋在拍照前，不會走到這裡。
         self._rr_sweep_and_send()
         # Task 4：sweep 發圖後貼 embed 卡片（首次貼；reroll 時 edit 同一則）
         if self._rr_embed_mid:
@@ -4321,6 +4350,7 @@ class Bot:
         ctx.shots = []
         pairs = []                                # [(dir_idx, grid_path)]
         zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
+        rot_missed = 0
         for i in range(8):
             if self._mine_resetting:
                 return                            # 上層 tick 下一輪處理 reset
@@ -4333,11 +4363,20 @@ class Bot:
             gpath = self._rr_sync_write(grid_img,
                                         f"reentry_ep{ctx.episode_id}_dir{i + 1}_grid{zs}")
             pairs.append((i, gpath))
-            self._rotate_verified(1)              # 8 次右轉＝轉滿一圈回原向；cur_dir 座標系不變
+            # 8 次右轉＝轉滿一圈回原向；cur_dir 座標系不變。H050：重試用盡仍沒轉時
+            # 之後的 dir 標籤全部錯位、收尾面向≠開場面向（`方位 粗格` 會轉錯）——
+            # 拍照照拍（至少有圖可看），但記數警告，讓使用者知道標籤不可信。
+            if not self._rotate_verified(1):
+                rot_missed += 1
         head = (prefix_msg or
                 f"⛏ 回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}\n"
                 f"回 `方位 粗格`（如 `3 C2`，方位 1-8）指位；`重骰` 換重生點；"
                 f"`歸位`/`上|下 [px]` 調視角；`層 <名>` 改目標層；`跳過` 回挖礦")
+        if rot_missed:
+            self.logger.warning("[RR#%s] 八方位拍照有 %d 次旋轉重試用盡未生效——方位標籤已錯位",
+                                ctx.episode_id, rot_missed)
+            head = (f"⚠ 八方位拍照中有 {rot_missed} 次旋轉未生效——方位標籤可能偏，"
+                    f"建議 📷 重掃\n") + head
         batch = [p for _, p in pairs if p]
         self._rr_notify(head + "\n方位 1-4", image_paths=batch[:4])
         if len(batch) > 4:
@@ -4407,11 +4446,16 @@ class Bot:
         """
         self._sampler_pitch_prepare()
         if reply.kind == "pitch_reset":
+            # H052：成敗只認凍結探針（與開場鏈同語意）——歸位冪等，eaten 門檻在
+            # 夜間地表/已歸位重做時必誤判「被吃」，✅/⚠ 回覆與記帳曾因此反向。
             for attempt in (1, 2):
-                if self._pitch_drag_verified(
-                        f"[RR#{ctx.episode_id}] 仰角歸位(attempt {attempt})",
-                        lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
-                                               cfg.reentry_pitch_back_px)):
+                _eaten_ok, p_mean, p_frac = self._pitch_drag_measured(
+                    f"[RR#{ctx.episode_id}] 仰角歸位(attempt {attempt})",
+                    lambda: ic.pitch_reset(cfg.reentry_pitch_clamp_px,
+                                           cfg.reentry_pitch_back_px))
+                if not reentry_remote.probe_frozen(
+                        p_mean, p_frac, cfg.reentry_frozen_mean_max,
+                        cfg.reentry_frozen_frac_max):
                     self._pitch_offset_px = cfg.reentry_pitch_back_px
                     self._rr_pitch_back_px = None   # 歸位＝回 config 標準角，重骰改用現值
                     self._rr_notify(f"✅ 仰角已歸位（夾限上 {self._pitch_offset_px}px；"
@@ -4496,14 +4540,29 @@ class Bot:
             return
         f = capture.grab()
         region = reentry_remote.coarse_cell_region(cell)
+        x, y, rw, rh = region
+        # 漂移守門（H050）：sweep 快照（使用者選格的依據）vs 現場同格。八方位轉滿
+        # 一圈的殘差/斜坡滑移可讓面向偏 ~6°（ep7 實錄：E2 的傳送板在現場跑出格外，
+        # 「放大圖不是指定的放大圖」）。放大圖仍發現場畫面——點擊座標以現況為準，
+        # 裁快照反而會點錯——但要讓使用者知道格線可能對不上、可 📷 重掃。
+        drift_note = ""
+        snap_path = next((p for i, p in ctx.shots if i == tgt_dir % 8), "")
+        snap = cv2.imread(snap_path) if snap_path else None
+        snap_crop = snap[y:y + rh, x:x + rw] if snap is not None else None
+        if reentry_remote.zoom_drifted(snap_crop, f[y:y + rh, x:x + rw],
+                                       cfg.reentry_remote_drift_diff):
+            drift_note = ("⚠ 畫面已偏離八方位圖（掃描後鏡頭殘差/滑動），"
+                          "放大圖以現況為準；格線對不上可 📷 重掃\n")
         zoom = reentry_remote.render_zoom(
             f, region, scale=cfg.reentry_remote_zoom_scale,
             cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
         zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
-        base = os.path.join(self._rr_snap_dir(),
-                            f"ep{ctx.episode_id}_zoom_{tgt_dir + 1}{cell}{zs}")
+        # 檔名帶時間戳（H050）：同格重複放大不可互相覆蓋（ep7 實錄 E2 重放大只剩
+        # 一份，事後無從比對）；_rr_click/_rr_magnify 讀 ctx.zoom_base 值，不受影響。
+        base = os.path.join(
+            self._rr_snap_dir(),
+            f"ep{ctx.episode_id}_zoom_{tgt_dir + 1}{cell}{zs}_{int(time.time())}")
         os.makedirs(self._rr_snap_dir(), exist_ok=True)
-        x, y, rw, rh = region
         cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])   # 漂移守門基準（同步寫）
         cv2.imwrite(base + ".png", zoom)
         ctx.phase = "awaiting_fine"
@@ -4511,7 +4570,8 @@ class Bot:
         ctx.zoom_region = region
         ctx.zoom_base = base                      # _rr_click 讀回（不重組字串）
         self._rr_notify(
-            f"🔍 方位 {tgt_dir + 1} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
+            drift_note
+            + f"🔍 方位 {tgt_dir + 1} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
             f"要換層回 `B3 <層名>`；太小回 `放大 <細格>` 再放大",
             image_paths=[base + ".png"])
 

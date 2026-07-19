@@ -123,6 +123,20 @@ def fine_cell_subregion(region, cell: str, cols: int = 6, rows: int = 6):
             y + GRID_ROWS.index(cell[1]) * sh, sw, sh)
 
 
+def zoom_drifted(snap_crop, live_crop, threshold: float) -> bool:
+    """放大守門（H050）：sweep 快照同格 vs 現場同格的平均差超標＝畫面已偏離方位圖。
+
+    八方位轉滿一圈的殘差/斜坡滑移可讓現場面向偏 ~6°（ep7 實錄 170px），使用者按
+    快照選的格子在現場已是別的內容——放大圖照發（點擊座標以現況為準），但要警告。
+    兩側夾（E2 粗格）：真漂移 29.66/21.6 vs 同面向 3 秒後 0.04、idle 晃動格 3.14；
+    門檻沿用 reentry_remote_drift_diff（_rr_click 點擊守門同語意同區域大小）。
+    快照讀不到（檔案被清/佇列滿沒寫）回 False＝不守門，照現行行為發圖。
+    """
+    from . import vision
+    diff = vision.frames_mean_diff(snap_crop, live_crop)   # None-safe/尺寸不合回 None
+    return diff is not None and diff >= threshold
+
+
 def magnify_scale(region_w: int, target_w: int, base_scale: int, cap: int = 24) -> int:
     """再放大的縮放倍率：輸出寬貼齊首次放大（target_w），上限 cap 防爆圖；異常回 base。"""
     if region_w <= 0 or target_w <= 0:

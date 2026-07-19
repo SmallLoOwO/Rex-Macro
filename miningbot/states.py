@@ -32,10 +32,14 @@ def decide_transition(state: State, o: Observation) -> State:
             return State.REENTRY
         return State.MINING
     if state is State.HARVESTING:
+        # H051：重置 pending（RESET_WAIT 因 chill 轉入、或 MINING 同幀 chill 搶先）時
+        # 收尾一律回 RESET_WAIT——礦坑倒數中/已清場，NEEDS_HUMAN 會卡死（banner worker
+        # 不在該狀態跑、無人清旗標），MINING 則對著已重置的礦坑空挖。回 RESET_WAIT
+        # 讓既有 reset_complete → REENTRY 鏈接手。進行中（尚無成敗）不被打斷。
         if o.harvest_failed:
-            return State.NEEDS_HUMAN
+            return State.RESET_WAIT if o.mine_resetting else State.NEEDS_HUMAN
         if o.harvest_done:
-            return State.MINING
+            return State.RESET_WAIT if o.mine_resetting else State.MINING
         return State.HARVESTING
     if state is State.NEEDS_HUMAN:
         if o.manual_reentry and o.auto_reenter:   # 手動優先於 human_cleared（更明確的意圖）
