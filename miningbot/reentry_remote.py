@@ -23,6 +23,9 @@ _KEYWORDS = {
     "跳過": "skip", "skip": "skip",
     "好": "confirm", "ok": "confirm",
     "作廢": "void", "void": "void",
+    # 2026-07-19：回礦中調好的仰角直接寫回 config 標準角（校準卡在 REENTRY 被拒，
+    # 過去只能事後重校）。裸 `存檔` 比照校準卡詞彙；`仰角 存檔` 同義。
+    "存檔": "pitch_save", "save": "pitch_save",
 }
 _ZOOM_WORDS = {"遠": "zoom_out", "far": "zoom_out", "近": "zoom_in", "near": "zoom_in"}
 _FINE_CELL = re.compile(r"^[A-F][1-6]$")
@@ -57,6 +60,8 @@ def parse_reply(text: str):
         sub = parts[1].lower()
         if sub in ("歸位", "reset") and len(parts) == 2:
             return RemoteReply("pitch_reset")
+        if sub in ("存檔", "save") and len(parts) == 2:
+            return RemoteReply("pitch_save")
         direction = {"上": "up", "up": "up", "下": "down", "down": "down"}.get(sub)
         if direction is None:
             return None
@@ -355,6 +360,9 @@ _PENDING_LABELS = {
     'sweep': '重新掃描',
     'zoom_out': '拉遠鏡頭',
     'zoom_in': '拉近鏡頭',
+    'pitch': '仰角微調',
+    'pitch_reset': '仰角歸位',
+    'pitch_save': '仰角存檔',
     'magnify': '再放大',
     'coarse': '轉向並放大',
     'fine': '點擊並驗證',
@@ -396,7 +404,8 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
     color = _REENTRY_PHASE_COLOR.get(ctx.phase, 0x5865F2)
     evac_tag = "（已撤離至地表）" if evac_done else ""
     pitch_line = ("" if pitch_offset_px is None
-                  else f"**俯仰**：夾限上 {pitch_offset_px}px（`上|下 [px]` 調、`歸位` 回夾限）\n")
+                  else f"**俯仰**：夾限上 {pitch_offset_px}px"
+                       f"（`上|下 [px]` 調、`歸位` 回夾限、`存檔` 寫回標準角）\n")
     return {
         "title": f"⛏ 回礦 #{ctx.episode_id}",
         "description": (
@@ -414,6 +423,16 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
         "footer": {"text": ("手動觸發｜" if ctx.trigger == "manual" else "")
                            + "照片訊息在上方；此卡會隨進度原地更新"},
     }
+
+
+def should_warn_attempts(attempt: int, every: int) -> bool:
+    """人工重骰次數提醒（2026-07-19）：every>0 且 attempt 為其倍數才提醒。
+
+    attempt 無上限設計不變（human-driven）；提醒只是「重生點一直不理想，可
+    `跳過` 或先調視角」的提示。H044 探測 reroll 也會累加 attempt（卡面同一數字），
+    但提醒只掛在使用者 🎲/`重骰` 的執行路徑上，探測不觸發。
+    """
+    return every > 0 and attempt > 0 and attempt % every == 0
 
 
 def reaction_to_reentry_reply(emoji: str):

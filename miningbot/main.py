@@ -1350,12 +1350,13 @@ class Bot:
         # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
         # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
         # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
-        # REENTRY 中整組凍結（2026-07-19 使用者需求）：遙控器功能回礦時用不上（暫停/繼續
-        # ＝跳過、📷 有回礦卡自己的），而八方位發圖會讓釘底邏輯每輪刪舊重貼＝洗版。
-        # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；離開 REENTRY 後第一輪輪詢自動補 PATCH＋重貼。
+        # REENTRY 中釘底凍結（2026-07-19 使用者需求）：遙控器功能回礦時用不上（暫停/繼續
+        # ＝跳過、📷 有回礦卡自己的），八方位發圖會讓釘底邏輯每輪刪舊重貼＝洗版。
+        # 狀態 PATCH 不閘——(paused, state) 變化天然只在進/出 REENTRY 各觸發一次，
+        # 進場那次會把遙控器換成「回礦中，操作請用回礦卡」指引（_build_remote_embed）。
+        # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；REENTRY 中釘底改由回礦卡接手（見下）。
         remote_frozen = self.state is State.REENTRY
-        if (self._remote_message_id and not remote_frozen
-                and self._remote_last_shown != (self.paused, self.state.value)):
+        if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
             self._edit_remote_control()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
@@ -1369,6 +1370,13 @@ class Bot:
         if (self._remote_message_id and not remote_frozen
                 and msgs[0]["id"] != self._remote_message_id):
             self._repost_remote_control()
+        # 回礦卡釘底（2026-07-19 使用者反映「回礦卡沒看到出現」）：卡片過去只原地
+        # PATCH，八方位照片/通知一直往下疊＝卡片被埋在頻道上方。REENTRY 中換回礦卡
+        # 接手釘底：被新訊息擠上去就刪舊貼新。_rr_busy（開場/指令執行、發圖中）不搬，
+        # 掃完後下一輪輪詢一次到位，避免發圖途中卡片反覆彈跳。
+        if (remote_frozen and self._rr_embed_mid and self._rr_ctx is not None
+                and not self._rr_busy and msgs[0]["id"] != self._rr_embed_mid):
+            self._rr_repost_embed()
         newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
         if self._last_discord_msg_id is None:
             # 首次輪詢：只記基準 ID，不處理歷史命令（避免重跑舊指令）
@@ -1432,6 +1440,22 @@ class Bot:
     # ---- 遙控器（單一持久訊息 + 反應按鈕）--------------------------------------
     def _build_remote_embed(self) -> dict:
         """組遙控器 embed。狀態欄同步顯示當前挖 礦狀態 + 暫停旗標，每次編輯都更新。"""
+        if self.state is State.REENTRY:
+            # 2026-07-19：回礦中遙控器功能用不上（暫停/繼續＝跳過、📷 有回礦卡自己的）——
+            # 進 REENTRY 時 (paused, state) 變化天然觸發單次 PATCH 成這張指引卡，之後凍結
+            #（釘底重貼也停，換回礦卡釘底）；離開 REENTRY 再 PATCH 回一般遙控器。
+            return {
+                "title": _REMOTE_TITLE,
+                "description": (
+                    "**狀態**：⛏ 回礦流程中\n"
+                    "\n"
+                    "操作已移至下方 **回礦卡**（顯示 attempt／目標層／俯仰等即時資訊，"
+                    "會釘在頻道底）\n"
+                    "此遙控器暫停即時更新，回礦結束後恢復；▶️/⏸️ 此時＝跳過回挖礦"
+                ),
+                "color": 0x5865F2,
+                "footer": {"text": "回礦結束後恢復即時更新"},
+            }
         running = not self.paused
         status_text = (f"{'🟢 挖礦中' if running else '🔴 已暫停'}"
                        f"　{self.state.value}"
@@ -3937,6 +3961,21 @@ class Bot:
         self._rr_last_min = int((time.time() - ctx.created_at) // 60)
         self.log_discord.info("RR embed posted -> mid=%s (ep=%s)", mid, ctx.episode_id)
 
+    def _rr_repost_embed(self):
+        """刪舊回礦卡、貼新的到頻道底（REENTRY 中的釘底；照抄 _repost_remote_control）。
+
+        在 Discord 輪詢執行緒跑，只做 Discord I/O 不碰遊戲輸入。與主迴圈 finalize 的
+        競態無害：刪除失敗只記 log，_rr_post_embed 內 ctx 已 None 會直接 return。
+        """
+        from . import notify
+        mid = self._rr_embed_mid
+        if mid:
+            ok, detail = notify.delete_message(
+                cfg.discord_bot_token, cfg.discord_channel_id, mid)
+            self.log_discord.info("RR embed repost：刪舊 mid=%s -> %s", mid, detail)
+        self._rr_embed_mid = None
+        self._rr_post_embed()
+
     def _rr_edit_embed(self):
         """原地 PATCH REENTRY embed（不推播）。404/10008 → 重貼（照抄 _edit_remote_control）。"""
         from . import notify
@@ -4200,8 +4239,16 @@ class Bot:
             self._rr_notify("⏭ 跳過，回正常挖礦")
         elif k == "reroll":
             self._rr_open_episode(reroll=True)
+            # 2026-07-19：重骰無上限不變，每 N 次提醒一次「可跳過/先調視角」
+            if self._rr_ctx is not None and reentry_remote.should_warn_attempts(
+                    self._rr_ctx.attempt, cfg.reentry_attempt_warn_every):
+                self._rr_notify(
+                    f"🎲 已重骰 {self._rr_ctx.attempt} 次——重生點一直不理想可 `跳過` "
+                    f"回挖礦，或先 `上|下 [px]`/`遠|近` 調視角再 📷 重掃")
         elif k == "sweep":
             self._rr_sweep_and_send(prefix_msg=f"🔁 回礦 #{ctx.episode_id} 重新八方位掃描")
+        elif k == "pitch_save":
+            self._rr_pitch_save(ctx)
         elif k in ("pitch_reset", "pitch"):
             self._rr_pitch(ctx, reply)
         elif k in ("zoom_out", "zoom_in"):
@@ -4246,10 +4293,12 @@ class Bot:
                     self._pitch_offset_px = cfg.reentry_pitch_back_px
                     self._rr_pitch_back_px = None   # 歸位＝回 config 標準角，重骰改用現值
                     self._rr_notify(f"✅ 仰角已歸位（夾限上 {self._pitch_offset_px}px；"
-                                    f"可 📷 重掃確認）")
+                                    f"附當前畫面，📷 可八方位重掃）",
+                                    image_paths=self._rr_pitch_shot(ctx))
                     return
                 self._sampler_pitch_prepare()
-            self._rr_notify("⚠ 仰角歸位疑似被吃（已重試）；再回一次 `仰角 歸位` 或 📷 看現況")
+            self._rr_notify("⚠ 仰角歸位疑似被吃（已重試）；再回一次 `仰角 歸位` 或 📷 看現況",
+                            image_paths=self._rr_pitch_shot(ctx))
             return
         px = reply.steps or cfg.sample_pitch_step_px
         dy = px if reply.cell == "down" else -px
@@ -4260,7 +4309,55 @@ class Bot:
         arrow = "▼ 下" if dy > 0 else "▲ 上"
         self._rr_notify((f"✅ 仰角{arrow} {px}px" if ok
                          else f"⚠ 仰角{arrow} {px}px 疑似被吃（記帳照調；懷疑沒動就 `仰角 歸位`）")
-                        + f"；目前=夾限上 {self._pitch_offset_px}px；📷 可重掃確認")
+                        + f"；目前=夾限上 {self._pitch_offset_px}px；附當前畫面，"
+                        + "`存檔` 可寫回標準角",
+                        image_paths=self._rr_pitch_shot(ctx))
+
+    def _rr_pitch_shot(self, ctx):
+        """仰角指令後的單張確認截圖（2026-07-19：免手動 📷 八方位重掃就能看角度）。
+
+        只拍當前面向、不轉向；失敗回 None（訊息照發不附圖，不能因截圖擋仰角回覆）。
+        """
+        try:
+            path = self._rr_sync_write(capture.grab(),
+                                       f"reentry_ep{ctx.episode_id}_pitch_check")
+        except Exception as e:
+            self.logger.warning("[RR#%s] 仰角確認截圖失敗：%s", ctx.episode_id, e)
+            return None
+        return [path] if path else None
+
+    def _rr_pitch_save(self, ctx, path: str | None = None):
+        """`存檔`：把目前 session 仰角寫回 config `reentry_pitch_back_px`（2026-07-19 需求）。
+
+        校準卡在 REENTRY 中被拒，回礦裡調出的好角度過去只能事後重校。沿用校準卡
+        寫檔路徑（rewrite_config_value 錨點恰一次才寫；任何失敗不動記憶體 cfg——
+        檔案與記憶體不分岔）。值 clamp [0, 夾限] 與 effective_pitch_back 同語意；
+        寫回後 session 記帳交還標準角（config 現值＝期望值）。
+        """
+        from . import config as config_module
+        fld = "reentry_pitch_back_px"
+        val = max(0, min(self._pitch_offset_px, cfg.reentry_pitch_clamp_px))
+        path = path or config_module.__file__
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                text = f.read()
+            new_text = calibrate_pitch.rewrite_config_value(text, fld, val)
+            if new_text is None:
+                self._rr_notify(f"❌ 存檔失敗：config.py 找不到唯一 `{fld}` 錨點——"
+                                f"請手抄 `{fld} = {val}`")
+                return False
+            # newline="" 保行尾 byte-level 不變（比照 _calib_save）
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_text)
+        except OSError as e:
+            self._rr_notify(f"❌ 存檔失敗：{e}——請手抄 `{fld} = {val}`")
+            return False
+        old = getattr(cfg, fld)
+        setattr(cfg, fld, val)
+        self._rr_pitch_back_px = None
+        self._rr_notify(f"💾 已寫回 `{fld}`：{old} → {val}（重骰/下次回礦即用此角）")
+        self.logger.info("RR 仰角存檔 %s: %d -> %d", fld, old, val)
+        return True
 
     def _rr_zoom(self, ctx, tgt_dir, cell):
         """轉到目標方位、裁粗格放大＋細網格回傳，進「等細格」。"""

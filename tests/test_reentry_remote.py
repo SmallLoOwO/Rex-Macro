@@ -353,6 +353,42 @@ def test_effective_pitch_back_caps_at_clamp_px():
     assert effective_pitch_back(5000, 400, 1500) == 1500
 
 
+# ===== 仰角存檔＋重骰次數提醒（2026-07-19）=====
+from miningbot.reentry_remote import should_warn_attempts
+
+
+def test_parse_pitch_save_bare_and_prefixed():
+    assert parse_reply("存檔").kind == "pitch_save"
+    assert parse_reply("save").kind == "pitch_save"
+    assert parse_reply("仰角 存檔").kind == "pitch_save"
+    assert parse_reply("pitch save").kind == "pitch_save"
+
+
+def test_parse_pitch_save_rejects_garbage():
+    assert parse_reply("存檔 123") is None       # 存檔不帶參數（值＝目前記帳）
+    assert parse_reply("仰角 存檔 40") is None
+
+
+def test_should_warn_attempts_multiples_only():
+    assert should_warn_attempts(5, 5) is True
+    assert should_warn_attempts(10, 5) is True
+    assert should_warn_attempts(4, 5) is False
+    assert should_warn_attempts(6, 5) is False
+
+
+def test_should_warn_attempts_disabled_when_zero():
+    assert should_warn_attempts(5, 0) is False
+    assert should_warn_attempts(0, 5) is False
+
+
+def test_embed_pitch_line_mentions_save():
+    ctx = RemoteReentryContext(episode_id=9, created_at=0.0,
+                               sticky_layer="Mantle Layer")
+    embed = build_reentry_embed(ctx, "Mantle Layer", 60.0, False,
+                                pitch_offset_px=400)
+    assert "存檔" in embed["description"]
+
+
 # ===== 仰角指令（2026-07-17：R 取樣視窗退役，俯仰控制移進 Discord 回礦流程）=====
 def test_parse_pitch_reset():
     assert parse_reply("仰角 歸位").kind == "pitch_reset"

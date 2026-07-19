@@ -302,6 +302,7 @@ class Config:
     #   pitch_eaten_*（那是「拖曳生效」門檻 8.0/0.15）——H046 就是誤用它把活人鎖 300s
     reentry_pitch_clamp_px: int = 1500          # 俯仰歸位：向下拖到夾限的量（過量無妨，飽和即可）
     reentry_pitch_back_px: int = 400            # 回拉量（R 視窗校準出、寫回這裡）
+    reentry_attempt_warn_every: int = 5         # 人工重骰每 N 次提醒可跳過/調視角（0=關；attempt 無上限不變）
     # --- H048 俯仰拖曳人式分段（2026-07-18 實機兩側量測）---
     pitch_drag_hold_budget_px: int = 150        # 單次右鍵 hold 的注入上限。指標加速實測 40→78/80→174/
     #   120→271/180→416（~2.0-2.3x），150px 實走 ~345px < 中央到標題列/工作列 ~500px——

@@ -200,9 +200,12 @@ def _rr_pitch_bot(monkeypatch):
     bot.logger = _LogRecorder()
     bot._sampler_pitch_prepare = lambda: None
     bot._pitch_drag_verified = lambda label, drag: True
-    bot._rr_notify = lambda msg, **kw: None
+    bot.notes = []                               # [(msg, kwargs)]
+    bot._rr_notify = lambda msg, **kw: bot.notes.append((msg, kw))
+    bot._rr_sync_write = lambda img, label: "shot.png"
     bot._pitch_offset_px = 400
     bot._rr_pitch_back_px = None
+    monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
     monkeypatch.setattr(main.cfg, "reentry_pitch_clamp_px", 1500)
     monkeypatch.setattr(main.cfg, "reentry_pitch_back_px", 400)
     monkeypatch.setattr(main.cfg, "sample_pitch_step_px", 40)
@@ -230,3 +233,72 @@ def test_rr_pitch_reset_clears_session_back(monkeypatch):
     bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
     assert bot._pitch_offset_px == 400
     assert bot._rr_pitch_back_px is None
+
+
+def test_rr_pitch_attaches_confirm_shot(monkeypatch):
+    """仰角指令回覆附單張當前面向截圖（2026-07-19：免手動 📷 八方位重掃）。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch", cell="down", steps=40))
+    assert bot.notes and bot.notes[-1][1].get("image_paths") == ["shot.png"]
+    bot.notes.clear()
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch_reset"))
+    assert bot.notes and bot.notes[-1][1].get("image_paths") == ["shot.png"]
+
+
+def test_rr_pitch_shot_failure_does_not_block_reply(monkeypatch):
+    """截圖失敗只記 log 不擋回覆（訊息照發、不附圖）。"""
+    bot = _rr_pitch_bot(monkeypatch)
+
+    def boom(img, label):
+        raise OSError("disk full")
+    bot._rr_sync_write = boom
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    bot._rr_pitch(ctx, reentry_remote.RemoteReply("pitch", cell="up", steps=40))
+    assert bot.notes and bot.notes[-1][1].get("image_paths") is None
+
+
+# ===== `存檔`：回礦中把 session 仰角寫回 config 標準角（2026-07-19）=====
+def test_rr_pitch_save_writes_config_and_syncs_memory(monkeypatch, tmp_path):
+    bot = _rr_pitch_bot(monkeypatch)
+    bot._pitch_offset_px = 520
+    bot._rr_pitch_back_px = 520
+    fake_cfg = tmp_path / "config.py"
+    fake_cfg.write_text(
+        "    reentry_pitch_back_px: int = 400            # 回拉量\n",
+        encoding="utf-8")
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    assert bot._rr_pitch_save(ctx, path=str(fake_cfg)) is True
+    assert "reentry_pitch_back_px: int = 520" in fake_cfg.read_text(encoding="utf-8")
+    assert main.cfg.reentry_pitch_back_px == 520   # 記憶體同步（monkeypatch 會還原）
+    assert bot._rr_pitch_back_px is None           # session 交還標準角（config 現值＝期望值）
+    assert any("💾" in m for m, _kw in bot.notes)
+
+
+def test_rr_pitch_save_missing_anchor_keeps_memory(monkeypatch, tmp_path):
+    """錨點不唯一/不存在＝不寫檔也不動記憶體 cfg（檔案與記憶體不分岔）。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    bot._pitch_offset_px = 520
+    fake_cfg = tmp_path / "config.py"
+    fake_cfg.write_text("    unrelated: int = 1\n", encoding="utf-8")
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    assert bot._rr_pitch_save(ctx, path=str(fake_cfg)) is False
+    assert main.cfg.reentry_pitch_back_px == 400
+    assert any("❌" in m for m, _kw in bot.notes)
+
+
+def test_rr_pitch_save_clamps_value(monkeypatch, tmp_path):
+    """記帳負值（實際已飽和在夾限）存檔＝0，與 effective_pitch_back 同語意。"""
+    bot = _rr_pitch_bot(monkeypatch)
+    bot._pitch_offset_px = -60
+    fake_cfg = tmp_path / "config.py"
+    fake_cfg.write_text(
+        "    reentry_pitch_back_px: int = 400\n", encoding="utf-8")
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=7, created_at=0.0, sticky_layer="L")
+    assert bot._rr_pitch_save(ctx, path=str(fake_cfg)) is True
+    assert "reentry_pitch_back_px: int = 0" in fake_cfg.read_text(encoding="utf-8")
