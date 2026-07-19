@@ -364,9 +364,9 @@ class Config:
     reentry_zoom_step_default: int = 4          # `遠`/`近` 省略步數時的預設
     reentry_zoom_max_steps: int = 12            # 單指令步數上限（防手滑打 99；超過 clamp 不拒收）
     zoom_reset_saturate_presses: int = 30       # 歸位飽和段按 I 次數（須大於最大可能累積步數）
-    zoom_reset_pullback_steps: int = 2          # 歸位回拉 K 步；0＝未校準＝遠/近指令整組停用。
-                                                # 2026-07-19 使用者實機經驗校準：連點 I 進第一人稱後
-                                                # O×2＝標準挖礦距離。boost FOV 隨使用次數累積漂移
+    zoom_reset_pullback_steps: int = 4          # 歸位回拉 K 步；0＝未校準＝遠/近指令整組停用。
+                                                # 2026-07-20 使用者實機校準：連點 I 進第一人稱後
+                                                # O×4＝標準挖礦距離（07-19 初校 O×2 偏近，07-20 實機改 4）。boost FOV 隨使用次數累積漂移
                                                 # （作用中變大/到期變小、重進伺服器才重製），鏡頭距離
                                                 # 是唯一可歸一的相機自由度——啟動/回礦 sweep 前/回
                                                 # MINING/暫停恢復都做一次歸位（_zoom_normalize）。
