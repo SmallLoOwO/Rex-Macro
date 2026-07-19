@@ -282,6 +282,37 @@ def find_reaction_increments(message: dict, previous_counts: dict[str, int],
     return current, increments
 
 
+class RepinDebouncer:
+    """釘底防抖：看到新訊息只立旗標，頻道安靜滿 quiet_s 秒才真的刪舊貼新。
+
+    2026-07-19 spec：舊釘底「一看到新訊息就刪舊貼新」在連發（稀有礦通知＋截圖、
+    八方位發圖空檔）時反覆刪貼；改為安靜窗到期一次到位。純邏輯零 I/O：時間一律
+    由呼叫端注入（time.monotonic()），可直接單元測試。遙控器與回礦卡各持一個
+    實例。旗標／時間都是單一指派，GIL 下原子——主迴圈 mark_pending（回礦收尾）
+    與輪詢執行緒 due/clear 的競態最壞多等一輪或多重貼一次，無正確性問題。
+    """
+
+    def __init__(self):
+        self.pending = False        # 需要重貼（卡片被擠上去／回礦收尾主動要求）
+        self.last_activity = 0.0    # 頻道最後一則新訊息的時刻（monotonic）
+
+    def note_activity(self, now: float):
+        """頻道出現任何新訊息（含 bot 自己發的）就刷新活動時間。"""
+        self.last_activity = now
+
+    def mark_pending(self):
+        """卡片需要重貼到頻道底（先立旗標，等安靜窗到期才動手）。"""
+        self.pending = True
+
+    def due(self, now: float, quiet_s: float) -> bool:
+        """該重貼了嗎：旗標立著且距最後活動已安靜滿 quiet_s。"""
+        return self.pending and (now - self.last_activity) >= quiet_s
+
+    def clear(self):
+        """卡片已重新貼到頻道底，殘留 pending 清掉（防剛貼完又多刪貼一次）。"""
+        self.pending = False
+
+
 def find_remote_messages(msgs: list[dict], title: str):
     """從 fetch_messages 回傳（newest-first）中認領既有遙控器訊息。回 (newest_id | None, stale_ids)。
 

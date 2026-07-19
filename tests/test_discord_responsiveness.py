@@ -365,3 +365,18 @@ def test_pause_resume_without_episode_is_noop():
     bot._pending_reentry = None
     bot._rr_skip_on_pause_resume("resume")
     assert bot._pending_reentry is None
+
+
+# ===== 2026-07-19：釘底防抖（安靜窗）＋回礦收尾自動重貼遙控器 =====
+def test_repin_debouncer_waits_for_quiet_window():
+    """防抖核心：mark 後未安靜滿不 due；滿了 due；note_activity 重置計時；clear 後不 due。"""
+    d = notify.RepinDebouncer()
+    assert d.due(100.0, 4.0) is False          # 未 mark 永不 due
+    d.note_activity(100.0)
+    d.mark_pending()
+    assert d.due(103.9, 4.0) is False          # 距最後活動 3.9s < 4.0s
+    assert d.due(104.0, 4.0) is True           # 安靜滿 4.0s
+    d.note_activity(104.0)                     # 連發：又一則新訊息 → 重置計時
+    assert d.due(107.9, 4.0) is False
+    d.clear()
+    assert d.due(999.0, 4.0) is False          # 已貼回頻道底
