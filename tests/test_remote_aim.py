@@ -177,10 +177,14 @@ class TestParseReply:
         assert parse_reply("5 G1", 0) is None       # 格子不合法
         assert parse_reply("5", 0) is None           # 單數字但零候選
 
-    def test_skip_and_all(self):
+    def test_skip(self):
         assert parse_reply("跳過", 3).kind == "skip"
         assert parse_reply("SKIP", 3).kind == "skip"
-        assert parse_reply("全部", 3).kind == "all"
+
+    def test_manual_keywords_and_all_alias(self):
+        # `全部`/`all` 為舊別名（統一走手動最後手段：重掃＋全方位圖）
+        for word in ("手動", "manual", "全部", "all", "MANUAL"):
+            assert parse_reply(word, 3).kind == "manual"
 
     def test_fullwidth_space_and_noise(self):
         r = parse_reply("　5　C3　", 0)               # 全形空白

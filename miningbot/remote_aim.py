@@ -265,7 +265,7 @@ def draw_overlay(frame_bgr, candidates, grid: bool = True):
 # ===== B1：回覆解析（無前綴；寧可不射不誤射，解析不出回 None）=====
 @dataclass(frozen=True)
 class AimReply:
-    kind: str        # "candidate" / "grid" / "skip" / "all"
+    kind: str        # "candidate" / "grid" / "skip" / "manual"
     number: int = 0
     dir_idx: int = 0
     layer: str = "mid"
@@ -280,7 +280,7 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
 
     - "2" → 候選編號（1..num_candidates 內才收）
     - "5 C3" / "5U C3" / "5d c3" → 網格（方位 0-7；U/D 需該層存在 layers_available）
-    - "跳過"/"skip" → skip；"全部" → all（補發其餘方位快照）
+    - "跳過"/"skip" → skip；"手動"/"全部" → manual（重掃＋全方位圖）
     """
     t = (text or "").replace("　", " ").strip()
     if not t:
@@ -288,8 +288,9 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
     low = t.lower()
     if low in ("skip", "跳過"):
         return AimReply("skip")
-    if low in ("all", "全部"):
-        return AimReply("all")
+    if low in ("manual", "手動", "all", "全部"):
+        # 最後手段：現場重掃＋全方位圖（`全部`/`all` 為 2026-07-11 舊別名）
+        return AimReply("manual")
     parts = t.split()
     if len(parts) == 1 and parts[0].isdigit():
         n = int(parts[0])
