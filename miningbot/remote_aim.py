@@ -143,6 +143,20 @@ def grid_cell_center(cell: str, w: int = 1920, h: int = 1080,
     return (ci * cw + cw // 2, ri * ch + ch // 2)
 
 
+def grid_cell_of(pos, w: int = 1920, h: int = 1080,
+                 cols: int = 6, rows: int = 4):
+    """螢幕座標 → 網格代碼（如 "C3"）；grid_cell_center 的逆函式。畫面外回 None。
+
+    候選總表用它把已存座標反算成「約C3」，操作者不用自己對格線。
+    """
+    x, y = int(pos[0]), int(pos[1])
+    if not (0 <= x < w and 0 <= y < h):
+        return None
+    ci = min(x * cols // w, cols - 1)
+    ri = min(y * rows // h, rows - 1)
+    return f"{GRID_COLS[ci]}{GRID_ROWS[ri]}"
+
+
 def draw_grid(img, cols: int = 6, rows: int = 4) -> None:
     """in-place 疊半透明格線＋格代碼（A1..）。draw_overlay 與 reentry_remote 共用。"""
     import cv2

@@ -110,6 +110,27 @@ class TestGridCellCenter:
             assert grid_cell_center(bad) is None
 
 
+class TestGridCellOf:
+    def test_roundtrip_all_cells(self):
+        # grid_cell_center 的逆函式：24 格 roundtrip 全對
+        for col in "ABCDEF":
+            for row in "1234":
+                cell = f"{col}{row}"
+                assert remote_aim.grid_cell_of(grid_cell_center(cell)) == cell
+
+    def test_boundary_pixels(self):
+        # 格界：319/269 仍在 A1，320/270 進 B2（格寬 320、格高 270）
+        assert remote_aim.grid_cell_of((0, 0)) == "A1"
+        assert remote_aim.grid_cell_of((1919, 1079)) == "F4"
+        assert remote_aim.grid_cell_of((319, 269)) == "A1"
+        assert remote_aim.grid_cell_of((320, 270)) == "B2"
+
+    def test_out_of_screen_returns_none(self):
+        assert remote_aim.grid_cell_of((-1, 5)) is None
+        assert remote_aim.grid_cell_of((1920, 0)) is None
+        assert remote_aim.grid_cell_of((0, 1080)) is None
+
+
 class TestDrawOverlay:
     def test_marks_candidate_and_keeps_input_intact(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
