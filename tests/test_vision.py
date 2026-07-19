@@ -886,3 +886,38 @@ def test_collect_rejects_hard_rej_real_equipment():
                        collect_rejects=rejects)
     assert loc is None                       # H040 回歸：裝備仍不誤收
     assert any(r["reason"] == "hard_rej" for r in rejects), rejects
+
+
+# ===== boost 使用次數計數器（2026-07-19）=====
+from miningbot.vision import read_boost_use_count
+
+_BC_FIX = "tests/fixtures/boost_count"
+
+
+def test_boost_use_count_known_values():
+    """13 個實機裁圖（07-14~07-19 快照，值 15~211）逐一比對。
+
+    Tesseract 對此字體只有 8/10（166 讀空、211 掉尾數）；模板比對必須全中。
+    """
+    import glob
+    files = sorted(glob.glob(os.path.join(_BC_FIX, "count_*.png")))
+    assert len(files) >= 13
+    for f in files:
+        truth = int(os.path.basename(f).split("_")[1].split(".")[0])
+        img = cv2.imread(f)
+        assert read_boost_use_count(img) == truth, f
+
+
+def test_boost_use_count_negative_regions():
+    """無計數器區域（天空/紅色場景滲入）一律 None——寧可不讀不誤讀。"""
+    for name in ("none_sky.png", "none_red_scene.png"):
+        img = cv2.imread(os.path.join(_BC_FIX, name))
+        assert img is not None, name
+        assert read_boost_use_count(img) is None, name
+
+
+def test_boost_use_count_unknown_glyph_rejects_whole_read():
+    """數字尺寸的紅色實心塊（未知字元）→ 整筆 None，不吐部分讀值。"""
+    img = cv2.imread(os.path.join(_BC_FIX, "count_41.png"))
+    img[40:53, 20:31] = (0, 0, 255)          # 塞一個 11×13 純紅塊（過尺寸閘、配不上模板）
+    assert read_boost_use_count(img) is None
