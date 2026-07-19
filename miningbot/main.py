@@ -81,6 +81,8 @@ class Bot:
             cfg.manual_snapshot_dir, cfg.log_dir)
         cfg.reentry_remote_ledger = resolve_runtime_log_path(
             cfg.reentry_remote_ledger, cfg.log_dir)
+        cfg.boost_count_ledger = resolve_runtime_log_path(
+            cfg.boost_count_ledger, cfg.log_dir)
         self.logger = diagnostics.setup_logging(cfg.log_dir, cfg.log_level)
         self.logger.info("runtime log directory: %s", cfg.log_dir)
         # 子系統 logger（分檔隔離噪音：心跳/重複動作/採集細節各自獨立檔）
@@ -177,6 +179,12 @@ class Bot:
         self._last_d3_fire_at: float | None = None  # session 級；實際 hold-click 當下起算
         self._last_boost_check = 0.0                 # boost 偵測節流：上次真的 edge-match 的時間
         self._boost_present = False                  # 上次偵測到的 boost 瓶子在否（節流間沿用，避免每幀掃）
+        # boost 使用計數（2026-07-19）：D5 有時按了不觸發、腳本會重按——「使用」只在
+        # 瓶子重新出現時 +1（一段 pending 內多次重按算一次）；右下角計數器＝ground truth。
+        self._boost_press_pending = False            # 按過 D5、瓶子尚未重現（重現確認才算一次使用）
+        self._boost_uses = 0                         # 本行程確認成功的使用數（≠ stats["boosts"] 按鍵數）
+        self._bc_last_pair_screen = None             # 上次存 FOV 前後幀對時的螢幕計數（節流錨）
+        self._bc_last_unreadable = 0.0               # 計數器讀不出 → 全幀快照節流（模板增補素材）
         self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
         self._activity_present = False               # 上次偵測到的 D4 冷卻圖示在否（節流間沿用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
@@ -540,9 +548,64 @@ class Bot:
             self._boost_present = vision.find_template_edges(
                 capture.crop(frame, cfg.boost_indicator_region), t,
                 cfg.boost_edge_threshold, cfg.boost_buff_scales) is not None
+            if self._boost_present and self._boost_press_pending:
+                # 成功觸發確認（2026-07-19）：只認「偵測到瓶子重現」這一刻，樂觀快取
+                # （_harvest_boost_guard 的 True）不算證據——它不清 pending。
+                self._confirm_boost_use(frame)
         if self._boost_present:
             return False
         return (time.time() - self._last_boost) > cfg.boost_cooldown_s
+
+    def _confirm_boost_use(self, frame):
+        """瓶子重現＝一次成功使用：+1、讀右下角計數器對帳、落 jsonl。
+
+        右下角計數器（session 內使用次數、重進歸零）是 ground truth：D5 失敗重按
+        時螢幕數字不動，內部 uses 與 screen 的差可離線對答案。讀不出（未知字元/
+        遮擋）→ 全幀快照節流落檔，供之後增補數字模板。
+        """
+        self._boost_press_pending = False
+        self._boost_uses += 1
+        screen = self._boost_screen_count(frame)
+        if screen is None and time.time() - self._bc_last_unreadable > 600:
+            self._bc_last_unreadable = time.time()
+            self._snapshot(frame, "boost_count_unreadable")
+        self._bc_append({"t": round(time.time(), 3), "kind": "use", "screen": screen,
+                         "uses": self._boost_uses, "presses": self.stats["boosts"]})
+
+    def _boost_screen_count(self, frame):
+        """右下角 boost 使用次數（int｜None）；None＝讀不出（寧可不讀不誤讀）。"""
+        return vision.read_boost_use_count(
+            capture.crop(frame, cfg.boost_count_region),
+            cfg.boost_count_digit_max_mismatch)
+
+    def _bc_append(self, d):
+        """boost 使用/FOV 帳本：append-only JSONL（曲線離線分析讀這份）。"""
+        try:
+            os.makedirs(os.path.dirname(cfg.boost_count_ledger), exist_ok=True)
+            with open(cfg.boost_count_ledger, "a", encoding="utf-8") as f:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        except OSError as e:
+            self.logger.warning("boost 帳本寫入失敗: %s", e)
+
+    def _boost_fov_pair_save(self, before_frame, screen):
+        """補瓶前後幀對（FOV 曲線量測點）：到期(縮)→補瓶展開，同場景自比無雜訊。
+
+        呼叫端已等 boost_fov_settle_s（FOV 展開完成）才進來。JPEG 存檔控量；
+        路徑落 jsonl，離線用兩固定地標像素距離比值算縮放係數。
+        """
+        import cv2                                  # lazy（同 _save_needs_human_screenshot）
+        after = capture.grab()
+        d = os.path.join(cfg.log_dir, "boost_fov")
+        os.makedirs(d, exist_ok=True)
+        tag = f"{time.strftime('%Y%m%d_%H%M%S')}_c{screen}"
+        bp = os.path.join(d, f"{tag}_before.jpg")
+        ap = os.path.join(d, f"{tag}_after.jpg")
+        cv2.imwrite(bp, before_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        cv2.imwrite(ap, after, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self._bc_last_pair_screen = screen
+        self._bc_append({"t": round(time.time(), 3), "kind": "refill_pair",
+                         "screen_before": screen, "before": bp, "after": ap})
+        self.logger.info("boost FOV 前後幀對已存（screen=%s）", screen)
 
     def _activity_ready(self, frame) -> bool:
         """D4 活動：右下角冷卻圖示「不在」= 冷卻好 → 該按 D4 右鍵刷新事件。
@@ -2662,8 +2725,17 @@ class Bot:
             self.log_act.info("mining: boost 消失 -> 重上 D5")
             self.last_action = "boost 重上(D5)"
             self.stats["boosts"] += 1
+            # FOV 前後幀對（2026-07-19）：到期收縮中的 frame 當 before，補瓶展開後
+            # 再抓 after——依螢幕計數節流（~每 N 次一組），到期才 settle 等展開。
+            screen = self._boost_screen_count(frame)
+            pair_due = harvester.plan_boost_pair_due(
+                screen, self._bc_last_pair_screen, cfg.boost_fov_pair_every_n)
             miner.use_boost()
             self._last_boost = time.time()           # 設冷卻，避免瓶子出現前重複按
+            self._boost_press_pending = True         # 瓶子重現確認才算一次使用
+            if pair_due:
+                time.sleep(cfg.boost_fov_settle_s)   # 等 FOV 展開（僅取樣輪，~每 N 次一次）
+                self._boost_fov_pair_save(frame, screen)
         elif action == "USE_D4":
             self._handle_use_d4(frame)
         elif action is None:
@@ -2712,10 +2784,16 @@ class Bot:
         self.log_act.info("[%s] harvest: boost 消失 -> 立即補 D5（FOV 守門）",
                           self.harvest.harvest_id if self.harvest else "?")
         self.stats["boosts"] += 1
+        screen = self._boost_screen_count(frame)
+        pair_due = harvester.plan_boost_pair_due(
+            screen, self._bc_last_pair_screen, cfg.boost_fov_pair_every_n)
         miner.use_boost_harvest()
         self._last_boost = time.time()      # 冷卻 gate：瓶子出現前不重複按
         self._boost_present = True          # 樂觀更新快取；下個節流窗會重驗
+        self._boost_press_pending = True    # 使用確認等偵測到瓶子重現（樂觀快取不算）
         time.sleep(cfg.boost_fov_settle_s)  # 等 FOV 展開，之後抓的幀才是最終座標
+        if pair_due:
+            self._boost_fov_pair_save(frame, screen)
         return True
 
     def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False,

@@ -410,3 +410,16 @@ def scan_succeeded(texts) -> bool:
             if t == "local" or SequenceMatcher(None, t, "local").ratio() >= 0.75:
                 return True
     return False
+
+
+def plan_boost_pair_due(screen_count, last_pair_count, every_n: int) -> bool:
+    """FOV 前後幀對取樣節流（2026-07-19）：螢幕計數每前進 every_n 存一組。
+
+    boost FOV 縮小隨使用次數累積（有極限、位置未知）——曲線量測靠「到期(縮)→
+    補瓶(展開)」前後幀同場景自比，每次都存太肥（1080p 對 ~200 組/場），依螢幕
+    計數節流。計數讀不出（None）不存（沒 x 軸標籤的量測點無用）；every_n<=0
+    ＝功能關閉；session 首次（last None）＝基準點必存。
+    """
+    if every_n <= 0 or screen_count is None:
+        return False
+    return last_pair_count is None or screen_count - last_pair_count >= every_n

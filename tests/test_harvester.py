@@ -481,3 +481,13 @@ def test_format_startup_pitch_status_uncalibrated():
     from miningbot.harvester import format_startup_pitch_status
     s = format_startup_pitch_status(0, homed=False, offset_px=0)
     assert "未校準" in s and "角度不明" in s
+
+
+def test_plan_boost_pair_due():
+    """FOV 前後幀對節流（2026-07-19）：計數前進 N 才存、None 不存、首次必存。"""
+    from miningbot.harvester import plan_boost_pair_due
+    assert plan_boost_pair_due(42, None, 10) is True       # session 首次＝基準點
+    assert plan_boost_pair_due(45, 42, 10) is False        # 未滿 N
+    assert plan_boost_pair_due(52, 42, 10) is True         # 滿 N
+    assert plan_boost_pair_due(None, 42, 10) is False      # 讀不出＝無 x 軸標籤，不存
+    assert plan_boost_pair_due(42, None, 0) is False       # 功能關閉

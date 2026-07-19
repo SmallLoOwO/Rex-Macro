@@ -105,6 +105,12 @@ def test_d4_unknown_snapshot_goes_to_review():
     assert snapshot_priority("079_sweep_empty_dir0") == 0
 
 
+def test_boost_count_unreadable_goes_to_review():
+    # 計數器讀不出的全幀＝數字模板增補素材（缺 5/7 類的字元證據），
+    # 同 d4_unknown 理由不可落 trace 被清
+    assert snapshot_subdir("boost_count_unreadable") == "review"
+
+
 def test_snapshot_path_default_does_not_overwrite_same_label(tmp_path):
     _, first = snapshot_path(str(tmp_path), "079_d3_fire")
     _, second = snapshot_path(str(tmp_path), "079_d3_fire")

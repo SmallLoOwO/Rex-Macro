@@ -80,6 +80,14 @@ class Config:
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     boost_check_interval_s: float = 0.2          # boost 高頻偵測「不空轉」：boost 到期→立刻補，越快偵測瓶子消失越好（提早補無意義且浪費換道具時間，見 2026-07-02 spec #4 方案 A）
     boost_buff_scales: tuple = (1.0,)            # boost 瓶子＝固定尺寸 UI → 單尺度即可（~56ms/次），高頻掃描才不吃 CPU（D4 續用 buff_scales）
+    # boost 使用次數計數器（2026-07-19）：右下角藥水圖示紅字＝session 內使用次數
+    # （重進歸零）；boost FOV 縮小隨它累積（作用中變大/到期變小），是 FOV 漂移的
+    # 狀態變數。區域依 07-17~07-19 歷史快照校準（vision.read_boost_use_count）。
+    boost_count_region: Region = field(default_factory=lambda: Region(1720, 940, 90, 90))
+    boost_count_digit_max_mismatch: float = 0.08  # 數字模板像素不一致比例上限（兩側夾：類內 ≤0.026 vs 類間最近 0.177）
+    boost_count_ledger: str = "logs/boost_fov/count.jsonl"  # 使用確認/對帳/前後幀對 append-only jsonl（FOV 曲線離線分析）
+    boost_fov_pair_every_n: int = 10             # 螢幕計數每前進 N 存一組補瓶前後幀（JPEG 對；0=關）——
+                                                 # 到期(縮)→補瓶(展開)同場景自比＝無姿勢/場景雜訊的 FOV 量測點
 
     # D4 活動：右鍵刷新事件（不斷換事件 → 多製造 chill 機會）
     # 偵測右下角 D4「冷卻圖示」不在 = 冷卻好 → 就用（避免能用卻沒用）。
