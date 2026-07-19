@@ -244,6 +244,8 @@ def _poll_bot(monkeypatch, state):
     bot._remote_message_id = "remote-message"
     bot._remote_last_shown = (True, "stale")     # 與現況不符 → 必觸發單次 PATCH
     bot._last_discord_msg_id = "old"
+    bot._remote_repin = notify.RepinDebouncer()
+    bot._rr_repin = notify.RepinDebouncer()
     bot.log_discord = _LogRecorder()
     bot._poll_remote_reactions = lambda: None
     bot._poll_rr_reactions = lambda: None
@@ -268,32 +270,41 @@ def test_remote_control_repost_frozen_during_reentry(monkeypatch):
 
 
 def test_remote_control_syncs_outside_reentry(monkeypatch):
-    """離開 REENTRY 後第一輪輪詢自動補上：狀態 PATCH＋被新訊息擠上去就重貼回頻道底。"""
+    """離開 REENTRY 後：狀態 PATCH 補上；新訊息當輪只立旗標，安靜窗滿才重貼回頻道底。"""
     bot, calls = _poll_bot(monkeypatch, State.MINING)
     bot._poll_discord()
-    assert calls == {"edit": 1, "repost": 1, "rr_repost": 0}
+    assert calls == {"edit": 1, "repost": 0, "rr_repost": 0}   # 防抖：當輪不刪貼
+    assert bot._remote_repin.pending is True
+    bot._repin_tick([], time.monotonic() + 999.0)              # 安靜窗必然已滿
+    assert calls["repost"] == 1
 
 
 def test_rr_embed_takes_over_pinning_during_reentry(monkeypatch):
-    """回礦卡接手釘底（2026-07-19 使用者反映卡片被照片埋住）：被擠上去就刪舊貼新。"""
+    """回礦卡接手釘底：被擠上去先立旗標，安靜窗滿刪舊貼新；遙控器凍結不動。"""
     bot, calls = _poll_bot(monkeypatch, State.REENTRY)
     bot._rr_embed_mid = "rr-card"
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
         episode_id=2, created_at=0.0, sticky_layer="L")
     bot._poll_discord()
+    assert calls["rr_repost"] == 0 and bot._rr_repin.pending is True
+    bot._repin_tick([], time.monotonic() + 999.0)
     assert calls["rr_repost"] == 1
     assert calls["repost"] == 0
 
 
 def test_rr_embed_pinning_waits_out_busy_execution(monkeypatch):
-    """_rr_busy（開場/八方位發圖中）不搬卡，掃完下一輪一次到位（避免發圖途中彈跳）。"""
+    """_rr_busy（開場/八方位發圖中）即使安靜窗滿也不搬卡，掃完下一輪一次到位。"""
     bot, calls = _poll_bot(monkeypatch, State.REENTRY)
     bot._rr_embed_mid = "rr-card"
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
         episode_id=2, created_at=0.0, sticky_layer="L")
     bot._rr_busy = True
     bot._poll_discord()
+    bot._repin_tick([], time.monotonic() + 999.0)
     assert calls["rr_repost"] == 0
+    bot._rr_busy = False
+    bot._repin_tick([], time.monotonic() + 999.0)
+    assert calls["rr_repost"] == 1
 
 
 def test_remote_embed_shows_reentry_guidance():

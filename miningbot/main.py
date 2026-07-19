@@ -1360,29 +1360,22 @@ class Bot:
         # ＝跳過、📷 有回礦卡自己的），八方位發圖會讓釘底邏輯每輪刪舊重貼＝洗版。
         # 狀態 PATCH 不閘——(paused, state) 變化天然只在進/出 REENTRY 各觸發一次，
         # 進場那次會把遙控器換成「回礦中，操作請用回礦卡」指引（_build_remote_embed）。
-        # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；REENTRY 中釘底改由回礦卡接手（見下）。
-        remote_frozen = self.state is State.REENTRY
+        # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；REENTRY 中釘底改由回礦卡接手（見 _repin_tick）。
         if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
             self._edit_remote_control()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
             after=self._last_discord_msg_id, limit=10)
+        # 2a. 釘底防抖（2026-07-19 spec，取代「一看到新訊息就刪舊貼新」）：看到新訊息
+        # 只立旗標＋刷活動時間，頻道安靜滿 cfg.discord_repin_quiet_s 才刪舊貼新——
+        # 連發（稀有礦通知＋截圖、八方位發圖空檔）期間不反覆刪貼，安靜後一次到位。
+        # msgs 為空的輪次也要跑（到期重貼正是發生在安靜輪），所以放在 early return
+        # 之前。REENTRY 凍結／回礦卡接手／_rr_busy 語意都在 _repin_tick 內；回礦收尾
+        # 由 _rr_finalize 主動立遙控器旗標，不再依賴「輪詢剛好看到新訊息」。
+        self._repin_tick(msgs, time.monotonic())
         if not msgs:
             return
-        # 2a. 釘底（混合設計 2026-07-09）：狀態更新/按鈕點擊都原地編輯（不產生新訊息），
-        # **只有**被其他訊息擠上去時才刪舊重貼回頻道底——重貼次數從「每次狀態變」降到
-        # 「每次頻道有新訊息」，兼顧「滑到最底就是遙控器」與不洗版。
-        if (self._remote_message_id and not remote_frozen
-                and msgs[0]["id"] != self._remote_message_id):
-            self._repost_remote_control()
-        # 回礦卡釘底（2026-07-19 使用者反映「回礦卡沒看到出現」）：卡片過去只原地
-        # PATCH，八方位照片/通知一直往下疊＝卡片被埋在頻道上方。REENTRY 中換回礦卡
-        # 接手釘底：被新訊息擠上去就刪舊貼新。_rr_busy（開場/指令執行、發圖中）不搬，
-        # 掃完後下一輪輪詢一次到位，避免發圖途中卡片反覆彈跳。
-        if (remote_frozen and self._rr_embed_mid and self._rr_ctx is not None
-                and not self._rr_busy and msgs[0]["id"] != self._rr_embed_mid):
-            self._rr_repost_embed()
         newest_id = msgs[0]["id"]                        # Discord 回傳 newest-first
         if self._last_discord_msg_id is None:
             # 首次輪詢：只記基準 ID，不處理歷史命令（避免重跑舊指令）
