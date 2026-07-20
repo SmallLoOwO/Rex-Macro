@@ -394,6 +394,18 @@ def test_repin_debouncer_waits_for_quiet_window():
     assert d.due(999.0, 4.0) is False          # 已貼回頻道底
 
 
+def test_repin_debouncer_mark_pending_now_bypasses_quiet_window():
+    """mark_pending_now（2026-07-20）：繞過安靜窗，即使 last_activity 才剛刷近也立刻 due。"""
+    d = notify.RepinDebouncer()
+    d.note_activity(100.0)                  # 模擬剛有活動（連發中）
+    d.mark_pending_now()
+    assert d.due(100.0, 4.0) is True        # 不等 quiet_s
+    assert d.due(999.0, 999.0) is True      # 任意 quiet 都 due（last_activity=0）
+    d.note_activity(200.0)                  # 後續又有活動 → 回到看 quiet_s
+    assert d.due(203.9, 4.0) is False
+    assert d.due(204.0, 4.0) is True
+
+
 def _bare_repin_bot(monkeypatch, state=State.MINING):
     """_repin_tick 專用最小 Bot；repost stub 模擬真品「貼底成功後 clear」語意。"""
     monkeypatch.setattr("miningbot.main.cfg.discord_repin_quiet_s", 4.0)

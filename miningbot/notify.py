@@ -304,6 +304,15 @@ class RepinDebouncer:
         """卡片需要重貼到頻道底（先立旗標，等安靜窗到期才動手）。"""
         self.pending = True
 
+    def mark_pending_now(self):
+        """立刻需要重貼（2026-07-20）：繞過安靜窗，due() 下一輪恆成立。
+
+        用於「退出精細選擇」等單次事件——卡被擠到上面時不該再等 quiet_s；
+        常態 repin 仍走 mark_pending + quiet_s 防連發刪貼。
+        """
+        self.pending = True
+        self.last_activity = 0.0
+
     def due(self, now: float, quiet_s: float) -> bool:
         """該重貼了嗎：旗標立著且距最後活動已安靜滿 quiet_s。"""
         return self.pending and (now - self.last_activity) >= quiet_s
