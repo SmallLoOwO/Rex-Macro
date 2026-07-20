@@ -241,7 +241,14 @@ class Bot:
         self._pending_calib_start = None          # "mining"/"reentry"：指令驗收後待主迴圈進場
         self._pending_calib_action = None         # "up"/…/"exit"：反應輪詢/文字指令待主迴圈消費
         self._pending_calib_px = 0                # 文字指令的像素覆寫（`上 12`；0=用現行幅度）
-        self._rr_sticky_layer = cfg.reentry_target_layer   # 黏性目標層（`層` 指令改、session 內沿用）
+        self._rr_sticky_layer = cfg.reentry_target_layer   # 黏性目標層（`層` 指令改；來源優先序見 _adopt_sticky_for_world）
+        # 2026-07-20：每世界黏性層持久化——init 讀回磁碟 map，世界偵測到時自動套該世界的層。
+        try:
+            with open(cfg.reentry_remote_sticky_layers_path, "r", encoding="utf-8") as f:
+                self._rr_sticky_layers = reentry_remote.parse_sticky_layers(f.read())
+        except OSError:
+            self._rr_sticky_layers = {}
+        self._rr_layer_user_pinned = False          # 本 session 是否被 `層` 釘過（釘過則世界偵測不再覆寫）
         self._evac_done = False                   # RESET_WAIT 撤離結果（REENTRY embed 僅供 footer 標注，不改流程）
         self._rr_embed_mid = None                 # REENTRY episode embed 訊息 id（_rr_finalize 時刪除，避免殘留死卡）
         self._rr_reactions_seen: dict[str, int] = {}  # embed 反應數基線（同步語意）
@@ -890,6 +897,7 @@ class Bot:
         world = game_data.update_world_from_event(event_text)
         if world and world != prev:
             self.logger.info("偵測到世界: %s（依事件 %r）", world, event_text.strip()[:40])
+            self._adopt_sticky_for_world(world)
 
     def _maybe_detect_world_from_ore_lines(self, new_lines):
         """礦名反推世界（Task 4.1）：7/9 世界 events 空、事件式偵測永遠鎖不了它們；
@@ -910,6 +918,7 @@ class Bot:
             if world:
                 game_data.set_world(world)
                 self.logger.info("世界鎖定（礦名反推）: %s（依礦名 %r）", world, ore_name)
+                self._adopt_sticky_for_world(world)
                 return
 
     def _check_reset(self, frame) -> bool:
@@ -4103,6 +4112,28 @@ class Bot:
         with open(cfg.reentry_remote_ledger, "a", encoding="utf-8") as f:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
+    def _adopt_sticky_for_world(self, world):
+        """世界底定後套用持久黏性層（2026-07-20）：未釘時查 map，與現值不同才更新＋log。
+
+        使用者本 session `層` 釘過（_rr_layer_user_pinned=True）則不覆寫——擋住「誤偵測世界
+        甩掉使用者剛設的層」。新 session pinned=False，首次世界偵測即套用該世界的持久層。
+        """
+        if self._rr_layer_user_pinned or not world:
+            return
+        want = reentry_remote.effective_sticky_layer(
+            world, self._rr_sticky_layers, cfg.reentry_target_layer)
+        if want != self._rr_sticky_layer:
+            self.logger.info("世界 %s 套用持久黏性層：%s → %s",
+                             world, self._rr_sticky_layer, want)
+            self._rr_sticky_layer = want
+
+    def _write_sticky_layers(self):
+        """寫穿式落盤黏性層 map（2026-07-20）；照 _rr_ledger_append 的目錄建立慣例。"""
+        path = cfg.reentry_remote_sticky_layers_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(reentry_remote.serialize_sticky_layers(self._rr_sticky_layers))
+
     def _rr_snap_dir(self) -> str:
         """遠端回礦快照目錄（logs/snapshots/reentry）。"""
         return os.path.join(cfg.log_dir, "snapshots", "reentry")
@@ -4487,7 +4518,16 @@ class Bot:
         if k == "layer":
             self._rr_sticky_layer = reply.layer
             ctx.sticky_layer = reply.layer
-            self._rr_notify(f"✅ 目標層改為：{reply.layer}")
+            self._rr_layer_user_pinned = True     # 2026-07-20：釘住，後續世界偵測不再覆寫使用者選擇
+            world = game_data.current_world_name()
+            new_map = reentry_remote.remember_layer(self._rr_sticky_layers, world, reply.layer)
+            if new_map is not None:
+                self._rr_sticky_layers = new_map
+                self._write_sticky_layers()
+                self._rr_notify(f"✅ 目標層改為：{reply.layer}（已記住 {world} → {reply.layer}）")
+            else:
+                self._rr_notify(f"✅ 目標層改為：{reply.layer}"
+                                f"（世界尚未偵測到，僅本次有效；偵測到後請再設一次以記住）")
         elif k == "void":
             self._rr_void_last(ctx)
         elif k == "skip":

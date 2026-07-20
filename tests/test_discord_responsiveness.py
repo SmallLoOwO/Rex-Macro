@@ -535,3 +535,81 @@ def test_remote_reposts_after_reentry_finalize_without_new_message(monkeypatch):
     assert bot.reposted == []
     bot._repin_tick([], 304.0)
     assert bot.reposted == ["remote"]
+
+
+# ===== 2026-07-20：每世界黏性層持久化（`層` 指令寫穿／世界偵測套用）=====
+def test_rr_layer_command_persists_when_world_known(tmp_path, monkeypatch):
+    """`層` 指令在世界已知時寫穿落盤 sticky_layers.json，跨重啟可讀回。"""
+    monkeypatch.setattr("miningbot.main.cfg.reentry_remote_sticky_layers_path",
+                        str(tmp_path / "sticky.json"))
+    bot = Bot.__new__(Bot)
+    bot._rr_sticky_layers = {}
+    bot._rr_layer_user_pinned = False
+    bot._rr_sticky_layer = "Mantle Layer"
+    bot._rr_ctx = reentry_remote.RemoteReentryContext(
+        episode_id=1, created_at=0.0, sticky_layer="Mantle Layer")
+    bot.notified = []
+    bot._rr_notify = lambda text, image_paths=None: bot.notified.append(text)
+    bot._rr_edit_embed = lambda: None
+    monkeypatch.setattr("miningbot.main.game_data.current_world_name", lambda: "Lucernia")
+
+    bot._rr_execute(reentry_remote.RemoteReply(kind="layer", layer="Confectent"))
+
+    assert bot._rr_sticky_layer == "Confectent"
+    assert bot._rr_layer_user_pinned is True
+    assert bot._rr_sticky_layers == {"Lucernia": "Confectent"}
+    assert bot._rr_ctx.sticky_layer == "Confectent"
+    assert any("已記住" in t and "Lucernia" in t for t in bot.notified)
+    import json
+    with open(tmp_path / "sticky.json", encoding="utf-8") as f:
+        assert json.load(f) == {"Lucernia": "Confectent"}
+
+
+def test_rr_layer_command_no_persist_when_world_unknown(tmp_path, monkeypatch):
+    """世界未知時 `層` 只改 session、不寫檔，notify 明示「僅本次有效」。"""
+    monkeypatch.setattr("miningbot.main.cfg.reentry_remote_sticky_layers_path",
+                        str(tmp_path / "sticky.json"))
+    bot = Bot.__new__(Bot)
+    bot._rr_sticky_layers = {}
+    bot._rr_layer_user_pinned = False
+    bot._rr_sticky_layer = "Mantle Layer"
+    bot._rr_ctx = reentry_remote.RemoteReentryContext(
+        episode_id=1, created_at=0.0, sticky_layer="Mantle Layer")
+    bot.notified = []
+    bot._rr_notify = lambda text, image_paths=None: bot.notified.append(text)
+    bot._rr_edit_embed = lambda: None
+    monkeypatch.setattr("miningbot.main.game_data.current_world_name", lambda: None)
+
+    bot._rr_execute(reentry_remote.RemoteReply(kind="layer", layer="Shamrock"))
+
+    assert bot._rr_sticky_layer == "Shamrock"
+    assert bot._rr_layer_user_pinned is True
+    assert bot._rr_sticky_layers == {}                   # 沒寫檔
+    assert not (tmp_path / "sticky.json").exists()
+    assert any("僅本次有效" in t for t in bot.notified)
+
+
+def test_adopt_sticky_for_world_applies_map_when_not_pinned():
+    """未釘時，世界偵測套用 map 裡該世界的持久層。"""
+    bot = Bot.__new__(Bot)
+    bot._rr_sticky_layers = {"Lucernia": "Confectent"}
+    bot._rr_layer_user_pinned = False
+    bot._rr_sticky_layer = "Mantle Layer"
+    bot.logger = _LogRecorder()
+
+    bot._adopt_sticky_for_world("Lucernia")
+
+    assert bot._rr_sticky_layer == "Confectent"
+
+
+def test_adopt_sticky_for_world_skips_when_user_pinned():
+    """使用者本 session `層` 釘過 → 世界偵測不再覆寫。"""
+    bot = Bot.__new__(Bot)
+    bot._rr_sticky_layers = {"Lucernia": "Confectent"}
+    bot._rr_layer_user_pinned = True
+    bot._rr_sticky_layer = "Shamrock"
+    bot.logger = _LogRecorder()
+
+    bot._adopt_sticky_for_world("Lucernia")
+
+    assert bot._rr_sticky_layer == "Shamrock"            # 不覆寫使用者選擇
