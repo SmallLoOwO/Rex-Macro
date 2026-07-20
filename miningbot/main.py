@@ -4510,6 +4510,8 @@ class Bot:
                 self._rr_notify("❓ 先 `方位 粗格`（如 `3 C2`）放大後才能 `放大 <細格>`")
                 return
             self._rr_magnify(ctx, reply.cell)
+        elif k == "back":
+            self._rr_back(ctx)
         elif k == "coarse":
             self._rr_zoom(ctx, reply.dir_idx, reply.cell)
         elif k == "fine":
@@ -4712,6 +4714,49 @@ class Bot:
             f"🔍 已再放大 {cell}（×{scale}）。回細格（如 `B3`）點擊；"
             f"可再 `放大 <細格>`；重掃回 📷",
             image_paths=[base + ".png"])
+
+    def _rr_back(self, ctx):
+        """退一層（2026-07-20）：連鎖放大時 pop 上一層 zoom_region；退過首層回 awaiting_cmd。
+
+        退層不轉向、不重掃、不動鏡頭距離——只回溯放大鏈。退到的那層用當下現場幀
+        重渲染（畫面可能已漂移），漂移守門基準 _src 同步更新，_rr_click 邏輯零改動。
+        focus 失敗不 pop（避免丟層）；grab/imwrite 罕見失敗則記 log（已 pop，重下即可）。
+        """
+        import cv2
+        if ctx.phase != "awaiting_fine":
+            self._rr_notify("❓ 現在不是等細格，無層可退")
+            return
+        if not self._focus_roblox():
+            self._rr_notify("⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        result = reentry_remote.pop_zoom_layer(ctx)
+        if result[0] == "awaiting_cmd":
+            ctx.phase = "awaiting_cmd"
+            ctx.zoom_region = ()
+            ctx.zoom_base = ""
+            ctx.zoom_scale = 0
+            self._rr_notify("↩ 已退回等指令，重新 `方位 粗格`（如 `3 C2`）")
+            return
+        layer = result[1]
+        ctx.zoom_region = layer["region"]
+        ctx.zoom_base = layer["base"]
+        ctx.zoom_scale = layer["scale"]
+        f = capture.grab()
+        zoom = reentry_remote.render_zoom(
+            f, layer["region"], scale=layer["scale"],
+            cols=cfg.reentry_remote_fine_cols, rows=cfg.reentry_remote_fine_rows)
+        x, y, rw, rh = layer["region"]
+        try:
+            os.makedirs(self._rr_snap_dir(), exist_ok=True)
+            cv2.imwrite(layer["base"] + "_src.png", f[y:y + rh, x:x + rw])
+            cv2.imwrite(layer["base"] + ".png", zoom)
+        except OSError as e:
+            self.logger.warning("[RR#%s] 退層寫檔失敗（%s）——已 pop，使用者重下即可",
+                                ctx.episode_id, e)
+        self._rr_notify(
+            f"↩ 已退一層（×{layer['scale']}）。回細格（如 `B3`）點擊；"
+            f"可再 `退` 或 `放大 <細格>`",
+            image_paths=[layer["base"] + ".png"])
 
     def _rr_click(self, ctx, fine_cell, layer_override):
         """細格點擊：漂移守門 → 左鍵點傳送按鈕 → 三態（成功/等確認/無反應）。"""
