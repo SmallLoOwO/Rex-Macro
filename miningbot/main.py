@@ -5322,7 +5322,14 @@ class Bot:
             self.logger.info("PAUSED — 按 Q 繼續")
 
     def _resume(self):
-        """繼續：清除暫停並重新握住 W + 左鍵（與啟動/_on_enter(MINING) 相同的完整序列）。"""
+        """繼續：清除暫停並重新握住 W + 左鍵。
+
+        輕量恢復（2026-07-20）：MINING 暫停恢復不再跑 zoom_normalize（I×30+O×4）
+        與 init_mining_sequence 的 rotate(.,)/center_crosshair——角度與遠近只在
+        稀有礦重追、回礦、啟動時才會被動到，那些路徑各自歸位；單純暫停期間相機
+        未動，完整復原是白做工。這裡只聚焦＋確認鎬子＋重新握住 W+左鍵。動過相機
+        的場合（手動碰過、或暫停跨過 boost 到期）由後續 reentry／採集收尾歸位接手。
+        """
         if self._calib_session is not None:
             # 校準中不准恢復挖礦（▶️/resume 只記離場後意圖；_calib_exit 先清 session 再
             # 呼叫 _resume 所以離場路徑不受此擋）。
@@ -5338,9 +5345,13 @@ class Bot:
             # 先重新聚焦 Roblox。失敗不交人工——使用者正在按 Q 注視著，下次 mining
             # tick 的視窗跑位偵測會接手（REFOCUS action；那條路徑失敗才交人工）。
             self._focus_roblox()
-            # 暫停期間人最可能滾輪動過鏡頭距離——恢復挖礦前歸一（2026-07-19）。
-            self._zoom_normalize("暫停恢復")
-            miner.init_mining_sequence(rotate=self._rotate_verified)
+            # 輕量恢復：假設暫停期間視角未動（角度/遠近只在稀有礦重追/回礦/啟動時
+            # 才變動，那些路徑各自歸位）。放開→確認鎬子（沒拿才按 D1）→重新握住
+            # W+左鍵；跳過舊版 zoom_normalize＋init 的 rotate/center（2026-07-19 加的
+            # 「暫停期間人最可能滾輪動過鏡頭」假設過於悲觀——使用者實機並不會）。
+            ic.key_up("w"); ic.mouse_up()
+            miner.ensure_pickaxe()
+            ic.key_down("w"); ic.mouse_down()
 
     def _toggle_pause(self):
         """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動；
