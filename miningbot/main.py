@@ -5077,6 +5077,20 @@ class Bot:
                                            cfg.found_keywords, rare_names=rare_names)
         special = ocr.any_new_special_found(chat_before, chat_after, common,
                                             cfg.found_keywords, cfg.special_keywords)
+        # ★ 基準閘（H054 對策，2026-07-20 harvest 094）：上面兩個都是**無錨點的計數差**，
+        #   前提是「基準與 after 看的是同一個聊天視圖」。基準沒讀到任何 has-found 歷史
+        #   ＝開火前聊天整窗淡出隱藏 → 之後舊行連同新行一起重新顯示，計數增加分不出是
+        #   本次採到還是舊紀錄重現 → 不可採信（094 實錄：基準只讀到面板 "NORMAL"、
+        #   rare 0→2 判成功，但框未消失且前後聊天裁圖逐位元相同＝這一發沒產生任何新行）。
+        #   方向照「寧漏勿假成功」：擋掉後 gone=False 走 RETRY 再射一次，礦還在、不損失。
+        #   只擋這兩個信號——帳本有等效規則且自帶錨點，照常生效（H032 晚到行仍救得回）。
+        if not ocr.baseline_saw_found_history(chat_before, cfg.found_keywords):
+            if confirmed or special:
+                self.log_harvest.warning(
+                    "[%s] H054 基準閘：基準無 has-found 歷史（開火前聊天淡出隱藏）"
+                    "→ 忽略計數差確認 rare=%s special=%s（不認定成功）",
+                    hid, confirmed, special)
+            confirmed = special = False
         # episode 帳本（H032 延伸對策）：鏈式對齊累積新增行——基準底行已捲出裁圖時，
         # 上面的單次差分全滅，帳本以「上一次讀取」為錨仍接得住晚到/被推走的成功行。
         # confirmed 一旦入帳全 episode 有效（誤判失敗後的任何 OCR 都會把它撈回來）。

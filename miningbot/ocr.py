@@ -288,6 +288,33 @@ def has_new_rare_found_tail(before: str, after: str, common_names, found_keyword
 # 實測（tests/fixtures/chat 回歸集）：三種 pass 在暗棕混合背景各救回不同行、聯集嚴格更優。
 CHAT_PREPROCESSES = ("min_channel", "gray", "dark_mask")
 
+def baseline_saw_found_history(before_texts, found_keywords) -> bool:
+    """episode 基準 OCR 是否真的看到了聊天的 has-found 歷史（H054 對策，2026-07-20）。
+
+    計數差信號（has_new_rare_found / any_new_special_found）的**前提**是「基準與 after
+    看的是同一個聊天視圖」——只有這樣，數量增加才能歸因到我方這一發。Roblox 聊天無新
+    訊息 ~15s 會整窗淡出隱藏，episode 進場凍結的基準裁圖若剛好落在那段，基準讀到 0 條
+    has-found（只剩常駐礦物面板文字）；之後任何新訊息會讓**舊行連同新行**整段重新顯示
+    → 計數差把開火前早就在聊天裡的舊採集行全當本次新增 → 假成功。
+
+    這正是 ChatLedger 既有規則（見 ChatLedger.update「上次讀取為空 → 只推進錨點、不計
+    新增」）的同一條原則，只是計數差沒有錨點、無從自我保護 → 由呼叫端先問這個問題。
+
+    判準用「有沒有任何 has-found 行」而非「有沒有任何文字」：裁圖含左上礦物面板等常駐
+    UI，聊天全隱藏時仍讀得到那些字（實機 094/093 = "NORMAL"、091 = "NORMAL"+"Shamrock"），
+    「有文字」分不出聊天死活。實機五場兩側夾：**基準 has-found 行 0 條**（081/091/093/094，
+    四場皆為淡出隱藏）vs **10 條**（082，真成功、計數差正確確認 rare 1→2）。
+
+    逐 pass 取聯集（任一 pass 看到即算），因為單一前處理本來就可能有背景盲區（H014）；
+    「所有 pass 都沒看到」才是聊天層級的隱藏。
+    """
+    return any(
+        _found_ore(line, found_keywords) is not None
+        for text in before_texts
+        for line in text.splitlines()
+    )
+
+
 def any_new_rare_found(before_texts, after_texts, common_names, found_keywords,
                        rare_names=()) -> bool:
     """逐 pass 差分（count 增加或底部新稀有行），任一 pass 確認即 True。

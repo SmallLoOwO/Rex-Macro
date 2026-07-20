@@ -927,3 +927,98 @@ def test_read_text_line_auto_falls_back_when_rapidocr_raises(monkeypatch):
     image = np.zeros((45, 200, 3), dtype=np.uint8)
 
     assert ocr_module.read_text_line(image) == "fallback"
+
+
+# ---- H054（2026-07-20，harvest 094；使用者發現「把過去的挖礦紀錄當成功依據」）----
+# 根因：episode 進場凍結的聊天裁圖落在 Roblox 聊天淡出時段（無新訊息 ~15s 整窗隱藏），
+# 基準 OCR 只讀到常駐 UI（礦物面板 "NORMAL"）、**0 條 has-found 行**。sweep 那 ~25s 間
+# 事件訊息抵達使聊天整段重新淡入 → 計數差把「開火前早就在聊天裡的舊採集行」全當本次
+# 新增 → rare 0→2 + special → 假成功。實機鐵證：094 框未消失（gone=False）、且開火前
+# (12:44:47) 與開火後 (12:44:56) 的聊天裁圖 MD5 完全相同＝這一發根本沒產生任何新行。
+# 錨點信號（last_line/tail）與 ChatLedger 都正確拒絕了（ocr.py:522 早有「上次讀取為空
+# → 不計新增」規則），只有**計數差**沒有這道保護 → confirmed 是三者 OR、帳本無法否決。
+# 對策：基準沒讀到任何 has-found 歷史時，計數差不可採信（方向：寧漏勿假成功——
+# 漏判走 RETRY/RESWEEP 再射一次，假成功＝礦沒挖到卻收尾走人）。
+H054_COMMON = ("Siogyne", "Riches", "Toppatrick", "Weevil", "Syrooze",
+               "Cleavelite", "Coinstorm", "Imbollyx")
+
+# harvest 094 實機原文（logs/snapshots/trace/20260720_124456_094_chat_ocr_success.txt）
+H054_BASELINE_HIDDEN = "NORMAL"
+H054_AFTER_094 = (
+    "nil (@small_io) nasreroliea ne event lo\n"
+    "Reminiscence!\n"
+    "KIT (@small_lo) has rerolled the event to Cobb\n"
+    "small_lo has found Clovara\n"
+    "small_lo has found an ionized Imbollyx\n"
+    "small_lo has found Riches\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found Toppatrick\n"
+    "small_lo has found Syrooze (Candied Cave)\n"
+    "NORMAL"
+)
+
+# harvest 082 實機原文（20260719_012711_082_chat_ocr_success.txt）＝**真成功**對照組：
+# 基準讀得到 10 條 has-found 歷史，新增行只有底部兩條 → 計數差在此必須照常生效。
+H054_BASELINE_VISIBLE_082 = (
+    "small_io nas louna uelisoi (sortsnow Cave)\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found Cleavelite\n"
+    "small_lo has found Riches\n"
+    "KIT (@small_lo) has activated the Wintburg ev\n"
+    "KIT (@small_lo) has rerolled the event to Polar\n"
+    "KIT (@small_lo) has rerolled the event to Cobb\n"
+    "small_lo has found Siogyne\n"
+    "KIT (@small_lo) has rerolled the event to Everg\n"
+    "small_lo has found a spectral Auriclase\n"
+    "NORMAL"
+)
+H054_AFTER_082 = (
+    "small_io nas rouna Siogyne\n"
+    "small_lo has found Cleavelite\n"
+    "small_lo has found Riches\n"
+    "KIT (@small_lo) has activated the Wintburg ev\n"
+    "KIT (@small_lo) has rerolled the event to Polar\n"
+    "KIT (@small_lo) has rerolled the event to Cobb\n"
+    "small_lo has found Siogyne\n"
+    "KIT (@small_lo) has rerolled the event to Everg\n"
+    "small_lo has found a spectral Auriclase\n"
+    "small_lo has found Weevil\n"
+    "small-lo-has-found-an ionized Starstride\n"
+    "NORMAL"
+)
+
+from miningbot.ocr import baseline_saw_found_history
+
+
+def test_h054_hidden_chat_baseline_is_not_usable():
+    # 094/093/091/081 五場實機基準都是這一種：整窗淡出、只剩常駐面板文字
+    assert baseline_saw_found_history([H054_BASELINE_HIDDEN], KW) is False
+
+
+def test_h054_visible_chat_baseline_is_usable():
+    # 082 真成功：基準確實看到了聊天歷史 → 計數差有意義
+    assert baseline_saw_found_history([H054_BASELINE_VISIBLE_082], KW) is True
+
+
+def test_h054_baseline_usable_when_any_pass_saw_history():
+    # 逐 pass 盲區（H014）：某個前處理讀不到不代表聊天是隱藏的——任一 pass 看到即可用
+    assert baseline_saw_found_history(["", H054_BASELINE_VISIBLE_082], KW) is True
+
+
+def test_h054_empty_baseline_is_not_usable():
+    assert baseline_saw_found_history(["", ""], KW) is False
+
+
+def test_h054_count_diff_alone_would_have_faked_success_on_094():
+    # 事故本體：計數差信號在 094 確實回 True（0→2）——這就是假成功的來源。
+    # 這條測試釘住「為什麼需要基準閘」：不是計數差壞了，是它的前提不成立。
+    assert has_new_rare_found(H054_BASELINE_HIDDEN, H054_AFTER_094,
+                              H054_COMMON, KW) is True
+    assert baseline_saw_found_history([H054_BASELINE_HIDDEN], KW) is False
+
+
+def test_h054_real_success_082_still_confirmed_by_count_diff():
+    # 兩側夾的另一側：真成功不可被閘擋掉
+    assert has_new_rare_found(H054_BASELINE_VISIBLE_082, H054_AFTER_082,
+                              H054_COMMON, KW) is True
+    assert baseline_saw_found_history([H054_BASELINE_VISIBLE_082], KW) is True

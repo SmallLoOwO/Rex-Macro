@@ -83,3 +83,70 @@ def test_aim_renderer_matches_candidates_by_exact_snapshot_path(tmp_path, monkey
     first_overlay = cv2.imread(first_path.replace(".png", "_aim.png"))
     assert tuple(first_overlay[180, 164]) == (0, 215, 255)
     assert tuple(first_overlay[180, 714]) != (0, 215, 255)
+
+
+# --- H054（2026-07-20，harvest 094）：基準無聊天歷史 → 計數差確認必須被擋 ---
+# 實機：episode 進場凍結的聊天裁圖落在 Roblox 聊天淡出時段 → 基準只讀到常駐面板
+# "NORMAL"、0 條 has-found；sweep 期間事件訊息讓聊天整段重新淡入 → 計數差把開火前
+# 早就在的舊採集行全當新增 → rare 0→2 + special 判 SUCCESS。鐵證：框未消失
+# (gone=False)、開火前後聊天裁圖 MD5 相同＝這一發沒產生任何新行，礦其實沒挖到。
+from tests.test_ocr import (H054_BASELINE_HIDDEN, H054_AFTER_094,
+                            H054_BASELINE_VISIBLE_082, H054_AFTER_082,
+                            H054_COMMON)
+
+
+class _WarnRecorder(_LogRecorder):
+    def __init__(self):
+        super().__init__()
+        self.warnings = []
+
+    def warning(self, message, *args):
+        self.warnings.append(message % args if args else message)
+        super().warning(message, *args)
+
+    def debug(self, message, *args):
+        pass
+
+
+def _verify_bot(monkeypatch, after_text):
+    bot = Bot.__new__(Bot)
+    bot.log_harvest = _WarnRecorder()
+    bot._chat_ledger = None
+    monkeypatch.setattr(main.ocr, "read_text_multi",
+                        lambda *args, **kwargs: [after_text])
+    monkeypatch.setattr(main.cfg, "found_keywords", ("has found", "found a"))
+    monkeypatch.setattr(main.cfg, "special_keywords", ("ionized", "spectral"))
+    monkeypatch.setattr(Bot, "_log_rapid_diag", lambda self, hid, why: None)
+    return bot
+
+
+def test_h054_hidden_baseline_suppresses_count_diff_confirmation(monkeypatch):
+    bot = _verify_bot(monkeypatch, H054_AFTER_094)
+    _, confirmed, special = bot._verify_chat_ocr(
+        None, [H054_BASELINE_HIDDEN], H054_COMMON, (), "094", "poll")
+
+    assert confirmed is False and special is False
+    assert any("H054 基準閘" in w for w in bot.log_harvest.warnings)
+
+
+def test_h054_visible_baseline_still_confirms_real_success(monkeypatch):
+    # 兩側夾另一側：082 真成功（基準看得到 10 條歷史）不可被閘擋掉
+    bot = _verify_bot(monkeypatch, H054_AFTER_082)
+    _, confirmed, _ = bot._verify_chat_ocr(
+        None, [H054_BASELINE_VISIBLE_082], H054_COMMON, (), "082", "poll")
+
+    assert confirmed is True
+    assert bot.log_harvest.warnings == []
+
+
+def test_h054_gate_does_not_veto_ledger_confirmation(monkeypatch):
+    # 帳本自帶錨點、規則等效，基準閘不可連它一起擋（否則 H032 晚到行救不回）
+    bot = _verify_bot(monkeypatch, H054_AFTER_094)
+    bot._chat_ledger = main.ocr.ChatLedger([H054_BASELINE_HIDDEN])
+    monkeypatch.setattr(type(bot._chat_ledger), "confirmed", property(lambda self: True))
+    monkeypatch.setattr(Bot, "_maybe_detect_world_from_ore_lines", lambda self, lines: None)
+
+    _, confirmed, _ = bot._verify_chat_ocr(
+        None, [H054_BASELINE_HIDDEN], H054_COMMON, (), "094", "poll")
+
+    assert confirmed is True

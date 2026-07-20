@@ -72,7 +72,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Coordinates/modes/hotkeys | `config.py` | config and incident regressions |
 | Rare-ore harvest | rules below, latest matching H incident | `harvester.py`, `_sweep_for_tracker`, `_tick_harvest`, `_harvest_success` |
 | Tracker detection | H039/H040, `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near` |
-| Chat verification | H014/H020/H032/H041 | `ocr.ChatLedger`, `read_text_multi`, `_verify_chat_ocr` |
+| Chat verification | H014/H020/H032/H041/H054 | `ocr.ChatLedger`, `read_text_multi`, `_verify_chat_ocr`, `ocr.baseline_saw_found_history` |
 | Chill/reset audio | `audio.py`, `tests/test_audio.py` | `main._on_audio_*` |
 | Mine reset | reset/capacity incident evidence | `states.py`, `_banner_ocr_loop`, `_update_reset_complete` |
 | Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*` |
@@ -97,7 +97,9 @@ conventions.
 5. D3 is always `2 → 0.15s → 3 → 0.3s → hold-click 0.4s → 0.5s`.
 6. Harvest success requires new rare/special chat evidence. Tracker disappearance
    alone means `RESWEEP`, never success. Preserve episode `ChatLedger` and late
-   confirmation.
+   confirmation. Count-difference signals are void when the baseline OCR saw no
+   has-found history: chat auto-hides after ~15s idle, and old lines re-displayed
+   by a later message are not this shot's evidence (H054).
 7. Capacity at 100% never enters `RESET_WAIT`; only the reset banner may stop mining.
 8. Tracker masks remain per HSV range and center confirmation is hue-independent.
    Use real in-game crops, keep the configured candidate ROI, and never run
