@@ -1,7 +1,23 @@
 # 回礦 reroll 隨機 yaw → b9f7783 yaw 回正失效 → 視覺校正修復設計
 
 - 日期：2026-07-20
-- 狀態：**調查完成／設計階段（視覺可行性待驗證）**
+- 狀態：**⚠ 根因已被否證（2026-07-21），勿依本文結論行動**
+
+> **本文的根因鏈不成立。** 見
+> `docs/superpowers/specs/2026-07-21-reentry-yaw-investigation-findings.md`。
+> 兩項前提已被推翻：
+>
+> 1. 「證據 2」宣稱 RR#10／RR#11「attempt 4＝reroll 過」——ledger 證明兩者
+>    **reroll 次數皆為 0**，`attempt` 與 reroll 完全不相關。據此推得的
+>    「根因一句話」、證據 3、機率表全部失效。
+> 2. 「限制聲明」宣稱作者無視覺、需他人執行——**不成立**，可讀圖。
+>
+> 另：本文引用的素材路徑錯誤（實際在 MSIX LocalCache），且 `*_landing.png`
+> 被誤判——那批**是礦層內幀**，正是視覺校正需要的語料。
+>
+> 以下原文保留供追溯，**演算法框架與整合點仍可參考，根因與下一步不可採用**。
+
+- 原狀態：調查完成／設計階段（視覺可行性待驗證）
 - 相關 commit：`b9f7783`（fix(reentry): 回礦成功收尾補 yaw 回正——斜向方位不再帶進挖礦）
 - 相關 spec：`docs/superpowers/specs/2026-07-08-mine-reentry-design.md:18`（reroll 亂 yaw 已知機制）
 - 對應事故：H059（待 commit 時補入 `docs/incidents.md`）
