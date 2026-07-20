@@ -3234,7 +3234,9 @@ class Bot:
             statuses = ",".join(dict.fromkeys(c.status for c in candidates))
             self._draw_aim_header(
                 overlaid,
-                f"DIR {shot.dir_idx} | {shot.layer.upper()} | {statuses.upper()}")
+                # H056：標頭數字＝使用者要輸入的方位號（1-8），與回礦介面一致
+                f"DIR {remote_aim.dir_label(shot.dir_idx)} | "
+                f"{shot.layer.upper()} | {statuses.upper()}")
             path = os.path.splitext(shot.snapshot_path)[0] + "_aim.png"
             if not cv2.imwrite(path, overlaid):
                 self.logger.warning("AIM overlay write failed: %s", path)
@@ -3364,7 +3366,8 @@ class Bot:
                 self.logger.warning("MANUAL snapshot unreadable: %s", path)
                 continue
             remote_aim.draw_grid(image)
-            self._draw_aim_header(image, f"DIR {abs_dir} | MID")
+            self._draw_aim_header(
+                image, f"DIR {remote_aim.dir_label(abs_dir)} | MID")
             out_path = os.path.splitext(path)[0] + "_manual.png"
             if not cv2.imwrite(out_path, image):
                 self.logger.warning("MANUAL overlay write failed: %s", out_path)
