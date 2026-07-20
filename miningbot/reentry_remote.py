@@ -451,8 +451,7 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
     color = _REENTRY_PHASE_COLOR.get(ctx.phase, 0x5865F2)
     evac_tag = "（已撤離至地表）" if evac_done else ""
     pitch_line = ("" if pitch_offset_px is None
-                  else f"**俯仰**：夾限上 {pitch_offset_px}px"
-                       f"（`上|下 [px]` 調、`歸位` 回夾限、`存檔` 寫回標準角）\n")
+                  else f"**俯仰**：夾限上 {pitch_offset_px}px\n")
     return {
         "title": f"⛏ 回礦 #{ctx.episode_id}",
         "description": (
@@ -462,8 +461,10 @@ def build_reentry_embed(ctx, sticky_layer: str, now: float, evac_done: bool,
             f"**已等**：{mins} 分鐘\n"
             f"**階段**：{phase_label}{evac_tag}\n"
             f"\n"
-            f"指令：`方位 粗格`（如 `3 C2`，方位 1-8）、`放大 <細格>`、`層 <名>`、"
-            f"`遠/近 [n]`、`上|下 [px]`、`歸位`；文字 `重骰`/`跳過`（跳過＝回挖礦）也可\n"
+            f"📐 **指位**（等指令）：`方位 粗格`（如 `3 C2`）、`層 <名>` 改目標層\n"
+            f"🎯 **點擊**（等細格）：`B3`、換層 `B3 <層名>`、`放大 <細格>`、`退` 退一層\n"
+            f"🔭 **視角**：`遠/近 [n]`、`上|下 [px]`、`歸位`、`存檔`\n"
+            f"🔄 **流程**：`重骰`、`跳過`（回挖礦）、`📷` 重掃\n"
             f"反應鈕：🎲 重骰　⏭️ 跳過　📷 重新掃描"
         ),
         "color": color,

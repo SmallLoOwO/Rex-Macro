@@ -4678,7 +4678,7 @@ class Bot:
         self._rr_notify(
             drift_note
             + f"🔍 方位 {tgt_dir + 1} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
-            f"要換層回 `B3 <層名>`；太小回 `放大 <細格>` 再放大",
+            f"要換層回 `B3 <層名>`；太小回 `放大 <細格>` 再放大；選錯格回 `退` 退一層",
             image_paths=[base + ".png"])
 
     def _rr_magnify(self, ctx, cell):
@@ -4723,7 +4723,7 @@ class Bot:
         ctx.zoom_scale = scale
         self._rr_notify(
             f"🔍 已再放大 {cell}（×{scale}）。回細格（如 `B3`）點擊；"
-            f"可再 `放大 <細格>`；重掃回 📷",
+            f"可再 `放大 <細格>`；`退` 退一層；重掃回 📷",
             image_paths=[base + ".png"])
 
     def _rr_back(self, ctx):
