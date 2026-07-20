@@ -47,7 +47,7 @@ uv run python -m miningbot.calibrate_pitch
 | 修改範圍 | 先讀 | 驗證重點 |
 |---|---|---|
 | 狀態／reset | `states.py`、對應 H 事故 | transition、direct assignment、pause/resume |
-| tracker | H039/H040、`tests/test_vision.py` | 真陽性與裝備/UI 負樣本兩側夾門檻 |
+| tracker | H039/H040/H057、`tests/test_vision.py` | 真陽性與裝備/UI 負樣本兩側夾門檻；黏連救援與重錨（H057） |
 | OCR／聊天 | H014/H020/H032/H041/H054 | pass 自洽、`ChatLedger`、晚到確認、引擎降級、基準閘 |
 | D3／掃描 | `harvester.py`、原始 `.mcr` | toggle、settle、固定按鍵與 hold 時序 |
 | 世界／礦物 | `game_data.py`、`fetch_ores.py` | active registry、低高階衝突、JSON 同步 |

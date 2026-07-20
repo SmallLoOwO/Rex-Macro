@@ -2814,7 +2814,11 @@ class Bot:
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score,
-            collect_rejects=collect_rejects)
+            collect_rejects=collect_rejects,
+            rescue_v_min=cfg.tracker_rescue_v_min,
+            rescue_area_min=cfg.tracker_rescue_area_min,
+            rescue_max=cfg.tracker_rescue_max_candidates,
+            rescue_dedup_px=cfg.tracker_rescue_dedup_px)
 
     def _find_tracker_near(self, frame, center, exclude, reference_bgr=None):
         """verify 輪詢快路徑：只搜開火座標周圍 ROI（參數組與 _find_tracker 一致）。"""
@@ -2826,7 +2830,11 @@ class Bot:
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
-            shape_roi_px=cfg.tracker_shape_roi_px)
+            shape_roi_px=cfg.tracker_shape_roi_px,
+            rescue_v_min=cfg.tracker_rescue_v_min,
+            rescue_area_min=cfg.tracker_rescue_area_min,
+            rescue_max=cfg.tracker_rescue_max_candidates,
+            rescue_dedup_px=cfg.tracker_rescue_dedup_px)
 
     def _rotate_verified(self, direction: int) -> bool:
         """送一次視角鍵（+1=右轉 .、-1=左轉 ,）並以前後幀驗證「真的轉了 45°」。
