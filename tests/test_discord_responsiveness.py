@@ -1,5 +1,6 @@
 import os
 import time
+import types
 
 from miningbot import notify, reentry_remote
 from miningbot.config import Config
@@ -459,7 +460,7 @@ def test_repin_tick_reentry_rr_card_and_busy_gate(monkeypatch):
     """REENTRY：回礦卡走同一安靜窗；_rr_busy 中即使 due 也不搬；遙控器旗標不因新訊息立。"""
     bot = _bare_repin_bot(monkeypatch, state=State.REENTRY)
     bot._rr_embed_mid = "rr-message"
-    bot._rr_ctx = object()
+    bot._rr_ctx = types.SimpleNamespace(phase="awaiting_cmd")   # 2026-07-20：repost 只在 awaiting_cmd
     bot._repin_tick([{"id": "photo-1"}], 200.0)
     assert bot.reposted == []
     bot._rr_busy = True
@@ -469,6 +470,17 @@ def test_repin_tick_reentry_rr_card_and_busy_gate(monkeypatch):
     bot._repin_tick([], 211.0)
     assert bot.reposted == ["rr"]
     assert bot._remote_repin.pending is False           # REENTRY 中遙控器旗標由收尾立
+
+
+def test_repin_tick_skips_repost_during_fine_selection(monkeypatch):
+    """2026-07-20：精細選擇（awaiting_fine/confirm）期間不釘底重貼回礦卡——避免推走放大圖。"""
+    for phase in ("awaiting_fine", "awaiting_confirm"):
+        bot = _bare_repin_bot(monkeypatch, state=State.REENTRY)
+        bot._rr_embed_mid = "rr-message"
+        bot._rr_ctx = types.SimpleNamespace(phase=phase)
+        bot._rr_repin.mark_pending()          # 卡已被擠（旗標立著）
+        bot._repin_tick([], 999.0)             # 安靜早已滿
+        assert bot.reposted == [], f"{phase} 不該 repost"
 
 
 def test_rr_finalize_marks_remote_repin_pending():

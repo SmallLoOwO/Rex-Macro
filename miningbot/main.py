@@ -1635,6 +1635,7 @@ class Bot:
         if not frozen and self._remote_repin.due(now, quiet):
             self._repost_remote_control()
         if (frozen and self._rr_ctx is not None and not self._rr_busy
+                and self._rr_ctx.phase == "awaiting_cmd"
                 and self._rr_repin.due(now, quiet)):
             self._rr_repost_embed()
 
