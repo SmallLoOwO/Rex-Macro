@@ -161,6 +161,18 @@ def can_consume_ability(state: State) -> bool:
     return state not in (State.HARVESTING, State.REENTRY)
 
 
+def can_consume_rotate(state: State) -> bool:
+    """Discord `轉` 指令（遠端轉 45°）的狀態閘（純函式）。
+
+    條件目前與 can_consume_ability 相同，但理由不同、故分開：`ability` 擋的是
+    「插一次按鍵打亂時序」；本指令擋的是**記帳脫節**——HARVESTING 有
+    `HarvestState.net_rotations`、REENTRY 有 `ctx.cur_dir`，收尾都要靠它反向
+    轉回原角。中途插一次 45° 會讓記帳與實際角度差一格，正是 H048/H052 家族
+    （視角停在斜角）的成因。兩者將來若需分別調整，不會互相牽動。
+    """
+    return state not in (State.HARVESTING, State.REENTRY)
+
+
 def can_accept_manual_reentry(state: State, reentry_active: bool) -> tuple[bool, str]:
     """Discord `回礦` 指令／STUCK 🏠 的接收守門（純函式）。回 (可接受, 拒絕原因)。
 

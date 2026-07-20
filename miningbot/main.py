@@ -16,7 +16,7 @@ from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining, can_consume_ability,
                      should_notify_spawn_chill, update_capacity_streak,
-                     can_accept_manual_reentry)
+                     can_accept_manual_reentry, can_consume_rotate)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
 from . import calibrate_pitch
@@ -230,6 +230,10 @@ class Bot:
         # Discord `ability` 指令／遙控器 ⚡（2026-07-12 spec）：輪詢執行緒寫旗標、
         # 主迴圈消費後按 X。布林於 GIL 下原子（同 human_cleared 跨執行緒寫入模式）。
         self._pending_ability = False
+        # Discord `轉` 指令（2026-07-21 H059）：遠端轉 45°，供使用者手動校正斜向面向
+        # （回礦落地約一半機率對角，自動視覺判定已證實做不到——見 07-21 findings）。
+        # 同上：輪詢執行緒只寫 ±1，輸入一律由主迴圈 _consume_pending_rotate 送。
+        self._pending_rotate = 0
         # Discord 遠端回礦（2026-07-12 spec）：輪詢執行緒只寫 _pending_reentry（含原文，
         # 供 ledger 指令流水），主迴圈消費；比照 _pending_aim／_aim_busy。
         self._rr_ctx = None                      # RemoteReentryContext（進 REENTRY remote 時建、收尾時清）
@@ -1785,7 +1789,7 @@ class Bot:
         args = command.args
 
         if self._calib_session is not None and cmd in (
-                "pause", "resume", "回礦", "reenter", "ability"):
+                "pause", "resume", "回礦", "reenter", "ability", "轉", "rotate"):
             # 校準中（2026-07-18 spec 第 1 節）：pause/resume 只記離場後意圖不解除校準；
             # 其餘遊戲輸入指令一律拒絕不排隊。📷/shot/status 等唯讀不在此列、照常。
             if cmd in ("pause", "resume"):
@@ -1957,6 +1961,27 @@ class Bot:
             self.log_discord.info("CMD ability -> queued state=%s paused=%s",
                                   self.state.value, self.paused)
 
+        elif cmd in ("轉", "rotate"):
+            # 遠端手動轉 45°（H059）：回礦落地後 yaw 被遊戲隨機化，約一半是對角；
+            # 自動視覺判定經六種特徵量測皆無法兩側夾（見 07-21 findings），改由使用者
+            # 看畫面自行校正。**不排隊**——使用者是看著畫面調整，延遲數分鐘才轉比不轉
+            # 更糟（比照 can_accept_manual_reentry 的「不排隊，避免舊指令補刀」）。
+            direction = discord_commands.parse_rotate_direction(args)
+            if direction is None:
+                notify.send_message(token, ch,
+                    "❌ 轉：方向看不懂 → `轉`（右轉一格）／`轉 左`／`轉 右`")
+            elif not can_consume_rotate(self.state):
+                notify.send_message(token, ch,
+                    f"❌ 轉未接受：{'採集進行中' if self.state is State.HARVESTING else '回礦流程中'}"
+                    "，該階段有視角記帳，插一格會讓收尾轉回錯位")
+            else:
+                self._pending_rotate = direction
+                notify.send_message(token, ch,
+                    f"🧭 已排入{'右' if direction > 0 else '左'}轉 45°"
+                    f"（狀態: {self.state.value}）→ 主迴圈下個 tick 送鍵")
+            self.log_discord.info("CMD 轉 %s -> dir=%s state=%s",
+                                  args, direction, self.state.value)
+
         elif cmd in ("回礦", "reenter"):
             # 手動觸發回礦（H044 spec 第 3 節；用途不限卡死——蒐集面板樣本等皆可）。
             # 輪詢執行緒只寫旗標；狀態守門走純函式 can_accept_manual_reentry。
@@ -1982,6 +2007,8 @@ class Bot:
                 "`status` — 查詢目前狀態、統計、保留清單\n"
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
                 "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
+                "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
+                "採集/回礦中不接受，不排隊）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
                 "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
                 "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
@@ -2644,8 +2671,30 @@ class Bot:
                 else:
                     self.logger.warning("重置撤離：無法聚焦 Roblox，放棄撤離（不擋 RESET_WAIT）")
 
+    def _consume_pending_rotate(self):
+        """主迴圈消費 Discord `轉` 指令（H059）。輪詢執行緒只寫旗標，送鍵一律在此。
+
+        接收時已擋過狀態，但接收到消費之間仍可能變（chill 觸發 HARVESTING 等）——
+        此時**丟棄不排隊**：使用者是看著畫面手動校正，隔幾分鐘才轉一格會讓他以為
+        自己按錯，比不轉更糟。用 `_rotate_verified` 而非裸送鍵，被吃時才有得回報。
+        """
+        if not self._pending_rotate:
+            return
+        direction, self._pending_rotate = self._pending_rotate, 0
+        if not can_consume_rotate(self.state):
+            self.log_discord.info("轉 已丟棄：接收後狀態變為 %s（不排隊）", self.state.value)
+            return
+        side = "右" if direction > 0 else "左"
+        if self._rotate_verified(direction):
+            self.last_action = f"遠端{side}轉 45°"
+            self.log_discord.info("轉 已執行：%s 45°（state=%s）", side, self.state.value)
+        else:
+            self.last_action = f"遠端{side}轉未生效"
+            self.logger.warning("遠端 %s轉 45° 重試用盡未生效——視角未變，可再送一次", side)
+
     def _tick(self, frame):
         self._update_reset_chime_active()
+        self._consume_pending_rotate()
         # Discord `ability` 指令消費：可消費狀態才按 X（HARVESTING/REENTRY 插按鍵會
         # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
         if self._pending_ability and can_consume_ability(self.state):
