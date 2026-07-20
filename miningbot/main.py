@@ -4656,10 +4656,12 @@ class Bot:
         os.makedirs(self._rr_snap_dir(), exist_ok=True)
         cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])   # 漂移守門基準（同步寫）
         cv2.imwrite(base + ".png", zoom)
+        ctx.zoom_stack.append(None)               # 2026-07-20：首層之前＝awaiting_cmd（退層 pop None 回指令）
         ctx.phase = "awaiting_fine"
         ctx.zoom_dir = tgt_dir
         ctx.zoom_region = region
         ctx.zoom_base = base                      # _rr_click 讀回（不重組字串）
+        ctx.zoom_scale = cfg.reentry_remote_zoom_scale
         self._rr_notify(
             drift_note
             + f"🔍 方位 {tgt_dir + 1} 的 {cell} 格放大。回細格（如 `B3`）點擊；"
@@ -4701,8 +4703,11 @@ class Bot:
         x, y, rw, rh = sub
         cv2.imwrite(base + "_src.png", f[y:y + rh, x:x + rw])
         cv2.imwrite(base + ".png", zoom)
+        ctx.zoom_stack.append({                   # 2026-07-20：連鎖放大前 push 上一層（退層用）
+            "region": ctx.zoom_region, "base": ctx.zoom_base, "scale": ctx.zoom_scale})
         ctx.zoom_region = sub
         ctx.zoom_base = base
+        ctx.zoom_scale = scale
         self._rr_notify(
             f"🔍 已再放大 {cell}（×{scale}）。回細格（如 `B3`）點擊；"
             f"可再 `放大 <細格>`；重掃回 📷",
