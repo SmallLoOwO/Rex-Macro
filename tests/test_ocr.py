@@ -1022,3 +1022,126 @@ def test_h054_real_success_082_still_confirmed_by_count_diff():
     assert has_new_rare_found(H054_BASELINE_VISIBLE_082, H054_AFTER_082,
                               H054_COMMON, KW) is True
     assert baseline_saw_found_history([H054_BASELINE_VISIBLE_082], KW) is True
+
+
+# ---- H055（2026-07-20，harvest 082；H054 調查副產物，使用者裁決當時不在該輪範圍）----
+# 左上礦物面板標頭 "NORMAL" 落在 config.chat_region = Region(0,110,460,280) 的下緣，
+# **每次聊天 OCR 都被讀成最後一行** → 兩個抗捲動信號結構性失效（不是調參問題、是恆成立）：
+#   has_new_rare_found_last_line：before_last == after_last == "NORMAL" → 永遠 False
+#   has_new_rare_found_tail：_align_tail 的錨點恆對到 after 尾端的 "NORMAL"、tail 恆為空
+#   ChatLedger：同一個 _align_tail，錨點鏈一併被綁死
+# 實機鐵證＝082（真成功）：新增行 "small_lo has found Weevil" 與
+# "small-lo-has-found-an ionized Starstride" 都插在 "NORMAL" **上面**，兩信號全滅，
+# 整套 verify 退化成只剩計數差——而計數差正是 H054 假成功的來源。
+#
+# 為何不縮短 chat_region（route b，實機量測否決）：面板不是「在聊天下方」而是**疊在聊天上**。
+#   082_d3_chat_after.png：面板白色圓角上緣在裁圖 y=227，最新 has-found 行的字身
+#     量在無面板的 x>=250 帶＝y=225..234 → 邊框橫穿字身（這也是 OCR 讀成
+#     "small-lo-has-found-an" 連字號的來源，H041 同型）。
+#   094_d3_chat_after.png：最新（淡出中）聊天行落在 y≈240..255，正是 "NORMAL" 字身帶
+#     （白字 y=240..258）→ 任何「停在面板上方」的裁法都會切掉真聊天行。
+#   故 config.py:73「勿縮短高度否則漏掉最新 has-found」是實機事實，不是保守估計。
+#
+# 對策（route a，純加法）：比對進入點剝掉尾端常駐 UI 殘留行，讓錨點自然落回真聊天行。
+# 兩側夾（6 份實機 trace dump 全部行）：
+#   UI 殘留＝**恰好 1 token**（NORMAL ×11、Shamrock ×2，共 13 筆）
+#   真 found 行＝**≥3 token**（"has found X" 的下限；實測最短 "small_lo has found W" ＝4）
+# 安全性不只經驗：found_keywords = ("has found","found a") 都是雙詞片語 → 任何 found 行
+# 必 ≥3 token → **1 token 行永遠不可能是 found 行**，剝掉它不可能剝掉成功信號。
+# 1 token 的真聊天行只有折行碎片（'Weevil'/'hasfound'/'Reminiscence!'/'30%!'），
+# 它們本來就 _found_ore() → None、對信號無貢獻。
+from miningbot.ocr import (has_new_rare_found_tail, new_chat_tail_lines,
+                           ChatLedger as _H055Ledger)
+
+H055_COMMON = H054_COMMON
+
+# harvest 091 實機原文（20260719_183935_091_chat_ocr_success.txt）：
+# 面板殘留**兩行**（左 NORMAL + 右側圖層面板 Shamrock），且基準整窗淡出。
+H055_BASELINE_FADED_091 = "NORMAL\nShamrock"
+H055_AFTER_091 = (
+    "small_io nas rouna Faearne\n"
+    "KIT (@small_lo) has boosted the event's length\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found Polkegg (Eggshell Cave)\n"
+    "small_lo has found an ionized Imbollyx\n"
+    "small_lo has found Eleggtricity (Eggshell Cave\n"
+    "KIT (@small_lo) has rerolled the event to Antle\n"
+    "KIT (@small_lo) has rerolled the event to Antle\n"
+    "small_lo has found Riches\n"
+    "small-lo-has-found-Starstride\n"
+    "NORMAL\n"
+    "Shamrock"
+)
+
+
+def test_h055_082_last_line_signal_sees_the_new_rare_line():
+    # 事故本體①：082 是真成功，底行信號本應 True，卻因 "NORMAL" 恆為兩側最後一行而回 False
+    assert has_new_rare_found_last_line(H054_BASELINE_VISIBLE_082, H054_AFTER_082,
+                                        H055_COMMON, KW) is True
+
+
+def test_h055_082_tail_signal_sees_the_new_rare_line():
+    # 事故本體②：錨點恆對到尾端 "NORMAL" → tail 恆空 → H032 的補洞信號一併失效
+    assert has_new_rare_found_tail(H054_BASELINE_VISIBLE_082, H054_AFTER_082,
+                                   H055_COMMON, KW) is True
+
+
+def test_h055_082_tail_lines_are_exactly_the_two_new_chat_lines():
+    # 錨點應落在 before 的真底行（a spectral Auriclase），其後兩行才是新增
+    assert new_chat_tail_lines(H054_BASELINE_VISIBLE_082, H054_AFTER_082) == [
+        "small_lo has found Weevil",
+        "small-lo-has-found-an ionized Starstride",
+    ]
+
+
+def test_h055_082_ledger_anchor_chain_confirms():
+    # 事故本體③：ChatLedger 走同一個 _align_tail，錨點鏈被同一原因綁死
+    ledger = _H055Ledger([H054_BASELINE_VISIBLE_082])
+    ledger.update([H054_AFTER_082], H055_COMMON, KW)
+    assert ledger.confirmed is True
+    assert any("Starstride" in l for l in ledger.rare_lines)
+
+
+def test_h055_strips_both_ui_residue_lines_091():
+    # 091 是雙面板場景：NORMAL + Shamrock 都要剝，錨點才落得回真聊天行
+    tail = new_chat_tail_lines("small_lo has found Riches\nNORMAL\nShamrock",
+                               H055_AFTER_091)
+    assert tail == ["small-lo-has-found-Starstride"]
+
+
+def test_h055_does_not_eat_hyphen_welded_real_chat_line():
+    # 使用者硬性要求：不可誤殺被 OCR 讀歪的真聊天行。
+    # H041 型整行黏連字號（"small-lo-has-found-an ionized Starstride"）去黏後 7 token，
+    # 遠高於 1 → 必須留下，否則正是它撐起 082 的成功判定。
+    welded = "small-lo-has-found-an ionized Starstride"
+    assert new_chat_tail_lines("small_lo has found Riches\nNORMAL",
+                               f"small_lo has found Riches\n{welded}\nNORMAL") == [welded]
+
+
+def test_h055_keeps_short_but_multi_token_chat_fragments():
+    # 兩側夾的下側：3 token 的折行碎片（093 實機 "chance by 15%!"）不可被當面板剝掉
+    assert new_chat_tail_lines("small_lo has found Riches\nNORMAL",
+                               "small_lo has found Riches\nchance by 15%!\nNORMAL") == [
+        "chance by 15%!"]
+
+
+def test_h055_faded_baseline_must_not_confirm_via_last_line():
+    # ★ 剝殼暴露的既有破口：091 基準整窗淡出（剝完為空），after 底行剛好是稀有礦
+    # （Starstride）。舊行為靠 "NORMAL"=="NORMAL" 意外擋住；剝掉後若不補「基準為空即棄權」，
+    # 會憑空生出假成功。方向同 ChatLedger「上次讀取為空→不計新增」與 H054 基準閘。
+    assert has_new_rare_found_last_line(H055_BASELINE_FADED_091, H055_AFTER_091,
+                                        H055_COMMON, KW) is False
+
+
+def test_h055_faded_baseline_must_not_confirm_via_tail():
+    assert has_new_rare_found_tail(H055_BASELINE_FADED_091, H055_AFTER_091,
+                                   H055_COMMON, KW) is False
+
+
+def test_h055_does_not_resurrect_h054_false_success_on_094():
+    # H054 回歸釘樁：剝殼後 094 的基準變成「真的空」，兩個錨點信號仍須拒絕
+    assert has_new_rare_found_last_line(H054_BASELINE_HIDDEN, H054_AFTER_094,
+                                        H054_COMMON, KW) is False
+    assert has_new_rare_found_tail(H054_BASELINE_HIDDEN, H054_AFTER_094,
+                                   H054_COMMON, KW) is False

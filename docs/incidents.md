@@ -436,6 +436,34 @@ fixture 位置慣例：
 - **回歸**：`tests/test_ocr.py` H054 區塊（隱藏/可見/逐 pass 聯集/全空基準＋「計數差在 094 確實回 True」的事故本體釘樁，6 例，原文取自 094/082 實機 trace dump）＋`tests/test_main_harvest_runtime.py` H054 區塊（隱藏基準擋下並記 WARNING、082 真成功不被擋、閘不得否決帳本確認，3 例）。
 - **下輪實機驗證預期**：`harvest.log` 出現 `H054 基準閘：基準無 has-found 歷史` WARNING 時，同一輪**不得**再出現 `-> SUCCESS`，應改走 `RETRY`（框還在）或 `RESWEEP`（框消失）；反之基準讀得到歷史的輪次（`rapid(baseline)` 行數 ≥8）行為完全不變。grep 檢查：`Select-String 'H054 基準閘' harvest.log` 的每個 hid，其 `verify harvest:` 行 verdict 應為 RETRY/RESWEEP。
 
+## H055（2026-07-20，harvest 082；H054 調查副產物，使用者當時裁決不在該輪範圍、問題本身確認存在）：常駐礦物面板 "NORMAL" 恆為聊天 OCR 最後一行 → 兩個抗捲動信號與 ChatLedger 錨點鏈結構性失效
+
+- **症狀**：082 是一次**真成功**（`rare [1]->[2]`、Discord 正確報出採到的礦），但四個確認信號只有**計數差**活著。實機 trace dump（`20260719_012711_082_chat_ocr_success.txt`）顯示新增的兩行 `small_lo has found Weevil` 與 `small-lo-has-found-an ionized Starstride` 都插在 `NORMAL` **上面**，before/after 的最後一行同為 `NORMAL`。這不是機率性漏判、是**恆成立**：六份實機 dump 的 after 段最後一行 100% 是面板文字（`NORMAL` ×11；091 另有右側圖層面板 `Shamrock` ×2，殘留兩行）。
+- **一句話根因**：`config.chat_region = Region(0,110,460,280)` 的下緣蓋到左上礦物面板標頭，`NORMAL` 每次都被 OCR 讀成最後一行 → (a) `has_new_rare_found_last_line` 的 `before_last == after_last == "NORMAL"` 恆成立、恆回 False；(b) `_align_tail` 的錨點恆對到 after 尾端的 `NORMAL`、tail 恆為空 → `has_new_rare_found_tail`（H032 對策）與共用同一 `_align_tail` 的 `ChatLedger` 錨點鏈一併失效。等於整套 verify 退化成單一信號，**而計數差正是 H054 假成功的來源**——H054 的基準閘擋掉計數差之後，faded-baseline 場次已無任何信號可用。
+- **為何不縮短 `chat_region`（route b，實機量測否決，非保守估計）**：面板不是「在聊天下方」而是**疊在聊天上**。082 裁圖量測：面板白色圓角上緣在 y=**227**，最新 has-found 行的字身（量在無面板干擾的 x≥250 帶）在 y=**225..234** → 邊框橫穿字身（這也是該行被 OCR 讀成 `small-lo-has-found-an` 連字號的來源，H041 同型）。094 裁圖更極端：最新（淡出中）聊天行落在 y≈**240..255**，正是 `NORMAL` 白字帶（y=240..258）之內。故任何「停在面板上方」的裁法都會切掉真聊天行，`config.py` 對 `chat_review_region` 的「勿縮短高度否則漏掉最新 has-found」是實機事實。
+- **對策（route a，純加法、零校準風險）**：`ocr._strip_ui_residue()` 在比對進入點 `_chat_lines()` 剝掉**尾端**常駐 UI 殘留行，讓錨點自然落回真正的最後一條聊天行；`has_new_rare_found_last_line` 與 `has_new_fuzzy_rare_found` 的底行路徑改走同一個 `_chat_lines()`。座標／`config.py` 完全未動。
+  - **兩側夾**（6 份實機 dump 全部行）：UI 殘留＝**恰好 1 token**（`NORMAL`／`Shamrock`，13 筆）vs 真 found 行＝**≥3 token**（`has found X` 的結構下限；實測最短 `small_lo has found W` ＝4 token）。門檻取 `UI_RESIDUE_MAX_TOKENS = 1`。
+  - **安全性可證、不只經驗**：`found_keywords = ("has found", "found a")` 皆為雙詞片語 → 任何 found 行必 ≥3 token → **1 token 行永遠不可能是 found 行**，剝掉它在數學上不可能剝掉成功信號。1 token 的真聊天行只有折行碎片（`Weevil`／`hasfound`／`Reminiscence!`／`30%!`），本來就 `_found_ore()→None`、對信號零貢獻。
+  - **去黏後再數 token**：H041 型整行連字號黏連（`small-lo-has-found-an ionized Starstride`）若照空白切只有 3 token、全黏則 1 token → 必須先把 `-`/`=` 當分隔（`_token_count`），否則會誤殺**正是撐起 082 成功判定的那一行**。
+  - **只剝尾端、遇第一個非殘留行即停**：中段折行碎片留著，`_align_tail` 的「向上連續吻合最長」比對不受擾。
+- **連帶修補（剝殼暴露的既有破口，必須同批修）**：剝掉 `NORMAL` 後，聊天整窗淡出的場次基準會變成**真的空**，而底行信號舊版對「空基準」沒有防護——091 實錄的 after 底行剛好是稀有礦（`Starstride`），若不補防護會**憑空生出假成功**（舊版是靠 `"NORMAL"=="NORMAL"` 意外擋住的）。故 `has_new_rare_found_last_line` 與 `has_new_fuzzy_rare_found` 底行路徑加「基準無聊天行即棄權」，方向與 `ChatLedger`「上次讀取為空→只起鏈不計新增」及 H054 基準閘完全一致（寧漏勿假成功）。
+- **修復前後實機六場對照**（`common_ore_names()` 全世界聯集）：
+
+  | dump | last_line | tail | ledger | count | 基準閘 |
+  |---|---|---|---|---|---|
+  | 081 resweep | False | False | False | False | False |
+  | 081 success | False | False | False | True | False |
+  | **082 success** | **True**（修前 False） | **True**（修前 False） | **True**（修前 False） | True | True |
+  | 091 success | False | False | False | True | False |
+  | 093 success | False | False | False | True | False |
+  | 094 success | False | False | False | True | False |
+
+  082（唯一基準可見的真成功）從 1 個信號恢復成 4 個；四場 faded-baseline 的錨點信號全部維持 False、計數差仍由 H054 基準閘擋下＝**沒有引入任何新的假陽性**。
+- **回歸**：`tests/test_ocr.py` H055 區塊（10 例，原文取自 082/091/094 實機 trace dump）——事故本體三條（底行／tail／ledger 在 082 應為 True）、剝殼正確性三條（091 雙殘留行、H041 黏連行不可被剝、3 token 折行碎片不可被剝）、安全方向四條（091 空基準不得經底行或 tail 確認、H054 的 094 不得復活假成功）。既有 H014/H020/H032/H041/H054 測試與 `tests/test_ocr_fixtures.py` 15 例實圖回歸全綠。
+- **fixture**：沿用 H054 區塊已收錄的 082 原文（同一份 dump），新增 091 原文（雙面板殘留場景）。
+- **下輪實機驗證預期**：`harvest.log` 的 `verify harvest:` 行，在**基準讀得到聊天歷史**的輪次（`rapid(baseline)` 行數 ≥8）應開始看到底行／tail／ledger 信號與計數差**同時**成立（修復前這類輪次只有計數差）；faded-baseline 輪次行為完全不變（仍走 H054 基準閘 → RETRY/RESWEEP）。反指標：若出現「基準只有 1 行（面板文字）卻判 SUCCESS」＝棄權防護失效，須立即回查。
+- **commit**：2026-07-20 `fix(verify): 剝掉聊天 OCR 尾端常駐面板殘留行（H055）`
+
 ## H056（2026-07-20 16:20~16:22，harvest 097；使用者發現「所有備選全部都沒有偵測到」→ 追查後改判）：瞄準介面方位 0-7 vs 回礦介面 1-8——使用者看 `DIR 4` 的圖打 `5`，腳本轉到別的方位開火
 
 - **時間線**：16:20:25 chill 觸發 → HARVESTING[097]；16:20:29~43 八方位 sweep 全 `no tracker` → giveup 交人工，Discord 發 9 個近失候選（分數 0.26~0.34，理由全為「形狀分不足」）；16:21:41~48 使用者回 `手動`，腳本重按 D2＋確認生效後拍八方位圖；16:22:21 使用者回 **`5 D2`** → `AIM 對齊：rot=-3（目標 dir=5）`；16:22:30 `AIM 重找全滅 -> 直接朝先驗點開火 (1120, 405)`；16:22:43 verify OCR 兩次只讀到 `'NORMAL'`、`confirmed=False` → 未採到；此後無人再回覆，16:35:49 防掛機 Space。

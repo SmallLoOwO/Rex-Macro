@@ -17,7 +17,10 @@
 - D3 必須使用 `2 → 0.15s → 3 → 0.3s → hold-click 0.4s → 0.5s`。
 - 採集成功只認 episode 內新增的稀有／特殊聊天證據。追蹤框消失但未確認
   時必須重掃。基準 OCR 沒讀到任何 has-found 歷史（開火前聊天淡出隱藏）時，
-  計數差信號一律不採信——舊行重新顯示不是本次採到（H054）。
+  計數差信號一律不採信——舊行重新顯示不是本次採到（H054）。聊天裁圖下緣
+  蓋到常駐礦物面板，每次 OCR 的最後一行都是面板文字：比對進入點必須先剝掉
+  尾端 UI 殘留行，否則錨點類信號恆為 False；面板是疊在最新聊天行**之上**，
+  不可改用縮短裁圖高度解決（H055）。
 - 容量 100% 只加速 reset banner 輪詢；不能自行進入 `RESET_WAIT`。
 - Discord 背景執行緒只能發布 pending/cache；遊戲輸入由主迴圈消費。
 
@@ -48,7 +51,7 @@ uv run python -m miningbot.calibrate_pitch
 |---|---|---|
 | 狀態／reset | `states.py`、對應 H 事故 | transition、direct assignment、pause/resume |
 | tracker | H039/H040/H057、`tests/test_vision.py` | 真陽性與裝備/UI 負樣本兩側夾門檻；黏連救援與重錨（H057） |
-| OCR／聊天 | H014/H020/H032/H041/H054 | pass 自洽、`ChatLedger`、晚到確認、引擎降級、基準閘 |
+| OCR／聊天 | H014/H020/H032/H041/H054/H055 | pass 自洽、`ChatLedger`、晚到確認、引擎降級、基準閘、UI 殘留行剝除 |
 | D3／掃描 | `harvester.py`、原始 `.mcr` | toggle、settle、固定按鍵與 hold 時序 |
 | 世界／礦物 | `game_data.py`、`fetch_ores.py` | active registry、低高階衝突、JSON 同步 |
 | D4 事件 keep/reroll | H049、`miner.plan_d4` | 快取須晚於上次動作、未知雙樣本確認 |

@@ -205,16 +205,17 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
     永遠出現在底部 → 只看最後一行，捲動只影響頂部。底部變動且該行是稀有礦才算
     （底部是一般礦則不算）。
     """
-    def last_line(text: str) -> str:
-        stripped = text.strip()
-        return stripped.split("\n")[-1].strip() if stripped else ""
-
-    before_last = last_line(before)
-    after_last  = last_line(after)
-    if _normalize(before_last) == _normalize(after_last):
+    before_lines, after_lines = _chat_lines(before), _chat_lines(after)
+    # 基準沒有任何聊天行（整窗淡出，剝掉常駐面板後為空）→ 無從歸因給這一發：
+    # 舊行重新淡入時底行必然「新出現」，採信就是憑空的假成功（H054 同型，091 實錄
+    # 底行剛好是稀有礦 Starstride）。舊版靠 "NORMAL"=="NORMAL" 意外擋住，H055 剝殼後
+    # 這道破口會露出來 → 明確棄權。方向同 ChatLedger「上次讀取為空→不計新增」。
+    if not before_lines or not after_lines:
+        return False
+    if _normalize(before_lines[-1]) == _normalize(after_lines[-1]):
         return False
     common = [_normalize(c) for c in common_names]
-    return _is_rare_ore(_found_ore(after_last, found_keywords), common)
+    return _is_rare_ore(_found_ore(after_lines[-1], found_keywords), common)
 
 
 # ── 底部新增行對齊（2026-07-04 H032 假陰性對策）─────────────────────────────
@@ -223,8 +224,45 @@ def has_new_rare_found_last_line(before: str, after: str, common_names, found_ke
 # 「新稀有行必在底部」的假設在多行同窗口抵達時不成立 → 改對齊 before 底行在 after 的
 # 錨點位置，錨點之後**全部**都是新增行，任一行是稀有 found 行即確認。
 
+# ── 常駐 UI 殘留行過濾（H055 對策，2026-07-20）─────────────────────────────
+# chat_region 下緣蓋到左上礦物面板標頭，"NORMAL"（091 另有右側圖層面板 "Shamrock"）
+# **每次 OCR 都被讀成最後一行** → 底行信號兩側恆等、_align_tail 錨點恆落在尾端、
+# tail 恆空 → 兩個抗捲動信號與 ChatLedger 錨點鏈全部結構性失效（實機 082 真成功實錄：
+# 新增的 Weevil／ionized Starstride 兩行都插在 "NORMAL" 上面，只剩計數差還活著）。
+#
+# 為何不改 chat_region（實機量測否決）：面板是**疊在聊天上**、不在聊天下方——082 裁圖
+# 面板上緣 y=227 橫穿最新 has-found 行的字身（y=225..234，量在無面板的 x>=250 帶），
+# 094 最新（淡出中）聊天行更落在 "NORMAL" 白字帶（y≈240..258）內 → 任何「停在面板上方」
+# 的裁法都會切掉真聊天行（config.py 對 chat_review_region 的警告即此）。
+#
+# 兩側夾（6 份實機 trace dump 全部行）：UI 殘留恰好 **1 token**（NORMAL ×11、Shamrock ×2）
+# vs 真 found 行 **≥3 token**（"has found X" 的結構下限；實測最短 4）。
+# 安全性可證、不只經驗：found_keywords 皆為雙詞片語 → 任何 found 行必 ≥3 token →
+# **1 token 行永遠不可能是 found 行**，剝它不可能剝掉成功信號。1 token 的真聊天行只有
+# 折行碎片（'Weevil'/'hasfound'/'Reminiscence!'），本來就 _found_ore()→None、無貢獻。
+# 只剝**尾端**、遇第一個非殘留行即停：中段折行碎片留著，_align_tail 的向上連續比對不受擾。
+UI_RESIDUE_MAX_TOKENS = 1
+
+
+def _token_count(line: str) -> int:
+    """去黏後的 token 數：H041 型整行連字號黏連會讓真聊天行看似單 token，必須先拆。"""
+    return len([t for t in re.split(r"[\s\-=]+", _normalize(line)) if t])
+
+
+def _is_ui_residue(line: str) -> bool:
+    return _token_count(line) <= UI_RESIDUE_MAX_TOKENS
+
+
+def _strip_ui_residue(lines: list) -> list:
+    """剝掉尾端常駐 UI 殘留行；遇到第一個像聊天的行即停。"""
+    end = len(lines)
+    while end > 0 and _is_ui_residue(lines[end - 1]):
+        end -= 1
+    return lines[:end]
+
+
 def _chat_lines(text: str) -> list:
-    return [l.strip() for l in text.splitlines() if l.strip()]
+    return _strip_ui_residue([l.strip() for l in text.splitlines() if l.strip()])
 
 
 def _lines_alike(a: str, b: str) -> bool:
@@ -457,15 +495,17 @@ def has_new_fuzzy_rare_found(before: str, after: str, common_names, rare_names) 
     if (count_fuzzy_rare_found(after, common_names, rare_names)
             > count_fuzzy_rare_found(before, common_names, rare_names)):
         return True
-    def last_line(text: str) -> str:
-        stripped = text.strip()
-        return stripped.split("\n")[-1].strip() if stripped else ""
-    b, a = _normalize(last_line(before)), _normalize(last_line(after))
-    if a and a != b and SequenceMatcher(None, b, a).ratio() < FUZZY_STALE_LINE_RATIO:
-        d = _fuzzy_rare_line(a, common_pairs, rare_pairs)
-        if d and d["accepted"]:
-            return True
-    before_lines = [_normalize(l) for l in _chat_lines(before)]
+    # 底行同樣要剝常駐 UI 殘留（H055：否則兩側恆為 "NORMAL"、這條路徑也恆不觸發），
+    # 並同樣在「基準無聊天行」時棄權（見 has_new_rare_found_last_line 的說明）。
+    before_lines_raw, after_lines_raw = _chat_lines(before), _chat_lines(after)
+    if before_lines_raw and after_lines_raw:
+        b = _normalize(before_lines_raw[-1])
+        a = _normalize(after_lines_raw[-1])
+        if a != b and SequenceMatcher(None, b, a).ratio() < FUZZY_STALE_LINE_RATIO:
+            d = _fuzzy_rare_line(a, common_pairs, rare_pairs)
+            if d and d["accepted"]:
+                return True
+    before_lines = [_normalize(l) for l in before_lines_raw]
     for line in new_chat_tail_lines(before, after):
         n = _normalize(line)
         if any(_lines_alike(bl, n) for bl in before_lines):
