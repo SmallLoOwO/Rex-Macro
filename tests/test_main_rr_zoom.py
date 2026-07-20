@@ -106,6 +106,13 @@ def _sweep_bot(monkeypatch, tmp_path, rotate_results):
         calls["n"] += 1
         return rotate_results[calls["n"] - 1]
     bot._rotate_verified = rotate
+    # 鏡頭距離歸位與本測試無關，但沒樁掉會掉進真 Win32：_zoom_normalize →
+    # _zoom_key_verified → _focus_roblox 用 FindWindowW 找 "Roblox"。後果有二：
+    # ① 測試結果取決於桌面上有沒有開著遊戲（找不到時走 logger.error 分支，本檔
+    #    的 _LogRecorder 樁沒有 .error → AttributeError，紅在無關的地方）；
+    # ② 遊戲開著時反而更糟——會真的送滾輪事件進遊戲。
+    # 回 False＝視同沒動過距離，ctx.net_zoom 保持不變（同 _rr_sweep_and_send 原邏輯）。
+    bot._zoom_normalize = lambda tag: False
     bot._snapshot = lambda f, label: str(tmp_path / f"{label}.png")
     bot._rr_sync_write = lambda img, label: str(tmp_path / f"{label}.png")
     bot.notes = []
