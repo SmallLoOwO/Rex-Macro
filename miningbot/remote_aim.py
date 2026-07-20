@@ -63,10 +63,34 @@ def _rank_key(rej: dict) -> float:
     return float(rej.get("colored", 0.0)) - 1.0
 
 
+def _dedup_rejects(rejects, radius_px: int):
+    """H056：同一張畫面內距離 < radius_px 的近失候選合併，只留最高分。
+
+    HSV 會把同一塊大色面（097 是角色的紅武器＋彩虹碎片衣裝）切成數個 blob，
+    097 實機 DIR1 三筆 (569,924)/(534,952)/(570,951) 相距 27~45px、分數同為 0.34，
+    佔掉 9 個名額中的 3 個。半徑取 60 < 追蹤框寬（實機 100~207px）——兩個真框
+    若靠這麼近，框身早已大幅重疊，不可能是兩個獨立目標。
+    只在同一 (層,方位) 內合併：不同方位是不同畫面，同螢幕座標沒有意義。
+    """
+    if radius_px <= 0:
+        return list(rejects)
+    kept, kept_pos = [], []
+    for r in sorted(rejects, key=_rank_key, reverse=True):
+        x, y = r["pos"]
+        if any((x - kx) ** 2 + (y - ky) ** 2 < radius_px ** 2 for kx, ky in kept_pos):
+            continue
+        kept.append(r)
+        kept_pos.append((x, y))
+    return kept
+
+
 def build_aim_context(shots, pose_net_rotations: int, pose_pitch_layer: str,
                       harvest_id: str, now: float, max_candidates: int = 9,
-                      observations=None) -> AimContext:
-    """把各 (層,方位) 的近失候選攤平、依分數降冪編號 1..n（上限 max_candidates 防洗版）。"""
+                      observations=None, dedup_radius_px: int = 60) -> AimContext:
+    """把各 (層,方位) 的近失候選攤平、依分數降冪編號 1..n（上限 max_candidates 防洗版）。
+
+    攤平前先做同層同方位的空間去重（H056），避免一塊衣裝吃掉多個編號名額。
+    """
     shot_list = list(shots)
     observation_list = list(observations or ())
 
@@ -75,7 +99,7 @@ def build_aim_context(shots, pose_net_rotations: int, pose_pitch_layer: str,
     observed = sorted(observation_list, key=lambda o: o.score, reverse=True)
     rejected = []
     for s in shot_list:
-        for r in s.rejects or []:
+        for r in _dedup_rejects(s.rejects or [], dedup_radius_px):
             rejected.append((_rank_key(r), s.layer, s.dir_idx,
                              s.snapshot_path, r))
     rejected.sort(key=lambda t: t[0], reverse=True)

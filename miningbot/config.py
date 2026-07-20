@@ -353,6 +353,8 @@ class Config:
     remote_aim_enabled: bool = True             # 關掉＝giveup 附圖/回覆解析全部回到今天行為
     remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
     remote_aim_refind_radius_px: int = 160      # fire 前重找 ROI 半徑（同 shape_roi 半徑量級）
+    remote_aim_fullframe_fallback: bool = True  # H056：ROI 重找全滅時再全畫面找一次（confirmed 門檻）
+    remote_aim_dedup_radius_px: int = 60        # H056：同層同方位近失候選合併半徑（小於框寬 100~207）
     remote_aim_budget_s: float = 120.0          # 單次 fire 全流程預算（對齊+重掃+驗證）
     remote_aim_snapshot_wait_s: float = 3.0     # Total wait budget before rendering or directly sending async snapshots.
     harvest_target_recovery_max: int = 1        # At most one recovery at an accepted/fired absolute direction.

@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import logging
 import ctypes
@@ -3166,7 +3167,8 @@ class Bot:
                 self._sweep_shots, self.harvest.net_rotations,
                 self.harvest.pitch_layer, self.harvest.harvest_id,
                 now=time.time(), max_candidates=cfg.remote_aim_max_candidates,
-                observations=self._target_observations)
+                observations=self._target_observations,
+                dedup_radius_px=cfg.remote_aim_dedup_radius_px)
             rendered = self._render_aim_shots(ctx)   # 疊圖＋落盤
             self._aim_context = ctx
             if rendered:
@@ -3453,6 +3455,19 @@ class Bot:
                 pos_score = pos[2]
                 self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
                 break
+        if not pos and cfg.remote_aim_fullframe_fallback:
+            # 4b. H056：ROI 全滅 -> 全畫面再找一次（**不帶 ref**：此時的替代方案是朝空地盲開，
+            # 而 preexist 差分會把「掃描前就在畫面上的真框」剔掉——097 開火幀實測真框 edge=0.586）。
+            # 安全靠形狀 confirmed 門檻（0.42）獨撐：不放寬、不吃 survivor，找不到就照舊盲開。
+            if time.time() > deadline:
+                return False, "預算用盡"
+            full = self._find_tracker(capture.grab(), _excl, with_score=True)
+            if full:
+                pos = full
+                pos_score = full[2]
+                self.logger.info("[%s] AIM 全畫面兜底命中 edge=%.2f -> %s（距先驗點 %.0fpx）",
+                                 hid, full[2], (full[0], full[1]),
+                                 math.hypot(full[0] - prior[0], full[1] - prior[1]))
         if not pos:
             pos = prior                        # 4c. 直接朝先驗點開火（miss 代價＝一發）
             self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)

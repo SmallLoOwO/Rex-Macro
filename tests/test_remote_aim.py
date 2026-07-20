@@ -29,9 +29,42 @@ class TestBuildAimContext:
         assert ctx.pose_net_rotations == 0 and ctx.harvest_id == "071"
 
     def test_cap_max_candidates(self):
-        shots = [_shot("mid", 0, [_rej(10 * i, 20, 0.2 + i * 0.01) for i in range(1, 15)])]
+        # 位置間隔 100px（> dedup 半徑 60）——這裡要驗的是「上限」，不要被 H056 去重干擾
+        shots = [_shot("mid", 0, [_rej(100 * i, 20, 0.2 + i * 0.01) for i in range(1, 15)])]
         ctx = build_aim_context(shots, 0, "mid", "072", now=0.0, max_candidates=9)
         assert len(ctx.candidates) == 9
+
+    def test_h056_merges_same_blob_split_into_multiple_candidates(self):
+        # 097 實機 DIR1：一塊角色衣裝被 HSV 切成三個 blob，相距 27~45px、分數同為 0.34，
+        # 吃掉 9 個名額中的 3 個。去重後只留一筆（最高分）。
+        shots = [_shot("mid", 1, [_rej(569, 924, 0.34), _rej(534, 952, 0.34),
+                                  _rej(570, 951, 0.34), _rej(687, 490, 0.20)])]
+        ctx = build_aim_context(shots, 0, "mid", "097", now=1.0)
+        assert [c.pos for c in ctx.candidates] == [(569, 924), (687, 490)]
+
+    def test_h056_dedup_keeps_highest_score_of_a_cluster(self):
+        shots = [_shot("mid", 1, [_rej(500, 500, 0.20), _rej(520, 510, 0.38),
+                                  _rej(540, 505, 0.25)])]
+        ctx = build_aim_context(shots, 0, "mid", "097", now=1.0)
+        assert [(c.pos, c.score) for c in ctx.candidates] == [((520, 510), 0.38)]
+
+    def test_h056_dedup_does_not_merge_across_directions(self):
+        # 不同方位＝不同畫面，同螢幕座標互不相干，不得合併
+        shots = [_shot("mid", 1, [_rej(569, 924, 0.34)]),
+                 _shot("mid", 4, [_rej(569, 924, 0.30)])]
+        ctx = build_aim_context(shots, 0, "mid", "097", now=1.0)
+        assert [c.dir_idx for c in ctx.candidates] == [1, 4]
+
+    def test_h056_dedup_keeps_separate_trackers_apart(self):
+        # 間隔 > 半徑（真框寬 100~207px，兩個獨立目標不會靠更近）→ 兩筆都留
+        shots = [_shot("mid", 1, [_rej(400, 400, 0.35), _rej(540, 481, 0.58)])]
+        ctx = build_aim_context(shots, 0, "mid", "097", now=1.0)
+        assert [c.pos for c in ctx.candidates] == [(540, 481), (400, 400)]
+
+    def test_h056_dedup_radius_zero_disables_merging(self):
+        shots = [_shot("mid", 1, [_rej(569, 924, 0.34), _rej(570, 951, 0.34)])]
+        ctx = build_aim_context(shots, 0, "mid", "097", now=1.0, dedup_radius_px=0)
+        assert len(ctx.candidates) == 2
 
     def test_empty_shots_gives_empty_candidates(self):
         ctx = build_aim_context([], 3, "up", "073", now=0.0)
