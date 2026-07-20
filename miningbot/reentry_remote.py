@@ -10,7 +10,7 @@ from .remote_aim import GRID_COLS, GRID_ROWS, draw_grid, grid_cell_center
 @dataclass(frozen=True)
 class RemoteReply:
     kind: str        # "coarse"/"fine"/"magnify"/"sweep"/"reroll"/"skip"/"confirm"/"void"/
-                     # "layer"/"zoom_out"/"zoom_in"/"pitch_reset"/"pitch"
+                     # "layer"/"zoom_out"/"zoom_in"/"pitch_reset"/"pitch"/"back"
     dir_idx: int = 0  # coarse：內部 0-based（訊息面 1-8，parse 時 -1）
     cell: str = ""   # coarse/fine/magnify：格代碼；pitch：方向 "up"/"down"
     layer: str = ""  # layer 指令的新層名；fine 的單次覆寫（空＝無）
@@ -26,6 +26,7 @@ _KEYWORDS = {
     # 2026-07-19：回礦中調好的仰角直接寫回 config 標準角（校準卡在 REENTRY 被拒，
     # 過去只能事後重校）。裸 `存檔` 比照校準卡詞彙；`仰角 存檔` 同義。
     "存檔": "pitch_save", "save": "pitch_save",
+    "退": "back", "back": "back",
 }
 _ZOOM_WORDS = {"遠": "zoom_out", "far": "zoom_out", "近": "zoom_in", "near": "zoom_in"}
 _FINE_CELL = re.compile(r"^[A-F][1-6]$")
@@ -144,6 +145,23 @@ def magnify_scale(region_w: int, target_w: int, base_scale: int, cap: int = 24) 
     return max(base_scale, min(cap, round(target_w / region_w)))
 
 
+def pop_zoom_layer(ctx):
+    """退一層純邏輯（2026-07-20）：主迴圈執行 I/O，此處只決定退到哪。
+
+    回 ("awaiting_cmd", None)：stack 空 or pop 出 None（退過首層＝回等指令）；
+    回 ("awaiting_fine", layer)：pop 出某層 dict（region/base/scale），主迴圈重渲染該層；
+    回 ("noop", None)：phase 不是 awaiting_fine（呼叫端應先擋，防禦值；stack 不動）。
+    """
+    if ctx.phase != "awaiting_fine":
+        return ("noop", None)
+    if not ctx.zoom_stack:
+        return ("awaiting_cmd", None)
+    layer = ctx.zoom_stack.pop()
+    if layer is None:
+        return ("awaiting_cmd", None)
+    return ("awaiting_fine", layer)
+
+
 def fine_cell_to_screen(region, cell: str, cols: int = 6, rows: int = 6):
     """細格代碼＋粗格區域 → 絕對螢幕座標（子格中心）；不合法回 None。"""
     cell = (cell or "").strip().upper()
@@ -230,6 +248,8 @@ class RemoteReentryContext:
     zoom_dir: int = 0            # 等細格時：目標方位
     zoom_region: tuple = ()      # 等細格時：粗格原幀區域 (x, y, w, h)
     zoom_base: str = ""          # 等細格時：漂移守門基準圖路徑（Task 5 _rr_zoom 寫、_rr_click 讀）
+    zoom_stack: list = field(default_factory=list)  # 放大層歷史（2026-07-20）：None=空層(回 awaiting_cmd)、dict=上一層 {region,base,scale}
+    zoom_scale: int = 0          # 當前層渲染倍率（首層=reentry_remote_zoom_scale；連鎖=magnify_scale 算出）
     shots: list = field(default_factory=list)    # [(dir_idx, snapshot_path)]
     log: list = field(default_factory=list)      # 指令流水
     clicks: list = field(default_factory=list)   # 點擊記錄（ground truth 本體）
@@ -390,6 +410,7 @@ _PENDING_LABELS = {
     'pitch_reset': '仰角歸位',
     'pitch_save': '仰角存檔',
     'magnify': '再放大',
+    'back': '退一層',
     'coarse': '轉向並放大',
     'fine': '點擊並驗證',
     'confirm': '確認回礦',

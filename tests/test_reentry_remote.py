@@ -601,3 +601,67 @@ def test_format_gate_readings_unreadable():
     s = format_gate_readings(None, None, 0.0, 0.0)
     assert s.count("讀不到") == 2
 
+
+class TestZoomBack:
+    def test_parse_back_keyword(self):
+        from miningbot.reentry_remote import parse_reply
+        assert parse_reply("退").kind == "back"
+        assert parse_reply("BACK").kind == "back"
+        assert parse_reply("　退　").kind == "back"        # 全形空白容錯
+
+    def test_back_not_triggered_by_noise(self):
+        from miningbot.reentry_remote import parse_reply
+        assert parse_reply("退出") is None                 # 不是單獨「退」
+        assert parse_reply("重骰").kind == "reroll"        # 既有詞不誤觸
+        assert parse_reply("跳過").kind == "skip"
+        assert parse_reply("backup") is None               # 精確匹配，不誤觸
+
+    def test_pop_empty_stack_to_cmd(self):
+        from miningbot.reentry_remote import RemoteReentryContext, pop_zoom_layer
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        ctx.phase = "awaiting_fine"
+        assert pop_zoom_layer(ctx) == ("awaiting_cmd", None)
+
+    def test_pop_none_marker_to_cmd(self):
+        from miningbot.reentry_remote import RemoteReentryContext, pop_zoom_layer
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        ctx.phase = "awaiting_fine"
+        ctx.zoom_stack.append(None)
+        assert pop_zoom_layer(ctx) == ("awaiting_cmd", None)
+        assert ctx.zoom_stack == []
+
+    def test_pop_dict_layer_to_fine(self):
+        from miningbot.reentry_remote import RemoteReentryContext, pop_zoom_layer
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        ctx.phase = "awaiting_fine"
+        layer = {"region": (10, 20, 30, 40), "base": "/tmp/x", "scale": 5}
+        ctx.zoom_stack.append(layer)
+        assert pop_zoom_layer(ctx) == ("awaiting_fine", layer)
+        assert ctx.zoom_stack == []
+
+    def test_pop_chain_is_lifo(self):
+        from miningbot.reentry_remote import RemoteReentryContext, pop_zoom_layer
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        ctx.phase = "awaiting_fine"
+        d1 = {"region": (1, 1, 1, 1), "base": "a", "scale": 3}
+        d2 = {"region": (2, 2, 2, 2), "base": "b", "scale": 6}
+        ctx.zoom_stack.extend([None, d1, d2])
+        assert pop_zoom_layer(ctx) == ("awaiting_fine", d2)
+        assert pop_zoom_layer(ctx) == ("awaiting_fine", d1)
+        assert pop_zoom_layer(ctx) == ("awaiting_cmd", None)
+        assert ctx.zoom_stack == []
+
+    def test_pop_wrong_phase_is_noop(self):
+        from miningbot.reentry_remote import RemoteReentryContext, pop_zoom_layer
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        ctx.phase = "awaiting_cmd"
+        ctx.zoom_stack.append(None)
+        assert pop_zoom_layer(ctx) == ("noop", None)
+        assert ctx.zoom_stack == [None]                    # stack 不動
+
+    def test_ctx_new_fields_default(self):
+        from miningbot.reentry_remote import RemoteReentryContext
+        ctx = RemoteReentryContext(episode_id=1, created_at=0.0, sticky_layer="x")
+        assert ctx.zoom_stack == []
+        assert ctx.zoom_scale == 0
+
