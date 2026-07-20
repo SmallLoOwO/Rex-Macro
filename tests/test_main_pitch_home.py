@@ -65,18 +65,41 @@ def _rr_bot(monkeypatch, order):
     bot._pitch_home_mining = lambda label: order.append("home") or True
     bot._rr_finalize = lambda outcome: order.append("finalize")
     bot._rr_notify = lambda msg, **kw: None
+    # yaw 回正（2026-07-20）：_rr_success 走 harvester.restore_view——stub 掉避免
+    # 需要真的 _rotate_verified，並把淨轉動記入 order 供順序／傳值斷言。
+    monkeypatch.setattr(main.harvester, "restore_view",
+                        lambda net, rotate=None: order.append(("yaw", net)))
     return bot
 
 
-def test_rr_success_order_home_finalize(monkeypatch):
-    # `走` 退役（2026-07-18）後成功收尾：歸位 → ledger → 回 MINING
+def test_rr_success_order_home_yaw_finalize(monkeypatch):
+    # 成功收尾順序：俯仰歸位 → yaw 回正 → ledger → 回 MINING
     order = []
     bot = _rr_bot(monkeypatch, order)
     ctx = reentry_remote.RemoteReentryContext(
         episode_id=8, created_at=0.0, sticky_layer="mid")
     bot._rr_success(ctx, "confirmed_by_user")
-    assert order == ["home", "finalize"]
+    assert order == ["home", ("yaw", 0), "finalize"]
     assert bot._reentry_done is True
+
+
+def test_rr_success_restores_yaw_from_cur_dir(monkeypatch):
+    """回礦中 `方位` 指令累積的 ctx.cur_dir 在成功收尾時反向回正（2026-07-20
+    使用者反映：選了斜向方位後沒回正，會帶進挖礦、W 往斜向走）。比照採集收尾
+    _resume_mining_tail 的 restore_view，把淨旋轉送進去反向送鍵轉回。"""
+    yaw_calls = []
+    bot = Bot.__new__(Bot)
+    bot._pitch_home_mining = lambda label: True
+    bot._rr_finalize = lambda outcome: None
+    bot._rr_notify = lambda msg, **kw: None
+    bot._rotate_verified = lambda d: True
+    monkeypatch.setattr(main.harvester, "restore_view",
+                        lambda net, rotate=None: yaw_calls.append(net))
+    ctx = reentry_remote.RemoteReentryContext(
+        episode_id=9, created_at=0.0, sticky_layer="L")
+    ctx.cur_dir = 3                      # 使用者下過 `方位` 指令累積淨右轉
+    bot._rr_success(ctx, "success")
+    assert yaw_calls == [3]
 
 
 # ===== H048/H052：開場鏈俯仰歸位——重試與成敗只認凍結探針（2026-07-19）=====

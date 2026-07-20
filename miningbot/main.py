@@ -4814,8 +4814,13 @@ class Bot:
                 image_paths=[mpath, lpath])
 
     def _rr_success(self, ctx, outcome):
-        """成功收尾：挖礦標準角歸位 → ledger → 回 MINING。"""
+        """成功收尾：挖礦標準角歸位 → yaw 回正 → ledger → 回 MINING。"""
         self._pitch_home_mining(f"[RR#{ctx.episode_id}] 回礦收尾")
+        # yaw 回正（2026-07-20 使用者反映：回礦中 `方位` 指令累積的 ctx.cur_dir
+        # 不回轉＝下礦後視角停在斜向、W 往斜向走、後續挖礦座標系偏）。比照採集
+        # 收尾 _resume_mining_tail 的 restore_view——teleport 保留 yaw（實機確認），
+        # 把淨旋轉反向送鍵轉回；cur_dir=0 時 restore_actions 回空、零作用。
+        harvester.restore_view(ctx.cur_dir, rotate=self._rotate_verified)
         self._rr_finalize(outcome)
         self._reentry_done = True                 # decide_transition → MINING → init 序列
         self._rr_notify("⛏ 回礦完成，開挖")
