@@ -345,7 +345,9 @@ class Config:
     sweep_pitch_step_px: int = 0                # 一層 nudge 拖曳量（R 視窗校準；0=未校準＝停用；
                                                  #   正=向下拖。遊戲拖曳方向若相反，校準時設負值即可）
     sweep_pitch_clamp_px: int = 1500            # pitch_reset 飽和拖曳量（沿用 reentry 初值；礦內校準可調）
-    sweep_pitch_center_back_px: int = 0         # 夾限→「置中視角」回拉量（R 視窗校準；0=未校準＝停用）
+    sweep_pitch_center_back_px: int = 370       # 挖礦標準角：夾限飽和後回拉量（校準 挖礦/CLI 寫回；0=未校準＝停用）。
+                                                 #   370＝2026-07-20 使用者確認：本世界挖礦角＝地表角，沿用
+                                                 #   reentry_pitch_back_px；換世界若挖礦角不同須 `校準 挖礦` 另校
 
     # --- Discord 遠端瞄準（2026-07-11 spec：giveup 附近失候選編號圖，回訊息即指揮）---
     remote_aim_enabled: bool = True             # 關掉＝giveup 附圖/回覆解析全部回到今天行為
