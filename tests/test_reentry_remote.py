@@ -435,7 +435,8 @@ def test_parse_bare_up_down_rejects_garbage():
 
 
 # ===== H045/H046：開場雙閘（凍結探針＋容量歸零）＝傳送驗證過後、拍照前的最後守門 =====
-from miningbot.reentry_remote import plan_opening_gate, probe_frozen
+from miningbot.reentry_remote import (plan_opening_gate, probe_frozen,
+                                       capacity_blocks_opening)
 
 # 凍結探針門檻（config 預設；兩側夾見 probe_frozen docstring）
 _FROZEN_MEAN_MAX = 0.02
@@ -506,8 +507,9 @@ def test_opening_gate_default_tolerates_post_reset_capacity_residual():
     # （非 0%）——連續 17 次開場閘全因 capacity=1.0 > 門檻 0.0 判 "capacity"、
     # 預算 300s 耗盡卡死、使用者手動關 bot。Config 預設門檻須容忍此殘留。
     # 兩側夾：真重置完成（地表）0~1% vs 重置進行中（地表）56~71%（RR#2 01:33~01:34）
-    # vs 凍結舊幀 78%（H045）。門檻取 10.0＝與 reset_chime_capacity_arm_pct 同概念
-    # （同一幀鈴聲路徑 02:37:13 早已用「1% ≤ 10%」接受）。
+    # vs 凍結舊幀 78%（H045）。H053 改 10.0；H058（2026-07-20 RR#8~12）再收到 5.0
+    # （重置收尾中 8% 仍太早放行，改由開場前預檢擋下）。兩側各 ≥4x 餘裕，本測試
+    # 不依賴具體值——1/0 proceed、56/78 capacity 在 5.0 與 10.0 下均成立。
     from miningbot.config import Config
     th = Config().reentry_open_capacity_max_pct
     # 真重置完成（地表＋殘留 1%，RR#7 連續 17 次實讀）→ 拍照
@@ -518,6 +520,44 @@ def test_opening_gate_default_tolerates_post_reset_capacity_residual():
     assert plan_opening_gate(False, True, "reset", 56.0, th) == "capacity"
     # 凍結舊幀（H045 ep3 78%）→ 續探
     assert plan_opening_gate(False, True, "reset", 78.0, th) == "capacity"
+
+
+# ===== H058 開場前容量預檢（重置收尾期間不點擊不拖曳）=====
+def test_capacity_blocks_opening_reset_drain():
+    # H058（2026-07-20 RR#8~12 實錄）：REENTRY 因「banner 消失＋5s 沉澱」即起跑，
+    # 但重置收尾（容量 60~76% 排到 ≤10%）還在進行——_rr_open_episode 每 20s 一輪
+    # 「點回到地表＋俯仰拖曳＋OCR」全卡在遊戲卡頓裡被吃（pitch/zoom 屢判疑似被吃），
+    # 持續 ~90s 直到容量自然排到門檻。開場前容量預檢：容量 > 門檻 → True（阻塞、
+    # 被動等候、不點擊不拖曳）；≤ 門檻 → False（放行開始回礦行動）。
+    from miningbot.config import Config
+    th = Config().reentry_open_capacity_max_pct
+    # 重置收尾中（RR#8~12 起跑實讀 65/67/64/76%；RR#12 排到 56/28%）→ 阻塞
+    assert capacity_blocks_opening("reset", 76.0, th) is True
+    assert capacity_blocks_opening("reset", 65.0, th) is True
+    assert capacity_blocks_opening("reset", 56.0, th) is True
+    assert capacity_blocks_opening("reset", 28.0, th) is True
+    # 稍高於門檻 → 阻塞（H058 門檻 10→5：8% 不再放行，等收尾更乾淨）
+    assert capacity_blocks_opening("reset", th + 1.0, th) is True
+    # 門檻以內（真重置完成 0~1%；門檻邊界）→ 放行
+    assert capacity_blocks_opening("reset", 1.0, th) is False
+    assert capacity_blocks_opening("reset", 0.0, th) is False
+    assert capacity_blocks_opening("reset", th, th) is False    # 邊界：等於門檻放行
+    # 手動回礦（挖礦中觸發）容量本來就非 0 → 不擋（比照 plan_opening_gate manual 分支）
+    assert capacity_blocks_opening("manual", 76.0, th) is False
+    # 讀不到（None）→ 放行，交給 plan_opening_gate 的 capacity_unread 分支處理
+    assert capacity_blocks_opening("reset", None, th) is False
+
+
+def test_capacity_blocks_opening_two_sided_clamp():
+    # H058 兩側夾（沿用 H053 證據）：真完成 0~1% vs 收尾中 56~71% vs 凍結 78~100%。
+    # 門檻 5.0 須同時「放行真完成」＋「擋下收尾/凍結」——兩側各 ≥4x 餘裕。
+    th = 5.0
+    assert capacity_blocks_opening("reset", 0.0, th) is False   # H046 17:24:55 實機幀
+    assert capacity_blocks_opening("reset", 1.0, th) is False   # H053 RR#7 連續 17 次 1%
+    assert capacity_blocks_opening("reset", 56.0, th) is True   # RR#2 01:34:04 實讀
+    assert capacity_blocks_opening("reset", 71.0, th) is True   # RR#2 01:33:38 實讀
+    assert capacity_blocks_opening("reset", 78.0, th) is True   # H045 ep3 凍結舊幀
+    assert capacity_blocks_opening("reset", 100.0, th) is True
 
 
 # ===== H046 depth 錨解析（實機拖尾雜訊全來自裁圖右緣的金額 "$..."）=====

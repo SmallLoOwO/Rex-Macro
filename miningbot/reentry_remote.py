@@ -362,6 +362,30 @@ def plan_opening_gate(frozen: bool, on_surface, trigger: str, capacity_pct,
     return "proceed"
 
 
+def capacity_blocks_opening(trigger: str, capacity_pct,
+                            capacity_max_pct: float) -> bool:
+    """開場前容量預檢（H058）：重置收尾中容量仍高 → True（阻塞、被動等候）。
+
+    與 plan_opening_gate 的 capacity 分支同條件（trigger=="reset" 且容量 > 門檻），
+    但在「點回到地表＋俯仰拖曳」之前提前判斷——避免重置收尾的遊戲卡頓吃掉這些
+    輸入。H058（2026-07-20 RR#8~12）實錄：REENTRY 因「banner 消失＋5s 沉澱」即
+    起跑，此時重置第二階段（容量從 60~76% 排到 ≤門檻）還在進行、約需 90s；
+    _rr_open_episode 每 20s 一輪「點回到地表＋俯仰拖曳＋容量 OCR」全卡在卡頓裡
+    被吃（pitch/zoom 屢判疑似被吃），直到容量自然排到門檻才放行。預檢讓這段
+    期「不點擊、不拖曳」，只被動 OCR 容量等下一探——容量 ≤ 門檻才開始真正的
+    回礦行動。
+
+    手動回礦（trigger!="reset"）容量本來就非 0、不擋（比照 plan_opening_gate
+    manual 分支）；讀不到（None）放行，交給 plan_opening_gate 的 capacity_unread
+    分支處理（保留下游既有保守判定）。
+    """
+    if trigger != "reset":
+        return False
+    if capacity_pct is None:
+        return False
+    return capacity_pct > capacity_max_pct
+
+
 def plan_click_verdict(on_surface, frame_changed: bool, timed_out: bool) -> str:
     """細格點擊後的成功判定（H046(c) 預防性修正：狀態錨取代轉移式幀差）。
 

@@ -4353,6 +4353,8 @@ class Bot:
         但其幀差結果只是**輔助訊號**：人已在地表時再點「回到地表」畫面可能毫無變化，
         轉移式驗證會把真成功判成失敗、卡死重骰（H046(b) 2026-07-17 ep2 實錄）。
         開場成立與否全看狀態錨（plan_opening_gate）：凍結探針＋Depth=Surface＋容量歸零。
+        H058：reset 觸發時先過容量預檢（capacity_blocks_opening）——重置第二階段（容量 60~76%
+        排到 ≤門檻）收尾中不點擊、不拖曳，避免卡頓吃輸入；≤門檻才進入上面的點擊→閘鏈。
         """
         if not self._focus_roblox():
             self._rr_notify("⚠ 無法聚焦 Roblox，回 `重骰` 重試或 `跳過`")
@@ -4361,8 +4363,37 @@ class Bot:
         now = time.time()
         if self._rr_open_first_ts == 0.0:
             self._rr_open_first_ts = now         # 探測預算起算（episode 首擊）
+        # H058：預檢需要 ctx（trigger＋episode_id）；首 tick 先建（不 increment attempt）
+        if self._rr_ctx is None:
+            self._rr_ensure_ctx(reroll=False)
+        ctx = self._rr_ctx
+        # H058 開場前容量預檢：重置收尾中（容量 > 門檻）不點擊「回到地表」、不拖曳俯仰——
+        # 遊戲卡頓會吃掉這些輸入（RR#8~12 實錄：REENTRY 起跑時容量 60~76%，每 20s 一輪
+        # click+pitch+OCR 持續 ~90s 到容量自然排到門檻才放行），且動作對「等容量排掉」無益。
+        # 被動觀測到容量 ≤ 門檻才開始真正的回礦行動。手動回礦（trigger!="reset"）不擋。
+        if ctx is not None and ctx.trigger == "reset":
+            pre_cap = ocr.read_capacity_pct(
+                capture.crop(capture.grab(), cfg.capacity_region), cfg.tesseract_path)
+            if reentry_remote.capacity_blocks_opening(
+                    ctx.trigger, pre_cap, cfg.reentry_open_capacity_max_pct):
+                self._maybe_arm_chime(pre_cap)   # 預檢路徑也推進鈴聲錨（容量 ≤10 即開窗、冪等）
+                self._rr_open_last_ts = time.time()
+                remain = max(0.0, cfg.reentry_open_budget_s
+                             - (time.time() - self._rr_open_first_ts))
+                cap_s = "讀不到" if pre_cap is None else f"{pre_cap:.0f}%"
+                self.logger.info(
+                    "[RR#%s] 開場前容量 %s > %.0f%%（重置收尾中）——不點擊不拖曳，"
+                    "%.0fs 後再探（預算剩 %.0fs）",
+                    ctx.episode_id, cap_s, cfg.reentry_open_capacity_max_pct,
+                    cfg.reentry_open_retry_wait_s, remain)
+                self.last_action = (
+                    f"等重置收尾：容量 {cap_s}"
+                    f"（降至 ≤{cfg.reentry_open_capacity_max_pct:.0f}% 才開始回礦）")
+                return
+        # 容量 OK（或 manual／讀不到）：reroll increment（若適用）→ 點擊 → 拖曳 → 閘
+        if reroll:
+            self._rr_ensure_ctx(reroll=True)
         teleported = self._click_surface_verified("開場")
-        self._rr_ensure_ctx(reroll)
         self._rr_open_last_ts = time.time()
         if teleported:
             time.sleep(1.0)                      # 傳送落地沉澱
