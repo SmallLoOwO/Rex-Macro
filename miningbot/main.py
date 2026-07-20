@@ -4945,6 +4945,39 @@ class Bot:
                 f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
 
+    def _rr_yaw_sample(self, ctx):
+        """成功收尾後原地拍八方位，收 yaw 分類語料（H059；cfg.reentry_yaw_sample_sweep）。
+
+        為什麼要這批圖：回礦每輪 attempt 都按「回到地表」換重生點＝遊戲隨機化
+        yaw，`restore_view` 轉回的是那個隨機基底，直角/對角各約一半。根治要靠
+        視覺校正，但目前**只有沿軸的正樣本、沒有斜挖負樣本**，依 H040/H054 慣例
+        無法兩側夾、不得寫門檻。八方位取樣的相鄰幀固定差 45°⇒偶數組與奇數組必
+        分屬兩類，分類器可用「指標是否以週期 2 交替」自洽驗證，不需絕對標籤。
+
+        必須排在 `restore_view` 之後——語料要反映 bot 實際開挖的那個面向。
+        8 次同向旋轉＝轉滿一圈回原向（同 `_rr_sweep` 的 H050 慣例），取樣結束
+        面向不變。旋轉被吃只記數警告、照拍不中止（至少留圖），比照 H050。
+        """
+        if not cfg.reentry_yaw_sample_sweep:
+            return
+        rot_missed = 0
+        for i in range(8):
+            if self._mine_resetting or not self._running or self.paused:
+                # reset 會重生、關機不再送鍵——兩者 yaw 都已作廢，停手即可。
+                # 但殘留旋轉會讓面向偏 (i%8)*45°，明講免得事後誤判成別的 bug。
+                self.logger.warning(
+                    "[RR#%s] yaw 取樣中止於第 %d/8 張——面向可能偏 %d°（reset/暫停）",
+                    ctx.episode_id, i + 1, (i % 8) * 45)
+                return
+            self._snapshot(capture.grab(), harvester.yaw_sample_label(ctx.episode_id, i))
+            if not self._rotate_verified(1):
+                rot_missed += 1
+        if rot_missed:
+            self.logger.warning(
+                "[RR#%s] yaw 取樣有 %d 次旋轉重試用盡未生效——方位標籤已錯位，"
+                "該輪語料不可信（收尾面向亦偏 %d°）",
+                ctx.episode_id, rot_missed, (rot_missed % 8) * 45)
+
     def _rr_success(self, ctx, outcome):
         """成功收尾：挖礦標準角歸位 → yaw 回正 → ledger → 回 MINING。"""
         self._pitch_home_mining(f"[RR#{ctx.episode_id}] 回礦收尾")
@@ -4953,6 +4986,7 @@ class Bot:
         # 收尾 _resume_mining_tail 的 restore_view——teleport 保留 yaw（實機確認），
         # 把淨旋轉反向送鍵轉回；cur_dir=0 時 restore_actions 回空、零作用。
         harvester.restore_view(ctx.cur_dir, rotate=self._rotate_verified)
+        self._rr_yaw_sample(ctx)                  # H059 語料（cfg 預設關；須在回正之後）
         self._rr_finalize(outcome)
         self._reentry_done = True                 # decide_transition → MINING → init 序列
         self._rr_notify("⛏ 回礦完成，開挖")

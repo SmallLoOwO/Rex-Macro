@@ -28,6 +28,16 @@ def sweep_snapshot_label(pitch_layer: str, dir_idx: int) -> str:
     return "sweep_empty_%s_dir%d" % (pitch_layer, dir_idx)
 
 
+def yaw_sample_label(episode_id, dir_idx: int) -> str:
+    """回礦落地 yaw 取樣快照 label（純函式；H059 語料收集）。
+
+    dir_idx 0-based（與 range(8) 迴圈對齊），檔名輸出 1 起算——同
+    reentry_ep{N}_dir{i+1} 慣例（2026-07-18 使用者要求）。以 reentry 開頭
+    → snapshot_subdir 分流到 snapshots/reentry，不汙染 review 的排錯視野。
+    """
+    return "reentry_ep%s_yaw%d" % (episode_id, dir_idx + 1)
+
+
 @dataclass(frozen=True)
 class PitchLayer:
     """失敗路徑俯仰掃描的一層（純資料）。nudge_px＝pitch_reset 置中後的拖曳量（正=向下拖）。"""
