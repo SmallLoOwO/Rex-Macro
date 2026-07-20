@@ -4072,6 +4072,10 @@ class Bot:
         self._rr_last_min = -1
         ctx, self._rr_ctx = self._rr_ctx, None
         self._pending_reentry = None
+        # 2026-07-20：脫離 REENTRY 立刻補挖礦遙控器到頻道底——不再只立旗標等 quiet_s
+        # （完成通知／補瓶通知會讓 last_activity 持續刷近，due() 不成立，遙控器遲遲不回底）。
+        # 上面的 mark_pending 留作保險：repost 失敗時下輪 _repin_tick 仍會重試。
+        self._repost_remote_control()
         if ctx is None:
             return
         self._zoom_restore_if_touched(ctx)

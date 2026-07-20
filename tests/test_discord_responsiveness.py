@@ -483,22 +483,47 @@ def test_repin_tick_skips_repost_during_fine_selection(monkeypatch):
         assert bot.reposted == [], f"{phase} 不該 repost"
 
 
-def test_rr_finalize_marks_remote_repin_pending():
-    """回礦收尾必須主動立遙控器重貼旗標——完成訊息被 REENTRY 輪次消費後頻道
-    再無新訊息，舊「看到新訊息才重貼」永不觸發（2026-07-19 使用者實測）。"""
+def test_rr_finalize_reposts_remote_control_immediately():
+    """2026-07-20：回礦收尾立刻重貼挖礦遙控器到頻道底——不再只立旗標等 quiet_s／新訊息。"""
     bot = Bot.__new__(Bot)
     bot._rr_open_first_ts = 1.0
     bot._rr_embed_mid = None                  # 無殘留卡 → 不走 delete_message
     bot._rr_reactions_seen = {}
     bot._rr_last_min = 3
-    bot._rr_ctx = None                        # ctx=None 防禦路徑也要立旗標
+    bot._rr_ctx = None                        # ctx=None 防禦路徑也要補遙控器
     bot._pending_reentry = None
     bot._remote_repin = notify.RepinDebouncer()
     bot.log_discord = _LogRecorder()
+    bot.reposted = False
+
+    def _fake_repost():
+        bot.reposted = True
+        bot._remote_repin.clear()             # 模擬 _post_remote_control 成功後 clear
+
+    bot._repost_remote_control = _fake_repost
 
     bot._rr_finalize("success")
 
-    assert bot._remote_repin.pending is True
+    assert bot.reposted is True               # 立刻重貼，不等新訊息／quiet_s
+    assert bot._remote_repin.pending is False  # clear 過（＝成功重貼）
+
+
+def test_rr_finalize_keeps_pending_if_repost_fails():
+    """2026-07-20：_repost_remote_control 失敗（沒 clear）時，保險 mark_pending 保留給下輪兜底。"""
+    bot = Bot.__new__(Bot)
+    bot._rr_open_first_ts = 1.0
+    bot._rr_embed_mid = None
+    bot._rr_reactions_seen = {}
+    bot._rr_last_min = 3
+    bot._rr_ctx = None
+    bot._pending_reentry = None
+    bot._remote_repin = notify.RepinDebouncer()
+    bot.log_discord = _LogRecorder()
+    bot._repost_remote_control = lambda: None   # stub：失敗（沒 clear、沒貼）
+
+    bot._rr_finalize("success")
+
+    assert bot._remote_repin.pending is True    # 保險保留，下輪 _repin_tick 兜底
 
 
 def test_remote_reposts_after_reentry_finalize_without_new_message(monkeypatch):
