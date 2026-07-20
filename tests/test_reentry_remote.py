@@ -665,3 +665,51 @@ class TestZoomBack:
         assert ctx.zoom_stack == []
         assert ctx.zoom_scale == 0
 
+
+class TestStickyLayer:
+    def test_effective_hit(self):
+        from miningbot.reentry_remote import effective_sticky_layer
+        assert effective_sticky_layer("Lucernia", {"Lucernia": "Confectent"}, "Mantle Layer") == "Confectent"
+
+    def test_effective_miss_fallback(self):
+        from miningbot.reentry_remote import effective_sticky_layer
+        assert effective_sticky_layer("Unknown", {}, "Mantle Layer") == "Mantle Layer"
+
+    def test_effective_world_none(self):
+        from miningbot.reentry_remote import effective_sticky_layer
+        assert effective_sticky_layer(None, {"Lucernia": "X"}, "Mantle Layer") == "Mantle Layer"
+
+    def test_remember_new_does_not_mutate_input(self):
+        from miningbot.reentry_remote import remember_layer
+        m = {"A": "L1"}
+        out = remember_layer(m, "B", "L2")
+        assert out == {"A": "L1", "B": "L2"}
+        assert m == {"A": "L1"}                          # 功能性：不改輸入 mapping
+
+    def test_remember_overwrite(self):
+        from miningbot.reentry_remote import remember_layer
+        assert remember_layer({"A": "L1"}, "A", "L9") == {"A": "L9"}
+
+    def test_remember_world_none_or_empty_layer(self):
+        from miningbot.reentry_remote import remember_layer
+        assert remember_layer({"A": "L1"}, None, "L2") is None
+        assert remember_layer({"A": "L1"}, "B", "") is None
+
+    def test_parse_none_empty_bad_nondict(self):
+        from miningbot.reentry_remote import parse_sticky_layers
+        assert parse_sticky_layers(None) == {}
+        assert parse_sticky_layers("") == {}
+        assert parse_sticky_layers("{bad json") == {}
+        assert parse_sticky_layers("[1, 2, 3]") == {}    # 頂層非 dict
+
+    def test_parse_chinese_value(self):
+        from miningbot.reentry_remote import parse_sticky_layers
+        assert parse_sticky_layers('{"World": "中文層"}') == {"World": "中文層"}
+
+    def test_serialize_roundtrip_and_sorted(self):
+        from miningbot.reentry_remote import parse_sticky_layers, serialize_sticky_layers
+        m = {"Lucernia": "Confectent", "Abyss": "深層"}
+        text = serialize_sticky_layers(m)
+        assert parse_sticky_layers(text) == m
+        assert text.index('"Abyss"') < text.index('"Lucernia"')   # sort_keys
+

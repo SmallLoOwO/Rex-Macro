@@ -162,6 +162,40 @@ def pop_zoom_layer(ctx):
     return ("awaiting_fine", layer)
 
 
+def effective_sticky_layer(world, mapping, fallback):
+    """每世界黏性層查值（2026-07-20）：mapping 命中 → 該世界的層；否則 fallback。
+    world=None（世界尚未偵測）→ fallback（config 預設 reentry_target_layer）。
+    """
+    if world is None:
+        return fallback
+    return mapping.get(world, fallback)
+
+
+def remember_layer(mapping, world, layer):
+    """功能性記層（2026-07-20）：回 {**mapping, world: layer}（已存在→覆蓋），**不改輸入**。
+    world=None 或 layer 空 → 回 None（呼叫端據此不寫檔、只改 session）。
+    """
+    if world is None or not layer:
+        return None
+    return {**mapping, world: layer}
+
+
+def parse_sticky_layers(raw_text):
+    """讀 sticky_layers.json（2026-07-20）：None／空／壞 JSON／頂層非 dict → {}（容錯）。"""
+    if not raw_text:
+        return {}
+    try:
+        obj = json.loads(raw_text)
+    except (ValueError, TypeError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def serialize_sticky_layers(mapping):
+    """寫 sticky_layers.json（2026-07-20）：ensure_ascii=False（中文層名可讀）、sort_keys（diff 友善）。"""
+    return json.dumps(mapping, ensure_ascii=False, sort_keys=True)
+
+
 def fine_cell_to_screen(region, cell: str, cols: int = 6, rows: int = 6):
     """細格代碼＋粗格區域 → 絕對螢幕座標（子格中心）；不合法回 None。"""
     cell = (cell or "").strip().upper()

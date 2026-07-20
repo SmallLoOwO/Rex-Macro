@@ -365,6 +365,10 @@ class Config:
     reentry_remote_drift_diff: float = 12.0     # 點擊前漂移守門：粗格區域幀平均差 ≥ 此值 → 不點、重發放大圖（H026 家族）
     reentry_remote_auto_resume: bool = False    # True=幀差+礦內亮度雙過即自動開挖；False=一律等「好」放行（亮度簽名校準前的安全預設）
     reentry_remote_ledger: str = "logs/reentry_remote/ledger.jsonl"   # append-only ground-truth 帳本
+    reentry_remote_sticky_layers_path: str = "logs/reentry_remote/sticky_layers.json"
+    # 每世界回礦黏性層 map（{世界: 層名}）；`層` 指令寫穿、bot init 讀回。
+    # 容錯：空/缺/壞 → {}，回退到 reentry_target_layer。與 reentry_remote_ledger 同目錄
+    # （MSIX 重導同處理）。reentry_target_layer 保留為「世界未在 map／未偵測到」的 fallback。
 
     # REENTRY 鏡頭遠近（2026-07-12 spec：遠/近指令＋夾限飽和絕對歸位）
     reentry_zoom_step_default: int = 4          # `遠`/`近` 省略步數時的預設
