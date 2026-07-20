@@ -4478,6 +4478,7 @@ class Bot:
         """主迴圈消費一則回礦指令（輸入操作全在此執行緒）。"""
         ctx = self._rr_ctx
         k = reply.kind
+        prev_phase = ctx.phase if ctx is not None else None
         if k == "layer":
             self._rr_sticky_layer = reply.layer
             ctx.sticky_layer = reply.layer
@@ -4529,6 +4530,11 @@ class Bot:
         # reroll 已在 _rr_open_episode 內 edit 過 → 這裡再 edit 一次同資料，無害的 no-op PATCH。
         if k not in ("skip", "reroll"):
             self._rr_edit_embed()
+        # 2026-07-20：退出精細選擇（fine/confirm → awaiting_cmd）立刻要求回礦卡重貼到頻道底，
+        # 不等 quiet_s——精細選擇期間卡被擠上去沒重貼，退回指令時要立刻可見。
+        if (prev_phase in ("awaiting_fine", "awaiting_confirm")
+                and ctx is not None and ctx.phase == "awaiting_cmd"):
+            self._rr_repin.mark_pending_now()
 
     def _rr_pitch(self, ctx, reply):
         """Discord 仰角指令（2026-07-17：R 取樣視窗退役，俯仰控制移進回礦流程）。
