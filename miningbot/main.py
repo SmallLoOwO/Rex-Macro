@@ -3338,7 +3338,8 @@ class Bot:
             prior = remote_aim.grid_cell_center(reply.cell)
         self._aim_busy = True
         try:
-            ok, detail = self._execute_remote_fire(ctx, tgt_layer, tgt_dir, prior)
+            ok, detail = self._execute_remote_fire(ctx, tgt_layer, tgt_dir, prior,
+                                                   cell=reply.cell)
         finally:
             self._aim_busy = False
         if ok:
@@ -3440,11 +3441,16 @@ class Bot:
             notify.send_images_message(token, ch, caption, rendered[i:i + 4])
         self.log_discord.info("MANUAL survey -> %d 方位圖已發", len(rendered))
 
-    def _execute_remote_fire(self, ctx, tgt_layer, tgt_dir, prior):
-        """對齊姿態 → 重新 D2 掃描 → ROI 放寬重找 → 開火 → 聊天驗證。回 (confirmed, 說明)。
+    def _execute_remote_fire(self, ctx, tgt_layer, tgt_dir, prior, cell: str = ""):
+        """對齊姿態 → 重新 D2 掃描 → 找框 → 開火 → 聊天驗證。回 (confirmed, 說明)。
 
         姿態記帳在 ctx（絕對姿態，與 self.harvest 的 net_rotations 分開——勿混用兩個來源）；
         對齊轉動的「被吃不計」規則比照 _sweep_for_tracker：只計實際轉成的步數。
+
+        cell（harvest 101）：grid 路徑（玩家回 `方位 格子`）帶粗格代碼→限縮該格跑
+        detect_tracker_core 找框真正中心、命中即自動開火；抓不到不盲打（101 病灶），
+        記素材＋回報（放大手選退路見 _execute_remote_aim_fine）。candidate 路徑（回編號）
+        cell 空→沿用既有 find_tracker_near 整幀重找（近失候選位置已精修，非本次目標）。
         """
         from . import notify
         deadline = time.time() + cfg.remote_aim_budget_s
@@ -3493,27 +3499,20 @@ class Bot:
         ref = gf
         harvester.execute_scan()
         self._confirm_scan("remote-aim")
-        # 3. ROI 放寬重找：先正常門檻，再 shape_threshold=0（colored 過即收、edge 排序）
-        pos = None
-        pos_score = -1.0
-        for thr in (cfg.tracker_shape_threshold, 0.0):
-            if time.time() > deadline:
-                return False, "預算用盡"
-            f2 = capture.grab()
-            pos = vision.find_tracker_near(
-                f2, prior, cfg.remote_aim_refind_radius_px,
-                frame_margin_frac=0.0, exclude=_excl,
-                reference_bgr=ref, shape_templates=self._shape_templates,
-                shape_threshold=thr, shape_hard_floor=0.0,
-                shape_scales=cfg.tracker_shape_scales,
-                shape_roi_px=cfg.tracker_shape_roi_px, with_score=True)
-            if pos:
-                pos_score = pos[2]
-                self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
-                break
-        if not pos:
-            pos = prior                        # 4c. 直接朝先驗點開火（miss 代價＝一發）
-            self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
+        # 3. 找框：grid 路徑走限縮偵測（harvest 101），candidate 路徑走既有 find_tracker_near
+        if cell:
+            pos, pos_score, detail = self._detect_core_in_cell(
+                cell, tgt_dir, deadline, hid)
+            if pos is None:
+                return False, detail
+        else:
+            pos, pos_score, detail = self._refind_tracker_near(
+                prior, _excl, ref, deadline, hid)
+            if detail:
+                return False, detail
+            if pos is None:
+                pos = prior                    # candidate 路徑：直接朝先驗點開火（miss 代價＝一發）
+                self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
         pos = (int(pos[0]), int(pos[1]))
         # 4. 開火；共用 session 冷卻由實際 hold-click 當下起算。
         fire_frame = capture.grab()
@@ -3549,6 +3548,73 @@ class Bot:
             self._remote_fire_success(ctx, hid)
             return True, "confirmed(final)"
         return False, "verify 窗口內聊天未確認"
+
+    def _refind_tracker_near(self, prior, excl, ref, deadline, hid):
+        """candidate 路徑既有 find_tracker_near 邏輯（自 _execute_remote_fire 拆出，純重構）。
+
+        先正常門檻，再 shape_threshold=0（colored 過即收、edge 排序）。回 (pos, score, detail)：
+        命中 (pos, score, "")；預算用盡 (None, -1.0, "預算用盡")；都沒命中 (None, -1.0, "")
+        （呼叫端據 detail 決定 abort 或退回先驗盲打）。
+        """
+        for thr in (cfg.tracker_shape_threshold, 0.0):
+            if time.time() > deadline:
+                return None, -1.0, "預算用盡"
+            f2 = capture.grab()
+            pos = vision.find_tracker_near(
+                f2, prior, cfg.remote_aim_refind_radius_px,
+                frame_margin_frac=0.0, exclude=excl,
+                reference_bgr=ref, shape_templates=self._shape_templates,
+                shape_threshold=thr, shape_hard_floor=0.0,
+                shape_scales=cfg.tracker_shape_scales,
+                shape_roi_px=cfg.tracker_shape_roi_px, with_score=True)
+            if pos:
+                self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
+                return ((int(pos[0]), int(pos[1])), pos[2], "")
+        return None, -1.0, ""
+
+    def _detect_core_in_cell(self, cell, tgt_dir, deadline, hid):
+        """grid 路徑限縮偵測（harvest 101 §5 步驟 3-4）：裁玩家選的粗格→detect_tracker_core
+        找框真正中心→命中即回絕對座標。回 (pos, score, detail)；pos None 時 detail 說明原因。
+
+        命中即自動開火路徑（偵測幀→開火背靠背，FOV 天然一致，不需 boost 閘）。
+        未命中不盲打（101 病灶＝粗格中心可差半格）：記 cell_crop 素材（aim_cell＋放大圖；
+        miss 另記 aim_core_miss label 當補新色系 profile 的直接 fixture 來源），回報退路。
+        座標相對 region 由 detect_tracker_core 算好後 +region 原點映射回全幀。
+        """
+        if time.time() > deadline:
+            return None, -1.0, "預算用盡"
+        region = remote_aim.grid_cell_region(cell, cfg.remote_aim_zoom_margin_frac)
+        if region is None:
+            return None, -1.0, f"粗格 {cell} 無效"
+        rx, ry, rw, rh = region
+        frame = capture.grab()
+        cell_crop = frame[ry:ry + rh, rx:rx + rw]
+        # 【LOG 素材】裁格＋放大圖（非同步佇列，不卡開火路徑）
+        self._hsnap_crop(frame, region, f"aim_cell_dir{tgt_dir}_{cell}")
+        try:
+            big = reentry_remote.render_zoom(
+                frame, region, scale=cfg.reentry_remote_zoom_scale,
+                cols=cfg.remote_aim_fine_grid, rows=cfg.remote_aim_fine_grid)
+            self._hsnap(big, f"aim_cell_dir{tgt_dir}_{cell}_zoom")
+        except Exception as exc:
+            self.logger.warning("[%s] AIM 放大圖 log 失敗: %s", hid, exc)
+        hit = vision.detect_tracker_core(
+            cell_crop, cfg.tracker_core_profiles,
+            min_area=cfg.tracker_core_min_area,
+            ar_lo=cfg.tracker_core_ar_lo, ar_hi=cfg.tracker_core_ar_hi,
+            extent_min=cfg.tracker_core_extent_min,
+            border_margin=cfg.tracker_core_border_margin,
+            border_dark_max=cfg.tracker_core_border_dark_max,
+            border_dark_frac_min=cfg.tracker_core_border_dark_frac_min)
+        if not hit:
+            # 未覆蓋色系／框不在格內：另記 miss label（補色系 profile 的 fixture 來源）
+            self._hsnap_crop(frame, region, f"aim_core_miss_dir{tgt_dir}_{cell}")
+            self.logger.info("[%s] AIM 限縮偵測 None cell=%s（待補色系 profile）", hid, cell)
+            return None, -1.0, f"限縮偵測未命中 {cell}（可能非綠色框），未開火——可 `手動` 或回編號重試"
+        pos = (rx + hit[0], ry + hit[1])
+        self.logger.info("[%s] AIM 限縮偵測命中 cell=%s -> %s (border=%.2f)",
+                         hid, cell, pos, hit[3])
+        return pos, float(hit[3]), ""
 
     def _remote_fire_success(self, ctx, hid):
         """遠端開火確認成功：通知＋俯仰歸位＋視角回正＋回挖礦。
