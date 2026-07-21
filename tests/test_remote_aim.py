@@ -5,7 +5,8 @@ from miningbot.remote_aim import (AimCandidate, SweepShot, TargetObservation,
                                   grid_cell_center, draw_overlay, parse_reply,
                                   plan_alignment, circled, format_candidate_summary,
                                   build_aim_groups, AIM_GROUP_HEADER,
-                                  MANUAL_SURVEY_HELP)
+                                  MANUAL_SURVEY_HELP, grid_cell_region,
+                                  fov_state_consistent)
 
 
 def _shot(layer, d, rejects):
@@ -131,6 +132,55 @@ class TestGridCellOf:
         assert remote_aim.grid_cell_of((-1, 5)) is None
         assert remote_aim.grid_cell_of((1920, 0)) is None
         assert remote_aim.grid_cell_of((0, 1080)) is None
+
+
+class TestGridCellRegion:
+    # harvest 101 手動瞄準精定位：粗格→裁圖區域（可加對稱餘裕、clamp 在畫面內）
+
+    def test_c1_no_margin(self):
+        # C=第3欄(idx2) x=640、1=第1列(idx0) y=0；格寬320 高270
+        assert grid_cell_region("C1") == (640, 0, 320, 270)
+
+    def test_c1_margin_015_top_edge_clamp(self):
+        # margin 0.15：mx=48 my=40；C1 頂緣 y0=0-40 → clamp 0；x 不靠邊正常擴
+        # 寬=320+48*2=416、高=270+40（頂 clamp 少一邊）=310
+        assert grid_cell_region("C1", 0.15) == (592, 0, 416, 310)
+
+    def test_a1_margin_015_top_left_clamp(self):
+        # A1 兩邊都靠畫面邊：x0/y0 都 clamp 0；只往右下擴
+        # mx=48 my=40；x0=max(0,0-48)=0、y0=0、x1=320+48=368、y1=270+40=310
+        assert grid_cell_region("A1", 0.15) == (0, 0, 368, 310)
+
+    def test_f4_margin_015_bottom_right_clamp(self):
+        # F4 右下角：x1 clamp 1920、y1 clamp 1080
+        # F=idx5 x=1600、4=idx3 y=810；mx=48 my=40
+        # x0=1600-48=1552、x1=min(1920,1600+320+48)=1920 → rw=368
+        # y0=810-40=770、y1=min(1080,810+270+40)=1080 → rh=310
+        assert grid_cell_region("F4", 0.15) == (1552, 770, 368, 310)
+
+    def test_interior_cell_margin_symmetric(self):
+        # C3（內部格）：四周都不靠邊 → 對稱擴（左右各48、上下各40）
+        # C=idx2 x=640、3=idx2 y=540；x0=592 x1=1008 rw=416；y0=500 y1=850 rh=350
+        assert grid_cell_region("C3", 0.15) == (592, 500, 416, 350)
+
+    def test_invalid_cell(self):
+        for bad in ("G1", "A5", "AA", "3C", "", "C", None):
+            assert grid_cell_region(bad, 0.15) is None
+
+    def test_case_insensitive_and_strip(self):
+        assert grid_cell_region(" c1 ", 0.0) == (640, 0, 320, 270)
+
+
+class TestFovStateConsistent:
+    # 退路 FOV 一致性守門：兩 boost 狀態相等→True（boost 變 FOV 即作廢重發）
+
+    def test_both_true_and_both_false(self):
+        assert fov_state_consistent(True, True) is True
+        assert fov_state_consistent(False, False) is True
+
+    def test_mismatch(self):
+        assert fov_state_consistent(True, False) is False
+        assert fov_state_consistent(False, True) is False
 
 
 class TestDrawOverlay:

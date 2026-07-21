@@ -522,6 +522,77 @@ def find_tracker_near(frame_bgr, center_xy, radius_px, *, frame_margin_frac=0.0,
     return mapped
 
 
+def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
+                        ar_lo: float = 0.6, ar_hi: float = 1.7,
+                        extent_min: float = 0.6, border_margin: int = 6,
+                        border_dark_max: int = 70,
+                        border_dark_frac_min: float = 0.15, log=None):
+    """限縮區域內找追蹤框「實心亮色中心」的真正中心（harvest 101 spec §6）。
+
+    與 find_tracker 的差別：find_tracker 對「尖刺太陽星框＋實心亮綠中心＋綠地形背景」這類
+    框有結構盲點（整幀假陽性、放大全 MISS，spec v1/v2 已證）。本函式只掃玩家選定的單格
+    區域（cell_crop）——限縮範圍避開全幀干擾，直接回框**真正中心**（非格心量化值）。
+
+    對每個 profile 的 HSV 範圍取 mask→morphology open→輪廓→篩「方形＋實心＋周圍黑邊」→
+    多命中取面積最大。回 (cx, cy, profile_name, border_frac)|None；座標**相對 region**。
+
+    黑邊判定：框 bbox 外側 border_margin 寬的環帶裡，gray≤border_dark_max 的像素佔比
+    ≥border_dark_frac_min 才收——擋「亮色中心但周圍無黑邊」的非框亮塊（空格背景）。
+    profiles=[]（未覆蓋色系）→ None（永不誤射；靠退路放大手選兜底）。
+    """
+    if region_bgr is None or region_bgr.size == 0 or not profiles:
+        return None
+    H, W = region_bgr.shape[:2]
+    hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2GRAY)
+    kernel = np.ones((3, 3), np.uint8)
+    best = None   # (area, cx, cy, name, border_frac)
+    for prof in profiles:
+        name, lo, hi = prof[0], prof[1], prof[2]
+        mask = cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < min_area:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            if bw <= 0 or bh <= 0:
+                continue
+            ar = bw / bh
+            if not (ar_lo <= ar <= ar_hi):
+                continue
+            extent = area / (bw * bh)
+            if extent < extent_min:
+                continue
+            # 黑邊環帶：bbox 外側 border_margin 寬的環（擴張框 − 原框），clamp 在 region 內。
+            rx0 = max(0, x - border_margin)
+            ry0 = max(0, y - border_margin)
+            rx1 = min(W, x + bw + border_margin)
+            ry1 = min(H, y + bh + border_margin)
+            ring = np.ones((ry1 - ry0, rx1 - rx0), dtype=bool)
+            ring[max(0, border_margin):max(0, border_margin) + bh,
+                 max(0, border_margin):max(0, border_margin) + bw] = False
+            ring_pixels = gray[ry0:ry1, rx0:rx1][ring]
+            border_frac = (float(np.mean(ring_pixels <= border_dark_max))
+                           if ring_pixels.size > 0 else 0.0)
+            if border_frac < border_dark_frac_min:
+                if log is not None:
+                    log("core候選 (%d,%d) name=%s area=%d ar=%.2f ext=%.2f border=%.2f -> rej(border)"
+                        % (x + bw // 2, y + bh // 2, name, int(area), ar, extent, border_frac))
+                continue
+            cx, cy = x + bw // 2, y + bh // 2
+            if log is not None:
+                log("core候選 (%d,%d) name=%s area=%d ar=%.2f ext=%.2f border=%.2f -> OK"
+                    % (cx, cy, name, int(area), ar, extent, border_frac))
+            if best is None or area > best[0]:
+                best = (area, cx, cy, name, border_frac)
+    if best is None:
+        return None
+    _, cx, cy, name, border_frac = best
+    return (cx, cy, name, border_frac)
+
+
 # ===== boost 使用次數計數器（2026-07-19）=====
 # 右下角 boost 藥水圖示上的紅色藝術字＝session 內使用次數（重進伺服器歸零）。
 # boost FOV 縮小隨此次數累積（作用中變大/到期變小），這個數字是 FOV 漂移的

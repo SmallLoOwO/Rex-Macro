@@ -370,6 +370,23 @@ class Config:
     harvest_target_recovery_max: int = 1        # At most one recovery at an accepted/fired absolute direction.
     harvest_target_recovery_radius_px: int = 240  # Expanded ROI around the historical target coordinate.
 
+    # --- 手動瞄準精定位（harvest 101；2026-07-21 spec）：玩家選粗格後限縮該格做特徵偵測，
+    # 命中即自動開火框真正中心；抓不到退回放大手選。偵測器色 profile 漸進擴充（現僅綠）。---
+    tracker_core_profiles: list = field(
+        default_factory=lambda: [("green", (40, 150, 150), (85, 255, 255))])
+        # [(name, hsv_lo, hsv_hi)]；非覆蓋色系遇到→偵測 None→退回放大手選（永不誤射）。
+        # 新色 fixture 到手才加（兩側夾，比照 tuning-from-incidents）。
+    tracker_core_min_area: int = 80             # 框面積下限（cell 原生解析度；綠框實測 256）
+    tracker_core_ar_lo: float = 0.6             # 方形長寬比下限（綠框 ar≈1.0）
+    tracker_core_ar_hi: float = 1.7             # 方形長寬比上限
+    tracker_core_extent_min: float = 0.6        # 實心理度下限（輪廓面積/bbox 面積；綠框 extent≈0.89）
+    tracker_core_border_margin: int = 6         # 黑邊環帶寬度（bbox 外側 margin px）
+    tracker_core_border_dark_max: int = 70      # 「暗」像素 gray 上限（黑邊判定）
+    tracker_core_border_dark_frac_min: float = 0.15  # 環帶暗像素佔比下限（綠框實測 0.35、空格 0）
+    remote_aim_zoom_margin_frac: float = 0.15   # grid_cell_region 裁格對稱餘裕（頂緣 clamp y0=0）
+    remote_aim_fine_grid: int = 6               # 放大圖細網格 6×6（同回礦 reentry_remote_fine_cols）
+    remote_aim_fov_recheck_max: int = 2         # 退路 FOV 作廢重發上限（boost 變 FOV 即作廢重發，不依賴 D5）
+
     # --- Discord 遠端回礦（2026-07-12 spec：重置後發八方位圖，回訊息兩段式指位點傳送面板）---
     reentry_remote_fine_cols: int = 6           # 細網格欄數（放大圖上）
     reentry_remote_fine_rows: int = 6           # 細網格列數；6×6 映射回原幀一格 ≈53×45px（±27px）

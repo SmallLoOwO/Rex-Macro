@@ -1,9 +1,10 @@
 import os
 import cv2
 import numpy as np
+import pytest
 from miningbot.vision import (find_template, template_present, find_template_edges,
                               find_tracker, find_tracker_near, find_marker, best_outline_score,
-                              template_outline_edges, frames_differ)
+                              template_outline_edges, frames_differ, detect_tracker_core)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -921,3 +922,84 @@ def test_boost_use_count_unknown_glyph_rejects_whole_read():
     img = cv2.imread(os.path.join(_BC_FIX, "count_41.png"))
     img[40:53, 20:31] = (0, 0, 255)          # 塞一個 11×13 純紅塊（過尺寸閘、配不上模板）
     assert read_boost_use_count(img) is None
+
+
+# ===== detect_tracker_core（harvest 101 手動瞄準精定位）=====
+# 限縮單格區域找追蹤框實心亮色中心。fixture assets/aim_tracker_core_green_scene.png
+# 尚未入庫→用合成圖（綠心＋黑邊環帶）驗演算法；實機 fixture 到手再補 (211,189)±15px 斷言。
+_GREEN_PROFILE = [("green", (40, 150, 150), (85, 255, 255))]
+
+
+def _draw_core(region, cx, cy, half=8, with_border=False, border=6, bg=200):
+    """合成追蹤框中心：飽和綠實心方塊（BGR(0,255,0)＝HSV(60,255,255)），可選黑邊環帶。
+
+    bg=200（亮灰）模擬「無黑邊」的空格背景；with_border=True 在綠心外圍 border px
+    填黑，模擬真框周圍黑邊。core 16×16（area 256，同 spec §6 綠框實測面積）。
+    """
+    region[:] = (bg, bg, bg)
+    if with_border:
+        cv2.rectangle(region, (cx - half - border, cy - half - border),
+                      (cx + half + border, cy + half + border), (0, 0, 0), -1)
+    cv2.rectangle(region, (cx - half, cy - half), (cx + half, cy + half),
+                  (0, 255, 0), -1)
+
+
+def test_detect_tracker_core_green_hit_with_border():
+    # 綠心（211,189）＋黑邊環帶 → 命中中心、profile=green、border_frac≥0.15（合成兩側夾正例）
+    region = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region, 211, 189, with_border=True, bg=200)
+    r = detect_tracker_core(region, _GREEN_PROFILE)
+    assert r is not None
+    cx, cy, name, border_frac = r
+    assert abs(cx - 211) <= 15 and abs(cy - 189) <= 15
+    assert name == "green"
+    assert border_frac >= 0.15
+
+
+def test_detect_tracker_core_green_no_border_rejected():
+    # 綠心但無黑邊（亮灰背景）→ border_frac≈0 < 0.15 → None（非框亮塊，兩側夾負例）
+    region = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region, 211, 189, with_border=False, bg=200)
+    assert detect_tracker_core(region, _GREEN_PROFILE) is None
+
+
+def test_detect_tracker_core_empty_region():
+    # 無綠心（純背景）→ 無 contour 過 min_area → None（空格兩側夾負例）
+    region = np.zeros((270, 320, 3), np.uint8)
+    region[:] = (200, 200, 200)
+    assert detect_tracker_core(region, _GREEN_PROFILE) is None
+
+
+def test_detect_tracker_core_empty_profiles_returns_none():
+    # profiles=[]（未覆蓋色系）→ None（永不誤射；靠退路放大手選兜底）
+    region = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region, 211, 189, with_border=True, bg=200)
+    assert detect_tracker_core(region, []) is None
+
+
+def test_detect_tracker_core_coords_relative_to_region():
+    # 座標相對 region（非全幀）：同一綠心在 region (50,40) → 回 (50,40) 附近
+    region = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region, 50, 40, with_border=True, bg=200)
+    r = detect_tracker_core(region, _GREEN_PROFILE)
+    assert r is not None and abs(r[0] - 50) <= 15 and abs(r[1] - 40) <= 15
+
+
+@pytest.mark.skip(reason="fixture assets/aim_tracker_core_green_scene.png 尚未入庫——"
+                         "待 harvest 101 實機裁圖到手後驗證：裁 C1→回相對 (211,189)±15px、"
+                         "profile=green、border_frac≥0.15；空鄰格 B1→None（兩側夾）")
+def test_detect_tracker_core_green_scene_fixture():
+    fixture = os.path.join(os.path.dirname(__file__), "..", "assets",
+                           "aim_tracker_core_green_scene.png")
+    img = cv2.imread(fixture)
+    assert img is not None, fixture
+    # C1 region (640,0,320,270)
+    crop = img[0:270, 640:960]
+    r = detect_tracker_core(crop, _GREEN_PROFILE)
+    assert r is not None
+    cx, cy, name, border_frac = r
+    assert abs(cx - 211) <= 15 and abs(cy - 189) <= 15
+    assert name == "green" and border_frac >= 0.15
+    # 空鄰格 B1 (320,0,320,270) → None
+    b1 = img[0:270, 320:640]
+    assert detect_tracker_core(b1, _GREEN_PROFILE) is None

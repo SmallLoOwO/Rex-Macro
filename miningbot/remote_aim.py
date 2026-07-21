@@ -157,6 +157,39 @@ def grid_cell_of(pos, w: int = 1920, h: int = 1080,
     return f"{GRID_COLS[ci]}{GRID_ROWS[ri]}"
 
 
+def grid_cell_region(cell: str, margin_frac: float = 0.0, w: int = 1920, h: int = 1080,
+                     cols: int = 6, rows: int = 4):
+    """粗格代碼 → 原幀裁圖區域 (x, y, rw, rh)，可加對稱餘裕並 clamp 在畫面內；不合法回 None。
+
+    harvest 101 手動瞄準精定位用：玩家選的粗格只給偵測器掃那一格（限縮偵測範圍＝避開
+    全幀干擾與假陽性）。margin_frac>0 時往四周各擴 margin_frac×格寬/格高，邊界格頂/底緣
+    clamp 到 0/w/h（C1 頂緣 y0=0）。與 reentry_remote.coarse_cell_region 同格大小但多餘裕。
+    """
+    cell = (cell or "").strip().upper()
+    if len(cell) != 2 or cell[0] not in GRID_COLS[:cols] or cell[1] not in GRID_ROWS[:rows]:
+        return None
+    cw, ch = w // cols, h // rows
+    ox = GRID_COLS.index(cell[0]) * cw
+    oy = GRID_ROWS.index(cell[1]) * ch
+    mx = int(margin_frac * cw)
+    my = int(margin_frac * ch)
+    x0 = max(0, ox - mx)
+    y0 = max(0, oy - my)
+    x1 = min(w, ox + cw + mx)
+    y1 = min(h, oy + ch + my)
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def fov_state_consistent(state0, state1) -> bool:
+    """退路（放大手選）FOV 一致性守門（harvest 101 spec §4）：兩 boost 狀態相等→True。
+
+    退路有人延遲窗（發圖→玩家思考→回細格），窗內 boost 若到期/作用變 FOV → 框位移、
+    放大圖作廢。state0＝發圖時 boost 在否、state1＝開火前重讀 boost 在否；不一致即作廢重發。
+    自動路徑（偵測幀→開火背靠背）FOV 天然一致，不走此閘。
+    """
+    return bool(state0) == bool(state1)
+
+
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨"
 
 
