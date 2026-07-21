@@ -1,172 +1,173 @@
-# 2026-07-21 手動瞄準放大精定位（harvest 101）：裁格放大偵測框中心＋FOV 一致性保證
+# 2026-07-21 手動瞄準精定位（harvest 101）：限縮單格特徵偵測自動命中＋放大手選退路＋放大圖落 log 養素材
+
+> **版本沿革**
+> - v1：核心「裁格放大跑 `find_tracker`」——實機 fixture 驗證**不可行**（find_tracker 對本框整幀假陽性、放大 2/3/4 倍全 MISS）。作廢。
+> - v2：改「手選細格」。算術驗出**單層 6×6 細格心距真框 29px、框卡格角落在框外**——單層不保證命中。作廢為主路徑。
+> - **v3（本版）**：玩家提供**粗格方位**→特徵偵測器**限縮該格**找框真正中心→自動命中；抓不到才退回**放大手選（含連鎖放大）**；放大／裁格圖一律落 log 當其他色系 fixture 素材。
 
 ## 0. 委派注意（實作者必讀）
 
-- **不要嘗試目視讀取任何 PNG**。所有 fixture 的量測數字都在本規格的表格裡；
-  測試用 `cv2.imread` 載入後計算數字斷言即可。
+- **不要目視讀 PNG**；量測數字都在表格，用 `cv2.imread` 計算斷言。
 - 不 commit、不切 branch、不刪 runtime 證據、不操作 Roblox/Discord。
-- 完成後執行並確保通過：`uv run pytest -q`、`uv run ruff check . --no-cache`。
+- 完成過：`uv run pytest -q`、`uv run ruff check . --no-cache`。
 - 座標／門檻／間隔只放 `miningbot/config.py`；純決策不做 I/O。
-- 方位 1-8（訊息面）已於前一 commit 落地（`remote_aim` 內部仍 0-based）；本規格
-  沿用該慣例，不再重述。
+- 方位 1-8（訊息面）已落地（`remote_aim` 內部 0-based）；沿用不重述。
 
 ## 1. 背景（一句話根因）
 
-手動瞄準（NEEDS_HUMAN → `手動` → 8 方位圖 → 回 `方位 格子`，如 `4 C1`）在
-`_execute_remote_fire`（`miningbot/main.py`）對齊＋重掃 D2 後，用
-`vision.find_tracker_near` 在**整張 1920×1080** 原幀、以粗格中心為錨半徑
-`remote_aim_refind_radius_px=160` 重找框；找不到就**盲打粗格幾何中心**。
+手動瞄準（NEEDS_HUMAN→`手動`→8 方位圖→回 `方位 格子`）在 `_execute_remote_fire`
+用 `find_tracker_near` 整幀以**粗格幾何中心**為錨重找框、找不到即**盲打粗格中心**。
+harvest 101：框在 C1、真值 (851,189)、僅 25×24px；重找全滅→盲打 (800,135)、距真框
+**74px**→兩發皆 miss。根因：粗格中心與真框結構性可差半格（水平 160px）。
 
-harvest 101（2026-07-21 13:44/13:48 兩發）實測：礦框在 C1、真值 `(851,189)`、
-大小僅 **25×24px**。`find_tracker_near` 對這種小框在整幀偵測失敗（log
-`AIM 重找全滅 -> 直接朝先驗點開火 (800,135)`），退回盲打格心 `(800,135)`，
-距真框 **74px** → 兩發皆 verify `NORMAL` 未確認 → miss。
+## 2. 洞察與策略（v3）
 
-**boost 已排除為病因**：actions.log 顯示 `_harvest_boost_guard` 在兩發前
-（13:44:35、13:47:58）都判「boost 消失 → 立即補 D5」，但補後開火幀的框仍
-`25×24`、位置只飄 14px（放大圖 13:43 `(837,185)` vs 開火幀 13:47 `(851,189)`、
-中央帶平均差 10.1）——D5 被吃/瓶空、FOV 全程維持收縮態、框一直看得到只是小。
-故 101 的 FOV 從頭到尾一致，miss 純粹是**小框在整幀偵測失敗＋退格心**。
+- **`find_tracker` 對本類框有結構盲點**（尖刺太陽星框＋實心亮綠中心＋綠地形背景）：
+  實機驗證整幀假陽性 (824,1055)、裁 C1 放大全 MISS。放棄它做本路徑偵測。
+- **玩家提供粗格＝限縮偵測範圍**：偵測器只掃那一格，無全幀干擾、無假陽性，直接回
+  框**真正中心**（非格心量化值）→ 一發命中。實機驗證（§6）：限縮 C1 命中 (851,189)
+  **0px 誤差**、空鄰格 B1 回 None。
+- **色系漸進 + 退路兜底**：偵測器色門檻每色系要 fixture 兩側夾，現僅綠色驗證。
+  非綠色框→偵測 None→退回放大手選。**永不誤射**（找不到就不打）。
+- **放大圖落 log＝養素材**：每次裁格/放大的圖存檔索引，成為補齊其他色系 profile 的
+  fixture 來源（邊跑邊長語料，解掉「只有一張綠樣本」的死結）。
 
-## 2. 目標 / 非目標
+## 3. 目標 / 非目標
 
-**目標**：選格子後不再盲打格心，而是**裁出該粗格放大 → 在放大圖偵測框 →
-回推原幀中心座標 → 開火**；並**保證開火座標的 FOV 情境與偵測當下一致**，
-不對已偏移的座標開火。
+**目標**：選粗格後——(a) 限縮該格特徵偵測框中心→命中即自動開火精確中心；(b) 抓不到
+→放大手選細格（含連鎖放大逐層逼近）作最後精細手段；(c) 裁格/放大圖落 log 當素材。
 
-**非目標**：
-- 不修 D5 被吃/瓶空（獨立問題線；`_harvest_boost_guard` 照跑，本規格不動它）。
-- 不動 8 方位 survey（它是玩家挑方位＋粗格的入口）。
-- 不改自動 sweep 主路徑（只動手動瞄準的 fire 路徑）。
-- 不引入新的 boost 重上邏輯（現有守門已盡力補；本規格只加「不一致就作廢」的
-  正確性保險）。
+**非目標**：不修 D5 被吃/瓶空；不動 8 方位 survey 與自動 sweep 主路徑；不改回礦流程
+（借回礦純函式、不共用其狀態機）；不憑空寫未驗證色系門檻（靠退路兜底）。
 
-## 3. 核心不變量
+## 4. 核心不變量
 
-**取座標的那一幀，與開火那一刻，必須在同一 boost 狀態。** boost 作用中↔到期會
-以畫面中心為錨縮放 FOV（`_harvest_boost_guard` docstring：~2.6x、框外推 ~390px），
-狀態一變框就位置平移、甚至被推出視野。違反＝打空。因 D5 可能被吃（無法強制
-狀態），保證改用**檢查兩時刻狀態、不一致即作廢重來**，不依賴 D5 生效。
+**開火座標所依據的畫面，與開火那一刻，須同一 FOV 情境。** boost 作用中↔到期以畫面
+中心為錨縮放 FOV、框位置平移。
+- **自動路徑**：偵測幀→開火機器背靠背（無人延遲窗），FOV 天然一致——不需 boost 閘。
+- **退路（放大手選）**：有人延遲窗（發圖→玩家思考→回細格），窗內 boost 若變 FOV 位移
+  →作廢重發。故退路發圖記 boost 狀態、開火前重讀，不一致即作廢重發（不依賴 D5）。
 
-## 4. 流程（`_execute_remote_fire`，取代現行步驟 3「ROI 放寬重找」）
+## 5. 流程（`_execute_remote_fire` 收到 coarse `4 C1`）
 
 ```
-使用者回 `4 C1`（方位 4、粗格 C1）→
-1. 對齊方位（既有，不變）
-2. _harvest_boost_guard（既有）→ prepare/execute_scan 重掃 D2（既有）
-3. 【新】裁格放大偵測：
-     region = grid_cell_region("C1")（含邊界餘裕 zoom_margin_frac）
-     f_detect = capture.grab()；state_detect = _boost_present（記下偵測幀狀態）
-     crop = 放大(f_detect 裁 region, scale)
-     hit  = vision.find_tracker(crop, margin_frac=0, ...)  # with_score
-     若 hit → 回推原幀中心 pos = region 原點 + hit中心/scale
-4. 【新】開火前 FOV 一致性閘：
-     state_fire = _boost_present（重讀）
-     state_fire == state_detect → 開火 pos（座標有效）
-     state_fire != state_detect → 作廢 pos，回步驟 3 重來（現況重偵測）；
-       受 remote_aim_budget_s 預算＋重試上限 gate
-5. 【新】偵測不到（含重試耗盡）→ 退回手選：發【當下 f_detect】的放大圖＋細網格，
-     使用者回細格（如 `B3`）→ 打細格中心（比照回礦 fine 流程，但用當下幀非舊 survey）
+1. 對齊方位（既有）
+2. _harvest_boost_guard（既有）→ 重掃 D2（既有）
+3. region = remote_aim.grid_cell_region("C1", margin_frac)
+   frame = capture.grab()
+   cell_crop = frame 裁 region
+   【LOG】存 cell_crop（label: aim_cell_dir{n}_{cell}）＋放大圖，索引落 snapshot_index（素材）
+4. hit = vision.detect_tracker_core(cell_crop, cfg.tracker_core_profiles, ...)   # 座標相對 region
+   4a. hit → pos = (region.x + hit.cx, region.y + hit.cy) → 開火 pos（既有 fire+verify 尾）→ 回挖礦
+   4b. None → 進 awaiting_fine 退路（步驟 5）；並【LOG】cell_crop 標 detect=None（＝待補色系素材）
+5. 放大手選（最後精細手段，退路）：
+   big = 放大(cell_crop, magnify_scale) → 疊 6×6 細網格 → 發圖；記 state0=_boost_present；
+   存 aim.zoom_region=region、zoom_stack=[]
+   玩家回：
+     細格 `B3` → sub = fine_cell_subregion(zoom_region,"B3");  state1=_boost_present
+                fov_state_consistent(state0,state1)? True→開火 sub 中心；False→重抓當下重發放大圖
+     `放大 B3` → zoom_stack.push(zoom_region); zoom_region=fine_cell_subregion(zoom_region,"B3");
+                重放大重發（逐層逼近；格子縮到 <框 即穩命中）
+     `退`     → pop_zoom_layer 回上一層重發
+     `跳過`   → 回挖礦；`手動` → 重走 8 方位 survey（既有）
 ```
 
-現行步驟 4「重找全滅 → 直接朝先驗點開火」的盲打分支**移除**（正是 101 的病灶）。
+移除：`find_tracker_near` 整幀重找＋盲打粗格心分支（101 病灶）。
 
-## 5. 元件（隔離邊界）
+## 6. 偵測器＋色系 profile（實機量測，fixture 斷言用）
+
+fixture `assets/aim_tracker_core_green_scene.png` = review 快照
+`20260721_134803_262217600_000030_101_aim_fire_800x135.png` 原樣入庫（綠色框、boost 到期態）。
+
+`vision.detect_tracker_core(region_bgr, profiles, *, min_area, ar_lo, ar_hi, extent_min,
+border_margin, border_dark_max, border_dark_frac_min)`：對每個 profile 的 HSV 範圍取
+mask→morphology open→輪廓→篩「方形＋實心＋周圍黑邊」→多命中取面積最大→回
+`(cx, cy, profile_name, border_frac)|None`（座標相對 region）。
+
+| 參數 | 值（config 化） | 佐證 |
+|---|---|---|
+| green profile HSV | lo (40,150,150) hi (85,255,255) | 框中心亮飽和綠 |
+| min_area | 80（cell 原生解析度） | 框面積實測 256 |
+| 方形 ar | 0.6–1.7 | 框 ar=1.0 |
+| 實心 extent_min | 0.6 | 框 extent=0.89 |
+| black-border margin | 6px | — |
+| black-border dark_max（gray） | 70 | 黑邊 |
+| black-border dark_frac_min | 0.15 | 框實測 0.35（真值），空格 0（→拒） |
+
+**限縮 C1 命中量測**：region (640,0,320,270) → 偵測回相對 (211,189) → +原點 = (851,189)、
+**0px**、border_frac 0.35。空鄰格 B1 (320,0,320,270) → None。
+
+色系覆蓋：`tracker_core_profiles` 現只 green（唯一有 fixture）。其他色系（橘 Exotic／
+萊姆／H040 紅粗框／藍菱星）**留空、遇到→None→退路**；靠 §5 步驟 3 的 log 素材逐色補
+profile（新色 fixture 到手才加，兩側夾，比照 tuning-from-incidents）。
+
+## 7. 元件（隔離邊界）
 
 | 元件 | 位置 | 純度 | 職責 |
 |---|---|---|---|
-| `grid_cell_region(cell, margin_frac)` | `remote_aim.py`（新） | 純函式 | 粗格代碼→原幀子區域 (x,y,w,h)，含對稱邊界餘裕、clamp 到畫面內 |
-| `map_zoom_point(region, scale, pt)` | `remote_aim.py`（新） | 純函式 | 放大圖內座標→原幀座標（`region原點 + pt/scale`） |
-| `fov_state_consistent(detect_state, fire_state)` | `remote_aim.py`（新） | 純函式 | 兩 bool 相等→True（可開火）；不等→False（作廢） |
-| 裁格放大＋`find_tracker`＋一致性閘＋退路 | `main.py`（改 `_execute_remote_fire`） | I/O | 編排上列純函式與既有 capture/vision/notify |
+| `grid_cell_region(cell, margin_frac)` | `remote_aim.py`（新） | 純函式 | 粗格→原幀子區域，含餘裕＋clamp；非法 None |
+| `fov_state_consistent(s0, s1)` | `remote_aim.py`（新） | 純函式 | 兩 bool 相等→True |
+| `detect_tracker_core(region_bgr, profiles, ...)` | `vision.py`（新） | 純函式（吃 array） | 限縮區域找框中心（色 profile＋方形＋黑邊）；fixture 可測 |
+| `fine_cell_subregion` / `magnify_scale` / `pop_zoom_layer` | `reentry_remote.py`（**既有借用**） | 純函式 | 退路連鎖放大用 |
+| aim 自動偵測開火＋awaiting_fine 退路＋放大 log | `main.py` / `remote_aim.parse_reply` | I/O＋parse | 編排 |
 
-`grid_cell_region` 與 `remote_aim.grid_cell_center` 共用同一 6×4 幾何常數，避免漂移。
+借回礦純函式**不共用其狀態機**（兩流程刻意分離；off-by-one 教訓）。
 
-## 6. 偵測配方＋101 量測（fixture 斷言用）
+## 8. 放大圖 log 機制（素材）
 
-fixture：`assets/aim_zoom_c1_expired_scene.png`（追蹤框場景一律入 `assets/*_scene.png`，
-比照 `green_center_scene`／`edge_clipped_tracker_scene`）＝ 由 review 快照
-`20260721_134803_262217600_000030_101_aim_fire_800x135.png` 原樣入庫
-（boost 到期／窄 FOV 態）。
-
-| 量 | 值 |
-|---|---|
-| 影格尺寸 | 1920×1080 |
-| 粗格幾何 | 6 cols × 4 rows → cw=320, ch=270 |
-| 粗格 C1 region（無餘裕） | (640, 0, 320, 270) |
-| 真框 bbox | (839, 177, 25, 24) |
-| 真框中心（原幀真值） | **(851, 189)** |
-| 真框相對 C1 原點 | (211, 189) |
-| 放大 scale=3（輸出寬 960） | 框中心（裁圖）(633, 567)、框尺寸 ~75×72 |
-| `map_zoom_point((640,0,..),3,(633,567))` | (851, 189) ✅ 回推 == 真值 |
-| 舊盲打格心 | (800, 135)，距真框 74px（本規格消除此誤差） |
-
-偵測配方：`find_tracker(crop, margin_frac=0, shape_templates=<既有>,
-shape_scales=<既有>, with_score=True)`。放大後框 ~75px，落在既有 `shape_scales`
-量級；`margin_frac=0` 因裁圖小、不可再排邊。實作時以本 fixture 驗證命中，
-必要時只調 `shape_scales`／裁圖 scale，**不放寬整幀主偵測門檻**。
-
-**兩狀態測試要求**：上表為到期態（101，已有）。作用中態（寬 FOV、框在
-P_active、尺寸更小）需一份 `assets/aim_zoom_*_active_scene.png` fixture——**101
-全程到期、無現成作用中樣本**，故：
-- 純函式（`grid_cell_region`／`map_zoom_point`／`fov_state_consistent`）與一致性閘
-  邏輯**兩狀態皆可離線測**（餵 bool、餵座標），本次即完成。
-- 作用中態的**偵測命中** fixture 留待下輪實機收（配方相同、僅框更小）；在 spec
-  §10 標記為待補，不阻擋本次落地。
-
-## 7. FOV 一致性保證（§4 步驟 4 細節）
-
-- `state = _boost_present`：既有布林，來源 `boost_active` 瓶子圖 edge-match
-  （`boost_indicator_region`，~56ms）。偵測幀抓一次、開火前重讀一次。
-- 相等即開火；不等即作廢該 pos、回步驟 3 重掃重偵測（現況）。
-- 護欄：`remote_aim_fov_recheck_max`（預設 2）次重試上限；耗盡→步驟 5 手選退路。
-  全程仍受 `remote_aim_budget_s` 總預算 gate（既有）。
-- **不強制 boost 狀態**（不主動補/解 D5 來對齊）——D5 可能被吃，強制不可靠；
-  只保證「偵測與開火同態」，補得成是 `_harvest_boost_guard` 的事。
-
-## 8. 退路（手選，當下幀）
-
-偵測不到（或一致性重試耗盡）→ 用**步驟 3 的當下幀 f_detect** 裁 region 放大、
-疊細網格發送（比照回礦 fine：`fine_cell_subregion` 換算細格→原幀子區域）。用當下
-幀而非舊 survey 圖，自然吸收 survey/開火 FOV 不一致——玩家看到的是現況。
-使用者回細格 → 打細格中心（無偵測依賴、零 miss 風險，代價是多一次來回）。
+- 每次裁粗格（步驟 3）＋每層放大（步驟 5）都 `_hsnap` 存圖，label
+  `aim_cell_dir{n}_{cell}[_zoomN]`，`diagnostics.append_snapshot_index` 落索引。
+- detect=None（未覆蓋色系）時**額外**存原生 cell_crop 標 `aim_core_miss_dir{n}_{cell}`——
+  這批就是「補新色系 profile」的直接 fixture 來源。
+- 存圖走既有非同步快照佇列（不卡開火路徑）＋落盤等待（發圖前 `_wait_snapshot_ready`）。
+- 落 `Config.log_dir`（MSIX 重導見 CLAUDE.md）；素材撈取＝grep 該 label 前綴。
 
 ## 9. 玩家可見訊息（同步更新，見 [[feedback_new_command_must_update_player_messages]]）
 
-- 偵測命中開火：沿用既有「✅ 收到…執行中」＋開火後 verify 回報。
-- 退路發圖：新 caption「🎯 已放大 DIR{n} 的 {cell} 格但沒自動抓到框——回細格
-  （如 `B3`）打中心；或 `跳過`」。
-- 一致性作廢重試：不必每次吵玩家（內部 log 即可）；耗盡轉手選時才發圖。
-- `MANUAL_SURVEY_HELP`／aim `看不懂` 訊息若涉及流程說明，順帶對齊。
+- 自動命中：沿用「✅ 收到…執行中」＋開火後 verify 回報。
+- 抓不到→退路發圖 caption：「🔍 沒自動抓到框（可能非綠色框），已放大 DIR{n} 的 {cell}——
+  回細格（如 `B3`）打中心、`放大 B3` 再放大、`退` 退一層、`跳過`／`手動`」（DIR 1-8）。
+- FOV 作廢重發：「📷 畫面變了，重發當下放大圖，請重選」。
+- `MANUAL_SURVEY_HELP` 末補一句「選格後會先自動抓框，抓不到再放大讓你點」。
 
 ## 10. 測試
 
 | 測試 | 型 | 內容 |
 |---|---|---|
-| `grid_cell_region` | 純函式 | C1→(640,0,320,270)；含餘裕版對稱擴張＋畫面內 clamp；非法格回 None |
-| `map_zoom_point` | 純函式 | ((640,0,..),3,(633,567))→(851,189)；scale=1 恆等 |
+| `grid_cell_region` | 純函式 | C1→(640,0,320,270)；margin 0.15→(592,0,416,310)（含頂緣 clamp y0=0）；非法 None |
 | `fov_state_consistent` | 純函式 | (T,T)/(F,F)→True；(T,F)/(F,T)→False |
-| 偵測命中（到期態） | fixture | `aim_zoom_c1_expired_scene.png` 裁 C1 放大→`find_tracker` 命中、回推中心落在 (851,189) ±15px（門檻寫死於測試） |
-| 偵測命中（作用中態） | fixture | **待下輪實機補** `aim_zoom_*_active_scene.png`；本次先留 `pytest.mark.skip` 佔位並註明待補 |
-| 一致性閘編排 | 邏輯 | 模擬 state_detect≠state_fire → 不開火、走重試；耗盡 → 手選分支 |
+| `detect_tracker_core` 命中（綠） | fixture | `aim_tracker_core_green_scene.png` 裁 C1→回相對 (211,189)±15px、profile="green"、border_frac≥0.15 |
+| `detect_tracker_core` 空格 | fixture | 同圖裁 B1→None（兩側夾負樣本） |
+| `detect_tracker_core` 空 profile | 純函式 | profiles=[] → None（未覆蓋色系不誤射） |
+| `fine_cell_subregion`（借用回歸） | 純函式 | 既有＋加 C1+`放大`一層 subregion 數字 |
+| `parse_reply` awaiting_fine | 純函式 | awaiting_fine=True 裸 `B3`→fine、`放大 B3`→magnify、`退`→back；False 裸 `B3`→None |
+| awaiting_fine 編排 | 邏輯 | state0≠state1→重發；連鎖放大 push/pop zoom_stack |
 
-回歸：`uv run pytest -q` 全綠；動過 vision 需過既有 assets 場景回歸。
+回歸：`uv run pytest -q` 全綠；動過 vision 過既有 assets 場景回歸。
 
 ## 11. Config 新增（`miningbot/config.py`）
 
 | 名 | 預設 | 說明 |
 |---|---|---|
-| `remote_aim_zoom_scale` | 3 | 粗格放大倍率（輸出寬 ~960） |
-| `remote_aim_zoom_margin_frac` | 0.15 | 裁格對稱邊界餘裕（防框貼格線被裁） |
-| `remote_aim_fov_recheck_max` | 2 | FOV 一致性作廢後的重偵測上限 |
+| `tracker_core_profiles` | `[("green",(40,150,150),(85,255,255))]` | 色系 HSV 範圍清單（漸進擴充） |
+| `tracker_core_min_area` / `_ar_lo` / `_ar_hi` / `_extent_min` | 80 / 0.6 / 1.7 / 0.6 | 方形實心篩 |
+| `tracker_core_border_margin` / `_border_dark_max` / `_border_dark_frac_min` | 6 / 70 / 0.15 | 黑邊判別 |
+| `remote_aim_zoom_margin_frac` | 0.15 | 裁格對稱餘裕 |
+| `remote_aim_fine_grid` | 6 | 細網格 6×6（同回礦） |
+| `remote_aim_fov_recheck_max` | 2 | 退路 FOV 作廢重發上限 |
 
-移除：現行 `remote_aim_refind_radius_px=160` 的整幀重找＋盲打格心分支（由裁格放大
-取代）。實作時 `rg remote_aim_refind_radius_px` 全庫確認僅此處引用後，連同 config
-常數一併刪除；若他處尚有引用則先處理再刪。
+移除：`remote_aim_refind_radius_px=160`（`rg` 確認僅此引用後連 config 刪）。
 
 ## 12. 非本次範圍
 
-- D5 被吃/瓶空（`_harvest_boost_guard` 補而不生效）——獨立問題線。
-- 自動 sweep 主路徑的小框偵測（`project_sweep_all_empty_giveups`）——同源弱點但
-  不同流程，本次只解手動瞄準 fire 路徑。
-- 作用中態偵測 fixture 的實機採集（§10 待補）。
+- D5 被吃/瓶空、自動 sweep 小框偵測（同源盲點不同流程）。
+- 其他色系 profile：靠 §8 log 素材逐色補（新色 fixture 到手才加）。
+
+## 13. 分階段落地建議（給計畫）
+
+1. 純函式（`grid_cell_region`／`fov_state_consistent`）＋ `detect_tracker_core`＋綠 fixture。
+2. 接進 `_execute_remote_fire`：限縮偵測→命中自動開火；抓不到→回報退路占位＋裁格 log。
+   （此階段已修好 101 綠框自動命中＋開始養素材。）
+3. 放大手選退路（awaiting_fine＋連鎖放大＋FOV 閘＋parse），把退路從「回報」升級為
+   「放大手選」。
+（1→2 即可獨立實機驗證綠框自動命中；3 補最後精細手段。）
