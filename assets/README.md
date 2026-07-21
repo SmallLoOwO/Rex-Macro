@@ -32,6 +32,22 @@ uv run python -m miningbot.fetch_ores
 | `marker.png` | `markers/` 無可用模板時的單張相容後備 |
 | `surface/panel_*.png` | `reentry_mode=auto` 的地表面板模板 |
 
+chill 參考集原則（2026-07-21 校準）：
+
+- 收參考只認 confirmed 實錄（`*chill_audio_*.wav`）。`audiochg_*` 的 `_miss`
+  只表示「錄的當下沒觸發」，**不代表不是 chill**——實測 44 個裡 15 個與某個
+  confirmed 同時刻（±3s），那是同一次 chill 的上升緣。
+- **不是每個 confirmed 都能當參考**：`loudest_window` 抽「最大聲的 1.0s」，
+  chill 響時若有更大聲的雜音重疊就會抽到雜音。收之前必過假觸發守門
+  （`Config.chill_ref_negative_ceiling`）：會把已知非 chill 音效推過觸發門檻的
+  一律拒收（實測 H040 把每 ~15 分一次的週期性音效從 0.180 推到 0.507）。
+- 去重與守門方向相反、缺一不可：去重比**完整實錄窗**（runtime 同款量測，
+  不可補零——補零區窗能量趨近 0 會讓正規化相關度虛高 3 倍），守門比抽出的裁片。
+- 兩側夾實測（34 個參考、decimate=8）：非 chill 最高 0.180 < 門檻 0.25 <
+  真 chill 最低 0.292（唯一例外 077 被守門拒收，見上）。
+- ⚠ `--scan` 讀 `Config.log_dir`；用 `uv run` 跑時它指到不存在的真實路徑，
+  實機錄音在 MSIX LocalCache → 要用 `--snapshots-dir` 顯式指路。
+
 Tracker 原則：
 
 - Wiki icon 只能作為資料或初始參考，不是可靠的 runtime shape 模板。
@@ -54,7 +70,9 @@ tick 的現行觸發契約。不要用隨機雜訊檔假裝功能已校準；未
 
 ```powershell
 uv run python -m miningbot.convert_audio chill.mp3
-uv run python -m miningbot.add_chill_ref --scan
+# 實機錄音在 MSIX LocalCache（pythonw 跑的場次）→ 顯式指路，否則掃不到東西
+uv run python -m miningbot.add_chill_ref --scan --snapshots-dir `
+  "$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\Local\RexMacro\logs\snapshots"
 uv run python -m miningbot.fetch_trackers
 uv run python -m miningbot.capture_template boost
 uv run python -m miningbot.calibrate_surface --import NNN

@@ -124,6 +124,12 @@ class Config:
                                                  # 20 個實錄驗證 k=4/k=8 分數差 ≤0.007（距門檻 0.25 很遠）
     audio_match_threshold: float = 0.25          # 交叉相關門檻。多參考取 max：命中任一已知 chill 即觸發。
                                                  # 真 chill 對自己的參考 ~1.0、靜音約 0.01；0.25 遠離雜訊（誤觸再往上調）
+    chill_ref_negative_ceiling: float = 0.22     # 收新參考前的假觸發守門：若該參考會讓任一已知
+                                                 # 非 chill 錄音分數 ≥ 此值就拒收。2026-07-21 兩側夾：
+                                                 # 週期性非 chill 音效(每 ~15 分一次的 s18 族)對安全參考
+                                                 # 集最高 0.180；H040 的裁片會把它推到 0.507、078 推到
+                                                 # 0.273、077 推到 0.245 → 全數拒收。0.18~0.22 任一值都
+                                                 # 選出同一組參考（結論對取值不敏感），取 0.22 留邊際。
     chill_require_ocr: bool = False              # 是否還要 OCR 文字二次確認（OCR 不穩/視窗化時設 False，只靠音訊）
     audio_sample_rate: int = 48000
     audio_window_seconds: float = 1.5
