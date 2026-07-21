@@ -2036,7 +2036,8 @@ class Bot:
         layers = ("mid", "up", "down") if harvester.plan_pitch_layers(
             cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
             cfg.sweep_pitch_center_back_px) else ("mid",)
-        reply = remote_aim.parse_reply(content, len(ctx.candidates), layers)
+        reply = remote_aim.parse_reply(content, len(ctx.candidates), layers,
+                                       awaiting_fine=ctx.awaiting_fine)
         if reply is None:
             notify.send_message(token, ch,
                 "❓ 看不懂。可用：`2`（射候選②）、`跳過`（回挖礦）、"
@@ -3323,9 +3324,23 @@ class Bot:
             notify.send_message(token, ch, "▶️ 跳過這顆，回挖礦")
             return
         if reply.kind == "manual":
+            ctx.awaiting_fine = False          # 離開退路、重走 8 方位 survey
             self._aim_busy = True
             try:
                 self._execute_manual_survey(ctx)
+            finally:
+                self._aim_busy = False
+            return
+        if reply.kind in ("fine", "magnify", "back"):
+            # 放大手選退路（harvest 101 §5）：細格點擊／再放大／退層
+            self._aim_busy = True
+            try:
+                if reply.kind == "fine":
+                    self._execute_aim_fine_fire(ctx, reply.cell)
+                elif reply.kind == "magnify":
+                    self._aim_magnify(ctx, reply.cell)
+                else:
+                    self._aim_back(ctx)
             finally:
                 self._aim_busy = False
             return
@@ -3342,6 +3357,8 @@ class Bot:
                                                    cell=reply.cell)
         finally:
             self._aim_busy = False
+        if ok is None:
+            return                             # 進入放大手選退路（_enter_aim_fine 已發圖＋設狀態）
         if ok:
             self._aim_context = None           # 成功收尾（_execute 內已切 MINING）
         else:
@@ -3504,7 +3521,11 @@ class Bot:
             pos, pos_score, detail = self._detect_core_in_cell(
                 cell, tgt_dir, deadline, hid)
             if pos is None:
-                return False, detail
+                if "未命中" in detail:
+                    # 限縮偵測未命中（非綠色框/框不在格內）→ 放大手選退路（§5 步驟 5）
+                    self._enter_aim_fine(ctx, cell, tgt_dir, tgt_layer, hid)
+                    return None, "entered awaiting_fine"
+                return False, detail             # 預算用盡／格無效
         else:
             pos, pos_score, detail = self._refind_tracker_near(
                 prior, _excl, ref, deadline, hid)
@@ -3514,40 +3535,9 @@ class Bot:
                 pos = prior                    # candidate 路徑：直接朝先驗點開火（miss 代價＝一發）
                 self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
         pos = (int(pos[0]), int(pos[1]))
-        # 4. 開火；共用 session 冷卻由實際 hold-click 當下起算。
-        fire_frame = capture.grab()
-        fire_path = self._hsnap(fire_frame, "aim_fire_%dx%d" % pos)
-        if not self._fire_d3_at(*pos):
-            return False, f"D3 冷卻尚餘 {self._d3_cooldown_remaining():.1f}s"
-        self._record_target_observation(
-            layer=tgt_layer, dir_idx=tgt_dir, pos=pos, score=pos_score,
-            status="fired", source="remote_d3", snapshot_path=fire_path)
-        # 5. 驗證：基準 OCR（開火後才跑）＋窗口輪詢（幀差閘）＋最終確認
-        common = game_data.common_ore_names()
-        rare_names = game_data.rare_ore_names()
-        chat_before = ocr.read_text_multi(chat_base_crop, cfg.tesseract_path)
-        last_crop = chat_base_crop
-        fired_at = time.time()
-        while time.time() - fired_at < cfg.harvest_verify_window_s:
-            if time.time() > deadline:
-                break
-            time.sleep(0.5)
-            cur = capture.crop(capture.grab(), cfg.chat_region)
-            if vision.frames_differ(last_crop, cur, cfg.chat_change_mean_diff):
-                chat_after, confirmed, special = self._verify_chat_ocr(
-                    cur, chat_before, common, rare_names, hid, "remote-aim")
-                last_crop = cur
-                if confirmed:
-                    self._remote_fire_success(ctx, hid)
-                    return True, "confirmed"
-        # 窗口到期最終確認（H020 慣例）
-        cur = capture.crop(capture.grab(), cfg.chat_region)
-        _, confirmed, _ = self._verify_chat_ocr(
-            cur, chat_before, common, rare_names, hid, "remote-aim-final")
-        if confirmed:
-            self._remote_fire_success(ctx, hid)
-            return True, "confirmed(final)"
-        return False, "verify 窗口內聊天未確認"
+        # 4-5. 開火＋驗證（grid 命中/candidate 共用尾段）
+        return self._aim_fire_and_verify(
+            pos, pos_score, tgt_layer, tgt_dir, ctx, hid, deadline, chat_base_crop)
 
     def _refind_tracker_near(self, prior, excl, ref, deadline, hid):
         """candidate 路徑既有 find_tracker_near 邏輯（自 _execute_remote_fire 拆出，純重構）。
@@ -3615,6 +3605,230 @@ class Bot:
         self.logger.info("[%s] AIM 限縮偵測命中 cell=%s -> %s (border=%.2f)",
                          hid, cell, pos, hit[3])
         return pos, float(hit[3]), ""
+
+    def _aim_fire_and_verify(self, pos, pos_score, tgt_layer, tgt_dir, ctx, hid,
+                             deadline, chat_base_crop):
+        """開火 pos → 聊天驗證（grid 命中＋fine 細格命中共用尾段，harvest 101）。回 (ok, detail)。
+
+        開火前基準 OCR → fire D3 → 記 fired 觀測 → 幀差閘輪詢驗證 → 窗口到期最終確認。
+        confirmed 即 _remote_fire_success（俯仰歸位＋視角回正＋回挖礦）。
+        """
+        fire_frame = capture.grab()
+        fire_path = self._hsnap(fire_frame, "aim_fire_%dx%d" % pos)
+        if not self._fire_d3_at(*pos):
+            return False, f"D3 冷卻尚餘 {self._d3_cooldown_remaining():.1f}s"
+        self._record_target_observation(
+            layer=tgt_layer, dir_idx=tgt_dir, pos=pos, score=pos_score,
+            status="fired", source="remote_d3", snapshot_path=fire_path)
+        common = game_data.common_ore_names()
+        rare_names = game_data.rare_ore_names()
+        chat_before = ocr.read_text_multi(chat_base_crop, cfg.tesseract_path)
+        last_crop = chat_base_crop
+        fired_at = time.time()
+        while time.time() - fired_at < cfg.harvest_verify_window_s:
+            if time.time() > deadline:
+                break
+            time.sleep(0.5)
+            cur = capture.crop(capture.grab(), cfg.chat_region)
+            if vision.frames_differ(last_crop, cur, cfg.chat_change_mean_diff):
+                chat_after, confirmed, special = self._verify_chat_ocr(
+                    cur, chat_before, common, rare_names, hid, "remote-aim")
+                last_crop = cur
+                if confirmed:
+                    self._remote_fire_success(ctx, hid)
+                    return True, "confirmed"
+        # 窗口到期最終確認（H020 慣例）
+        cur = capture.crop(capture.grab(), cfg.chat_region)
+        _, confirmed, _ = self._verify_chat_ocr(
+            cur, chat_before, common, rare_names, hid, "remote-aim-final")
+        if confirmed:
+            self._remote_fire_success(ctx, hid)
+            return True, "confirmed(final)"
+        return False, "verify 窗口內聊天未確認"
+
+    def _detect_boost_present(self, frame) -> bool:
+        """偵測 boost 瓶子是否在場（fresh、不限流）。FOV 一致性守門用（harvest 101 §4）。
+
+        _boost_present 是節流快取（_tick_harvest 才更新；NEEDS_HUMAN 期間不更新→會過期），
+        退路 FOV 守門需要「當下」狀態，故直接跑偵測（單尺度 ~56ms，不卡）。
+        """
+        t = self._templates.get("boost_active")
+        if t is None or frame is None:
+            return False
+        return vision.find_template_edges(
+            capture.crop(frame, cfg.boost_indicator_region), t,
+            cfg.boost_edge_threshold, cfg.boost_buff_scales) is not None
+
+    def _render_aim_zoom_image(self, frame, region, tgt_dir, cell, layer=0, scale=None):
+        """裁 region 放大＋細網格 → 非同步存圖 → 等待落盤 → 回路徑（退路發圖用）。
+
+        layer=0 首層（粗格放大）；>0 連鎖放大層（檔名帶 _zN 避免覆蓋）。落盤等待走
+        remote_aim_snapshot_wait_s 預算；逾時回 None（呼叫端退回純文字通知）。
+        """
+        sc = scale if scale is not None else cfg.reentry_remote_zoom_scale
+        zoom = reentry_remote.render_zoom(
+            frame, region, scale=sc,
+            cols=cfg.remote_aim_fine_grid, rows=cfg.remote_aim_fine_grid)
+        suffix = "" if layer == 0 else f"_z{layer}"
+        path = self._hsnap(zoom, f"aim_fine_dir{tgt_dir}_{cell}{suffix}")
+        if path and self._wait_snapshot_ready(path):
+            return path
+        return None
+
+    def _enter_aim_fine(self, ctx, cell, tgt_dir, tgt_layer, hid):
+        """限縮偵測未命中 → 放大手選退路（harvest 101 §5 步驟 5）。
+
+        裁玩家選的粗格放大＋細網格 → 發圖＋記 FOV 狀態（boost）。玩家回細格點擊／
+        再放大／退／跳過。發圖時 boost 狀態錄為 fov_state0，玩家回細格開火前重讀對比，
+        不一致即作廢重發（boost 到期/作用變 FOV → 框位移，§4）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        region = remote_aim.grid_cell_region(cell, cfg.remote_aim_zoom_margin_frac)
+        if region is None:
+            notify.send_message(token, ch, f"❌ 粗格 {cell} 無效，請重選或 `跳過`")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試或 `跳過`")
+            return
+        frame = capture.grab()
+        path = self._render_aim_zoom_image(frame, region, tgt_dir, cell, layer=0)
+        ctx.awaiting_fine = True
+        ctx.fine_tgt_layer = tgt_layer
+        ctx.fine_tgt_dir = tgt_dir
+        ctx.fine_cell = cell
+        ctx.zoom_region = region
+        ctx.zoom_stack = []
+        ctx.zoom_scale = cfg.reentry_remote_zoom_scale
+        ctx.fov_state0 = self._detect_boost_present(frame)
+        ctx.fov_rechecks = 0
+        self.logger.info("[%s] AIM 限縮未命中 -> 放大手選 cell=%s dir=%d fov0=%s",
+                         hid, cell, tgt_dir, ctx.fov_state0)
+        caption = (f"🔍 沒自動抓到框（可能非綠色框），已放大 DIR{tgt_dir + 1} 的 {cell}——"
+                   f"回細格（如 `B3`）打中心、`放大 B3` 再放大、`退` 退一層、`跳過`／`手動`")
+        if path:
+            notify.send_images_message(token, ch, caption, [path])
+        else:
+            notify.send_message(token, ch, caption + "（放大圖寫檔逾時，請依記憶回細格或 `手動`）")
+
+    def _execute_aim_fine_fire(self, ctx, fine_cell, hid):
+        """玩家回細格 → FOV 一致性守門 → 開火該細格中心 → 驗證（harvest 101 §5）。
+
+        FOV 不一致（boost 變動）→ 重發當下放大圖請玩家重選（bounded by fov_recheck_max）。
+        一致 → fine_cell_to_screen 算細格中心絕對座標 → _aim_fire_and_verify 開火驗證。
+        未確認命中留在 awaiting_fine 讓玩家重選／跳過（不自動重試，同 grid 路徑慣例）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        pos = reentry_remote.fine_cell_to_screen(
+            ctx.zoom_region, fine_cell,
+            cols=cfg.remote_aim_fine_grid, rows=cfg.remote_aim_fine_grid)
+        if pos is None:
+            notify.send_message(token, ch, "❓ 細格代碼不合法（A1–F6）")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        frame = capture.grab()
+        state1 = self._detect_boost_present(frame)
+        if (not remote_aim.fov_state_consistent(ctx.fov_state0, state1)
+                and ctx.fov_rechecks < cfg.remote_aim_fov_recheck_max):
+            ctx.fov_state0 = state1
+            ctx.fov_rechecks += 1
+            path = self._render_aim_zoom_image(
+                frame, ctx.zoom_region, ctx.fine_tgt_dir, ctx.fine_cell,
+                layer=len(ctx.zoom_stack))
+            self.logger.info("[%s] AIM FOV 不一致（->%s）-> 重發放大圖 #%d/%d",
+                             hid, state1, ctx.fov_rechecks, cfg.remote_aim_fov_recheck_max)
+            notify.send_images_message(
+                token, ch, "📷 畫面變了（boost 變動），重發當下放大圖，請重選細格",
+                [path] if path else [])
+            return
+        # FOV 一致（或重發達上限）：開火該細格中心
+        deadline = time.time() + cfg.remote_aim_budget_s
+        ready, detail = self._wait_for_d3_cooldown(deadline)
+        if not ready:
+            notify.send_message(token, ch, f"❌ {detail}")
+            return
+        chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
+        ok, detail = self._aim_fire_and_verify(
+            (int(pos[0]), int(pos[1])), -1.0, ctx.fine_tgt_layer, ctx.fine_tgt_dir,
+            ctx, hid, deadline, chat_base_crop)
+        if ok:
+            self._aim_context = None           # confirmed（_aim_fire_and_verify 內已切 MINING）
+        else:
+            notify.send_message(
+                token, ch,
+                f"❌ 未確認命中（{detail}）。可重選細格、`放大 <細格>`、`退` 或 `跳過`")
+
+    def _aim_magnify(self, ctx, cell, hid):
+        """再放大（連鎖）：細格子區域變成新 zoom_region，重放大重發（逐層逼近，§5）。
+
+        子格寬 <細網格數＝位圖極限（<1px/格）拒絕；scale 補償貼齊首層輸出寬。
+        上一層 push 進 zoom_stack（退層用）；FOV 狀態重錄（新幀）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        sub = reentry_remote.fine_cell_subregion(
+            ctx.zoom_region, cell,
+            cols=cfg.remote_aim_fine_grid, rows=cfg.remote_aim_fine_grid)
+        if sub is None:
+            notify.send_message(token, ch, "❓ 細格代碼不合法（A1–F6）")
+            return
+        if sub[2] < cfg.remote_aim_fine_grid or sub[3] < cfg.remote_aim_fine_grid:
+            notify.send_message(token, ch, "⚠ 已到放大極限（子格不足 1px），直接回細格點擊")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        frame = capture.grab()
+        scale = reentry_remote.magnify_scale(
+            sub[2], cfg.screen_w // 6 * cfg.reentry_remote_zoom_scale,
+            cfg.reentry_remote_zoom_scale)
+        ctx.zoom_stack.append({"region": ctx.zoom_region, "scale": ctx.zoom_scale})
+        ctx.zoom_region = sub
+        ctx.zoom_scale = scale
+        ctx.fov_state0 = self._detect_boost_present(frame)
+        path = self._render_aim_zoom_image(
+            frame, sub, ctx.fine_tgt_dir, ctx.fine_cell,
+            layer=len(ctx.zoom_stack), scale=scale)
+        self.logger.info("[%s] AIM 再放大 %s (×%d, layer=%d)", hid, cell, scale, len(ctx.zoom_stack))
+        notify.send_images_message(
+            token, ch,
+            f"🔍 已再放大 {cell}（×{scale}）。回細格（如 `B3`）打中心；可再 `放大 <細格>`、`退` 退一層",
+            [path] if path else [])
+
+    def _aim_back(self, ctx, hid):
+        """退一層（§5）：pop zoom_stack 上一層重渲染重發；已在首層 → 回等格子。
+
+        退層不轉向、不重掃、不動鏡頭——只回溯放大鏈。退到的那層用當下現場幀重渲染
+        （畫面可能已漂移），FOV 狀態重錄。退過首層＝回等粗格（awaiting_fine 關閉）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        if not ctx.zoom_stack:
+            ctx.awaiting_fine = False
+            ctx.zoom_region = ()
+            ctx.zoom_scale = 0
+            self.logger.info("[%s] AIM 退過首層 -> 回等格子", hid)
+            notify.send_message(token, ch, "↩ 已退回等格子，重新 `方位 格子`（如 `5 C3`）或 `跳過`")
+            return
+        if not self._focus_roblox():
+            notify.send_message(token, ch, "⚠ 無法聚焦 Roblox，稍後重試")
+            return
+        layer = ctx.zoom_stack.pop()
+        frame = capture.grab()
+        ctx.zoom_region = layer["region"]
+        ctx.zoom_scale = layer["scale"]
+        ctx.fov_state0 = self._detect_boost_present(frame)
+        path = self._render_aim_zoom_image(
+            frame, ctx.zoom_region, ctx.fine_tgt_dir, ctx.fine_cell,
+            layer=len(ctx.zoom_stack), scale=ctx.zoom_scale)
+        self.logger.info("[%s] AIM 退一層 (layer=%d, ×%d)", hid, len(ctx.zoom_stack), ctx.zoom_scale)
+        notify.send_images_message(
+            token, ch,
+            f"↩ 已退一層（×{ctx.zoom_scale}）。回細格（如 `B3`）；可再 `退` 或 `放大 <細格>`",
+            [path] if path else [])
 
     def _remote_fire_success(self, ctx, hid):
         """遠端開火確認成功：通知＋俯仰歸位＋視角回正＋回挖礦。

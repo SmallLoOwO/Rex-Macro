@@ -250,6 +250,43 @@ class TestParseReply:
         assert parse_reply("", 3) is None
 
 
+class TestParseReplyAwaitingFine:
+    # harvest 101 §5 步驟 5：放大手選退路期間只收細格系列
+
+    def test_bare_fine_cell(self):
+        r = parse_reply("B3", 0, awaiting_fine=True)
+        assert (r.kind, r.cell) == ("fine", "B3")
+
+    def test_magnify_cell(self):
+        for txt in ("放大 B3", "magnify B3", "MAGNIFY b3"):
+            r = parse_reply(txt, 0, awaiting_fine=True)
+            assert (r.kind, r.cell) == ("magnify", "B3"), txt
+
+    def test_back(self):
+        assert parse_reply("退", 0, awaiting_fine=True).kind == "back"
+        assert parse_reply("BACK", 0, awaiting_fine=True).kind == "back"
+
+    def test_skip_and_manual_still_work(self):
+        assert parse_reply("跳過", 0, awaiting_fine=True).kind == "skip"
+        assert parse_reply("手動", 0, awaiting_fine=True).kind == "manual"
+
+    def test_grid_syntax_rejected_during_fine(self):
+        # awaiting_fine 中 grid 語法 → None（先 `退` 回等格子再重選粗格）
+        assert parse_reply("5 C3", 0, awaiting_fine=True) is None
+        assert parse_reply("2", 3, awaiting_fine=True) is None     # candidate 也不收
+
+    def test_invalid_fine_cell(self):
+        assert parse_reply("B9", 0, awaiting_fine=True) is None    # 列逾 6
+        assert parse_reply("G1", 0, awaiting_fine=True) is None    # 欄逾 F
+        assert parse_reply("放大 B9", 0, awaiting_fine=True) is None
+
+    def test_not_awaiting_fine_bare_cell_is_none(self):
+        # 非 fine 模式：裸細格不是合法回覆（既有行為不變）
+        assert parse_reply("B3", 0, awaiting_fine=False) is None
+        assert parse_reply("放大 B3", 0, awaiting_fine=False) is None
+        assert parse_reply("退", 0, awaiting_fine=False) is None
+
+
 class TestPlanAlignment:
     def test_restored_pose_to_dir5(self):
         # giveup 已歸位（net=0, mid）→ 目標方位 5：最短路徑左轉 3（5-0=5 → -3）

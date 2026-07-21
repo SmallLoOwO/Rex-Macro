@@ -53,6 +53,16 @@ class AimContext:
     pose_pitch_layer: str     # giveup 收尾後俯仰層（歸位過＝"mid"）
     harvest_id: str
     created_at: float
+    # 放大手選退路（harvest 101 §5 步驟 5；限縮偵測未命中時進入）
+    awaiting_fine: bool = False        # True＝等細格（玩家看放大圖選格子）
+    fine_tgt_layer: str = "mid"        # 退路開火目標層（grid 對齊過的層）
+    fine_tgt_dir: int = 0              # 退路開火目標方位（內部 0-based）
+    fine_cell: str = ""                # 目前放大的粗格代碼
+    zoom_region: tuple = ()            # 當前放大區域 (x, y, w, h)
+    zoom_stack: list = field(default_factory=list)  # 連鎖放大層歷史 [{region, scale}]
+    zoom_scale: int = 0                # 當前層渲染倍率
+    fov_state0: bool = False           # 發圖時 boost 狀態（FOV 一致性守門基準）
+    fov_rechecks: int = 0              # FOV 作廢重發次數（bounded by remote_aim_fov_recheck_max）
 
 
 def _rank_key(rej: dict) -> float:
@@ -298,7 +308,7 @@ def draw_overlay(frame_bgr, candidates, grid: bool = True):
 # ===== B1：回覆解析（無前綴；寧可不射不誤射，解析不出回 None）=====
 @dataclass(frozen=True)
 class AimReply:
-    kind: str        # "candidate" / "grid" / "skip" / "manual"
+    kind: str        # "candidate" / "grid" / "skip" / "manual" / "fine" / "magnify" / "back"
     number: int = 0
     dir_idx: int = 0
     layer: str = "mid"
@@ -306,14 +316,22 @@ class AimReply:
 
 
 _LAYER_SUFFIX = {"U": "up", "D": "down"}
+_FINE_CELL = re.compile(r"^[A-F][1-6]$")   # 放大圖細網格 6×6（同 reentry_remote）
 
 
-def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
+def parse_reply(text: str, num_candidates: int, layers_available=("mid",),
+                awaiting_fine: bool = False):
     """NEEDS_HUMAN 待命時的一般訊息解析（無前綴；寧可不射不誤射，解析不出回 None）。
 
     - "2" → 候選編號（1..num_candidates 內才收）
     - "5 C3" / "5U C3" / "5d c3" → 網格（方位 1-8；U/D 需該層存在 layers_available）
     - "跳過"/"skip" → skip；"手動"/"全部" → manual（重掃＋全方位圖）
+
+    awaiting_fine=True（放大手選退路，harvest 101 §5）：只收細格系列——
+    - "B3" → fine（打該細格中心）
+    - "放大 B3"/"magnify B3" → magnify（細格再放大一層）
+    - "退"/"back" → back（退一層）
+    - "跳過"/"手動" 同上；其他（含 grid 語法）→ None（先 `退` 回等格子再重選粗格）
     """
     t = (text or "").replace("　", " ").strip()
     if not t:
@@ -324,6 +342,17 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
     if low in ("manual", "手動", "all", "全部"):
         # 最後手段：現場重掃＋全方位圖（`全部`/`all` 為 2026-07-11 舊別名）
         return AimReply("manual")
+    if awaiting_fine:
+        if low in ("back", "退"):
+            return AimReply("back")
+        parts = t.split()
+        if len(parts) == 2 and parts[0].lower() in ("放大", "magnify"):
+            cell = parts[1].upper()
+            return AimReply("magnify", cell=cell) if _FINE_CELL.fullmatch(cell) else None
+        if len(parts) == 1:
+            cell = parts[0].upper()
+            return AimReply("fine", cell=cell) if _FINE_CELL.fullmatch(cell) else None
+        return None
     parts = t.split()
     if len(parts) == 1 and parts[0].isdigit():
         n = int(parts[0])
