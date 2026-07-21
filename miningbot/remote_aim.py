@@ -190,20 +190,20 @@ def format_candidate_summary(candidates) -> str:
         key = c.status if c.status in _OBS_STATUSES else c.reason
         label = REASON_LABELS.get(key, key)
         if c.number == 1 and c.status in _OBS_STATUSES:
-            lines.append(f"①（最優）DIR{c.dir_idx}・約{cell}・{label}"
+            lines.append(f"①（最優）DIR{c.dir_idx + 1}・約{cell}・{label}"
                          f"——回 1 快速重採")
         else:
             score = (f"分數{c.score:.2f}" if c.score >= 0
                      else f"色{c.score + 1.0:.2f}")
-            lines.append(f"{circled(c.number)} DIR{c.dir_idx}・約{cell}・"
+            lines.append(f"{circled(c.number)} DIR{c.dir_idx + 1}・約{cell}・"
                          f"{score}・{label}")
     return "\n".join(lines)
 
 
 AIM_GROUP_HEADER = ("🎯 近失候選——回編號（如 `2`）腳本自動對齊射擊；"
                     "`跳過` 回挖礦；`手動` 最後手段（重掃＋全方位圖）")
-MANUAL_SURVEY_HELP = ("🧭 手動瞄準（D2 已重掃、效果窗內實況）——回 `方位 格子` 射擊："
-                      "`5 C3`＝DIR5 的 C3 格；`5U C3`/`5D C3`＝上/下層（盲射）；"
+MANUAL_SURVEY_HELP = ("🧭 手動瞄準（D2 已重掃、效果窗內實況）——回 `方位 格子` 射擊（方位 1-8）："
+                      "`5 C3`＝圖上 DIR5 的 C3 格；`5U C3`/`5D C3`＝上/下層（盲射）；"
                       "`跳過` 回挖礦")
 
 
@@ -223,7 +223,7 @@ def build_aim_groups(rendered, summary: str, batch: int = 4) -> list:
             caption = AIM_GROUP_HEADER + (f"\n{summary}" if summary else "")
         else:
             nums = "".join(circled(n) for r in chunk for n in sorted(r[0]))
-            dirs = "・".join(f"DIR{r[1]}" for r in chunk)
+            dirs = "・".join(f"DIR{r[1] + 1}" for r in chunk)   # 方位訊息面 1-8
             caption = f"🎯 近失候選（續）：{nums}｜{dirs}"
         out.append((caption, [r[3] for r in chunk]))
     return out
@@ -279,7 +279,7 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
     """NEEDS_HUMAN 待命時的一般訊息解析（無前綴；寧可不射不誤射，解析不出回 None）。
 
     - "2" → 候選編號（1..num_candidates 內才收）
-    - "5 C3" / "5U C3" / "5d c3" → 網格（方位 0-7；U/D 需該層存在 layers_available）
+    - "5 C3" / "5U C3" / "5d c3" → 網格（方位 1-8；U/D 需該層存在 layers_available）
     - "跳過"/"skip" → skip；"手動"/"全部" → manual（重掃＋全方位圖）
     """
     t = (text or "").replace("　", " ").strip()
@@ -298,7 +298,7 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
             return AimReply("candidate", number=n)
         return None
     if len(parts) == 2:
-        m = re.fullmatch(r"([0-7])([UuDd]?)", parts[0])
+        m = re.fullmatch(r"([1-8])([UuDd]?)", parts[0])
         if not m:
             return None
         layer = _LAYER_SUFFIX.get(m.group(2).upper(), "mid") if m.group(2) else "mid"
@@ -307,7 +307,8 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",)):
         cell = parts[1].upper()
         if grid_cell_center(cell) is None:
             return None
-        return AimReply("grid", dir_idx=int(m.group(1)), layer=layer, cell=cell)
+        # 方位訊息面 1-8（2026-07-21 使用者要求 1 起算，比照 reentry_remote）；內部仍 0-based
+        return AimReply("grid", dir_idx=int(m.group(1)) - 1, layer=layer, cell=cell)
     return None
 
 

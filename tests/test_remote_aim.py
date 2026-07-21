@@ -159,21 +159,28 @@ class TestParseReply:
         assert parse_reply("0", 3) is None
 
     def test_grid_default_layer(self):
+        # 方位訊息面 1-8（2026-07-21 使用者要求 1 起算，比照 reentry_remote）→ 內部 0-based
         r = parse_reply("5 C3", 0)
-        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 5, "mid", "C3")
+        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 4, "mid", "C3")
 
     def test_grid_pitch_layers(self):
         r = parse_reply("5U c3", 0, layers_available=("mid", "up", "down"))
-        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 5, "up", "C3")
-        r = parse_reply("0d A1", 0, layers_available=("mid", "up", "down"))
+        assert (r.kind, r.dir_idx, r.layer, r.cell) == ("grid", 4, "up", "C3")
+        r = parse_reply("1d A1", 0, layers_available=("mid", "up", "down"))
         assert (r.kind, r.dir_idx, r.layer) == ("grid", 0, "down")
+
+    def test_grid_dir_1_to_8_maps_to_0_based(self):
+        # 玩家 1-8 邊界 → 內部 dir_idx 0-7（2026-07-21 手動瞄準 off-by-one 對策）
+        assert parse_reply("1 A1", 0).dir_idx == 0
+        assert parse_reply("8 F4", 0).dir_idx == 7
 
     def test_grid_layer_unavailable(self):
         # 俯仰掃描未啟用（layers 只有 mid）→ U/D 不合法
         assert parse_reply("5U C3", 0, layers_available=("mid",)) is None
 
     def test_grid_invalid(self):
-        assert parse_reply("8 C3", 0) is None       # 方位只有 0-7
+        assert parse_reply("0 C3", 0) is None       # 方位 1-8，0 不合法
+        assert parse_reply("9 C3", 0) is None       # 方位 1-8，9 不合法
         assert parse_reply("5 G1", 0) is None       # 格子不合法
         assert parse_reply("5", 0) is None           # 單數字但零候選
 
@@ -188,7 +195,7 @@ class TestParseReply:
 
     def test_fullwidth_space_and_noise(self):
         r = parse_reply("　5　C3　", 0)               # 全形空白
-        assert r is not None and r.kind == "grid"
+        assert r is not None and r.kind == "grid" and r.dir_idx == 4
         assert parse_reply("哈哈這是聊天", 3) is None
         assert parse_reply("", 3) is None
 
@@ -239,18 +246,18 @@ class TestFormatCandidateSummary:
                        status="accepted", source="sweep_stable"),
                  _cand(2, 2, (1100, 400), 0.38, "hard_rej")]
         lines = format_candidate_summary(cands).splitlines()
-        assert lines[0] == "①（最優）DIR5・約C3・曾鎖定——回 1 快速重採"
-        assert lines[1] == "② DIR2・約D2・分數0.38・形狀分不足"
+        assert lines[0] == "①（最優）DIR6・約C3・曾鎖定——回 1 快速重採"
+        assert lines[1] == "② DIR3・約D2・分數0.38・形狀分不足"
 
     def test_number_one_near_miss_is_plain_line(self):
         # ① 不是觀測證據 → 不加（最優）提示（規則綁狀態、不綁編號）
         text = format_candidate_summary([_cand(1, 0, (10, 10), 0.44, "soft")])
-        assert text == "① DIR0・約A1・分數0.44・形狀弱訊號"
+        assert text == "① DIR1・約A1・分數0.44・形狀弱訊號"
 
     def test_hsv_only_candidate_shows_colored_not_negative(self):
         # 無 edge 候選排序鍵＝colored−1.0（負數）→ 顯示「色0.55」不出現負號
         text = format_candidate_summary([_cand(1, 7, (330, 700), -0.45, "margin")])
-        assert text == "① DIR7・約B3・色0.55・太靠邊"
+        assert text == "① DIR8・約B3・色0.55・太靠邊"
         assert "-" not in text
 
     def test_fired_and_seen_once_labels(self):
@@ -259,7 +266,7 @@ class TestFormatCandidateSummary:
                  _cand(2, 6, (600, 300), 0.10, "double_frame_unstable",
                        status="seen_once", source="double_frame_unstable")]
         lines = format_candidate_summary(cands).splitlines()
-        assert lines[0] == "①（最優）DIR4・約B2・射過未確認——回 1 快速重採"
+        assert lines[0] == "①（最優）DIR5・約B2・射過未確認——回 1 快速重採"
         assert "單幀目擊" in lines[1]
 
     def test_unknown_reason_falls_through_as_is(self):
@@ -286,7 +293,7 @@ class TestBuildAimGroups:
         cap1, paths1 = groups[1]
         assert paths1 == ["d2.png"]
         assert cap1.startswith("🎯 近失候選（續）")
-        assert "⑦" in cap1 and "DIR2" in cap1
+        assert "⑦" in cap1 and "DIR3" in cap1
 
     def test_single_group_header_and_summary(self):
         groups = build_aim_groups([((1,), 0, "mid", "a.png")], "line")
