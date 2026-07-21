@@ -1,6 +1,6 @@
 ---
 name: tuning-from-incidents
-description: Use when the mining bot misbehaved in a live run (漏採、假陰性、誤交人工、誤觸發、OCR 讀歪、掃描全空、視角偏移), or when asked to adjust any miningbot detection threshold, OCR preprocessing, exclusion list, timing, or verify logic.
+description: Use when a miningbot live-run misbehavior needs detection/decision tuning — adjusting a detection threshold, OCR preprocessing, exclusion list, timing, or verify logic. Symptoms like 漏採／假陰性／誤交人工／誤觸發／OCR 讀歪／掃描全空／視角偏移 usually route here, but first confirm the root cause is detection — NOT a player-facing convention off-by-one, stale help text, or two remote flows (reentry vs aim) out of sync, which this skill does not cover.
 ---
 
 # 實機事故微調迴圈（Tuning from Incidents）
@@ -15,6 +15,12 @@ description: Use when the mining bot misbehaved in a live run (漏採、假陰�
 - 使用者回報某輪採集出問題（通常附 Hxxx 編號或大概時間）
 - 想調 config 門檻、OCR 前處理、排除清單、verify 邏輯、vision 偵測、音訊參考
 - 不適用：全新功能（走 brainstorming → writing-plans）
+- 不適用：遙控／手動瞄準的**玩家慣例／UI 契約**——方位 0-7 vs 1-8、help 文字過期、
+  兩個 remote flow（`reentry_remote` 與 `remote_aim`）只改一邊。這類是 off-by-one／
+  訊息不同步，不是偵測門檻，**別調 vision／OCR**，走一般開發流程把兩邊 flow＋玩家訊息
+  一次補齊（見 memory `feedback_new_command_must_update_player_messages`）。
+  ⚠ 症狀會偽裝成偵測問題：使用者常回報「掃描全空／選的格子沒東西」，但根因可能是
+  「玩家指的方位被 off-by-one 送到隔壁空格」（101 事故）——動手前先驗慣例一致性。
 
 ## 迴圈（順序不可跳）
 
@@ -84,3 +90,4 @@ description: Use when the mining bot misbehaved in a live run (漏採、假陰�
 | 「排除清單加這顆就不誤報了」 | 先查階級；Exotic+ 列入＝重演 H014 假陰性 |
 | 「這段邏輯看起來冗餘，順手簡化」 | verify 每個分支都是實機事故堆出來的；先讀 CLAUDE.md 再動 |
 | 「聊天沒新行＝沒採到」 | 成功行會晚到／被推走／淡出（H015/H020/H032）；查 episode 帳本與晚到確認 |
+| 「選的方位／格子沒東西＝偵測或掃描漏了」 | 遙控／手動瞄準事故先驗玩家慣例：`reentry_remote` 已 1-8、`remote_aim` 仍 0-7 的 off-by-one 會把玩家指的方位送到隔壁空格（101）；先查兩 remote flow 方位慣例＋圖上 `DIR n` 標頭＋help 文字是否同步，再談偵測門檻 |
