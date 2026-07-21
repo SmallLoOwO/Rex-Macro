@@ -818,8 +818,12 @@ def test_072_dual_tracker_scene_detects_first_fired_target():
 def test_072_post_success_second_tracker_scene_detected():
     """真實資料：assets/post_success_second_tracker_scene.png（incident 072，成功收場幀）。
 
-    採到第一顆後畫面仍有第二顆追蹤框 (1097,475)（edge≈0.61 ≫ 0.42）。釘住「成功後畫面仍
-    有另一個可採目標」——decide_post_success 距離閘（551px vs 100px）正是據此判定續採。"""
+    採到第一顆後畫面仍有第二顆追蹤框（edge≈0.61 ≫ 0.42）。釘住「成功後畫面仍
+    有另一個可採目標」——decide_post_success 距離閘（548px vs 100px）正是據此判定續採。
+
+    H057 期望值修正：舊版釘 (1097,475)——那是 HSV 候選中心（藉 320px ROI 內偏移 96px
+    的真框拿到 0.61），實際畫面上唯一的框（黃色尖刺太陽框）在 **(1043,555)**（人工目視
+    裁圖確認）。重錨修正後 find_tracker 回傳形狀命中中心＝真框位置。"""
     img_path = "assets/post_success_second_tracker_scene.png"
     tmpls = _load_real_markers_h040()
     if not (os.path.exists(img_path) and tmpls):
@@ -835,8 +839,8 @@ def test_072_post_success_second_tracker_scene_detected():
                        shape_hard_floor=cfg.tracker_shape_hard_floor,
                        shape_scales=cfg.tracker_shape_scales,
                        shape_roi_px=cfg.tracker_shape_roi_px)
-    assert loc is not None, "072 成功收場幀應偵測到第二顆 (1097,475) 追蹤框（edge≈0.61 ≫ 0.42 門檻）"
-    assert abs(loc[0] - 1097) <= 20 and abs(loc[1] - 475) <= 20, f"應命中第二顆 (1097,475)，實得 {loc}"
+    assert loc is not None, "072 成功收場幀應偵測到第二顆 (1043,555) 追蹤框（edge≈0.61 ≫ 0.42 門檻）"
+    assert abs(loc[0] - 1043) <= 20 and abs(loc[1] - 555) <= 20, f"應命中第二顆真框 (1043,555)，實得 {loc}"
 
 
 # --- collect_rejects：近失候選外露（2026-07-11 remote-aim spec Phase A1）---
@@ -1031,3 +1035,143 @@ def test_detect_tracker_core_oversized_blob_rejected():
     region2 = np.zeros((270, 320, 3), np.uint8)
     _draw_core(region2, 160, 135, half=16, with_border=True, bg=200)  # 33×33=1089 ≤1800
     assert detect_tracker_core(region2, _GREEN_PROFILE) is not None
+# --- H057（2026-07-20 harvest 097）：同色黏連救援＋confirmed 重錨 ---
+# 097 dir4：亮綠追蹤框 (983,435) 貼上受光綠牆 → RETR_EXTERNAL 把框和牆接成一條
+# 爆 area/bbox 閘的大輪廓（bbox 493x85、area 14620），真框在形狀確認前就出局；
+# 同幀角色的臉 (959,547) 藉 320px shape ROI「借」到隔壁真框的 0.61 分而成為
+# 全畫面最佳命中（H040 撐大 ROI 引入的交叉污染）。
+# 兩條對策：(1) confirmed 重錨到形狀命中中心；(2) 超大輪廓 V-submask 二次分割救援。
+
+
+def _load_real_markers_h057():
+    """production 同款形狀確認集：assets/markers 內全部無 alpha 的實機裁圖。"""
+    names = ("red_square_tracker_real", "exotic_tracker_real", "enigmatic_tracker_real",
+             "exquisite_tracker_real", "transcendent_tracker_real")
+    tmpls = {}
+    for n in names:
+        t = cv2.imread(f"assets/markers/{n}.png", cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            tmpls[n] = t
+    return tmpls
+
+
+def _h057_kwargs(tmpls, rescue=True):
+    from miningbot.config import DEFAULT as cfg
+    _c = cfg.chat_region
+    kw = dict(exclude=[(_c.x, _c.y, _c.x + _c.w, _c.y + _c.h)],
+              margin_frac=cfg.tracker_margin_frac,
+              shape_templates=tmpls,
+              shape_threshold=cfg.tracker_shape_threshold,
+              shape_hard_floor=cfg.tracker_shape_hard_floor,
+              shape_scales=cfg.tracker_shape_scales,
+              shape_roi_px=cfg.tracker_shape_roi_px)
+    if rescue:
+        kw.update(rescue_v_min=cfg.tracker_rescue_v_min,
+                  rescue_area_min=cfg.tracker_rescue_area_min,
+                  rescue_max=cfg.tracker_rescue_max_candidates,
+                  rescue_dedup_px=cfg.tracker_rescue_dedup_px)
+    return kw
+
+
+def test_h057_green_on_green_manual_frame_hits_true_frame_not_face():
+    """真實資料：tests/fixtures/tracker/h057_green_on_green_manual.png（097 dir4 手動掃圖）。
+
+    修復前 find_tracker 回 (959,547)＝角色的臉（借分 0.61）；真框 (983,435)
+    連候選都進不了。修復後（重錨＋救援）必須命中真框、且不得再回臉的位置。"""
+    img_path = "tests/fixtures/tracker/h057_green_on_green_manual.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h057_kwargs(tmpls))
+    assert loc is not None, "097 dir4 真框 (983,435) 應被偵測到（H057 事故根因）"
+    assert abs(loc[0] - 983) <= 20 and abs(loc[1] - 435) <= 20, f"應命中真框 (983,435)，實得 {loc}"
+    assert not (abs(loc[0] - 959) <= 10 and abs(loc[1] - 547) <= 10), "不得再命中角色的臉 (959,547)"
+
+
+def test_h057_reanchor_alone_redeems_borrowed_score():
+    """重錨隔離測試：關閉救援（rescue_v_min=None）後，臉候選 (959,547) 的 0.61
+
+    分來自 ROI 內偏移 114px 的真框——重錨必須把 confirmed 座標搬回形狀命中處
+    (983,435)，而不是留在借分的候選中心。"""
+    img_path = "tests/fixtures/tracker/h057_green_on_green_manual.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h057_kwargs(tmpls, rescue=False))
+    assert loc is not None
+    assert abs(loc[0] - 983) <= 20 and abs(loc[1] - 435) <= 20, f"重錨應回真框 (983,435)，實得 {loc}"
+
+
+def test_h057_incident_sweep_frame_now_detects():
+    """真實資料：tests/fixtures/tracker/h057_green_on_green_sweep.png（097 sweep dir4 幀，16:20:43）。
+
+    這張就是當時 giveup 交人工的其中一幀——真框 (983,436) 在畫面上，但被同色
+    黏連吃掉、八方位全空。修復後同一幀必須直接命中（本次 giveup 本可完全避免）。
+    注意：實機 sweep 還有 reference_bgr 差分；本測試無 reference，守的是
+    「黏連本身不再讓真框出局」這一層。"""
+    img_path = "tests/fixtures/tracker/h057_green_on_green_sweep.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h057_kwargs(tmpls))
+    assert loc is not None, "097 sweep dir4 幀的真框 (983,436) 應被偵測到"
+    assert abs(loc[0] - 983) <= 20 and abs(loc[1] - 436) <= 20, f"應命中真框 (983,436)，實得 {loc}"
+
+
+def _h057_wall_scene(with_frame: bool):
+    """合成黏連：HSV(63,220,75) 受光綠牆（V 低於救援門檻 150、高於色域 V 下限 50），
+
+    可選直接「畫」一個同色相、V=255 的空心方環在牆上——環與牆在同一條 inRange
+    mask 內相連 → RETR_EXTERNAL 必黏成一條爆 area/bbox 閘的大輪廓（097 dir4 根因
+    的最小重現）。回傳 (scene, 環中心, 環模板（黑底裁圖，給形狀確認）)。"""
+    scene = np.zeros((1080, 1920, 3), np.uint8)
+    wall_hsv = np.full((300, 500, 3), (63, 220, 75), np.uint8)
+    scene[400:700, 700:1200] = cv2.cvtColor(wall_hsv, cv2.COLOR_HSV2BGR)
+    ring_bgr = tuple(int(v) for v in cv2.cvtColor(
+        np.full((1, 1, 3), (63, 230, 255), np.uint8), cv2.COLOR_HSV2BGR)[0, 0])
+    cx, cy, half, thick = 950, 550, 15, 5
+    tmpl = np.zeros((44, 44, 3), np.uint8)
+    cv2.rectangle(tmpl, (22 - half, 22 - half), (22 + half, 22 + half), ring_bgr, thick)
+    if not with_frame:
+        return scene, None, tmpl
+    cv2.rectangle(scene, (cx - half, cy - half), (cx + half, cy + half), ring_bgr, thick)
+    return scene, (cx, cy), tmpl
+
+
+def test_h057_rescue_second_segmentation_recovers_frame_glued_to_wall():
+    """救援隔離測試（合成）：環貼同色牆 → 無救援必 None（黏連爆閘），
+
+    開救援後 V-submask 二次分割必須救回環中心。"""
+    scene, center, tmpl = _h057_wall_scene(with_frame=True)
+    kw = dict(shape_templates={"ring": tmpl}, shape_threshold=0.42, shape_hard_floor=0.30,
+              shape_scales=(0.7, 1.0, 1.4), shape_roi_px=320, margin_frac=0.02)
+    assert find_tracker(scene, **kw) is None, "黏連未救援時本應漏掉（爆 area/bbox 閘）"
+    loc = find_tracker(scene, rescue_v_min=150, rescue_area_min=120, **kw)
+    assert loc is not None, "救援應在爆閘輪廓 bbox 內二次分割救回真框"
+    assert abs(loc[0] - center[0]) <= 20 and abs(loc[1] - center[1]) <= 20, f"應命中 {center}，實得 {loc}"
+
+
+def test_h057_rescue_wall_without_frame_stays_none():
+    """救援負樣本（合成）：純受光綠牆（V=75 < 救援門檻 150）→ 開救援也不得生出候選。"""
+    scene, _, tmpl = _h057_wall_scene(with_frame=False)
+    loc = find_tracker(scene, shape_templates={"ring": tmpl}, shape_threshold=0.42,
+                       shape_hard_floor=0.30, shape_scales=(0.7, 1.0, 1.4),
+                       shape_roi_px=320, margin_frac=0.02,
+                       rescue_v_min=150, rescue_area_min=120)
+    assert loc is None
+
+
+def test_h057_rescue_no_false_positive_on_equipment_scene():
+    """救援負樣本（實機）：069_dir5 紅緞帶裝備場景。救援會從爆閘輪廓分出裝備碎片
+
+    （實測 edge 0.26~0.34），但全數必須被形狀門檻 0.42 hard_rej——結果仍 None。"""
+    img_path = "assets/red_ribbon_equipment_scene.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h057_kwargs(tmpls))
+    assert loc is None, f"裝備碎片（edge≤0.34）不得因救援翻盤為追蹤框，實得 {loc}"

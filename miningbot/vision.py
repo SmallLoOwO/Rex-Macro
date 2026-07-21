@@ -319,23 +319,33 @@ def find_marker(frame_bgr, templates, edge_threshold: float = 0.50, scales=(1.0,
     return best[1] if best else None
 
 
+def best_outline_match(scene_bgr, templates, scales=(1.0,), min_px=12):
+    """同 best_outline_score，但連最佳命中「中心座標」一起回傳：(score, center|None)。
+
+    H057 重錨用：shape ROI 撐大到 320px（H040）後，最佳分數可能來自 ROI 內
+    偏離候選中心的位置（隔壁的真框）——呼叫端需要知道命中點在哪，
+    不能只拿分數就把它記在候選頭上。
+    """
+    if scene_bgr is None or scene_bgr.size == 0 or not templates:
+        return -1.0, None
+    scene_e = _canny(scene_bgr)
+    sh, sw = scene_e.shape[:2]
+    best, best_loc = -1.0, None
+    for tmpl in templates.values():
+        val, loc, _, _ = _best_edge_match_sized(
+            scene_e, sh, sw, template_outline_edges(tmpl), scales, min_px)
+        if loc is not None and val > best:
+            best, best_loc = val, loc
+    return best, best_loc
+
+
 def best_outline_score(scene_bgr, templates, scales=(1.0,), min_px=12) -> float:
     """回傳 templates 中任一模板外框在 scene 的最佳邊緣相關度（0..1）。
 
     給「混合偵測」的形狀確認用：在 HSV 候選周圍的小 ROI 上跑，分數高 = 該處有追蹤框外框。
     templates 可混用 wiki 透明圖（用 alpha 外框）與實機裁圖（用灰階邊緣）。
     """
-    if scene_bgr is None or scene_bgr.size == 0 or not templates:
-        return -1.0
-    scene_e = _canny(scene_bgr)
-    sh, sw = scene_e.shape[:2]
-    best = -1.0
-    for tmpl in templates.values():
-        val, loc, _, _ = _best_edge_match_sized(
-            scene_e, sh, sw, template_outline_edges(tmpl), scales, min_px)
-        if loc is not None and val > best:
-            best = val
-    return best
+    return best_outline_match(scene_bgr, templates, scales, min_px)[0]
 
 
 def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
@@ -344,7 +354,9 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  shape_hard_floor: float = 0.25,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
                  shape_roi_px: int = 160, with_score: bool = False,
-                 collect_rejects=None):
+                 collect_rejects=None, rescue_v_min=None,
+                 rescue_area_min: int = 120, rescue_max: int = 12,
+                 rescue_dedup_px: int = 60):
     """偵測 D2 掃描後的稀有礦「追蹤框」，回傳框中心 (x, y)；找不到回 None。
 
     各階級外框顏色不同（Exquisite 綠、Exotic 橘、Enigmatic 萊姆、Exclusive 暗紫、
@@ -363,6 +375,14 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     shape_hard_floor：edge 低於此值的候選直接拒（連 soft filter 也不救）——擋「HSV
     很強但形狀完全錯」的裝備誤判（實測 edge≈0.16）。只有 survivor（floor≤edge<
     threshold）才退回 HSV，保留「未見階級外框配不到模板」的安全網。
+
+    rescue_v_min：H057 超大輪廓救援（None＝關閉，行為與舊版逐位元相同）。追蹤框貼上
+    同色系受光背景（097 dir4 綠框貼綠牆）時，RETR_EXTERNAL 把框和牆接成一條爆
+    area/bbox 閘的大輪廓，框在形狀確認前就出局。救援＝confirmed 全滅時，回頭在爆閘
+    輪廓的 bbox 內用「V ≥ rescue_v_min」子 mask 二次分割（實測框芯 V=222 vs 受光牆帶
+    V=72~76 vs 一般綠背景 V=20），分出的小 blob 過寬鬆閘（area ≥ rescue_area_min、
+    bbox 12~80）後只走形狀 confirmed 路徑——不進 survivor/純 HSV 排名，救回與否
+    全由 edge 門檻裁決，救援本身不放寬任何全域色域門檻。
     """
     h, w = frame_bgr.shape[:2]
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
@@ -370,15 +390,26 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     mx0, my0 = w * margin_frac, h * margin_frac
     mx1, my1 = w * (1 - margin_frac), h * (1 - margin_frac)
     candidates = []   # [(colored_frac, cx, cy, ring_ok)] 通過 HSV 收集的候選
-    for lo, hi in _TRACKER_COLORS:
+    rescue_enabled = rescue_v_min is not None and bool(shape_templates)
+    oversized = []       # [(color_idx, x, y, bw, bh)] H057：爆閘輪廓的救援佇列
+    color_planes = []    # 每色 (color_mask, ref_mask)——救援二次分割用（僅救援開啟時保留）
+    for ci, (lo, hi) in enumerate(_TRACKER_COLORS):
         color_mask = cv2.inRange(hsv, lo, hi)
         ref_mask = cv2.inRange(ref_hsv, lo, hi) if ref_hsv is not None else None
+        if rescue_enabled:
+            color_planes.append((color_mask, ref_mask))
         cnts, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for c in cnts:
             area = cv2.contourArea(c)
-            if area < 400 or area > 5000:
+            if area < 400:
                 continue
             x, y, bw, bh = cv2.boundingRect(c)
+            if area > 5000 or bw > 80 or bh > 80:
+                # H057：同色背景把追蹤框黏進大輪廓（097 dir4 真框被接進 493x85/14620
+                # 的受光綠牆輪廓）→ 不是純噪音，記下 bbox 留給救援二次分割。
+                if rescue_enabled:
+                    oversized.append((ci, x, y, bw, bh))
+                continue
             if not (18 <= bw <= 80 and 18 <= bh <= 80):
                 continue
             if abs(bw - bh) > max(bw, bh) * 0.5:
@@ -440,26 +471,101 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     # hard_floor ≤ edge < threshold **且 ring_ok** → survivor（退回 HSV，容忍未見階級、
     # 但要求環形以免非環形假陽性翻盤）；其餘 → 拒。
     if shape_templates:
-        confirmed = []
-        survivors = []      # borderline：保留給 HSV fallback（未見階級安全網）
-        for cf, cx, cy, ring_ok in candidates:
+        def _pos_ok(px, py):
+            return (mx0 < px < mx1 and my0 < py < my1
+                    and not any(x0 <= px <= x1 and y0 <= py <= y1
+                                for (x0, y0, x1, y1) in exclude))
+
+        def _shape_confirm(cands, collect, tag=""):
+            """小 ROI 外框比對；confirmed 一律「重錨」到形狀命中中心（H057）。
+
+            H040 把 ROI 撐到 320px 後，候選的 ROI 可能把「隔壁的真框」包進來——
+            分數是真框的、座標卻是候選的（097 角色臉 (959,547) 借了 (983,435) 真框
+            的 0.61 而勝出）。重錨讓 confirmed 座標回到形狀命中處；命中點出界／落在
+            排除區時保留原座標（不比舊行為差）。
+            """
+            _confirmed, _survivors = [], []
             r = shape_roi_px // 2
-            roi = frame_bgr[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
-            score = best_outline_score(roi, shape_templates, shape_scales)
-            verdict = ("OK" if score >= shape_threshold
-                       else "soft" if (score >= shape_hard_floor and ring_ok)
-                       else "hard_rej")
-            if log is not None:
-                log("shape確認 (%d,%d) colored=%.2f edge=%.2f ring_ok=%s floor=%.2f thr=%.2f -> %s"
-                    % (cx, cy, cf, score, ring_ok, shape_hard_floor, shape_threshold, verdict))
-            if collect_rejects is not None and verdict in ("hard_rej", "soft"):
-                collect_rejects.append({"pos": (cx, cy), "colored": cf,
-                                        "edge": score, "reason": verdict})
-            if score >= shape_threshold:
-                confirmed.append((score, cx, cy))       # 形狀夠像＝真框，中心實心與否都收
-            elif score >= shape_hard_floor and ring_ok:
-                survivors.append((score, cx, cy))       # 存 edge 分數（供 with_score / 早停）
-            # else：hard_rej（形狀太錯）或「borderline 但非環形」→ 完全移除
+            for cf, cx, cy, ring_ok in cands:
+                rx0, ry0 = max(0, cx - r), max(0, cy - r)
+                roi = frame_bgr[ry0:cy + r, rx0:cx + r]
+                score, mloc = best_outline_match(roi, shape_templates, shape_scales)
+                acx, acy = cx, cy
+                if score >= shape_threshold and mloc is not None:
+                    nx, ny = rx0 + mloc[0], ry0 + mloc[1]
+                    if (nx, ny) != (cx, cy) and _pos_ok(nx, ny):
+                        acx, acy = nx, ny
+                verdict = ("OK" if score >= shape_threshold
+                           else "soft" if (score >= shape_hard_floor and ring_ok)
+                           else "hard_rej")
+                if log is not None:
+                    anchor = "" if (acx, acy) == (cx, cy) else "（重錨自(%d,%d)）" % (cx, cy)
+                    log("shape確認%s (%d,%d) colored=%.2f edge=%.2f ring_ok=%s floor=%.2f thr=%.2f -> %s%s"
+                        % (tag, acx, acy, cf, score, ring_ok, shape_hard_floor,
+                           shape_threshold, verdict, anchor))
+                if collect is not None and verdict in ("hard_rej", "soft"):
+                    collect.append({"pos": (cx, cy), "colored": cf,
+                                    "edge": score, "reason": verdict})
+                if score >= shape_threshold:
+                    _confirmed.append((score, acx, acy))    # 形狀夠像＝真框，中心實心與否都收
+                elif score >= shape_hard_floor and ring_ok:
+                    _survivors.append((score, cx, cy))      # 存 edge 分數（供 with_score / 早停）
+                # else：hard_rej（形狀太錯）或「borderline 但非環形」→ 完全移除
+            return _confirmed, _survivors
+
+        confirmed, survivors = _shape_confirm(candidates, collect_rejects)
+        if not confirmed and rescue_enabled and oversized:
+            # ---- H057 超大輪廓救援：只在正常路徑必然漏掉（無任何 confirmed）時多試一次 ----
+            rcands = []
+            for ci, ox, oy, obw, obh in oversized:
+                color_mask, ref_mask = color_planes[ci]
+                sub = color_mask[oy:oy + obh, ox:ox + obw]
+                vsub = hsv[oy:oy + obh, ox:ox + obw, 2]
+                bright = np.where(vsub >= rescue_v_min, sub, 0).astype(np.uint8)
+                scnts, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c2 in scnts:
+                    sa = cv2.contourArea(c2)
+                    if sa < rescue_area_min or sa > 5000:
+                        continue
+                    sx, sy, sbw, sbh = cv2.boundingRect(c2)
+                    if not (12 <= sbw <= 80 and 12 <= sbh <= 80):
+                        continue
+                    if abs(sbw - sbh) > max(sbw, sbh) * 0.5:
+                        continue
+                    gx, gy = ox + sx, oy + sy
+                    gcx, gcy = gx + sbw // 2, gy + sbh // 2
+                    if not _pos_ok(gcx, gcy):
+                        continue
+                    # 差分過濾語意與正常路徑一致：掃描前就存在的彩色物件不救
+                    if ref_mask is not None:
+                        rf = float(np.mean(ref_mask[gy:gy + sbh, gx:gx + sbw] > 0))
+                        if rf > 0.15:
+                            continue
+                    bb = hsv[gy:gy + sbh, gx:gx + sbw]
+                    rcf = float(((bb[:, :, 1] > 90) & (bb[:, :, 2] > 90)).mean())
+                    rcands.append((rcf, gcx, gcy, sa))
+            # 去重（rescue_dedup_px 內留 area 大者）＋跳過正常路徑已評過的位置＋上限
+            rcands.sort(key=lambda t: -t[3])
+            picked = []
+            for rcf, gcx, gcy, sa in rcands:
+                if any(abs(gcx - px) < rescue_dedup_px and abs(gcy - py) < rescue_dedup_px
+                       for _, px, py, _ in picked):
+                    continue
+                if any(abs(gcx - c[1]) < rescue_dedup_px and abs(gcy - c[2]) < rescue_dedup_px
+                       for c in candidates):
+                    continue
+                picked.append((rcf, gcx, gcy, sa))
+                if len(picked) >= rescue_max:
+                    break
+            if picked:
+                if log is not None:
+                    log("超大輪廓救援：oversized=%d -> 救援候選=%d（v_min=%d area_min=%d）"
+                        % (len(oversized), len(picked), rescue_v_min, rescue_area_min))
+                # 救援候選只走 confirmed 路徑（ring_ok=False → 不可能進 survivor），
+                # 也不進 collect_rejects——牆面碎片不該洗版近失清單（D03 教訓）。
+                confirmed, _ = _shape_confirm(
+                    [(rcf, gcx, gcy, False) for rcf, gcx, gcy, _ in picked],
+                    None, tag="(救援)")
         if confirmed:
             confirmed.sort(reverse=True)        # 形狀分數最高者勝
             s, cx, cy = confirmed[0]

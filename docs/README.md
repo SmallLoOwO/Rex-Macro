@@ -13,6 +13,7 @@ code, tests, and `miningbot/config.py` still outrank every document.
 | `manual-sampling.md` | R-key sampling and re-entry calibration procedure |
 | `../assets/README.md` | tracked datasets versus machine-local runtime assets |
 | `incidents.md` | append-only H-series runtime evidence, causes, and regressions |
+| `open-detection-issues.md` | measured-but-unfixed detection/aim gaps (D-series); move an entry into `incidents.md` once it ships |
 
 ## Historical documents
 

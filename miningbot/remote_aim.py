@@ -7,6 +7,17 @@ GRID_COLS = "ABCDEF"
 GRID_ROWS = "123456"
 
 
+def dir_label(dir_idx: int) -> int:
+    """內部 dir_idx（0-7）→ 使用者看到的方位編號（1-8）。
+
+    H056：回礦介面 2026-07-18 起就是「方位 1-8」（`reentry_remote` 同名慣例），
+    瞄準介面卻留在 0-7；使用者在兩邊之間換算而指錯方位（097 看 `DIR 4` 的圖打 `5`，
+    腳本轉到 dir5 的另一個畫面）。此後**所有對外顯示與輸入一律 1-8**，
+    內部 dir_idx 仍 0-based——轉換只在這裡與 parse_reply 發生。
+    """
+    return dir_idx + 1
+
+
 @dataclass(frozen=True)
 class AimCandidate:
     number: int      # 全域流水編號（跨層跨方位，1 起）
@@ -73,10 +84,34 @@ def _rank_key(rej: dict) -> float:
     return float(rej.get("colored", 0.0)) - 1.0
 
 
+def _dedup_rejects(rejects, radius_px: int):
+    """H056：同一張畫面內距離 < radius_px 的近失候選合併，只留最高分。
+
+    HSV 會把同一塊大色面（097 是角色的紅武器＋彩虹碎片衣裝）切成數個 blob，
+    097 實機 DIR1 三筆 (569,924)/(534,952)/(570,951) 相距 27~45px、分數同為 0.34，
+    佔掉 9 個名額中的 3 個。半徑取 60 < 追蹤框寬（實機 100~207px）——兩個真框
+    若靠這麼近，框身早已大幅重疊，不可能是兩個獨立目標。
+    只在同一 (層,方位) 內合併：不同方位是不同畫面，同螢幕座標沒有意義。
+    """
+    if radius_px <= 0:
+        return list(rejects)
+    kept, kept_pos = [], []
+    for r in sorted(rejects, key=_rank_key, reverse=True):
+        x, y = r["pos"]
+        if any((x - kx) ** 2 + (y - ky) ** 2 < radius_px ** 2 for kx, ky in kept_pos):
+            continue
+        kept.append(r)
+        kept_pos.append((x, y))
+    return kept
+
+
 def build_aim_context(shots, pose_net_rotations: int, pose_pitch_layer: str,
                       harvest_id: str, now: float, max_candidates: int = 9,
-                      observations=None) -> AimContext:
-    """把各 (層,方位) 的近失候選攤平、依分數降冪編號 1..n（上限 max_candidates 防洗版）。"""
+                      observations=None, dedup_radius_px: int = 60) -> AimContext:
+    """把各 (層,方位) 的近失候選攤平、依分數降冪編號 1..n（上限 max_candidates 防洗版）。
+
+    攤平前先做同層同方位的空間去重（H056），避免一塊衣裝吃掉多個編號名額。
+    """
     shot_list = list(shots)
     observation_list = list(observations or ())
 
@@ -85,7 +120,7 @@ def build_aim_context(shots, pose_net_rotations: int, pose_pitch_layer: str,
     observed = sorted(observation_list, key=lambda o: o.score, reverse=True)
     rejected = []
     for s in shot_list:
-        for r in s.rejects or []:
+        for r in _dedup_rejects(s.rejects or [], dedup_radius_px):
             rejected.append((_rank_key(r), s.layer, s.dir_idx,
                              s.snapshot_path, r))
     rejected.sort(key=lambda t: t[0], reverse=True)
@@ -220,7 +255,7 @@ _OBS_STATUSES = ("fired", "accepted", "seen_once")
 
 
 def format_candidate_summary(candidates) -> str:
-    """候選總表（一行一候選）：編號↔DIR↔格子↔分數↔原因，一眼可對圖。
+    """候選總表（一行一候選）：編號↔方位↔格子↔分數↔原因，一眼可對圖。
 
     - ① 是觀測證據（掃到過但沒採到）→「（最優）…回 1 快速重採」提示行。
     - score ≥ 0（有 edge）顯示「分數x.xx」；< 0（HSV-only，排序鍵 colored−1.0）
@@ -233,12 +268,12 @@ def format_candidate_summary(candidates) -> str:
         key = c.status if c.status in _OBS_STATUSES else c.reason
         label = REASON_LABELS.get(key, key)
         if c.number == 1 and c.status in _OBS_STATUSES:
-            lines.append(f"①（最優）DIR{c.dir_idx + 1}・約{cell}・{label}"
+            lines.append(f"①（最優）方位{dir_label(c.dir_idx)}・約{cell}・{label}"
                          f"——回 1 快速重採")
         else:
             score = (f"分數{c.score:.2f}" if c.score >= 0
                      else f"色{c.score + 1.0:.2f}")
-            lines.append(f"{circled(c.number)} DIR{c.dir_idx + 1}・約{cell}・"
+            lines.append(f"{circled(c.number)} 方位{dir_label(c.dir_idx)}・約{cell}・"
                          f"{score}・{label}")
     return "\n".join(lines)
 
@@ -269,7 +304,7 @@ def build_aim_groups(rendered, summary: str, batch: int = 4) -> list:
     rendered = [(candidate_numbers, dir_idx, layer, path), ...]（numbers 非空）。
     依各圖最小候選編號升冪——① 的圖必在首組首張。首組 caption＝群標題＋總表
     （notify.format_group_messages 的 fallback 直接把組名當 caption 用），
-    續組列出該批編號與 DIR，解決「不知道哪個數字是哪張圖」。
+    續組列出該批編號與方位，解決「不知道哪個數字是哪張圖」。
     """
     items = sorted(rendered, key=lambda r: min(r[0]))
     out = []
@@ -279,7 +314,7 @@ def build_aim_groups(rendered, summary: str, batch: int = 4) -> list:
             caption = AIM_GROUP_HEADER + (f"\n{summary}" if summary else "")
         else:
             nums = "".join(circled(n) for r in chunk for n in sorted(r[0]))
-            dirs = "・".join(f"DIR{r[1] + 1}" for r in chunk)   # 方位訊息面 1-8
+            dirs = "・".join(f"方位{dir_label(r[1])}" for r in chunk)
             caption = f"🎯 近失候選（續）：{nums}｜{dirs}"
         out.append((caption, [r[3] for r in chunk]))
     return out
@@ -337,7 +372,9 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",),
     """NEEDS_HUMAN 待命時的一般訊息解析（無前綴；寧可不射不誤射，解析不出回 None）。
 
     - "2" → 候選編號（1..num_candidates 內才收）
-    - "5 C3" / "5U C3" / "5d c3" → 網格（方位 1-8；U/D 需該層存在 layers_available）
+    - "5 C3" / "5U C3" / "5d c3" → 網格（**方位 1-8**，同回礦介面；內部轉 0-based。
+      H056：097 使用者看標頭 `DIR 4` 的圖打 `5`，舊 0-7 解析轉到別的方位而失手。
+      U/D 需該層存在 layers_available）
     - "跳過"/"skip" → skip；"手動"/"全部" → manual（重掃＋全方位圖）
 
     awaiting_fine=True（放大手選退路，harvest 101 §5）：只收細格系列——
@@ -382,7 +419,7 @@ def parse_reply(text: str, num_candidates: int, layers_available=("mid",),
         cell = parts[1].upper()
         if grid_cell_center(cell) is None:
             return None
-        # 方位訊息面 1-8（2026-07-21 使用者要求 1 起算，比照 reentry_remote）；內部仍 0-based
+        # 使用者輸入 1-8 → 內部 dir_idx 0-7（dir_label 的逆；`0` 不再是合法方位）
         return AimReply("grid", dir_idx=int(m.group(1)) - 1, layer=layer, cell=cell)
     return None
 

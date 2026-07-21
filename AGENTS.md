@@ -71,7 +71,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Top-level state | `states.py`, `tests/test_states.py` | every direct `self.state =` site |
 | Coordinates/modes/hotkeys | `config.py` | config and incident regressions |
 | Rare-ore harvest | rules below, latest matching H incident | `harvester.py`, `_sweep_for_tracker`, `_tick_harvest`, `_harvest_success` |
-| Tracker detection | H039/H040, `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near` |
+| Tracker detection | H039/H040/H057, `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near` |
 | Chat verification | H014/H020/H032/H041/H054 | `ocr.ChatLedger`, `read_text_multi`, `_verify_chat_ocr`, `ocr.baseline_saw_found_history` |
 | Chill/reset audio | `audio.py`, `tests/test_audio.py` | `main._on_audio_*` |
 | Mine reset | reset/capacity incident evidence | `states.py`, `_banner_ocr_loop`, `_update_reset_complete` |

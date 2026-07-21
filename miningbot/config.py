@@ -172,6 +172,14 @@ class Config:
                                                  # 模板 213px×尺度 1.4≈298 也要裝得下 → 320。
     tracker_shape_hard_floor: float = 0.30       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16/0.25/0.26、真追蹤框≥0.44（2026-06-28 由 0.25→0.30 擋下夜間兩次 borderline 裝備誤射）
     tracker_shape_early_exit: float = 0.60       # sweep 早停：某方位雙幀穩定且 edge≥此值（遠高於裝備上限 0.26）→ 直接確定、免掃完剩餘方位/免轉回 verify（實測真框 0.54-1.00）
+    # H057（2026-07-20 harvest 097）超大輪廓救援：綠框貼受光綠牆被 RETR_EXTERNAL 接成
+    # 一條爆 area/bbox 閘的大輪廓（bbox 493x85、area 14620），真框在形狀確認前就出局
+    # → 全八方位掃描全空誤交人工。confirmed 全滅時在爆閘輪廓 bbox 內用高 V 子 mask
+    # 二次分割，救回的候選只走形狀 confirmed 路徑（不放寬任何全域門檻）。
+    tracker_rescue_v_min: int = 150              # 二次分割亮度下限；兩側夾：受光牆帶 V=72~76（必擋）vs 框芯 V=222（必收），dir4 實測 V 100~180 都能救回真框，取中值
+    tracker_rescue_area_min: int = 120           # 救援 blob 面積下限；真框亮芯碎片實測 area 552~600（V=150 時），120 擋掉更小的牆面亮點雜訊
+    tracker_rescue_max_candidates: int = 12      # 每幀救援候選上限（依 area 大者優先）；控形狀確認開銷（實測正常場景救援候選 5~15、最多 65）
+    tracker_rescue_dedup_px: int = 60            # 救援候選去重半徑（同一框的碎片合併；與 remote_aim_dedup_radius_px 同語意）
     tracker_margin_frac: float = 0.02            # find_tracker 邊緣排除帶（實戰值；vision 函式預設仍 0.10）。H019(1862,418)/H026(1288,1020) 兩次真框都被 0.10 的帶擋掉——D5 到期 FOV 收縮（以中心為錨 ~2.6x 縮放）把框推到邊緣，且 yaw 旋轉不改 y、底緣框 8 方位永遠在帶內。0.02 收得回兩顆（回歸 fixture：edge_clipped/bottom_edge_tracker_scene.png）且對全 fixture 集無新假陽性；邊緣雜訊由 preexist 差分/colored_frac/形狀確認擋
     boost_fov_settle_s: float = 1.5              # 採集中補 D5 後等 FOV 展開的時間（H026 boost 守門；補完必須重抓幀才能偵測/開火）
     aim_center_tolerance_px: int = 25            # 準心對準容差
@@ -371,6 +379,8 @@ class Config:
     remote_aim_enabled: bool = True             # 關掉＝giveup 附圖/回覆解析全部回到今天行為
     remote_aim_max_candidates: int = 9          # 附圖候選編號上限（防洗版）
     remote_aim_refind_radius_px: int = 160      # fire 前重找 ROI 半徑（同 shape_roi 半徑量級）
+    remote_aim_fullframe_fallback: bool = True  # H056：ROI 重找全滅時再全畫面找一次（confirmed 門檻）
+    remote_aim_dedup_radius_px: int = 60        # H056：同層同方位近失候選合併半徑（小於框寬 100~207）
     remote_aim_budget_s: float = 120.0          # 單次 fire 全流程預算（對齊+重掃+驗證）
     remote_aim_snapshot_wait_s: float = 3.0     # Total wait budget before rendering or directly sending async snapshots.
     harvest_target_recovery_max: int = 1        # At most one recovery at an accepted/fired absolute direction.

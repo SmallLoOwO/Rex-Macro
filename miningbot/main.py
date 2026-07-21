@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import logging
 import ctypes
@@ -2871,7 +2872,11 @@ class Bot:
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score,
-            collect_rejects=collect_rejects)
+            collect_rejects=collect_rejects,
+            rescue_v_min=cfg.tracker_rescue_v_min,
+            rescue_area_min=cfg.tracker_rescue_area_min,
+            rescue_max=cfg.tracker_rescue_max_candidates,
+            rescue_dedup_px=cfg.tracker_rescue_dedup_px)
 
     def _find_tracker_near(self, frame, center, exclude, reference_bgr=None):
         """verify 輪詢快路徑：只搜開火座標周圍 ROI（參數組與 _find_tracker 一致）。"""
@@ -2883,7 +2888,11 @@ class Bot:
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
             shape_scales=cfg.tracker_shape_scales,
-            shape_roi_px=cfg.tracker_shape_roi_px)
+            shape_roi_px=cfg.tracker_shape_roi_px,
+            rescue_v_min=cfg.tracker_rescue_v_min,
+            rescue_area_min=cfg.tracker_rescue_area_min,
+            rescue_max=cfg.tracker_rescue_max_candidates,
+            rescue_dedup_px=cfg.tracker_rescue_dedup_px)
 
     def _rotate_verified(self, direction: int) -> bool:
         """送一次視角鍵（+1=右轉 .、-1=左轉 ,）並以前後幀驗證「真的轉了 45°」。
@@ -3224,7 +3233,8 @@ class Bot:
                 self._sweep_shots, self.harvest.net_rotations,
                 self.harvest.pitch_layer, self.harvest.harvest_id,
                 now=time.time(), max_candidates=cfg.remote_aim_max_candidates,
-                observations=self._target_observations)
+                observations=self._target_observations,
+                dedup_radius_px=cfg.remote_aim_dedup_radius_px)
             rendered = self._render_aim_shots(ctx)   # 疊圖＋落盤
             self._aim_context = ctx
             if rendered:
@@ -3290,7 +3300,9 @@ class Bot:
             statuses = ",".join(dict.fromkeys(c.status for c in candidates))
             self._draw_aim_header(
                 overlaid,
-                f"DIR {shot.dir_idx + 1} | {shot.layer.upper()} | {statuses.upper()}")
+                # H056：標頭數字＝使用者要輸入的方位號（1-8），與回礦介面一致
+                f"DIR {remote_aim.dir_label(shot.dir_idx)} | "
+                f"{shot.layer.upper()} | {statuses.upper()}")
             path = os.path.splitext(shot.snapshot_path)[0] + "_aim.png"
             if not cv2.imwrite(path, overlaid):
                 self.logger.warning("AIM overlay write failed: %s", path)
@@ -3437,7 +3449,8 @@ class Bot:
                 self.logger.warning("MANUAL snapshot unreadable: %s", path)
                 continue
             remote_aim.draw_grid(image)
-            self._draw_aim_header(image, f"DIR {abs_dir + 1} | MID")   # 方位訊息面 1-8（內部/檔名/log 仍 0-based）
+            self._draw_aim_header(
+                image, f"DIR {remote_aim.dir_label(abs_dir)} | MID")
             out_path = os.path.splitext(path)[0] + "_manual.png"
             if not cv2.imwrite(out_path, image):
                 self.logger.warning("MANUAL overlay write failed: %s", out_path)
@@ -3544,6 +3557,9 @@ class Bot:
         先正常門檻，再 shape_threshold=0（colored 過即收、edge 排序）。回 (pos, score, detail)：
         命中 (pos, score, "")；預算用盡 (None, -1.0, "預算用盡")；都沒命中 (None, -1.0, "")
         （呼叫端據 detail 決定 abort 或退回先驗盲打）。
+
+        ROI 兩輪都全滅後還有 H056 全畫面兜底（見下方註解）——2026-07-21 合併 main 時，
+        把 main 寫在未重構版 `_execute_remote_fire` 裡的那段搬進這裡（同一行為、換位置）。
         """
         for thr in (cfg.tracker_shape_threshold, 0.0):
             if time.time() > deadline:
@@ -3559,6 +3575,18 @@ class Bot:
             if pos:
                 self.logger.info("[%s] AIM 重找命中 (thr=%.2f) -> %s", hid, thr, pos)
                 return ((int(pos[0]), int(pos[1])), pos[2], "")
+        if cfg.remote_aim_fullframe_fallback:
+            # H056：ROI 全滅 -> 全畫面再找一次（**不帶 ref**：此時的替代方案是朝空地盲開，
+            # 而 preexist 差分會把「掃描前就在畫面上的真框」剔掉——097 開火幀實測真框 edge=0.586）。
+            # 安全靠形狀 confirmed 門檻（0.42）獨撐：不放寬、不吃 survivor，找不到就照舊盲開。
+            if time.time() > deadline:
+                return None, -1.0, "預算用盡"
+            full = self._find_tracker(capture.grab(), excl, with_score=True)
+            if full:
+                self.logger.info("[%s] AIM 全畫面兜底命中 edge=%.2f -> %s（距先驗點 %.0fpx）",
+                                 hid, full[2], (full[0], full[1]),
+                                 math.hypot(full[0] - prior[0], full[1] - prior[1]))
+                return ((int(full[0]), int(full[1])), full[2], "")
         return None, -1.0, ""
 
     def _detect_core_in_cell(self, cell, tgt_dir, deadline, hid):
@@ -5730,7 +5758,14 @@ class Bot:
             self.logger.info("PAUSED — 按 Q 繼續")
 
     def _resume(self):
-        """繼續：清除暫停並重新握住 W + 左鍵（與啟動/_on_enter(MINING) 相同的完整序列）。"""
+        """繼續：清除暫停並重新握住 W + 左鍵。
+
+        輕量恢復（2026-07-20）：MINING 暫停恢復不再跑 zoom_normalize（I×30+O×4）
+        與 init_mining_sequence 的 rotate(.,)/center_crosshair——角度與遠近只在
+        稀有礦重追、回礦、啟動時才會被動到，那些路徑各自歸位；單純暫停期間相機
+        未動，完整復原是白做工。這裡只聚焦＋確認鎬子＋重新握住 W+左鍵。動過相機
+        的場合（手動碰過、或暫停跨過 boost 到期）由後續 reentry／採集收尾歸位接手。
+        """
         if self._calib_session is not None:
             # 校準中不准恢復挖礦（▶️/resume 只記離場後意圖；_calib_exit 先清 session 再
             # 呼叫 _resume 所以離場路徑不受此擋）。
@@ -5746,9 +5781,13 @@ class Bot:
             # 先重新聚焦 Roblox。失敗不交人工——使用者正在按 Q 注視著，下次 mining
             # tick 的視窗跑位偵測會接手（REFOCUS action；那條路徑失敗才交人工）。
             self._focus_roblox()
-            # 暫停期間人最可能滾輪動過鏡頭距離——恢復挖礦前歸一（2026-07-19）。
-            self._zoom_normalize("暫停恢復")
-            miner.init_mining_sequence(rotate=self._rotate_verified)
+            # 輕量恢復：假設暫停期間視角未動（角度/遠近只在稀有礦重追/回礦/啟動時
+            # 才變動，那些路徑各自歸位）。放開→確認鎬子（沒拿才按 D1）→重新握住
+            # W+左鍵；跳過舊版 zoom_normalize＋init 的 rotate/center（2026-07-19 加的
+            # 「暫停期間人最可能滾輪動過鏡頭」假設過於悲觀——使用者實機並不會）。
+            ic.key_up("w"); ic.mouse_up()
+            miner.ensure_pickaxe()
+            ic.key_down("w"); ic.mouse_down()
 
     def _toggle_pause(self):
         """Q：開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重新啟動；
