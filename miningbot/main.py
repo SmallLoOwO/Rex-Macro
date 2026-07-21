@@ -7,7 +7,6 @@ import json
 import threading
 import queue
 import itertools
-import winsound
 
 import numpy as np
 
@@ -690,12 +689,8 @@ class Bot:
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
-        """本機提醒：嗶聲 + WARNING log。"""
+        """本機提醒：WARNING log（操作者通知已交 Discord，不再發聲）。"""
         self.logger.warning("ALERT %s", message)
-        try:
-            winsound.Beep(880, 400); winsound.Beep(660, 400)
-        except RuntimeError:
-            pass
 
     def _snapshot(self, frame, label: str) -> str | None:
         """關鍵事件存畫面（非同步寫檔）。即時回傳路徑，imwrite 丟背景執行緒不卡主線。
