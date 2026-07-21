@@ -377,6 +377,11 @@ class Config:
         # [(name, hsv_lo, hsv_hi)]；非覆蓋色系遇到→偵測 None→退回放大手選（永不誤射）。
         # 新色 fixture 到手才加（兩側夾，比照 tuning-from-incidents）。
     tracker_core_min_area: int = 80             # 框面積下限（cell 原生解析度；綠框實測 256）
+    tracker_core_max_area: int = 1800           # 框面積上限：亮綠「地形」與框心同色且大塊實心，
+        # 被格邊裁成近方形後 ar/extent/border 三關全過（101 dir1/2/3 實測 4918/15043/17268/25631），
+        # best 取面積最大→會蓋掉同格真框朝地形開火。兩側夾：真框心 256×6／663（edge_clipped
+        # 33×32）vs 地形最小 4918 → 取 1800（真值 2.7 倍、誤收 1/2.7）。方向＝寧漏勿誤射
+        # （漏＝退回放大手選，誤射＝浪費一發且打空）。
     tracker_core_ar_lo: float = 0.6             # 方形長寬比下限（綠框 ar≈1.0）
     tracker_core_ar_hi: float = 1.7             # 方形長寬比上限
     tracker_core_extent_min: float = 0.6        # 實心理度下限（輪廓面積/bbox 面積；綠框 extent≈0.89）

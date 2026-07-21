@@ -2039,9 +2039,8 @@ class Bot:
         reply = remote_aim.parse_reply(content, len(ctx.candidates), layers,
                                        awaiting_fine=ctx.awaiting_fine)
         if reply is None:
-            notify.send_message(token, ch,
-                "❓ 看不懂。可用：`2`（射候選②）、`跳過`（回挖礦）、"
-                "`手動`（最後手段：重掃＋全方位圖＋格子瞄準說明）")
+            notify.send_message(
+                token, ch, remote_aim.aim_unknown_help(ctx.awaiting_fine))
             return
         if self._aim_busy:
             notify.send_message(token, ch, "⏳ 上一發還在執行，稍候")
@@ -3591,6 +3590,7 @@ class Bot:
         hit = vision.detect_tracker_core(
             cell_crop, cfg.tracker_core_profiles,
             min_area=cfg.tracker_core_min_area,
+            max_area=cfg.tracker_core_max_area,
             ar_lo=cfg.tracker_core_ar_lo, ar_hi=cfg.tracker_core_ar_hi,
             extent_min=cfg.tracker_core_extent_min,
             border_margin=cfg.tracker_core_border_margin,

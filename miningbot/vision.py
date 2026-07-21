@@ -523,6 +523,7 @@ def find_tracker_near(frame_bgr, center_xy, radius_px, *, frame_margin_frac=0.0,
 
 
 def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
+                        max_area: int = 1800,
                         ar_lo: float = 0.6, ar_hi: float = 1.7,
                         extent_min: float = 0.6, border_margin: int = 6,
                         border_dark_max: int = 70,
@@ -538,6 +539,8 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
 
     黑邊判定：框 bbox 外側 border_margin 寬的環帶裡，gray≤border_dark_max 的像素佔比
     ≥border_dark_frac_min 才收——擋「亮色中心但周圍無黑邊」的非框亮塊（空格背景）。
+    面積上下限：框心是**小塊**（實測 256～663）；亮綠地形同色但大塊（≥4918），會過
+    ar/extent/border 三關並以最大面積蓋掉同格真框→用 max_area 夾掉（見 config 兩側夾）。
     profiles=[]（未覆蓋色系）→ None（永不誤射；靠退路放大手選兜底）。
     """
     if region_bgr is None or region_bgr.size == 0 or not profiles:
@@ -555,6 +558,14 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
         for c in cnts:
             area = cv2.contourArea(c)
             if area < min_area:
+                continue
+            if area > max_area:
+                # 亮綠地形：同色大塊實心，被格邊裁成近方形後 ar/extent/border 全過，且面積
+                # 遠大於真框心→best 會蓋掉同格真框朝地形開火（101 dir1/2/3 實測）。
+                if log is not None:
+                    x0, y0, w0, h0 = cv2.boundingRect(c)
+                    log("core候選 (%d,%d) name=%s area=%d -> rej(area>max %d)"
+                        % (x0 + w0 // 2, y0 + h0 // 2, name, int(area), max_area))
                 continue
             x, y, bw, bh = cv2.boundingRect(c)
             if bw <= 0 or bh <= 0:

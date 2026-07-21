@@ -925,8 +925,12 @@ def test_boost_use_count_unknown_glyph_rejects_whole_read():
 
 
 # ===== detect_tracker_core（harvest 101 手動瞄準精定位）=====
-# 限縮單格區域找追蹤框實心亮色中心。fixture assets/aim_tracker_core_green_scene.png
-# 尚未入庫→用合成圖（綠心＋黑邊環帶）驗演算法；實機 fixture 到手再補 (211,189)±15px 斷言。
+# 限縮單格區域找追蹤框實心亮色中心。合成圖驗演算法邊界，實機裁格 fixture 驗真值。
+# fixture＝**粗格原生裁圖**（正是 detect_tracker_core 在實機吃到的東西），存 tests/fixtures/
+# 而非 assets/——assets/**/*.png 被 .gitignore 排除，是機器本地 runtime 輸入（tests/AGENTS.md）。
+# 兩側夾（面積）：真框心 256×6／663（含本機 edge_clipped_tracker_scene 33×32）
+#              vs 亮綠地形 4918/15043/17268/25631 → tracker_core_max_area=1800。
+_AIM_FIX = "tests/fixtures/aim"
 _GREEN_PROFILE = [("green", (40, 150, 150), (85, 255, 255))]
 
 
@@ -985,21 +989,45 @@ def test_detect_tracker_core_coords_relative_to_region():
     assert r is not None and abs(r[0] - 50) <= 15 and abs(r[1] - 40) <= 15
 
 
-@pytest.mark.skip(reason="fixture assets/aim_tracker_core_green_scene.png 尚未入庫——"
-                         "待 harvest 101 實機裁圖到手後驗證：裁 C1→回相對 (211,189)±15px、"
-                         "profile=green、border_frac≥0.15；空鄰格 B1→None（兩側夾）")
 def test_detect_tracker_core_green_scene_fixture():
-    fixture = os.path.join(os.path.dirname(__file__), "..", "assets",
-                           "aim_tracker_core_green_scene.png")
-    img = cv2.imread(fixture)
-    assert img is not None, fixture
-    # C1 region (640,0,320,270)
-    crop = img[0:270, 640:960]
+    # 實機真值（101 第二發 aim_fire 幀）：裁 C1→相對 (211,189)＝絕對 (851,189)、0px、
+    # border_frac 0.35、框心面積 256（17×17）；空鄰格 B1→None。
+    # 相對路徑：cv2.imread 讀不到本 repo 的非 ASCII 絕對路徑（同檔 _BC_FIX 慣例）
+    crop = cv2.imread(f"{_AIM_FIX}/101_core_green_c1.png")     # C1 region (640,0,320,270)
+    assert crop is not None
     r = detect_tracker_core(crop, _GREEN_PROFILE)
     assert r is not None
     cx, cy, name, border_frac = r
     assert abs(cx - 211) <= 15 and abs(cy - 189) <= 15
     assert name == "green" and border_frac >= 0.15
     # 空鄰格 B1 (320,0,320,270) → None
-    b1 = img[0:270, 320:640]
+    b1 = cv2.imread(f"{_AIM_FIX}/101_core_green_b1.png")
+    assert b1 is not None
     assert detect_tracker_core(b1, _GREEN_PROFILE) is None
+
+
+def test_detect_tracker_core_bright_terrain_is_not_a_tracker():
+    """實機負例：整片亮綠地形不得被當框自動開火（101 dir2 survey 幀 D1 格）。
+
+    地形色與框心同屬綠 HSV 範圍，且大塊地形實心（extent 0.70）、被格邊裁成近方形
+    （198×185、ar 1.07）、bbox 外環帶落在暗地形上（border_frac 0.89）——ar/extent/border
+    三道關卡全過。唯一結構差異是**面積**：框心 256（17×17），地形 25631（≈100 倍）。
+    無面積上限時 best 取面積最大 → 即使該格真有框也會被地形蓋掉、朝地形中心開一發。
+    """
+    d1 = cv2.imread(f"{_AIM_FIX}/101_terrain_fp_d1.png")       # D1 region (960,0,320,270)
+    assert d1 is not None
+    assert detect_tracker_core(d1, _GREEN_PROFILE) is None
+    # 紅綠自證：拿掉面積上限，同一張圖就會回報 (207,177)——確認本測試真的夾在 max_area 上，
+    # 不是被別的關卡順手擋掉（門檻回退時此測試必紅）。
+    unguarded = detect_tracker_core(d1, _GREEN_PROFILE, max_area=10 ** 9)
+    assert unguarded is not None and unguarded[3] > 0.8
+
+
+def test_detect_tracker_core_oversized_blob_rejected():
+    # 面積上限兩側夾：真框心 ≤663 收、地形級大塊（>1800）拒——即使黑邊環帶齊全
+    region = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region, 160, 135, half=40, with_border=True, bg=200)   # 81×81=6561
+    assert detect_tracker_core(region, _GREEN_PROFILE) is None
+    region2 = np.zeros((270, 320, 3), np.uint8)
+    _draw_core(region2, 160, 135, half=16, with_border=True, bg=200)  # 33×33=1089 ≤1800
+    assert detect_tracker_core(region2, _GREEN_PROFILE) is not None

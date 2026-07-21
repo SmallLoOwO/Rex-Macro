@@ -409,3 +409,21 @@ def test_recovery_prefers_latest_fired_then_accepted_then_seen_once():
     ]
     assert pick_recovery_observation(observations) is observations[3]
     assert pick_recovery_observation([]) is None
+
+
+def test_aim_unknown_help_lists_only_currently_accepted_commands():
+    """「看不懂」回覆必須列出當下真的收得到的指令（memory: 新指令必同步玩家可見訊息）。
+
+    awaiting_fine=True（放大手選退路）時 parse_reply 只收細格系列，候選編號 `2` 會被拒
+    →此時仍叫玩家打 `2` 等於把人導向一定失敗的輸入，看起來像 bot 壞掉。
+    """
+    fine = remote_aim.aim_unknown_help(awaiting_fine=True)
+    for token in ("B3", "放大", "退", "跳過", "手動"):
+        assert token in fine, token
+    assert "候選" not in fine          # 細格模式收不到候選編號，不可列
+
+    coarse = remote_aim.aim_unknown_help(awaiting_fine=False)
+    for token in ("候選", "跳過", "手動"):
+        assert token in coarse, token
+    # 兩個模式的指令集互斥處不可混淆：非細格模式不列細格專用的 `退`
+    assert "`退`" not in coarse
