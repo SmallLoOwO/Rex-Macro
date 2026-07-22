@@ -205,6 +205,27 @@ def capture_window_active(armed_since: float, now: float, max_s: float) -> bool:
     return 0.0 <= now - armed_since <= max_s
 
 
+def chill_muted_after_antiafk(pressed_at: float, now: float, mute_s: float) -> bool:
+    """防掛機 Space 之後的 chill 靜音窗（純函式）——擋 bot 自製的假觸發。
+
+    H060（2026-07-22 實機）：等待狀態每 antiafk_interval_s 按一次 Space 保活
+    （main.run 的 NEEDS_HUMAN/RESET_WAIT/回礦等指令分支），角色原地跳的音效被
+    loopback 收進 chill 偵測器。當日三次 REENTRY 的 spawn chill 通知**全部**發生在
+    「防掛機：按 Space」之後 2 秒，分數 0.25/0.38/0.37 皆越過 0.25 門檻。
+
+    這是唯一一種 bot 知道確切發生時刻的音源，故用時間窗直接排除，不必靠參考集
+    品質——參考集校準再好也擋不住「自己製造的聲音剛好像 chill」這類迴圈。
+
+    窗長由實機量測定：三次事件的分數分別維持到按鍵後 +4s/+5s/+4s（1.5s 滾動窗
+    ＋落地音延遲），預設 6.0s 留邊際。相對 900s 保活週期只遮蔽 0.67%，且只在
+    等待狀態發生（挖礦中不按 Space）。pressed_at<=0＝本行程尚未按過，不靜音；
+    now 早於 pressed_at（時鐘回跳）也不靜音。
+    """
+    if pressed_at <= 0.0:
+        return False
+    return 0.0 <= now - pressed_at <= mute_s
+
+
 def save_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
     """把樣本忠實存成 16-bit WAV。samples 已是 int16 值域的 float（loopback int16→float32），
     故**直接轉 int16，不可再乘 32767**（乘了會溢位繞回成雜訊——舊 save_buffer_wav 的 bug）。

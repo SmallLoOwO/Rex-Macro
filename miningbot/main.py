@@ -174,6 +174,8 @@ class Bot:
         self._last_heartbeat = time.time()
         self._peak_audio_since_hb = 0.0           # 上次 heartbeat 至今的最高音訊分數（捕捉 30s 取樣漏掉的 chill 尖峰）
         self._antiafk_last = 0.0                   # 防掛機：上次按 Space 的時間（0=未在計時；暫停中才啟用）
+        self._antiafk_pressed_at = 0.0             # H060：上次真的按下 Space 的時刻（chill 靜音窗錨點）
+        self._antiafk_mute_logged = False          # H060：本次按鍵的靜音已記過一筆（避免每幀洗 log）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
         self._last_d3_fire_at: float | None = None  # session 級；實際 hold-click 當下起算
@@ -838,6 +840,15 @@ class Bot:
         if score > self._peak_audio_since_hb:
             self._peak_audio_since_hb = score       # 捕捉 30s heartbeat 取樣漏掉的 chill 尖峰
         chill_audio = score >= cfg.audio_match_threshold
+        # H060：防掛機 Space 的原地跳音效會被認成 chill（2026-07-22 三次 REENTRY 誤報
+        # 全在按鍵後 2s）。bot 知道自己何時按的 → 用時間窗直接排除，不倚賴參考集品質。
+        if chill_audio and audio.chill_muted_after_antiafk(
+                self._antiafk_pressed_at, time.time(), cfg.antiafk_chill_mute_s):
+            chill_audio = False
+            if not self._antiafk_mute_logged:      # 每次按鍵只記一筆，不每幀洗 log
+                self._antiafk_mute_logged = True
+                self.logger.info("chill 靜音（音訊 %.2f）：防掛機 Space 後 %.0fs 內，"
+                                 "判定為原地跳音效", score, cfg.antiafk_chill_mute_s)
         chill_text = False
         if chill_audio:
             if not cfg.chill_require_ocr:
@@ -5733,6 +5744,10 @@ class Bot:
             self._focus_roblox()
             refocused = True
         ic.key_press("space")
+        # H060：原地跳的音效會被 chill 偵測器認成 chill → 從**真的按下**這刻起開靜音窗
+        # （now 是進函式時取的，_focus_roblox 可能已花掉 ~1.3s，用它會少遮一段）。
+        self._antiafk_pressed_at = time.time()
+        self._antiafk_mute_logged = False
         self.logger.info("防掛機：%s按 Space（%s中等超過 %.0f 分鐘）",
                          "已失焦→重聚焦 Roblox 後" if refocused else "",
                          context, cfg.antiafk_interval_s / 60)

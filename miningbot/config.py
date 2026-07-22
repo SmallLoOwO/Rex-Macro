@@ -440,6 +440,10 @@ class Config:
                                                  # 與 Roblox 內建功能衝突而廢棄，2026-07-10）
     hotkey_quit: str = "f12"                     # 真正結束程式
     antiafk_interval_s: float = 900.0            # 防掛機踢除：暫停中每 N 秒按一次 Space（預設 15 分鐘）
+    antiafk_chill_mute_s: float = 6.0            # H060：按 Space 後 N 秒不採信 chill——原地跳的音效
+                                                 # 會被認成 chill（2026-07-22 三次 REENTRY 誤報全在按鍵後
+                                                 # 2s，分數 0.25/0.38/0.37）。窗長取實機量測的分數尾巴
+                                                 # +4s/+5s/+4s 再留邊際；佔保活週期 0.67%，只影響等待狀態
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""

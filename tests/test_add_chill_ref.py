@@ -110,6 +110,48 @@ def test_safe_reference_passes_negative_screen():
     assert would_false_trigger(ref, [negative], decimate=k) is False
 
 
+# --- H060：「週期性非 chill 音效」的真身＝bot 自己的防掛機 Space（原地跳）-----
+# neg_s18_periodic 那族一直被當成不明的遊戲音效，2026-07-22 對上 miningbot.log
+# 才發現每一筆都緊跟在「防掛機：按 Space」之後——是 bot 自己按出來的跳躍音。
+# 07-22 這場的跳躍音變體分數比 s18 高一截（0.18 → 0.37），故另立負樣本。
+
+
+def test_antiafk_jump_is_a_negative_not_a_chill():
+    """防掛機跳躍音在安全參考下必須遠低於觸發門檻（兩側夾的負樣本側）。"""
+    ref = _load_mono("ref_091_existing_family.wav")
+    negative = _load_mono("neg_antiafk_jump_s37.wav")
+    k = cfg.audio_match_decimate
+    assert match_score(negative, ref, k) < cfg.chill_ref_negative_ceiling
+    assert would_false_trigger(ref, [negative], decimate=k) is False
+
+
+def test_rising_edge_clip_that_lifts_antiafk_jump_is_rejected():
+    """上升緣錄音抽出的裁片會把防掛機跳躍音推過門檻 → 守門必須擋下。
+
+    2026-07-21 校準（ae3bd16）把 7 個 `audiochg_*`（chill 的**上升緣**錄音）收成
+    參考。`loudest_window` 抽「最大聲的 1.0s」，但上升緣窗裡 chill 還沒到，抽到的
+    是背景音——與 H040 同一種污染，只是來源是上升緣而非重疊雜音。
+
+    後果（H060，2026-07-22 實機）：防掛機每 15 分鐘按一次 Space 保活，跳躍音被
+    這個參考認成 chill。當日 22 筆相位鎖定的跳躍音有 19 筆越過 0.25 門檻，
+    REENTRY 中三次全部在按鍵後 2 秒發出 spawn chill 誤報。
+
+    兩側夾（decimate=8）：
+        安全參考集下，防掛機跳躍音           0.180
+        收了這個上升緣裁片之後，同一個負樣本   0.375   → 遠超觸發門檻 0.25
+    """
+    clip = _load_mono("contaminated_rising_edge_101.wav")     # 已是抽出的 1.0s 裁片
+    negative = _load_mono("neg_antiafk_jump_s37.wav")
+    k = cfg.audio_match_decimate
+
+    lifted = match_score(negative, clip, k)
+    assert lifted >= cfg.audio_match_threshold, (
+        f"這個裁片本來就會把防掛機跳躍音推過門檻（實測 0.375），得到 {lifted:.3f}")
+
+    assert would_false_trigger(clip, [negative], decimate=k) is True, (
+        "上升緣污染裁片必須被假觸發守門擋下，否則 --scan 會再把它收回參考集")
+
+
 def _touch(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "wb").close()

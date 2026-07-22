@@ -261,3 +261,41 @@ def test_capture_window_closes_after_max():
 
 def test_capture_window_inactive_when_not_armed():
     assert capture_window_active(0.0, 999.0, 120.0) is False
+
+
+# --- H060：防掛機 Space 自製跳躍音的 chill 靜音窗 ---------------------------
+from miningbot.audio import chill_muted_after_antiafk
+from miningbot.config import DEFAULT as _cfg
+
+
+def test_chill_muted_right_after_antiafk_press():
+    # 實機三次都是「按鍵後 2 秒」才被主迴圈取樣到 → 窗必須涵蓋 +2s
+    assert chill_muted_after_antiafk(100.0, 102.0, 6.0) is True
+    assert chill_muted_after_antiafk(100.0, 100.0, 6.0) is True    # 按下當幀
+
+
+def test_chill_muted_through_measured_tail():
+    # 2026-07-22 三次事件分數分別維持到按鍵後 +4s / +5s / +4s（滾動窗＋落地音）
+    assert chill_muted_after_antiafk(100.0, 105.0, 6.0) is True
+
+
+def test_chill_not_muted_after_window_closes():
+    assert chill_muted_after_antiafk(100.0, 106.01, 6.0) is False
+    # 下一次按鍵前的 15 分鐘空檔＝完全不影響真 chill
+    assert chill_muted_after_antiafk(100.0, 900.0, 6.0) is False
+
+
+def test_chill_not_muted_before_any_press():
+    assert chill_muted_after_antiafk(0.0, 999.0, 6.0) is False
+
+
+def test_chill_not_muted_for_past_timestamps():
+    # now 早於 pressed_at（時鐘回跳/測試樁）不可誤靜音
+    assert chill_muted_after_antiafk(100.0, 99.0, 6.0) is False
+
+
+def test_default_mute_window_covers_measured_tail():
+    # 門檻取值有實機依據：最長一次的尾巴是 +5s，預設須留邊際
+    assert _cfg.antiafk_chill_mute_s >= 5.0
+    # 但不可長到吃掉 15 分鐘保活週期的可觀測時間（<1%）
+    assert _cfg.antiafk_chill_mute_s < _cfg.antiafk_interval_s * 0.01
