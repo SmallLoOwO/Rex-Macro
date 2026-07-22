@@ -5281,6 +5281,15 @@ class Bot:
         lpath = os.path.join(self._rr_snap_dir(),
                              f"ep{ctx.episode_id}_click{len(ctx.clicks) - 1}_landing{zs}.png")
         cv2.imwrite(lpath, land)
+        # 落地實測層別（ledger ground truth）：遊戲畫面不顯示「在第幾層」，唯一可
+        # 機讀的位置訊號是頂部 Depth 數值，(世界, 深度) 可反推層別。只寫紀錄、
+        # **不參與任何決策**——底下的 verdict 分支與開挖流程完全不看這兩個值。
+        depth_m = ocr.read_depth_meters(
+            capture.crop(land, cfg.depth_region), cfg.tesseract_path)
+        layer_seen = game_data.layer_for_depth(game_data.current_world_name(), depth_m)
+        reentry_remote.record_landing(ctx, depth_m, layer_seen)
+        self.logger.info("[RR#%s] 落地實測：depth=%s 層=%s（宣告層=%s）",
+                         ctx.episode_id, depth_m, layer_seen, layer)
         if verdict == "moved_unconfirmed":
             # 降級路徑：Depth OCR 讀不到（區域被蓋/引擎故障）退回舊幀差訊號，
             # 一律交人工確認、不自動開挖（寧問勿假成功）；警告讓故障浮上來

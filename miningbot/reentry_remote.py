@@ -436,6 +436,25 @@ def record_click(ctx, pos, layer, region, now):
                        "zoom": ctx.net_zoom, "invalid": False})
 
 
+def record_landing(ctx, depth_m, layer_seen) -> bool:
+    """把落地量到的深度與層別補寫進最後一筆點擊；沒有點擊可補時回 False。
+
+    為什麼要這兩欄：既有的 `layer` 欄是**使用者宣告**的字串（`層 <名>` 指令留下、
+    bot 從不驗證），實測 20 筆點擊有 5 筆標成 "Mantle Layer" 但落地畫面實為
+    Shamrock。`depth_m` 是畫面實測、`layer_seen` 由 `game_data.layer_for_depth`
+    以 (世界, 深度) 反推——遊戲不顯示層數，深度是唯一可機讀的位置訊號。
+
+    兩者都可能是 None（Depth OCR 讀不到、世界未偵測到、深度落在層表外例如
+    H043 虛空墜落），照實寫入不補值——**寫 None 才看得出當時量不到**，
+    事後分析語料時才不會把「沒量到」誤當成「量到某層」。
+    """
+    if not ctx.clicks:
+        return False
+    ctx.clicks[-1]["depth_m"] = depth_m
+    ctx.clicks[-1]["layer_seen"] = layer_seen
+    return True
+
+
 def ledger_entry(ctx, outcome, world, duration_s):
     """episode 收尾行（append-only；快照路徑在 shots/clicks 內，離線可回放）。"""
     return {"episode": ctx.episode_id, "t": ctx.created_at, "world": world,

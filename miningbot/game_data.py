@@ -1415,6 +1415,95 @@ def emoji_to_world(emoji: str) -> str | None:
             return w
     return None
 
+
+# ── 層別深度區間（wiki 同步：`python -m miningbot.fetch_layers` 印 diff）──────
+# 為什麼要這張表：**遊戲畫面不會顯示「你在第幾層」**。唯一可機讀的位置訊號是頂部
+# 那行 Depth 數值，而層→深度是 wiki 記載的固定區間，故 (世界, 深度) 可逆推層別。
+# 用途：回礦落地時把「實際到達的層」記進 ledger 當 ground truth，取代原本只記
+# 使用者宣告字串 `sticky_layer` 的作法（該字串 bot 從不驗證，實測 20 筆點擊有 5 筆
+# 標成 Mantle Layer 但畫面實為 Shamrock）。
+#
+# ⚠ 三個踩過的坑，改這張表前先讀：
+#   1. **深度區間跨世界完全重疊**——每個世界都從 0-999 起、每 1000m 一層。
+#      0-999m 同時是 Spookstone/Lucitreum/Statistone/Stone/Slate/Moon Stone/
+#      Space Rock。所以查表的鍵**必須含世界**，只有深度定不出層。
+#   2. **層名非全域唯一，同名層在不同世界深度不同**——Jollystone 在 Aesteria 是
+#      5000-5999，在（已併入 Aesteria 的）Wintera Isle 是 1000-1999。wiki infobox
+#      的 depth 欄會並列多段，抓取時必須挑本世界那段。
+#   3. **深度會超出表**——實測 25790m（tests/fixtures/reentry/h046_depth_25790m.png）
+#      是 H043 虛空墜落的讀數，不是合法層深。區間外一律回 None，**不可夾到最近的層**。
+#
+# 每層未必是 1000m：World 1 的 Core 拆成 Outer 7000-7499 / Inner 7500-7999 兩個
+# 500m 層（wiki `[[Core Layer|Outer Core]]`／`[[Core Layer|Inner Core]]` 共用同頁）；
+# Subworld 2 的 ??? 是 4000-5999 兩千米寬。所以查表用實際區間、不可用 depth//1000。
+LAYER_DEPTHS: dict[str, tuple[tuple[str, int, int], ...]] = {
+    "Aesteria": (
+        ("Spookstone", 0, 999), ("Affement", 1000, 1999),
+        ("Withered Sand", 2000, 2999), ("Hexafite", 3000, 3999),
+        ("Deepfrost", 4000, 4999), ("Jollystone", 5000, 5999),
+        ("Maculite", 6000, 6999), ("Surmilum", 7000, 7999),
+        ("Sugarstone", 8000, 8999), ("Delucemite", 9000, 9999),
+    ),
+    "Lucernia": (
+        ("Lucitreum", 0, 999), ("Cicallite", 1000, 1999),
+        ("Confectent", 2000, 2999), ("Foligrass", 3000, 3999),
+        ("Sepulcrum", 4000, 4999), ("Wickrock", 5000, 5999),
+        ("Amourite", 6000, 6999), ("Shamrock", 7000, 7999),
+        ("Brittlestone", 8000, 8999), ("Harmonine", 9000, 9999),
+    ),
+    "World 0": (
+        ("Statistone", 0, 999), ("Wireframe", 1000, 1999),
+        ("Matricite", 2000, 2999), ("Mechaloid", 3000, 3999),
+        ("Steel", 4000, 4999), ("Penumbrum", 5000, 5999),
+        ("Twilement", 6000, 6999), ("Cosmorock", 7000, 7999),
+        ("Glitch", 8000, 8999), ("Virus", 9000, 9999),
+    ),
+    "World 1": (
+        ("Stone", 0, 999), ("Basalt", 1000, 1999),
+        ("Granite", 2000, 2999), ("Diorite", 3000, 3999),
+        ("Obsidian", 4000, 4999), ("Marble", 5000, 5999),
+        ("Mantle", 6000, 6999), ("Outer Core", 7000, 7499),
+        ("Inner Core", 7500, 7999),
+    ),
+    "World 2": (
+        ("Slate", 0, 999), ("Permafrost", 1000, 1999),
+        ("Shatterstone", 2000, 2999), ("Riftrock", 3000, 3999),
+        ("Darkmatter", 4000, 4999), ("Void", 5000, 5999),
+    ),
+    "Subworld 1": (
+        ("Moon Stone", 0, 999), ("Moon Mantle", 1000, 1999),
+        ("Moon Core", 2000, 2999), ("Rocc", 3000, 3999),
+    ),
+    "Subworld 2": (
+        ("Space Rock", 0, 999), ("Outer Space", 1000, 1999),
+        ("Antimatter", 2000, 2999), ("Vacuum", 3000, 3999),
+        ("???", 4000, 5999),
+    ),
+}
+
+# 深度可變、**故意不列入 LAYER_DEPTHS** 的層。Frost 是活動特殊層，每次礦場重置會
+# 隨機取代掉一層（wiki infobox 寫 `depth = Variable`），沒有固定區間；活動期間某個
+# 深度帶未必是表上那層 → 查表結果在 Frost 活動中不可信。列在這裡是為了讓
+# fetch_layers 的 diff 不會每次都報「wiki 有但 game_data 缺」。
+VARIABLE_DEPTH_LAYERS: frozenset[str] = frozenset({"Frost"})
+
+
+def layer_for_depth(world: str | None, depth_m: float | None) -> str | None:
+    """(世界, 深度 m) → 層名；任一項缺失或深度落在區間外都回 None。
+
+    回 None 的情形都是「無法斷定」而非「錯誤」，呼叫端應照舊走原本的
+    sticky_layer 宣告值，不要因為查不到就中斷流程：
+      - world/depth 為 None（世界尚未偵測到、Depth OCR 讀不到或讀到 Surface）
+      - world 不在 LAYER_DEPTHS（新世界還沒同步）
+      - depth 落在所有區間外（H043 虛空墜落實測 25790m；負值）
+    """
+    if world is None or depth_m is None:
+        return None
+    for name, lo, hi in LAYER_DEPTHS.get(world, ()):
+        if lo <= depth_m <= hi:
+            return name
+    return None
+
 # 目前世界：**預設未確定（None）**。遊戲沒有直接顯示在哪個世界，要靠「看到的事件屬於哪個世界」
 # 來推斷（事件是分世界的）。未確定前，採集確認的排除清單用「所有世界的聯集」當保守後備；
 # 一旦事件唯一鎖定某世界，就收斂成該世界的清單——更準、也省去把各世界清單都比一次。

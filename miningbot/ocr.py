@@ -80,6 +80,41 @@ def read_depth_is_surface(image_bgr, tesseract_path=None):
     return parse_depth_surface(text)
 
 
+# 深度數值 sanity 上限：只擋 OCR 明顯讀歪（例如把尾端金額 "$108,537" 當成深度），
+# **不擋合法的深層與墜落值**。最深層底是 9999m，但虛空墜落會一路累加（H043 實測
+# 25790m，fixtures/reentry/h046_depth_25790m.png）→ 上限必須遠高於層表。
+_DEPTH_METERS_MAX = 1_000_000
+
+
+def parse_depth_meters(text: str) -> int | None:
+    """從頂部列文字抽出 Depth 公尺數；地表／讀不到／超出 sanity 上限回 None。
+
+    刻意**不**檢查數值是否落在任何層的區間內——那是 `game_data.layer_for_depth`
+    的職責。本函式只忠實回報畫面上的數字，虛空墜落的 25790m 也照回，否則
+    H043 那條「深度異常」的診斷線索會在這裡被吃掉。
+    """
+    if not text:
+        return None
+    if _DEPTH_SURFACE_RE.search(text):     # "Depth: Surface" 沒有數值
+        return None
+    m = _DEPTH_METERS_RE.search(text)
+    if m is None:
+        return None
+    value = int(m.group(1).replace(",", ""))
+    return value if 0 <= value <= _DEPTH_METERS_MAX else None
+
+
+def read_depth_meters(image_bgr, tesseract_path=None):
+    """讀頂部 Depth 固定列的公尺數（比照 read_depth_is_surface）：回 int 或 None。"""
+    text = read_text_line(
+        image_bgr,
+        tesseract_path,
+        psm=7,
+        validator=lambda value: parse_depth_meters(value) is not None,
+    )
+    return parse_depth_meters(text)
+
+
 def count_found(text: str, phrases) -> int:
     """計 phrases 在 text 中出現的總次數（正規化後比對）。
 
