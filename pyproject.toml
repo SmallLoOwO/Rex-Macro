@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Windows-only automation bot for Roblox REX"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "fastapi>=0.110",
     "imageio-ffmpeg==0.5.1",
     "mss==9.0.1",
     "numpy==2.1.2",
@@ -15,6 +16,7 @@ dependencies = [
     "pytesseract==0.3.13",
     "rapidocr==3.9.1",
     "scipy==1.14.1",
+    "uvicorn>=0.27",
 ]
 
 [dependency-groups]

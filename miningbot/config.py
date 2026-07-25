@@ -478,6 +478,11 @@ class Config:
                                                  # 2s，分數 0.25/0.38/0.37）。窗長取實機量測的分數尾巴
                                                  # +4s/+5s/+4s 再留邊際；佔保活週期 0.67%，只影響等待狀態
 
+    # 網頁 UI（2026-07-26 spec；P1：IPC 基礎建設）
+    web_server_enabled: bool = True              # 啟用網頁伺服器（綁 127.0.0.1）
+    web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
+    web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
+
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
