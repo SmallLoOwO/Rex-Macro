@@ -94,6 +94,29 @@ def test_radar_commands_are_whitelisted():
         assert discord_commands.RADAR_COMMAND_KIND[name] in ("scan", "cave")
 
 
+# --- 採集掃描前等冷卻（使用者指定：等冷卻結束再開始稀有掃描） ---
+
+def test_scan_cooldown_ready_uses_badge_when_ocr_ok():
+    """OCR 可用時看徽章：Local 還在＝冷卻中，按下去不會生效。"""
+    assert harvester.scan_cooldown_ready(True, 999.0, 34.0, ocr_ok=True) is False
+    assert harvester.scan_cooldown_ready(False, 0.0, 34.0, ocr_ok=True) is True
+
+
+def test_scan_cooldown_ready_falls_back_to_timer_without_ocr():
+    """OCR 不可用時徽章讀不到 → 只能靠定時，且不可因 badge_present=False 就誤判就緒。"""
+    assert harvester.scan_cooldown_ready(False, 5.0, 34.0, ocr_ok=False) is False
+    assert harvester.scan_cooldown_ready(False, 40.0, 34.0, ocr_ok=False) is True
+    # 沒有 OCR 時 badge 參數不該有影響力
+    assert harvester.scan_cooldown_ready(True, 40.0, 34.0, ocr_ok=False) is True
+
+
+def test_status_text_describes_wait_not_failure():
+    """行為已從『可能白掃』改成『先等冷卻』——狀態文字不可再嚇人說會掃不出框。"""
+    s = harvester.format_radar_status(True, False)
+    assert "等冷卻" in s
+    assert "掃不出框" not in s
+
+
 # --- 啟用情形文字（啟動訊息／status 共用） ---
 
 def test_format_radar_status_shows_both_switches():
@@ -102,10 +125,10 @@ def test_format_radar_status_shows_both_switches():
     assert "⚠" not in s                                   # 都關著不必警告
 
 
-def test_format_radar_status_warns_when_scan_on():
-    """掃描開著會搶採集冷卻——這個警告是使用者當初的顧慮，不可省略。"""
+def test_format_radar_status_mentions_shared_cooldown_when_scan_on():
+    """掃描與採集共用 D2 冷卻，開著時要說明會先等——使用者當初的顧慮，不可省略。"""
     s = harvester.format_radar_status(True, False)
-    assert "⚠" in s and "採集" in s
+    assert "採集" in s and "冷卻" in s
 
 
 def test_format_radar_status_flags_ocr_fallback():

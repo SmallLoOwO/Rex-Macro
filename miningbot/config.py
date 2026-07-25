@@ -115,6 +115,12 @@ class Config:
     radar_check_interval_s: float = 3.0          # 徽章偵測節流（同 activity_check_interval_s 量級）
     radar_grace_s: float = 4.0                   # 按下後等徽章出現的寬限（實測 t+0.4s 出現，留餘裕）
     radar_repeat_interval_s: float = 34.0        # 後備定時：OCR 引擎不可用時改用（實測徽章 31s 在、34s 沒）
+    # 採集掃描前等 D2 左鍵冷卻（2026-07-25）：連續使用開著時 Cyberscan 可能剛被自動用掉，
+    # 此時 execute_scan 按下去沒作用 → 白掃 8 方位 ~19s＋可能誤交人工。改成**先等冷卻結束
+    # 再掃**（使用者指定的解法）：多等 ≤30s 換一次有效掃描，遠優於白掃。
+    # 逾時不卡死：照常往下掃（保守，寧可白掃一次也不要卡在採集入口）。
+    radar_scan_wait_max_s: float = 36.0          # 等待上限（冷卻 30s + 餘裕）
+    radar_scan_wait_poll_s: float = 1.0          # 等待期間重讀徽章的間隔
     # 視窗跑位偵測（item ④）：用 Win32 查 Roblox 視窗「前景/位置/大小」，相對啟動時量到的
     # 基準判斷是否跑掉（失焦或被移動/縮放）→ 自動重新聚焦+初始化。用基準相對比較而非寫死
     # 1920x1080，因 DPI 縮放會讓 GetWindowRect 回報縮放後座標（實測此機 125% → 1536x864）。

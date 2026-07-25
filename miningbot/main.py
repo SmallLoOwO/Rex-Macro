@@ -193,6 +193,7 @@ class Bot:
         self._radar_last = {"scan": 0.0, "cave": 0.0}
         self._radar_toggle = {"scan": cfg.radar_scan_repeat_enabled,
                               "cave": cfg.radar_cave_skim_enabled}
+        self._radar_auto_scan_at = 0.0               # **連續使用**上次按左鍵的時刻（採集自己按的不算）
         self._radar_check_at = 0.0                   # 徽章偵測節流錨
         self._radar_local_present = False            # 節流間沿用的快取
         self._radar_cave_present = False
@@ -670,6 +671,66 @@ class Bot:
         self._radar_local_present = harvester.scan_succeeded(texts)
         self._radar_cave_present = harvester.cave_skim_present(texts)
         return self._radar_local_present, self._radar_cave_present
+
+    def _run_scan(self):
+        """觸發 D2 左鍵掃描並記下時刻。
+
+        冷卻是**共享**的：採集流程按的這一次同樣會讓連續使用進入冷卻。時刻記在同一個
+        _radar_last["scan"] 上，兩邊看同一個時鐘——否則 OCR 不可用（定時後備）時，
+        連續使用會以為冷卻還沒開始而在採集掃完後立刻再按一次無效的。
+        """
+        harvester.execute_scan()
+        if getattr(self, "_radar_last", None) is not None:   # 見 _await_scan_ready 的 getattr 註解
+            self._radar_last["scan"] = time.time()
+
+    def _await_scan_ready(self, where: str) -> bool:
+        """採集掃描前先等 D2 左鍵冷卻結束（2026-07-25 使用者指定解法）。
+
+        連續使用（`掃描 開`）會週期性用掉 Cyberscan。冷卻中直接 execute_scan 會按下去
+        沒作用 → 沒有追蹤框 → 白掃 8 方位 ~19s、還可能誤交人工。這裡改成等冷卻結束
+        再掃：多等 ≤30s 換一次有效掃描，遠優於白掃。
+
+        **必須在拍 reference 幀之前呼叫**——等待期間場景會變（其他玩家/光照），
+        先拍 ref 再等 30s 會讓排除基準過期，反而製造假陽性。
+
+        回 True＝已就緒；False＝等到逾時仍在冷卻（呼叫端照常往下掃，不卡死採集入口）。
+
+        只有「連續使用開著」或「剛被連續使用佔掉冷卻」時才真的等——否則直接放行，
+        讓功能關閉時的採集時序與加這功能之前**逐字不變**（採集自己按的那次也會設
+        _radar_last，但那不該讓下一次 resweep 開始等待，那是既有行為不是本功能的事）。
+        """
+        # getattr 預設值：部分測試用 Bot.__new__ 繞過 __init__ 建物件（同檔既有慣例，
+        # 見 _pre_scan_ref / _post_harvest_watch）——缺屬性時一律當「功能沒開」直接放行。
+        recent_auto = (time.time() - getattr(self, "_radar_auto_scan_at", 0.0)
+                       ) < cfg.radar_repeat_interval_s
+        toggles = getattr(self, "_radar_toggle", None) or {}
+        if not (toggles.get("scan", False) or recent_auto):
+            return True
+        deadline = time.time() + cfg.radar_scan_wait_max_s
+        logged = False
+        while True:
+            since = time.time() - (getattr(self, "_radar_last", None) or {}).get("scan", 0.0)
+            present = False
+            if self._radar_ocr_ok:
+                self._radar_check_at = 0.0          # 繞過節流：等待中要讀當下真值
+                present, _ = self._radar_badges(capture.grab())
+            if harvester.scan_cooldown_ready(present, since, cfg.radar_repeat_interval_s,
+                                             self._radar_ocr_ok):
+                if logged:
+                    self.log_harvest.info("[scan-wait] %s D2 冷卻結束（等了 %.1fs）→ 開始掃描",
+                                          where, cfg.radar_scan_wait_max_s
+                                          - (deadline - time.time()))
+                return True
+            if time.time() >= deadline:
+                self.logger.warning(
+                    "[scan-wait] %s 等 D2 冷卻逾時 %.0fs 仍未就緒 → 照常掃描（可能白掃）",
+                    where, cfg.radar_scan_wait_max_s)
+                return False
+            if not logged:
+                self.log_harvest.info("[scan-wait] %s D2 左鍵冷卻中 → 等冷卻結束再掃描", where)
+                self.last_action = "等 D2 冷卻"
+                logged = True
+            time.sleep(cfg.radar_scan_wait_poll_s)
 
     def _radar_ready(self, frame, which: str) -> bool:
         """D2 某能力是否該按了（連續使用模式）。which='scan'|'cave'。"""
@@ -2633,6 +2694,9 @@ class Bot:
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
             #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
+            # 等 D2 冷卻放在拍 ref 之前：等待期間場景會變（其他玩家/光照），
+            # 先拍 ref 再等 ~30s 會讓排除基準過期、反而製造假陽性。
+            self._await_scan_ready("enter")
             gf = capture.grab()
             if self._harvest_boost_guard(gf):
                 gf = capture.grab()             # 剛補 D5、FOV 已展開 → 必須重抓
@@ -2641,7 +2705,7 @@ class Bot:
             # 重拍 _pre_scan_ref——若 D3 其實已採到才 RESWEEP，重拍的已是「採完後」畫面
             # → 送人工的 before/after 兩張一模一樣、對比失去鑑別力）
             self._harvest_origin_ref = self._pre_scan_ref
-            harvester.execute_scan()            # 裝備 D2 + 點擊觸發掃描
+            self._run_scan()            # 裝備 D2 + 點擊觸發掃描
             self._confirm_scan("enter")
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
@@ -2902,7 +2966,7 @@ class Bot:
             self.last_action = "雷達掃描(D2 左鍵)"
             self.stats["radar_scans"] = self.stats.get("radar_scans", 0) + 1
             miner.use_radar_scan()
-            self._radar_last["scan"] = time.time()
+            self._radar_last["scan"] = self._radar_auto_scan_at = time.time()
             self._radar_check_at = 0.0
         elif action == "USE_D4":
             self._handle_use_d4(frame)
@@ -3235,10 +3299,11 @@ class Bot:
             self.harvest.pitch_layer = observation.layer
 
         harvester.prepare_scan()
+        self._await_scan_ready("historical-recovery")   # 等冷卻要在拍 ref 之前
         scan_reference = capture.grab()
         if self._harvest_boost_guard(scan_reference):
             scan_reference = capture.grab()
-        harvester.execute_scan()
+        self._run_scan()
         self._confirm_scan("historical-recovery")
         reference = getattr(self, "_pre_scan_ref", None)
         if reference is None:
@@ -3527,7 +3592,8 @@ class Bot:
                 notify.send_message(token, ch, "❌ 俯仰歸位被吃，可再回 `手動` 重試或 `跳過`")
                 return
         harvester.prepare_scan()
-        harvester.execute_scan()           # 重按 D2：手動圖必須在掃描效果窗內拍
+        self._await_scan_ready("remote-aim-manual")
+        self._run_scan()           # 重按 D2：手動圖必須在掃描效果窗內拍
         if not self._confirm_scan("remote-aim-manual"):
             notify.send_message(token, ch, "❌ 掃描未生效，可再回 `手動` 重試或 `跳過`")
             return
@@ -3630,11 +3696,12 @@ class Bot:
         _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]   # 同 _tick_harvest 聊天排除組法
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)   # 開火前基準（截圖先、OCR 後）
         harvester.prepare_scan()
+        self._await_scan_ready("remote-aim")            # 等冷卻要在拍 ref 之前
         gf = capture.grab()
         if self._harvest_boost_guard(gf):
             gf = capture.grab()
         ref = gf
-        harvester.execute_scan()
+        self._run_scan()
         self._confirm_scan("remote-aim")
         # 3. 找框：grid 路徑走限縮偵測（harvest 101），candidate 路徑走既有 find_tracker_near
         if cell:
@@ -5675,7 +5742,10 @@ class Bot:
             return True
         self.logger.warning("[scan-confirm] %s 未見 Local → 重新聚焦＋重掃一次", where)
         self._focus_roblox()
-        harvester.execute_scan()
+        # 沒見到 Local 的最常見原因就是冷卻中（連續使用剛用掉）——重掃前先等，
+        # 否則重試會用同樣的無效點擊再撞一次。
+        self._await_scan_ready(f"{where}-retry")
+        self._run_scan()
         ok = self._scan_local_badge_present()
         self.log_harvest.info("[scan-confirm] %s retry ok=%s", where, ok)
         return True   # 重試後不論成敗都繼續 sweep（寧多掃勿誤棄；失敗已留 WARNING）
@@ -5705,9 +5775,10 @@ class Bot:
         #   真框 (1288,1049) fill=0.57 ref_fill=0.57＝ref 裡就是它自己）。沿用進場時
         #   「框出現前」拍的 reference：靜態 UI（熱鍵列/面板）不隨視角/FOV 變、排除效果不減；
         #   世界內容錯位漏放的假陽性交給 colored_frac＋形狀確認擋。
+        self._await_scan_ready("resweep")
         if getattr(self, "_pre_scan_ref", None) is None:
             self._pre_scan_ref = capture.grab()  # 防禦：理論上進 HARVESTING 必已拍
-        harvester.execute_scan()
+        self._run_scan()
         self._confirm_scan("resweep")
         # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
         self._harvest_start = time.time()

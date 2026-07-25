@@ -425,6 +425,19 @@ def scan_succeeded(texts) -> bool:
     return False
 
 
+def scan_cooldown_ready(badge_present: bool, since_last_auto_s: float,
+                        cooldown_s: float, ocr_ok: bool) -> bool:
+    """採集掃描前的 D2 左鍵就緒判定（純函式）。
+
+    OCR 可用 → 看效果列徽章：`Local` 還在＝Cyberscan 仍在冷卻，按下去不會生效。
+    OCR 不可用 → 退回定時（距上次自動使用超過冷卻長度即視為好了）。
+    兩條路都保守：寧可多等一輪，也不要在冷卻中送出無效掃描而白掃 8 方位。
+    """
+    if ocr_ok:
+        return not badge_present
+    return since_last_auto_s > cooldown_s
+
+
 def format_radar_status(scan_on: bool, cave_on: bool, ocr_ok: bool = True) -> str:
     """D2 雷達連續使用的啟用情形（啟動訊息／`status` 共用一行文字）。
 
@@ -437,7 +450,7 @@ def format_radar_status(scan_on: bool, cave_on: bool, ocr_ok: bool = True) -> st
     if (scan_on or cave_on) and not ocr_ok:
         line += "（OCR 不可用 → 改用定時後備）"
     if scan_on:
-        line += "\n⚠ 掃描開啟中：與採集流程搶同一條 D2 冷卻，chill 觸發採集時可能掃不出框"
+        line += "\nℹ 掃描開啟中：與採集共用 D2 冷卻，採集會先等冷卻結束再掃（最多多等 ~30s）"
     return line
 
 
