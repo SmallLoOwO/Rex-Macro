@@ -3082,6 +3082,106 @@ class Bot:
         if expired:
             self.logger.info("web: 清掉過期 reply %d 筆", len(expired))
 
+    # --- P4 Task 3：web_pending reply pop 整合（harvest manual_survey 進入點） ---
+
+    def _send_web_intervention_event(self, flow: str, routing_key: str,
+                                     frame, ctx_summary: str) -> None:
+        """推截圖 + INTERVENTION_NEEDED context 給 web client（透過 ConnectionRegistry）。
+
+        P4 Task 3：manual_survey 進入點原本要發 Discord 八方位圖給玩家選方向+格；
+        web 在線時改推一份當下截圖＋ context 給 web，玩家 pinch-zoom + tap 直接選點
+        （滑掉整條 Discord 八方位→格→連鎖放大間接表達鏈，spec §4）。
+
+        沒 web thread／registry 尚未注入 loop → no-op，呼叫端 fallback 到 Discord 流程。
+        編碼失敗只回報不丟——網頁介入是加值路徑，失敗不能炸主流程。
+        """
+        if self._web_thread is None:
+            return
+        import cv2
+        ok, buf = cv2.imencode(".png", frame)
+        if not ok:
+            self.log_discord.warning(
+                "web intervention: PNG encode 失敗（frame shape=%r）",
+                getattr(frame, "shape", None))
+            return
+        registry = self._web_thread.app.state.registry
+        registry.broadcast_binary(buf.tobytes())
+        from .web_protocol import WebMessage
+        registry.broadcast(WebMessage(
+            type="event",
+            payload={"event": "INTERVENTION_NEEDED", "flow": flow,
+                     "routing_key": routing_key, "summary": ctx_summary},
+        ))
+
+    def _await_web_pointer_reply(self, routing_key: str,
+                                 timeout_s: float) -> dict | None:
+        """輪詢 web_pending 取玩家點擊 reply；timeout 回 None。
+
+        與 Discord 反應按鈕輪詢平行——同一 routing key 兩條路徑都會推 reply，
+        PendingReplies.push 同 key 第二筆拒絕（spec §8 first-wins）。500ms 輪詢間隔
+        比照 _poll_discord 頻率，不過密卡 CPU、不過鬆讓玩家感覺 lag。
+        """
+        if self._web_pending is None:
+            return None
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            reply = self._web_pending.pop(routing_key)
+            if reply is not None:
+                return reply
+            time.sleep(0.5)
+        return None
+
+    def _execute_remote_fire_from_web(self, ctx, x: int, y: int):
+        """從 web 點擊 reply 直接走 fire+verify（跳過 Discord 八方位＋偵測）。
+
+        P4 Task 3 minimum viable：玩家在介入面板 pinch-zoom + tap 點位置 → server 還原
+        原生 (x, y) → 直接走 _aim_fire_and_verify 開火驗證（沿用 _execute_aim_fine_fire
+        的尾段：chat_base_crop + _aim_fire_and_verify），不轉方位、不動俯仰、不偵測。
+        玩家看的就是當下畫面、點的就是當下框位置——方位/俯仰/偵測對齊整段省略。
+
+        回 (ok, detail)：confirmed=True 的成功路徑已在 _aim_fire_and_verify 內呼叫
+        _remote_fire_success（俯仰歸位＋視角回正＋回挖礦）。
+
+        待補（P5／實機驗收）：
+        - 失敗時透過 INTERVENTION_RESULT event 回報 web client（目前 silent return）。
+        - 玩家 reply 後呼叫 _resolve_ping_if_any 結案 PING 訊息（Task 5 接線）。
+        - 確認 _aim_busy／_aim_context 清理由 caller 負責（與 _execute_aim_fine_fire 慣例一致）。
+        """
+        hid = ctx.harvest_id
+        deadline = time.time() + cfg.remote_aim_budget_s
+        ready, detail = self._wait_for_d3_cooldown(deadline)
+        if not ready:
+            self.log_discord.warning("[%s] web fire: D3 冷卻未就緒： %s", hid, detail)
+            return False, detail
+        if not self._focus_roblox():
+            return False, "無法聚焦 Roblox"
+        if self._mine_resetting:
+            return False, "礦坑重置中"
+        chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
+        # 用當下姿態記錄觀測（_aim_fire_and_verify 內 _record_target_observation 用）
+        tgt_dir = ctx.pose_net_rotations % 8
+        tgt_layer = ctx.pose_pitch_layer
+        self.logger.info("[%s] AIM web fire -> (%d, %d) dir=%d layer=%s",
+                         hid, x, y, tgt_dir, tgt_layer)
+        return self._aim_fire_and_verify(
+            (int(x), int(y)), -1.0, tgt_layer, tgt_dir, ctx, hid, deadline,
+            chat_base_crop)
+
+    def _summarize_survey_ctx(self, ctx) -> str:
+        """給 web client 介入面板顯示的 context 摘要（純文字）。
+
+        與 Discord 八方位圖標頭同義：harvest 編號 ＋ 當下絕對方位 ＋ 俯仰層。
+        缺欄位就少顯示該欄，不丟例外（網頁面板壞資料不能炸主流程）。
+        """
+        parts = []
+        if hasattr(ctx, "harvest_id"):
+            parts.append(f"harvest={ctx.harvest_id}")
+        if hasattr(ctx, "pose_net_rotations"):
+            parts.append(f"dir={ctx.pose_net_rotations % 8}")
+        if hasattr(ctx, "pose_pitch_layer"):
+            parts.append(f"layer={ctx.pose_pitch_layer}")
+        return " ".join(parts) or "manual_survey"
+
     def _tick(self, frame):
         self._update_reset_chime_active()
         self._consume_pending_rotate()
@@ -3904,7 +4004,45 @@ class Bot:
         只拍 mid 層（`5U C3`/`5D C3` 盲射語法仍可用）、不開火；失敗回報後不自動重試
         （有界），_aim_context 保留等下一則回覆。姿態記帳走 ctx.pose_net_rotations，
         旋轉被吃不計（同 fire 路徑慣例）——轉滿 8 次回原方位。
+
+        P4 Task 3：進入時先檢查 web_pending 在線與否——web 在線則推截圖給 web client、
+        等玩家 pinch-zoom + tap 直接點位置（60s 預算＝remote_aim_budget_s），reply 直接
+        走 _execute_remote_fire_from_web 開火+驗證（跳過底下整段 Discord 八方位圖）；
+        無 reply（timeout）或無 web 連線 → fall through 既有 Discord 八方位流程（fallback）。
         """
+        # P4 Task 3：web 在線 → 先走 web 介入面板（pinch-zoom + tap 取代 Discord 八方位）
+        web_state = getattr(self, "_web_fallback", None)
+        if (self._web_pending is not None and web_state is not None
+                and not web_state.is_fallback(
+                    now=time.monotonic(), grace_s=cfg.web_fallback_grace_s)):
+            routing_key = f"harvest:{ctx.harvest_id}"
+            if self._focus_roblox():
+                frame = capture.grab()
+                if frame is not None:
+                    self._send_web_intervention_event(
+                        flow="harvest", routing_key=routing_key,
+                        frame=frame, ctx_summary=self._summarize_survey_ctx(ctx),
+                    )
+                reply = self._await_web_pointer_reply(
+                    routing_key=routing_key, timeout_s=cfg.remote_aim_budget_s,
+                )
+                if reply is not None:
+                    self.log_discord.info(
+                        "[%s] MANUAL survey: 收到 web reply %r，跳過 Discord 八方位",
+                        ctx.harvest_id, reply)
+                    return self._execute_remote_fire_from_web(
+                        ctx,
+                        x=int(reply.get("x", 0)),
+                        y=int(reply.get("y", 0)),
+                    )
+                self.log_discord.info(
+                    "[%s] MANUAL survey: web reply timeout，fall through Discord 八方位",
+                    ctx.harvest_id)
+            else:
+                self.log_discord.info(
+                    "[%s] MANUAL survey: 無法聚焦 Roblox，跳過 web 介入走 Discord",
+                    ctx.harvest_id)
+        # 既有 Discord 八方位圖流程（fallback）
         from . import notify
         import cv2
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
