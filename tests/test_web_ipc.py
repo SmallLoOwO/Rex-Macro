@@ -1,6 +1,10 @@
 """race routing key 與 PendingReplies（先到先贏規則）。"""
-import pytest
-from miningbot.web_ipc import routing_key, reply_matches, PendingReplies
+from miningbot.web_ipc import (
+    FallbackState,
+    PendingReplies,
+    reply_matches,
+    routing_key,
+)
 
 
 class TestRoutingKey:
@@ -81,3 +85,57 @@ class TestPendingRepliesFirstWins:
         q._now = lambda: 10.0  # 還新鮮
         assert q.pop_any_expired() == []
         assert q.pop("harvest:007") == {"x": 100}
+
+
+class TestFallbackState:
+    def test_initial_state_is_fallback(self):
+        # 啟動時 0 client → fallback
+        s = FallbackState()
+        s._now = lambda: 0.0
+        assert s.is_fallback(now=0.0, grace_s=30.0) is True
+
+    def test_client_connected_exits_fallback(self):
+        s = FallbackState()
+        s.client_connected(now=0.0)
+        assert s.is_fallback(now=0.0, grace_s=30.0) is False
+        assert s.client_count == 1
+
+    def test_disconnect_starts_grace_not_immediate_fallback(self):
+        s = FallbackState()
+        s.client_connected(now=0.0)
+        s.client_disconnected(now=10.0)
+        # grace 還沒過
+        assert s.is_fallback(now=20.0, grace_s=30.0) is False
+        assert s.client_count == 0
+
+    def test_grace_expires_into_fallback(self):
+        s = FallbackState()
+        s.client_connected(now=0.0)
+        s.client_disconnected(now=10.0)
+        # grace 30s 從 disconnect 起算 → 10+30=40s 過期
+        assert s.is_fallback(now=40.0, grace_s=30.0) is True
+
+    def test_reconnect_during_grace_resets(self):
+        s = FallbackState()
+        s.client_connected(now=0.0)
+        s.client_disconnected(now=10.0)
+        s.client_connected(now=20.0)  # grace 內重連
+        assert s.is_fallback(now=25.0, grace_s=30.0) is False
+        assert s.client_count == 1
+
+    def test_multiple_clients_only_last_disconnect_triggers_grace(self):
+        s = FallbackState()
+        s.client_connected(now=0.0)
+        s.client_connected(now=1.0)  # 兩個 client
+        s.client_disconnected(now=10.0)  # 走一個，還有一個
+        assert s.is_fallback(now=100.0, grace_s=30.0) is False
+        assert s.client_count == 1
+        s.client_disconnected(now=110.0)  # 全走
+        assert s.is_fallback(now=115.0, grace_s=30.0) is False  # grace 內
+        assert s.is_fallback(now=150.0, grace_s=30.0) is True
+
+    def test_client_count_never_negative(self):
+        s = FallbackState()
+        # 沒連過就 disconnect 不該讓 count 變負
+        s.client_disconnected(now=0.0)
+        assert s.client_count == 0
