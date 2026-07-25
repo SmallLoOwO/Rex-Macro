@@ -5567,18 +5567,28 @@ class Bot:
         """D2 掃描確認（scan_confirm_mode 控制）。回傳 False 表示 enforce 模式下已重試仍失敗。"""
         if cfg.scan_confirm_mode == "off":
             return True
-        crop = capture.crop(capture.grab(), cfg.scan_confirm_region)
-        ok = harvester.scan_succeeded([ocr.read_text(crop, cfg.tesseract_path)])
+        ok = self._scan_local_badge_present()
         self.log_harvest.info("[scan-confirm] %s ok=%s mode=%s", where, ok, cfg.scan_confirm_mode)
         if ok or cfg.scan_confirm_mode == "observe":
             return True
         self.logger.warning("[scan-confirm] %s 未見 Local → 重新聚焦＋重掃一次", where)
         self._focus_roblox()
         harvester.execute_scan()
-        crop = capture.crop(capture.grab(), cfg.scan_confirm_region)
-        ok = harvester.scan_succeeded([ocr.read_text(crop, cfg.tesseract_path)])
+        ok = self._scan_local_badge_present()
         self.log_harvest.info("[scan-confirm] %s retry ok=%s", where, ok)
         return True   # 重試後不論成敗都繼續 sweep（寧多掃勿誤棄；失敗已留 WARNING）
+
+    def _scan_local_badge_present(self) -> bool:
+        """效果列裡有沒有「Local」徽章＝D2 左鍵掃描是否真的觸發。
+
+        逐格 OCR（非整條一次讀）：格位由 vision.find_effect_slots 現場定位，因為徽章疊加時
+        Local 會被推到不同格；整條一次 OCR 在 psm=6 下會讀成亂碼（見 config 註解）。
+        `Cave Skim`（D2 的 Z）同樣是雷達徽章但文字不同，實測不會被 scan_succeeded 誤判成 Local。
+        """
+        band = capture.crop(capture.grab(), cfg.scan_confirm_region)
+        texts = [ocr.read_text(band[y:y + h, x:x + w], cfg.tesseract_path)
+                 for (x, y, w, h) in vision.find_effect_slots(band)]
+        return harvester.scan_succeeded(texts)
 
     def _reharvest_sweep(self):
         """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""

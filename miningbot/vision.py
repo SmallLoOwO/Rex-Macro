@@ -886,6 +886,47 @@ def boost_count_red_mask(crop_bgr):
         cv2.inRange(hsv, (170, 120, 120), (180, 255, 255))
 
 
+def find_effect_slots(band_bgr, slot_pitch_px: int = 64):
+    """效果列（右下角 buff 徽章帶）裡每一格徽章的 bbox，相對 band、由左至右。
+
+    為什麼要定位而不是釘死座標：徽章會疊加，新的插最左、既有不位移，所以任一效果的
+    絕對 x 取決於「它之後還有幾個效果活著」。2026-07-25 實機兩側對照：`Local` 單獨在場
+    落 x=1676；被 `Cave Skim` 疊上時 `Cave Skim` 佔 1612、`Local` 仍在 1676；但 `Cave Skim`
+    單獨在場時它自己就落 1676。**同一個標籤會出現在不同格** → 固定 Region 必漏。
+    D4／D5 早就改掃整條效果列避開這件事（見 config.boost_indicator_region 註解），
+    這裡是把同一個慣例補給 D2。
+
+    紫色圓角外框是徽章格的穩定特徵（HSV H 120-155、S≥60、V≥90）。相鄰格只有 ~6px 間隙
+    （實測 1612..1670 與 1676..1734）——CLOSE 核不可超過 3x3：7x7 會把兩格黏成 ~130px 寬的
+    單框再被方形度篩掉（實測含兩格的幀變成 0 slots）。萬一仍黏連，依 slot_pitch_px 等分切開。
+
+    注意 band 右緣要停在常駐計數圖示左緣（x=1740）：那個圖示是 2026-07-08 更新加的
+    **永久** UI（boost 使用次數），不是 buff，掃進來會多一格假徽章。
+    """
+    hsv = cv2.cvtColor(band_bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([120, 60, 90]), np.array([155, 255, 255]))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = []
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        if h < 40 or h > 90 or w < 40:
+            continue
+        if w <= 90:
+            if abs(w - h) > 18:                      # 徽章是方的
+                continue
+            boxes.append((int(x), int(y), int(w), int(h)))
+            continue
+        n = int(round(w / float(slot_pitch_px)))     # 黏連 → 等分切
+        if n < 2:
+            continue
+        step = w / n
+        for i in range(n):
+            boxes.append((int(x + i * step), int(y), int(step) - 4, int(h)))
+    boxes.sort()
+    return boxes
+
+
 def read_boost_use_count(crop_bgr, max_mismatch: float = 0.08):
     """右下角計數器裁圖 → 使用次數 int；讀不出（含任一未知字元）回 None。
 

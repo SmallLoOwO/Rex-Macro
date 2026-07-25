@@ -407,10 +407,13 @@ def restore_view(net_rotations: int, rotate=None):
 
 
 def scan_succeeded(texts) -> bool:
-    """D2 掃描成功確認：OCR 文字裡有 Local-ish token 即成功（左下 Local 標籤）。
+    """D2 掃描成功確認：OCR 文字裡有 Local-ish token 即成功。
 
+    標籤在**右下角效果列**的雷達徽章上（2026-07-25 實機校準；早期註解寫「左下」是錯的）。
+    呼叫端逐格 OCR 後把各格文字丟進來，故收 list。
     彈窗吃掉 click 時掃描沒觸發 → 白掃 8 方位 ~19s（CLAUDE.md D2 段）。
-    容忍 OCR 噪音（i/l 同形），0.75 門檻夾在 'global'(0.73) 與 'locaI'(0.8+) 之間。
+    容忍 OCR 噪音（i/l 同形），0.75 門檻夾在 'global'(0.73) 與 'locaI'(0.8+) 之間；
+    D2 的 Z（`Cave Skim`）同樣是雷達徽章，實測 ratio 遠低於門檻不會誤判。
     """
     for text in texts or []:
         for tok in (text or "").lower().split():

@@ -118,4 +118,6 @@ Search symbols instead of line numbers:
 - Treat `game_data.py` as static/generated domain data; use `fetch_ores.py` and
   conflict tests rather than casual bulk edits.
 - Automatic re-entry remains calibration gated.
-- `scan_confirm_region` is not calibrated while `scan_confirm_mode` is off.
+- `scan_confirm_region` now holds the whole bottom-right effect row; badge slots shift
+  as buffs stack, so locate them with `vision.find_effect_slots` and OCR per slot —
+  never hardcode a single slot, and never OCR the whole strip at once.

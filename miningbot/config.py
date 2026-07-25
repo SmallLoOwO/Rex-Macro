@@ -205,8 +205,14 @@ class Config:
     # D2 掃描成功確認（HANDOFF F）：掃描後 OCR 左下 Local 標籤。彈窗吃掉 click → 白掃
     # 8 方位 ~19s＋可能誤交人工。模式循 RapidOCR 觀察期慣例：
     #   off=不跑；observe=只記 log 收誤判數據（不重試）；enforce=失敗重聚焦重掃一次
-    scan_confirm_mode: str = "off"               # 校準 region 後先切 observe，2-3 天裁決再 enforce
-    scan_confirm_region: Region = field(default_factory=lambda: Region(20, 850, 200, 60))  # 左下 Local 標籤（估值，校準時調——照 chat_review_region 慣例從 logs/snapshots 全幀圖裁）
+    scan_confirm_mode: str = "off"               # 先切 observe 收 2-3 天誤判數據再裁決 enforce
+    # 掃描成功＝右下角效果列出現雷達徽章「Local」（2026-07-25 實機校準，取代原先的左下估值——
+    # 舊值 Region(20,850,200,60) 方位就錯，離線重放 22 幀 TP=0：它讀到的是左側常駐礦物面板
+    # 文字 'Dyvantium 1 / Equalizosity 1'）。徽章 t+0.4s 出現、~30s 後消失（同冷卻）。
+    # 這裡放**整條效果列**而非單格：徽章疊加時位置會變（見 vision.find_effect_slots），
+    # 由 _confirm_scan 逐格 OCR。右緣停在常駐計數圖示左緣 x=1740，與 boost_indicator_region 同。
+    # ⚠ 整條一次 OCR 不可行：psm=6 假設單一均勻文字塊，590px 帶多圖示實測讀成 'oy A\nBa' 亂碼。
+    scan_confirm_region: Region = field(default_factory=lambda: Region(1150, 940, 590, 100))
     chat_change_mean_diff: float = 2.0           # 聊天裁圖平均像素差超過此值才重跑 OCR（角色靜止時無新訊息＝近乎逐位元相同）
 
     # 驗證式旋轉（2026-07-05 視角回歸 45° 偏移對策）：每次 ,/. 送鍵後以前後幀確認「真的轉了」。

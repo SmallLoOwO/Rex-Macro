@@ -162,8 +162,9 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `main.py` remains the main complexity hotspot and has intentional direct state
   assignments outside the central transition path.
 - Remote aim/re-entry and zoom need more live-game evidence than pure tests provide.
-- `scan_confirm_mode` is off and its region is not calibrated for the taskbar-visible
-  layout.
+- `scan_confirm_mode` is still off. Its region was calibrated on 2026-07-25 to the
+  bottom-right effect row (the earlier bottom-left value read the ore panel instead),
+  but the mode has not yet run in `observe` against a live session.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.
