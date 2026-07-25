@@ -192,10 +192,10 @@ class Bot:
         self._bc_last_unreadable = 0.0               # 計數器讀不出 → 全幀快照節流（模板增補素材）
         self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
         # D2 雷達連續使用（2026-07-25）：兩個能力冷卻獨立，各記各的上次觸發時刻。
-        # _radar_toggle 是 Discord 執行期開關（config 是預設值，指令改這裡不動檔案）。
+        # _radar_toggle 是 Discord 執行期開關；2026-07-26 起持久化到 radar_toggle.json
+        # ——Discord 改了會 save，重啟時從檔案載入（不退回 cfg 預設，使用者要求）。
         self._radar_last = {"scan": 0.0, "cave": 0.0}
-        self._radar_toggle = {"scan": cfg.radar_scan_repeat_enabled,
-                              "cave": cfg.radar_cave_skim_enabled}
+        self._radar_toggle = self._load_radar_toggle()
         self._radar_auto_scan_at = 0.0               # **連續使用**上次按左鍵的時刻（採集自己按的不算）
         self._radar_check_at = 0.0                   # 徽章偵測節流錨
         self._radar_local_present = False            # 節流間沿用的快取
@@ -2134,6 +2134,7 @@ class Bot:
                 return
             if want is not None:
                 self._radar_toggle[which] = want
+                self._save_radar_toggle()        # 持久化：重啟後保留，使用者關掉才退回預設
                 if want:
                     # 剛開啟時清掉上次觸發時刻，讓它下一輪就能按（不必等 grace）
                     self._radar_last[which] = 0.0
@@ -2160,6 +2161,7 @@ class Bot:
                 "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
                 "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
                 "   ↳ ⚠ 掃描與採集流程搶同一條 D2 冷卻，開著可能讓 chill 採集掃不出追蹤框\n"
+                "   ↳ 切換後會記住，下次啟動自動套用（刪 `radar_toggle.json` 才退回預設關）\n"
                 "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
                 "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
@@ -2607,6 +2609,50 @@ class Bot:
         except Exception as e:
             self.logger.error("keep_ores 存檔失敗: %s", e)
 
+    # ---- D2 雷達連續使用開關持久化（2026-07-26 使用者要求） ------------------
+    # 對稱於 keep_ores：Discord 改了 → 即時 save → 下次啟動 load。否則重啟退回 cfg 預設 False，
+    # 使用者以為還開著卻沒在用。
+    def _radar_toggle_path(self) -> str:
+        import os
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "radar_toggle.json")
+
+    def _load_radar_toggle(self) -> dict:
+        """啟動時從 radar_toggle.json 載入 D2 連續使用開關（跨 session 持久化）。
+
+        檔案不存在／損壞／缺欄位／非 bool → 退回 cfg 預設值（不拋例外，首輪與容錯路徑
+        同 keep_ores）。只信任 {scan, cave} 兩個 key，其他忽略；非 bool 值（手編失誤）
+        也退回預設——避免型別混淆讓後續 if 寫成 truthy 判定走歪。
+        """
+        import json
+        defaults = {"scan": cfg.radar_scan_repeat_enabled,
+                    "cave": cfg.radar_cave_skim_enabled}
+        try:
+            with open(self._radar_toggle_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return defaults
+        loaded = dict(defaults)
+        for k, default_v in defaults.items():
+            v = data.get(k) if isinstance(data, dict) else None
+            if isinstance(v, bool):
+                loaded[k] = v
+        if loaded != defaults:
+            self.logger.info(
+                "雷達連續使用開關載入：scan=%s cave=%s（cfg 預設 scan=%s cave=%s）",
+                loaded["scan"], loaded["cave"],
+                defaults["scan"], defaults["cave"])
+        return loaded
+
+    def _save_radar_toggle(self):
+        """將 D2 連續使用開關存到 radar_toggle.json（Discord 切換後呼叫）。"""
+        import json
+        try:
+            with open(self._radar_toggle_path(), "w", encoding="utf-8") as f:
+                json.dump(self._radar_toggle, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error("雷達連續使用開關存檔失敗: %s", e)
+
     def _harvest_seq_path(self) -> str:
         """harvest_seq.json 路徑（與 keep_ores.json 同目錄：專案根）。"""
         return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -2970,7 +3016,7 @@ class Bot:
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._activity_ready(frame),   # D4：冷卻好就右鍵刷新事件
-            scan_event=self._radar_ready(frame, "scan"),  # D2 左鍵：連續使用（預設關，搶採集冷卻）
+            scan_event=self._radar_ready(frame, "scan"),  # D2 左鍵：連續使用（持久化 toggle，預設關）
             cave_event=self._radar_ready(frame, "cave"),  # D2 Z：連續使用（削洞穴方塊）
             window_unfocused=self._window_displaced(),    # item ④：視窗跑位（失焦/移動/縮放）
         )

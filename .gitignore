@@ -17,6 +17,7 @@ snap.png
 *.log
 logs/
 harvest_seq.json
+radar_toggle.json
 
 # 大型/個人資產（音檔、模板截圖另行管理，避免誤入版控）
 assets/*.wav
