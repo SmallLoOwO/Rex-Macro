@@ -76,3 +76,82 @@ def test_main_reentry_consumes_web_click_reply():
     斷言：未進入既有 Discord 八方位流程（_rr_sweep_and_send 不被呼叫、未貼 embed）。
     """
     pytest.skip("main.py reentry click 整合需 fake bot；P5 或實機驗收補")
+
+
+def test_web_fire_at_full_pipeline():
+    """完整 pipeline：client send fire_at → server 還原 → pending push。
+    不測 main.py bot 端，只測 web_server 段。"""
+    import json
+    import time
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    fallback = FallbackState()
+    app = create_app(pending, fallback, broadcast_callback=None)
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "type": "command",
+            "payload": {"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                        "client_xy": [480, 270], "canvas_size": [960, 540],
+                        "zoom": 1.0, "pan_offset": [0, 0]},
+        }))
+        time.sleep(0.1)
+    reply = pending.pop("harvest:007")
+    assert reply is not None
+    assert reply["x"] == 960
+    assert reply["y"] == 540
+    assert reply["flow"] == "harvest"
+    assert reply["harvest_id"] == "007"
+
+
+def test_web_reentry_click_full_pipeline():
+    import json
+    import time
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    fallback = FallbackState()
+    app = create_app(pending, fallback, broadcast_callback=None)
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "type": "command",
+            "payload": {"cmd": "reentry_click", "flow": "reentry", "attempt_id": "attempt_2",
+                        "client_xy": [100, 100], "canvas_size": [1920, 1080],
+                        "zoom": 1.0, "pan_offset": [0, 0]},
+        }))
+        time.sleep(0.1)
+    reply = pending.pop("reentry:attempt_2")
+    assert reply is not None
+    assert reply["flow"] == "reentry"
+    assert reply["attempt_id"] == "attempt_2"
+
+
+def test_web_fire_at_invalid_does_not_push():
+    """缺欄位的 fire_at 不該 push；連線仍活著。"""
+    import json
+    import time
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    fallback = FallbackState()
+    app = create_app(pending, fallback, broadcast_callback=None)
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "type": "command",
+            "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 client_xy/id
+        }))
+        time.sleep(0.1)
+        # 連線還活著，可以再送正常命令
+        ws.send_text(json.dumps({
+            "type": "command",
+            "payload": {"cmd": "pause"},
+        }))
+        time.sleep(0.1)
+    assert pending.pop("harvest:007") is None
+    assert pending.pop("control:pause") is not None
