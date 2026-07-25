@@ -305,3 +305,114 @@ def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
     results = [c for c in calls
                if hasattr(c, "payload") and c.payload.get("event") == "INTERVENTION_RESULT"]
     assert len(results) == 0, "timeout 不該廣播 INTERVENTION_RESULT"
+
+
+# ---------------------------------------------------------------------------
+# P5 Task 3：frame-grab race——reply race sanity-check（_mine_resetting）
+# ---------------------------------------------------------------------------
+
+
+class _FakeHarvestCtx:
+    """harvest 路徑的 ctx：只需要 harvest_id（_execute_remote_fire_from_web 用）。"""
+    harvest_id = "test_harvest"
+
+
+def _build_stub_bot_for_intervention():
+    """組一個僅含 _broadcast_intervention_result / _resolve_ping_if_any 依賴的 stub bot。
+
+    與 _build_stub_bot_for_reentry 不同：不綁 _reentry_await_player_click，只測試
+    _execute_remote_fire_from_web / _rr_click_from_web 的 reply-race sanity-check。
+    """
+    import types
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = _FakeWebThread()
+    bot.log_discord = logging.getLogger("test_intervention_race")
+    bot.logger = logging.getLogger("test_intervention_race")
+    # _resolve_ping_if_any no-op：測試不關心 PING 結案，但函式會呼叫它
+    bot._ping_messenger = None
+    # 把真實 method 綁到 stub——測試目標本身（_execute_remote_fire_from_web /
+    # _rr_click_from_web / _broadcast_intervention_result / _resolve_ping_if_any）
+    bot._execute_remote_fire_from_web = types.MethodType(
+        Bot._execute_remote_fire_from_web, bot)
+    bot._rr_click_from_web = types.MethodType(
+        Bot._rr_click_from_web, bot)
+    bot._broadcast_intervention_result = types.MethodType(
+        Bot._broadcast_intervention_result, bot)
+    bot._resolve_ping_if_any = types.MethodType(
+        Bot._resolve_ping_if_any, bot)
+    return bot
+
+
+def test_execute_remote_fire_from_web_rejects_when_mine_resetting():
+    """P5 Task 3: _execute_remote_fire_from_web 在 _mine_resetting=True 時應該：
+    1. 不呼叫 _wait_for_d3_cooldown／_focus_roblox／_aim_fire_and_verify（不消耗 D3、不搶焦點）
+    2. 廣播 INTERVENTION_RESULT（flow=harvest, verdict=rejected_reset）
+    3. 回 (False, "礦坑重置中")
+    """
+    from miningbot.web_protocol import WebMessage
+
+    bot = _build_stub_bot_for_intervention()
+    bot._mine_resetting = True
+
+    # 這些都不該被呼叫——設成會 raise 的 sentinel
+    def _fail(*args, **kwargs):
+        raise AssertionError("不該呼叫——_mine_resetting 應在這些之前 short-circuit")
+    bot._wait_for_d3_cooldown = _fail
+    bot._focus_roblox = _fail
+    bot._aim_fire_and_verify = _fail
+
+    ok, detail = bot._execute_remote_fire_from_web(_FakeHarvestCtx(), x=960, y=540)
+
+    assert ok is False
+    assert detail == "礦坑重置中"
+    calls = bot._web_thread.app.state.registry.calls
+    results = [c for c in calls
+               if isinstance(c, WebMessage)
+               and c.payload.get("event") == "INTERVENTION_RESULT"]
+    assert len(results) == 1, (
+        f"應廣播 1 次 INTERVENTION_RESULT，實際："
+        f"{[c.payload for c in calls if isinstance(c, WebMessage)]}")
+    payload = results[0].payload
+    assert payload["flow"] == "harvest"
+    assert payload["verdict"] == "rejected_reset"
+    assert "重骰" in payload["summary"] or "跳過" in payload["summary"]
+
+
+def test_rr_click_from_web_rejects_when_mine_resetting():
+    """P5 Task 3: _rr_click_from_web 在 _mine_resetting=True 時應該：
+    1. 不呼叫 _focus_roblox／_rr_click_and_verify／_rr_notify（short-circuit 在 cv2 import 前）
+    2. 廣播 INTERVENTION_RESULT（flow=reentry, verdict=rejected_reset）
+    3. 回 None（caller 視為不可 retry 的硬失敗）
+    """
+    from miningbot.web_protocol import WebMessage
+
+    bot = _build_stub_bot_for_intervention()
+    bot._mine_resetting = True
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("不該呼叫——_mine_resetting 應在這些之前 short-circuit")
+    # 函式內 `import cv2` 在 short-circuit 之後，不會觸及；只設下游协作sentinel
+    bot._focus_roblox = _fail
+    bot._rr_click_and_verify = _fail
+    bot._rr_notify = _fail
+    bot._rr_snap_dir = _fail
+
+    verdict = bot._rr_click_from_web(_FakeCtx(), x=100, y=100)
+
+    assert verdict is None
+    calls = bot._web_thread.app.state.registry.calls
+    results = [c for c in calls
+               if isinstance(c, WebMessage)
+               and c.payload.get("event") == "INTERVENTION_RESULT"]
+    assert len(results) == 1, (
+        f"應廣播 1 次 INTERVENTION_RESULT，實際："
+        f"{[c.payload for c in calls if isinstance(c, WebMessage)]}")
+    payload = results[0].payload
+    assert payload["flow"] == "reentry"
+    assert payload["verdict"] == "rejected_reset"
+    assert "重骰" in payload["summary"] or "跳過" in payload["summary"]

@@ -3148,8 +3148,26 @@ class Bot:
 
         P4 Task 5 接線：玩家 reply 處理完成（不論 verify 是否通過）後呼叫
         _resolve_ping_if_any 結案 PING 訊息——玩家已介入、結案信號比 verify 結果優先。
+
+        P5 Task 3（P4 final-review Important: frame-grab race）：reply pop 後立刻
+        sanity-check `_mine_resetting`——60-120s 等 reply 期間 礦坑可能已開始重置，
+        target tracker 已經 despawn；這時用過時 snapshot 的座標開火只會浪費 D3 + 留
+        誤判證據。reject 並推 INTERVENTION_RESULT 告知 web client。完整 re-verify
+        target visibility（FOV 漂移／tracker 是否仍在）留實機驗收後再評估。
         """
         hid = ctx.harvest_id
+        # P5 Task 3：reply race sanity-check——必須在 _wait_for_d3_cooldown／focus 前，
+        # 礦坑重置中不該消耗 D3 冷卻等待，也不該搶焦點。
+        if getattr(self, "_mine_resetting", False):
+            self.logger.info(
+                "[%s] web fire reply 在 礦坑重置中，reject（避免對過時 snapshot 開火）",
+                hid)
+            self._broadcast_intervention_result(
+                ctx, verdict="rejected_reset",
+                summary=" 礦坑重置中，請 `重骰`／`跳過`", flow="harvest")
+            self._resolve_ping_if_any(
+                f"harvest:{hid}", "web", "web fire 失敗：礦坑重置中（reply race）")
+            return False, "礦坑重置中"
         deadline = time.time() + cfg.remote_aim_budget_s
         ready, detail = self._wait_for_d3_cooldown(deadline)
         if not ready:
@@ -3161,10 +3179,6 @@ class Bot:
             self._resolve_ping_if_any(
                 f"harvest:{hid}", "web", "web fire 失敗：無法聚焦 Roblox")
             return False, "無法聚焦 Roblox"
-        if self._mine_resetting:
-            self._resolve_ping_if_any(
-                f"harvest:{hid}", "web", "web fire 失敗：礦坑重置中")
-            return False, "礦坑重置中"
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
         # 用當下姿態記錄觀測（_aim_fire_and_verify 內 _record_target_observation 用）
         tgt_dir = ctx.pose_net_rotations % 8
@@ -6021,7 +6035,26 @@ class Bot:
         P5 Task 2：回傳 verdict（still_surface / no_change / moved_unconfirmed /
         descended），讓 _reentry_await_player_click 可據此判斷 retry；座標超界／
         聚焦失敗回 None（caller 視為不可 retry 的硬失敗）。
+
+        P5 Task 3（P4 final-review Important: frame-grab race）：reply pop 後立刻
+        sanity-check `_mine_resetting`——60-120s 等 reply 期間 礦坑可能已開始重置，
+        傳送板／landing snapshot 都已過時；這時用過時座標點擊只會落在錯位置。
+        reject 並推 INTERVENTION_RESULT 告知 web client。完整 re-verify（FOV 漂移、
+        landing 是否仍可見）留實機驗收後再評估。
         """
+        # P5 Task 3：reply race sanity-check——必須在座標驗證／focus／cv2 import 前。
+        # 即便 caller retry 預算會消耗一次，也勝過對過時 snapshot 點擊。
+        if getattr(self, "_mine_resetting", False):
+            self.logger.info(
+                "[RR#%s] web click reply 在 礦坑重置中，reject（避免對過時 snapshot 點擊）",
+                getattr(ctx, "episode_id", "?"))
+            self._broadcast_intervention_result(
+                ctx, verdict="rejected_reset",
+                summary=" 礦坑重置中，請 `重骰`／`跳過`", flow="reentry")
+            self._resolve_ping_if_any(
+                f"reentry:{ctx.episode_id}", "web",
+                "web click 失敗：礦坑重置中（reply race）")
+            return None
         import cv2
         if not (0 <= int(x) < cfg.screen_w and 0 <= int(y) < cfg.screen_h):
             self._rr_notify(
@@ -6158,11 +6191,16 @@ class Bot:
             return True
         return True  # unreachable；保險起見
 
-    def _broadcast_intervention_result(self, ctx, verdict: str, summary: str) -> None:
+    def _broadcast_intervention_result(
+            self, ctx, verdict: str, summary: str, flow: str = "reentry") -> None:
         """推 INTERVENTION_RESULT event 給 web client（P5 Task 2）。
 
         verdict 非 descended 時呼叫，讓 web client UI 顯示「未成功，再點一次」
         或最終「放棄，請用文字指令」訊息；玩家不需 Discord embed 卡片也能反應。
+
+        P5 Task 3：flow 參數讓 harvest 路徑（_execute_remote_fire_from_web）與
+        reentry 路徑（_rr_click_from_web）都能標對 flow——web client 可據此顯示
+        「採集流程被中斷」 vs 「回礦流程被中斷」。
 
         沒 web thread／無 registry → no-op（防護）；廣播失敗只記 log 不丟——
         網頁介入是加值路徑，失敗不能炸主流程。
@@ -6174,7 +6212,7 @@ class Bot:
         registry = web_thread.app.state.registry
         registry.broadcast(WebMessage(
             type="event",
-            payload={"event": "INTERVENTION_RESULT", "flow": "reentry",
+            payload={"event": "INTERVENTION_RESULT", "flow": flow,
                      "verdict": verdict, "summary": summary},
         ))
 
