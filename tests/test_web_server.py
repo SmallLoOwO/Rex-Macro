@@ -113,31 +113,47 @@ class TestHandleCommandCoordinatesRestore:
 
 
 class TestWebSocketHeartbeat:
-    """WebSocket heartbeat：server 周期性 ping；client 不回 pong 視為斷線。
+    """WebSocket heartbeat：app-level text ping 已退役（P5 Task 2）。
 
-    P4 minimum viable：只驗證 server 在連線時主動送 ping 的能力，
-    不驗證 timeout（測試 timeout 太慢）。
+    P4 final-review Important 1：text-message "ping" 只在 TCP 全斷才拋，
+    無法偵測手機背景化／Tailscale relay 半斷的 half-open 連線。改依賴
+    uvicorn 預設 20s protocol-level ping frame（真正的 keep-alive）。
+
+    ping_interval_s 參數保留（向後相容），但不再產生 app-level heartbeat task。
     """
 
-    def test_ping_sent_within_interval(self):
-        # 此測試驗證 server 在 websocket_ping_interval_s 內有送出 ping
-        # 實作面上 server 用 asyncio.create_task 在 endpoint 內排 ping
+    def test_no_app_level_heartbeat_task_scheduled(self, monkeypatch):
+        # P5 Task 2：ws_endpoint 不該啟動 _send_pings 之類的 asyncio.create_task
+        import asyncio
+        import time
         from miningbot.web_ipc import PendingReplies, FallbackState
         from miningbot.web_server import create_app
+
         pending = PendingReplies()
         fallback = FallbackState()
         app = create_app(pending, fallback, broadcast_callback=None,
-                         ping_interval_s=0.05)  # 測試用很短 interval
+                         ping_interval_s=0.05)  # 即使 > 0 也不該排程 heartbeat
+
+        scheduled = []
+        orig_create_task = asyncio.create_task
+
+        def tracking_create_task(coro, **kw):
+            # coroutine object 的 __qualname__ 是函式完整名稱
+            scheduled.append(getattr(coro, "__qualname__", ""))
+            return orig_create_task(coro, **kw)
+        monkeypatch.setattr(asyncio, "create_task", tracking_create_task)
+
         client = TestClient(app)
-        with client.websocket_connect("/ws") as ws:
-            # 等 ping 到達
-            try:
-                # TestClient 的 receive 點接收 ping/pong/text/bytes
-                # WebSocket ping 在 TestClient 不直接可見，但 receive_text 會 timeout
-                # 略：heartbeat 行為靠 production uvicorn 實機驗證
-                pytest.skip("WebSocket ping 在 TestClient 不可見；實機驗證")
-            except Exception:
-                pass
+        with client.websocket_connect("/ws"):
+            # 等過 ping_interval_s 數倍，確保舊實作會被觸發
+            time.sleep(0.15)
+
+        heartbeat_names = [
+            name for name in scheduled if name and "_send_pings" in str(name)
+        ]
+        assert not heartbeat_names, (
+            f"app-level heartbeat task 不該被排程（依賴 uvicorn protocol ping），"
+            f"實際 schedule 的 heartbeat coroutines：{heartbeat_names}")
 
 
 def test_websocket_invalid_message_does_not_crash(app_parts):

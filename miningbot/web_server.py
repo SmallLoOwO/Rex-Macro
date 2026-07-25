@@ -111,10 +111,11 @@ def create_app(
     config：P3 玩家設定面板用——傳入 Config instance 時掛 `GET/POST /api/config`
         與 `GET /`（HTML）三條 route；不傳則只保留 P1 既有 routes（向下相容）。
     overrides_path：P3 持久化路徑；傳入時啟動讀回套用、POST 寫回。可選。
-    ping_interval_s：P4 WebSocket heartbeat 間隔（秒）。> 0 時 ws_endpoint 啟動
-        asyncio task 周期性送 `{"type":"ping"}`；client 不回 pong / 斷線時 send_text
-        丟例外，task 自然結束。預設 30s（Config.websocket_ping_interval_s）；
-        測試可傳 0 關閉、或傳極短值驗證 task 排程。
+    ping_interval_s：P4 WebSocket heartbeat 間隔（秒）。**P5 Task 2 已退役**——
+        text-message "ping" 只能在 TCP 全斷才拋例外，無法偵測手機背景化／
+        Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn 預設 20s 協議級
+        ping frame（真正的 keep-alive）。參數保留以免破壞既有呼叫端，但 ws_endpoint
+        不再讀它（silent ignored）。詳見 Config.websocket_ping_interval_s 註解。
 
     lifespan 注入（uvicorn 0.51+）：原本 brief 的 `config.lifespan = patched` 行不通
     （uvicorn 0.51 的 config.lifespan 是字串 "auto"，不是 callable）；改用 FastAPI
@@ -156,23 +157,9 @@ def create_app(
         await websocket.accept()
         fallback.client_connected()
         registry.add(websocket)
-        # P4: heartbeat task（防 half-open；spec §8）
-        # 手機背景化／Tailscale 重連可能讓 TCP 半開著但 client 已不可達；
-        # server 每 ping_interval_s 秒主動送一則 {"type":"ping"}，send_text 丟例外
-        # 即視為斷線——task 自己結束，外層 receive_text 也會跟著 WebSocketDisconnect。
-        ping_task = None
-        if ping_interval_s > 0:
-            async def _send_pings():
-                try:
-                    while True:
-                        await asyncio.sleep(ping_interval_s)
-                        try:
-                            await websocket.send_text('{"type":"ping"}')
-                        except Exception:
-                            return  # 連線斷了
-                except asyncio.CancelledError:
-                    return
-            ping_task = asyncio.create_task(_send_pings())
+        # P5 Task 2：app-level text-message heartbeat 已退役——uvicorn 預設 20s
+        # 協議級 ping frame 是真正的 keep-alive（半開連線 OS buffer 滿才會丟例外）；
+        # text "ping" 只在 TCP 全斷才拋，無法偵測手機背景化／Tailscale relay 半斷。
         try:
             while True:
                 text = await websocket.receive_text()
@@ -190,8 +177,6 @@ def create_app(
         except Exception as e:
             _log.warning("web: WebSocket 連線例外: %s", e)
         finally:
-            if ping_task is not None:
-                ping_task.cancel()
             registry.remove(websocket)
             fallback.client_disconnected()
 

@@ -483,8 +483,10 @@ class Config:
     web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
     websocket_ping_interval_s: float = 30.0
-    # WebSocket server 主動送 ping 的間隔（防手機背景化 half-open 連線；
-    # P1 final review 標的 P4 風險）。uvicorn 預設 20s，bot 放寬到 30s 減流量。
+    # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，
+    # 無法偵測手機背景化／Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn
+    # 預設 20s 協議級 ping frame（真正的 keep-alive）。欄位保留以免破壞既有呼叫端，
+    # 但 ws_endpoint 不再讀它（silent ignored）。
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""

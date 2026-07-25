@@ -6013,11 +6013,14 @@ class Bot:
 
         失敗時（still_surface / no_change）只發 _rr_notify，不 fall through 到
         Discord 八方位——玩家可改用文字指令 `重骰`／`跳過`（_handle_reentry_reply
-        不靠 embed 也能解析），或等下一輪 web 介入。詳情待 Task 6 補介入面板
-        結果回報。
+        不靠 embed 也能解析），或等下一輪 web 介入。
 
         P4 Task 5 接線：玩家 reply 處理完成（不論 verdict 結果）後呼叫
         _resolve_ping_if_any 結案 PING 訊息——玩家已介入、結案信號比 verdict 優先。
+
+        P5 Task 2：回傳 verdict（still_surface / no_change / moved_unconfirmed /
+        descended），讓 _reentry_await_player_click 可據此判斷 retry；座標超界／
+        聚焦失敗回 None（caller 視為不可 retry 的硬失敗）。
         """
         import cv2
         if not (0 <= int(x) < cfg.screen_w and 0 <= int(y) < cfg.screen_h):
@@ -6027,12 +6030,12 @@ class Bot:
             self._resolve_ping_if_any(
                 f"reentry:{ctx.episode_id}", "web",
                 f"web 點擊座標超出螢幕範圍 ({x},{y})")
-            return
+            return None
         if not self._focus_roblox():
             self._rr_notify("⚠ 無法聚焦 Roblox，web 點擊取消；可 `重骰` 重試")
             self._resolve_ping_if_any(
                 f"reentry:{ctx.episode_id}", "web", "web 點擊失敗：無法聚焦 Roblox")
-            return
+            return None
         pos = (int(x), int(y))
         layer = ctx.sticky_layer
         cur = capture.grab()
@@ -6054,6 +6057,7 @@ class Bot:
         self._resolve_ping_if_any(
             f"reentry:{ctx.episode_id}", "web",
             f"玩家點擊 ({x},{y}) verdict={verdict}")
+        return verdict
 
     def _reentry_await_player_click(self, ctx) -> bool:
         """回礦開場鏈全閘通過後、_rr_sweep_and_send 前先問 web。
@@ -6062,9 +6066,15 @@ class Bot:
         → 等玩家 pinch-zoom + tap（預算 cfg.remote_aim_budget_s）→ reply 直接走
         _rr_click_from_web（跳過 Discord 方位+格+連鎖放大整條鏈）。
 
+        P5 Task 2：verdict 非 descended 時不立刻 return——推 INTERVENTION_RESULT
+        給 web client（client UI 顯示「未成功，再點一次或重骰／跳過」）→ 重新抓幀、
+        重發 INTERVENTION_NEEDED、等下一個 reply。最多 3 次；3 次都未 descended 推
+        verdict="放棄" 並 return True（caller 跳過 Discord sweep），玩家需改用文字指令
+        （`重骰`／`跳過`）收尾。
+
         回 True＝web 已處理（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
-        回 False＝無 web 連線／fallback 中／無 reply（timeout）／聚焦失敗 →
-        caller fall through 既有 Discord 流程。
+        回 False＝無 web 連線／fallback 中／無 reply（timeout）／聚焦失敗／
+                frame grab 失敗 → caller fall through 既有 Discord 流程。
 
         attempt_id（wire protocol 對 reentry flow 的 id 欄位名）＝ episode_id：
         每集唯一、與 Discord 卡片標題 #ep{episode_id} 一致，玩家可對照。
@@ -6082,6 +6092,12 @@ class Bot:
                 "[RR#%s] 回礦 web 介入：無法聚焦 Roblox，跳過走 Discord 八方位",
                 ctx.episode_id)
             return False
+
+        # P5 Task 2 retry loop——3 次都失敗就放棄（推 verdict="放棄" 並 return True）
+        max_attempts = 3
+        retry_timeout_s = 30.0           # retry 比 initial budget 短，避免拖太久
+
+        # 推 initial INTERVENTION_NEEDED（含當下幀）；retry 前會重推一次更新幀
         frame = capture.grab()
         if frame is None:
             return False
@@ -6090,19 +6106,77 @@ class Bot:
             frame=frame,
             ctx_summary=f"reentry episode={ctx.episode_id}",
         )
-        reply = self._await_web_pointer_reply(
-            routing_key=routing_key, timeout_s=cfg.remote_aim_budget_s)
-        if reply is None:
+
+        for attempt in range(1, max_attempts + 1):
+            timeout = cfg.remote_aim_budget_s if attempt == 1 else retry_timeout_s
+            reply = self._await_web_pointer_reply(
+                routing_key=routing_key, timeout_s=timeout)
+            if reply is None:
+                self.log_discord.info(
+                    "[RR#%s] 回礦 web 介入：reply timeout（attempt %d/%d），"
+                    "fall through Discord 八方位",
+                    ctx.episode_id, attempt, max_attempts)
+                return False
             self.log_discord.info(
-                "[RR#%s] 回礦 web 介入：reply timeout，fall through Discord 八方位",
-                ctx.episode_id)
-            return False
-        self.log_discord.info(
-            "[RR#%s] 回礦 web 介入：收到 reply %r，跳過 Discord 方位+格+連鎖放大",
-            ctx.episode_id, reply)
-        self._rr_click_from_web(
-            ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)))
-        return True
+                "[RR#%s] 回礦 web 介入：收到 reply %r（attempt %d/%d），"
+                "跳過 Discord 方位+格+連鎖放大",
+                ctx.episode_id, reply, attempt, max_attempts)
+            verdict = self._rr_click_from_web(
+                ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)))
+            if verdict == "descended":
+                return True
+            # verdict 為 None（座標超界／聚焦失敗）或 still_surface／no_change／
+            # moved_unconfirmed——都視為可 retry 的非 descended 結果
+            verdict_label = verdict if verdict else "硬失敗"
+            if attempt < max_attempts:
+                self._broadcast_intervention_result(
+                    ctx, verdict_label,
+                    "未成功，再點一次或 `重骰`／`跳過`")
+                # 重新抓幀 + 重發 INTERVENTION_NEEDED（玩家看得到當下畫面再點）
+                frame = capture.grab()
+                if frame is None:
+                    self.log_discord.warning(
+                        "[RR#%s] 回礦 web 介入：retry 前 frame grab 失敗，放棄",
+                        ctx.episode_id)
+                    return False
+                self._send_web_intervention_event(
+                    flow="reentry", routing_key=routing_key,
+                    frame=frame,
+                    ctx_summary=(
+                        f"reentry episode={ctx.episode_id} "
+                        f"retry {attempt + 1}/{max_attempts}"),
+                )
+                continue
+            # 3 次都未 descended：告知玩家改用文字指令；return True 跳過 Discord sweep
+            self.log_discord.warning(
+                "[RR#%s] 回礦 web 介入：%d 次都未 descended（最後 verdict=%s），"
+                "改用 Discord 文字指令 `重骰`／`跳過`",
+                ctx.episode_id, max_attempts, verdict_label)
+            self._broadcast_intervention_result(
+                ctx, "放棄",
+                f"{max_attempts} 次未成功，請用 `重骰`／`跳過` 處理")
+            return True
+        return True  # unreachable；保險起見
+
+    def _broadcast_intervention_result(self, ctx, verdict: str, summary: str) -> None:
+        """推 INTERVENTION_RESULT event 給 web client（P5 Task 2）。
+
+        verdict 非 descended 時呼叫，讓 web client UI 顯示「未成功，再點一次」
+        或最終「放棄，請用文字指令」訊息；玩家不需 Discord embed 卡片也能反應。
+
+        沒 web thread／無 registry → no-op（防護）；廣播失敗只記 log 不丟——
+        網頁介入是加值路徑，失敗不能炸主流程。
+        """
+        web_thread = getattr(self, "_web_thread", None)
+        if web_thread is None:
+            return
+        from .web_protocol import WebMessage
+        registry = web_thread.app.state.registry
+        registry.broadcast(WebMessage(
+            type="event",
+            payload={"event": "INTERVENTION_RESULT", "flow": "reentry",
+                     "verdict": verdict, "summary": summary},
+        ))
 
     def _rr_yaw_sample(self, ctx):
         """成功收尾後原地拍八方位，收 yaw 分類語料（H059；cfg.reentry_yaw_sample_sweep）。
