@@ -102,7 +102,8 @@ class Bot:
                 notify.make_discord_sink(
                     cfg.discord_bot_token, cfg.discord_channel_id,
                     on_error=lambda d: self.logger.error("Discord 通知失敗: %s", d),
-                    log=self.log_discord),
+                    log=self.log_discord,
+                    giveup_image_mode="single"),
                 log=self.log_discord,
                 max_queue=cfg.discord_sink_queue_max))
             self.logger.info("Discord 通知已啟用 (channel=%s)", cfg.discord_channel_id)
@@ -2492,18 +2493,9 @@ class Bot:
         finally:
             self._running = False
             self._audio_cap.stop()
-            # P2 Task 7 anchor E：shutdown 時 best-effort 把 StatusMessenger 卡片 edit 成
-            # 「已關機」狀態（失敗不影響其他 cleanup； StatusMessenger 可能未初始化）。
-            if getattr(self, "_status_messenger", None) is not None:
-                try:
-                    self._status_messenger.update(
-                        state="STOPPED", last_action="shutdown",
-                        audio_score=0.0, capacity_pct=None,
-                        uptime_s=int(time.time() - self._started),
-                        now=time.monotonic(),
-                    )
-                except Exception as e:
-                    self.log_discord.warning("shutdown StatusMessenger.update 例外: %s", e)
+            # P2 Task 7 anchor E：shutdown 不編輯 STOPPED——下次 ensure_posted 會 post 新卡，
+            # 舊卡自然成為「上次狀態」留存（不需標示 STOPPED；規格接受此簡化）。
+            # 早期版本會 edit 成 STOPPED，但每次重啟會累積舊 STOPPED 卡，故移除。
             ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
             # WebIPC thread 收掉（比照 daemon thread 慣例：明確 stop + join，讓 socket
             # 關乾淨；不依賴 process exit 才釋放）
@@ -3079,6 +3071,10 @@ class Bot:
         動作字串變動且過 throttle 才會真的發 edit_message。沒設 Discord token 時 no-op。
         """
         if getattr(self, "_status_messenger", None) is None:
+            return
+        # 若啟動時 Discord 暫時下、ensure_posted 失敗留下 message_id=None，每 tick 重試
+        # post（idempotent，已 post 過 no-op）。否則 update() 永遠 no-op、bot 永遠沒狀態卡。
+        if not self._status_messenger.ensure_posted(now=time.monotonic()):
             return
         try:
             audio_score = self.listener.latest_score()

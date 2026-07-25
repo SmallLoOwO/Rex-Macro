@@ -37,6 +37,14 @@ REACTION_USER_API = "https://discord.com/api/v10/channels/{channel_id}/messages/
 # Discord mention 格式：<@USER_ID>；USER_ID 必須是字串（數字會被當角色 ID）。
 PING_USER_ID = "373438562940747776"
 
+# P2 format_status_text 用的狀態中文化映射（與 status_hud._STATE_ZH 同內容、不同模組；
+# 命名 _STATUS_ZH 避免跨模組同名混淆）。模組層級常數——不必每次 tick 重建。
+_STATUS_ZH = {
+    "MINING": "挖礦中", "HARVESTING": "採集稀有礦",
+    "NEEDS_HUMAN": "需要人工", "RESET_WAIT": "礦坑重置·待定位",
+    "REENTRY": "重置·自動回礦",
+}
+
 
 # --- P2: 狀態訊息 post-once-then-edit 純函式（spec §7 A 混合更新策略）---
 # 遙控器卡是 1 則常駐訊息；狀態/動態用 edit_message 即時更新（重要內容），
@@ -91,16 +99,10 @@ def format_status_text(state: str, last_action: str, audio_score: float,
     """狀態訊息內容（給 StatusMessenger.post/edit 用）。
 
     跟 status_hud.py 同風格（左下角 HUD 文字版），但搬到 Discord 卡片。
-    state 用既有 _STATE_ZH（status_hud）映射成中文；映射不到用原文。
+    state 用模組層 _STATUS_ZH 映射成中文；映射不到用原文。
     uptime 格式 XhYYm（不顯示秒，discord 卡片不需要那麼細）。
     """
-    # 從 status_hud 借狀態中文化（避免循環 import，local copy）
-    _STATE_ZH = {
-        "MINING": "挖礦中", "HARVESTING": "採集稀有礦",
-        "NEEDS_HUMAN": "需要人工", "RESET_WAIT": "礦坑重置·待定位",
-        "REENTRY": "重置·自動回礦",
-    }
-    tag = _STATE_ZH.get(state, state)
+    tag = _STATUS_ZH.get(state, state)
     cap_s = f"　容量: {capacity_pct:.0f}%" if capacity_pct is not None else ""
     h = uptime_s // 3600
     m = (uptime_s % 3600) // 60

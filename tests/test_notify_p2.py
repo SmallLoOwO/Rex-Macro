@@ -1,7 +1,6 @@
 """P2 Discord 訊息角色精簡：純函式 + StatusMessenger + 整合。
 
 跟既有 tests/test_notify.py 共存——把 P2 新元件獨立成新檔，避免既有檔越長越亂。"""
-import pytest
 
 
 def test_config_has_status_edit_min_interval():
@@ -102,7 +101,7 @@ class TestFormatStatusText:
     def test_capacity_none_omitted(self):
         s = format_status_text("MINING", "x", 0.5, None, 60)
         assert "容量" not in s
-        assert "1m" in s  # 60 = 1m
+        assert "0h01m" in s  # 60 = 0h 1m；鎖定零填充格式（避免 "1m" 誤匹配 "21m" 等）
 
     def test_uptime_formats(self):
         assert "2h17m" in format_status_text("MINING", "x", 0.0, None, 8234)
@@ -389,20 +388,20 @@ class TestMainIntegration:
     def test_main_init_creates_messengers_when_discord_enabled(self, monkeypatch):
         # 略——具體 fake bot 結構依 main.py；此測試標 skip，理由同 P1 Task 10
         # 留 P3/P4 整合時補回（那時 main.py 對 web 整合更完整）
+        import pytest
         pytest.skip("main.py 整合 smoke test 留 P3/P4 補；此 task 先驗 rg 找的 anchor 存在")
 
     def test_anchor_make_discord_sink_exists(self):
         """確保 main.py 含 make_discord_sink anchor（原 brief 用 rg；本機無 rg 改純 Python）。
 
-        anchor A（Discord sink 註冊處）位於 miningbot/main.py:102 的
+        anchor A（Discord sink 註冊處）位於 miningbot/main.py 的
         notify.make_discord_sink(...) 呼叫——同處整合 StatusMessenger /
         PingResolveMessenger 初始化。
         """
         import os
-        main_py = os.path.join(
-            "C:/Users/puppy/OneDrive/Desktop/無聊的挖礦遊戲",
-            "miningbot", "main.py",
-        )
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parent.parent
+        main_py = repo_root / "miningbot" / "main.py"
         with open(main_py, "r", encoding="utf-8") as f:
             lines = f.readlines()
         matches = [(i + 1, ln.rstrip()) for i, ln in enumerate(lines)
