@@ -14,7 +14,10 @@ import uvicorn
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from miningbot.web_protocol import WebMessage, parse_message, serialize_message
+from miningbot.web_protocol import (
+    WebMessage, parse_message, parse_fire_at_payload,
+    parse_reentry_click_payload, serialize_message,
+)
 from miningbot.web_ipc import PendingReplies, FallbackState
 
 
@@ -95,6 +98,7 @@ def create_app(
     on_startup: Callable[[asyncio.AbstractEventLoop], None] | None = None,
     config=None,
     overrides_path: str | None = None,
+    ping_interval_s: float = 30.0,
 ) -> FastAPI:
     """建 FastAPI app。
 
@@ -107,6 +111,10 @@ def create_app(
     config：P3 玩家設定面板用——傳入 Config instance 時掛 `GET/POST /api/config`
         與 `GET /`（HTML）三條 route；不傳則只保留 P1 既有 routes（向下相容）。
     overrides_path：P3 持久化路徑；傳入時啟動讀回套用、POST 寫回。可選。
+    ping_interval_s：P4 WebSocket heartbeat 間隔（秒）。> 0 時 ws_endpoint 啟動
+        asyncio task 周期性送 `{"type":"ping"}`；client 不回 pong / 斷線時 send_text
+        丟例外，task 自然結束。預設 30s（Config.websocket_ping_interval_s）；
+        測試可傳 0 關閉、或傳極短值驗證 task 排程。
 
     lifespan 注入（uvicorn 0.51+）：原本 brief 的 `config.lifespan = patched` 行不通
     （uvicorn 0.51 的 config.lifespan 是字串 "auto"，不是 callable）；改用 FastAPI
@@ -134,6 +142,23 @@ def create_app(
         await websocket.accept()
         fallback.client_connected()
         registry.add(websocket)
+        # P4: heartbeat task（防 half-open；spec §8）
+        # 手機背景化／Tailscale 重連可能讓 TCP 半開著但 client 已不可達；
+        # server 每 ping_interval_s 秒主動送一則 {"type":"ping"}，send_text 丟例外
+        # 即視為斷線——task 自己結束，外層 receive_text 也會跟著 WebSocketDisconnect。
+        ping_task = None
+        if ping_interval_s > 0:
+            async def _send_pings():
+                try:
+                    while True:
+                        await asyncio.sleep(ping_interval_s)
+                        try:
+                            await websocket.send_text('{"type":"ping"}')
+                        except Exception:
+                            return  # 連線斷了
+                except asyncio.CancelledError:
+                    return
+            ping_task = asyncio.create_task(_send_pings())
         try:
             while True:
                 text = await websocket.receive_text()
@@ -144,12 +169,15 @@ def create_app(
                     continue
                 if msg.type == "command":
                     _handle_command(msg.payload, pending)
+                # P4: ping/pong 訊息由 WebSocket 協議層處理，這裡只接 text 不特別回應
                 # event type 由 server 發、client 收；client 不該送 event，忽略
         except WebSocketDisconnect:
             pass
         except Exception as e:
             _log.warning("web: WebSocket 連線例外: %s", e)
         finally:
+            if ping_task is not None:
+                ping_task.cancel()
             registry.remove(websocket)
             fallback.client_disconnected()
 
@@ -215,28 +243,49 @@ def _err(status: int, reason: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": reason})
 
 
-def _handle_command(payload: dict, pending: PendingReplies) -> None:
-    """把 command payload 推進 PendingReplies（用 flow + id 算 routing key）。
+def _handle_command(payload: dict, pending: PendingReplies,
+                    canvas_size: tuple = (1920, 1080)) -> None:
+    """把 command payload 解析後 push 進 PendingReplies。
+
+    P4 擴充：fire_at / reentry_click 用 parse_*_payload 還原原生座標。
+    其他命令沿用 P1 行為（control:* routing key）。
+
+    canvas_size 預設 (1920, 1080) = 假設 client 顯示原生尺寸；
+    實際上 client 會送自己的 canvas_size 在 payload 中，parse 會用它。
 
     payload 結構（spec §8）：
-    - fire_at / reentry_click：必有 flow + harvest_id（或 attempt_id）+ (x, y)
+    - fire_at / reentry_click：必有 flow + harvest_id（或 attempt_id）+
+      client_xy + canvas_size + zoom + pan_offset（P4 Task 1 schema）
     - config_set：必有 field + value（白名單驗證在 main.py 整合時做）
     - pause / resume / request_frame：控制類，無 routing key，用 "control:*"
 
-    若 payload 缺 routing key 必要欄位，記 log 不 push（防護）。
+    若 payload 缺 routing key 必要欄位或 parse 失敗，記 log 不 push（防護）。
     """
     cmd = payload.get("cmd")
     if cmd in ("fire_at", "reentry_click"):
-        flow = payload.get("flow")
-        ep_id = payload.get("harvest_id") or payload.get("attempt_id")
+        parser = parse_fire_at_payload if cmd == "fire_at" else parse_reentry_click_payload
+        # client 在 payload 中自帶 canvas_size（client 顯示用）
+        client_canvas = payload.get("canvas_size", list(canvas_size))
+        try:
+            client_canvas = tuple(client_canvas)
+        except (TypeError, ValueError):
+            _log.warning("web: %s canvas_size invalid: %r", cmd, payload.get("canvas_size"))
+            return
+        parsed = parser(payload, canvas_size=client_canvas)
+        if parsed is None:
+            _log.warning("web: %s payload invalid: %r", cmd, payload)
+            return
+        flow = parsed["flow"]
+        ep_id = parsed.get("harvest_id") or parsed.get("attempt_id")
         if not flow or not ep_id:
-            _log.warning("web: %s 缺 flow/episode_id，丟棄: %r", cmd, payload)
+            _log.warning("web: %s 缺 flow/episode_id", cmd)
             return
         key = f"{flow}:{ep_id}"
-    else:
-        # 控制類：直接用 cmd 名當 key（不参與 race，主迴圈 safe point 直接讀）
-        key = f"control:{cmd}"
-    pending.push(key, payload)
+        pending.push(key, parsed)
+        return
+    # 既有 control:* 路徑（pause / resume / config_set / request_frame 等）
+    if cmd is not None:
+        pending.push(f"control:{cmd}", payload)
 
 
 class WebIPCThread:
@@ -272,12 +321,18 @@ class WebIPCThread:
         self._thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
         self.actual_port: int = 0
+        # P4: 從 Config 讀 WebSocket heartbeat 間隔；未傳 config 走 create_app 預設 30s。
+        ping_interval_s = (
+            getattr(config, "websocket_ping_interval_s", 30.0)
+            if config is not None else 30.0
+        )
         # P3：config + overrides_path 傳給 create_app，讓 HTTP endpoints
         # （GET/POST /api/config、GET /）能在 thread 內掛上。不傳時向下相容（P1 既有測試）。
         self.app = create_app(
             pending, fallback, broadcast_callback=None,
             on_startup=self._on_startup,
             config=config, overrides_path=overrides_path,
+            ping_interval_s=ping_interval_s,
         )
 
     def _on_startup(self, loop: asyncio.AbstractEventLoop) -> None:

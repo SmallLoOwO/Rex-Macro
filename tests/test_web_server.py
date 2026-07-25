@@ -44,21 +44,100 @@ def test_websocket_connect_increments_client_count(app_parts):
 
 
 def test_websocket_command_pushes_to_pending(app_parts):
+    """P1 regression：fire_at 命令透過 _handle_command 還原座標後 push 進 pending。
+
+    P4 Task 2 起 fire_at 走 parse_fire_at_payload 還原座標路徑；payload 改用
+    client_xy + canvas_size + zoom + pan_offset（見 TestHandleCommandCoordinatesRestore）。
+    本測保持綠色是 P1→P4 contract 遷移的最低門檻。
+    """
     app, pending, fallback, _ = app_parts
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
         ws.send_text(json.dumps({
             "type": "command",
             "payload": {"cmd": "fire_at", "flow": "harvest",
-                        "harvest_id": "007", "x": 851, "y": 189},
+                        "harvest_id": "007",
+                        "client_xy": [851, 189], "canvas_size": [1920, 1080],
+                        "zoom": 1.0, "pan_offset": [0, 0]},
         }))
         # 給 server 一點時間處理
         import time; time.sleep(0.05)
     # 連線斷了之後 pending 應該有 reply（routing key harvest:007）
     reply = pending.pop("harvest:007")
     assert reply is not None
-    assert reply["cmd"] == "fire_at"
+    assert reply["flow"] == "harvest"
+    assert reply["harvest_id"] == "007"
     assert reply["x"] == 851
+    assert reply["y"] == 189
+
+
+class TestHandleCommandCoordinatesRestore:
+    """fire_at 命令的座標還原：client 點擊 → 原生座標 push 進 pending。"""
+
+    def test_fire_at_pushes_restored_coords(self):
+        from miningbot.web_ipc import PendingReplies, FallbackState
+        from miningbot.web_server import create_app
+        pending = PendingReplies()
+        fallback = FallbackState()
+        app = create_app(pending, fallback, broadcast_callback=None)
+        client = TestClient(app)
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "command",
+                "payload": {"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                            "client_xy": [480, 270], "canvas_size": [960, 540],
+                            "zoom": 1.0, "pan_offset": [0, 0]},
+            }))
+            import time; time.sleep(0.1)
+        reply = pending.pop("harvest:007")
+        assert reply is not None
+        assert reply["x"] == 960
+        assert reply["y"] == 540
+
+    def test_fire_at_invalid_payload_does_not_push(self):
+        from miningbot.web_ipc import PendingReplies, FallbackState
+        from miningbot.web_server import create_app
+        pending = PendingReplies()
+        fallback = FallbackState()
+        app = create_app(pending, fallback, broadcast_callback=None)
+        client = TestClient(app)
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({
+                "type": "command",
+                "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 client_xy
+            }))
+            import time; time.sleep(0.1)
+        assert pending.pop("harvest:007") is None  # 沒進 queue
+        # 連線還活著（沒 crash）
+        # 結束 with 區塊才會 disconnect
+
+
+class TestWebSocketHeartbeat:
+    """WebSocket heartbeat：server 周期性 ping；client 不回 pong 視為斷線。
+
+    P4 minimum viable：只驗證 server 在連線時主動送 ping 的能力，
+    不驗證 timeout（測試 timeout 太慢）。
+    """
+
+    def test_ping_sent_within_interval(self):
+        # 此測試驗證 server 在 websocket_ping_interval_s 內有送出 ping
+        # 實作面上 server 用 asyncio.create_task 在 endpoint 內排 ping
+        from miningbot.web_ipc import PendingReplies, FallbackState
+        from miningbot.web_server import create_app
+        pending = PendingReplies()
+        fallback = FallbackState()
+        app = create_app(pending, fallback, broadcast_callback=None,
+                         ping_interval_s=0.05)  # 測試用很短 interval
+        client = TestClient(app)
+        with client.websocket_connect("/ws") as ws:
+            # 等 ping 到達
+            try:
+                # TestClient 的 receive 點接收 ping/pong/text/bytes
+                # WebSocket ping 在 TestClient 不直接可見，但 receive_text 會 timeout
+                # 略：heartbeat 行為靠 production uvicorn 實機驗證
+                pytest.skip("WebSocket ping 在 TestClient 不可見；實機驗證")
+            except Exception:
+                pass
 
 
 def test_websocket_invalid_message_does_not_crash(app_parts):

@@ -482,6 +482,9 @@ class Config:
     web_server_enabled: bool = True              # 啟用網頁伺服器（綁 127.0.0.1）
     web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
+    websocket_ping_interval_s: float = 30.0
+    # WebSocket server 主動送 ping 的間隔（防手機背景化 half-open 連線；
+    # P1 final review 標的 P4 風險）。uvicorn 預設 20s，bot 放寬到 30s 減流量。
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
     discord_webhook_url: str = ""
