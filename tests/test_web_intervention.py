@@ -79,8 +79,11 @@ def test_main_reentry_consumes_web_click_reply():
 
 
 def test_web_fire_at_full_pipeline():
-    """完整 pipeline：client send fire_at → server 還原 → pending push。
-    不測 main.py bot 端，只測 web_server 段。"""
+    """完整 pipeline：client 送 fire_at（已含原生 x/y）→ server 驗證 → pending push。
+
+    P5 Task 1：座標空間協議重設——client 端 JS 自己用 canvas.width/rect.width
+    換算成原生座標，server 只做 thin validator；不再送 client_xy/canvas_size/zoom/pan。
+    """
     import json
     import time
     from fastapi.testclient import TestClient
@@ -94,8 +97,7 @@ def test_web_fire_at_full_pipeline():
         ws.send_text(json.dumps({
             "type": "command",
             "payload": {"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
-                        "client_xy": [480, 270], "canvas_size": [960, 540],
-                        "zoom": 1.0, "pan_offset": [0, 0]},
+                        "x": 960, "y": 540},
         }))
         time.sleep(0.1)
     reply = pending.pop("harvest:007")
@@ -120,8 +122,7 @@ def test_web_reentry_click_full_pipeline():
         ws.send_text(json.dumps({
             "type": "command",
             "payload": {"cmd": "reentry_click", "flow": "reentry", "attempt_id": "attempt_2",
-                        "client_xy": [100, 100], "canvas_size": [1920, 1080],
-                        "zoom": 1.0, "pan_offset": [0, 0]},
+                        "x": 100, "y": 100},
         }))
         time.sleep(0.1)
     reply = pending.pop("reentry:attempt_2")
@@ -144,7 +145,7 @@ def test_web_fire_at_invalid_does_not_push():
     with client.websocket_connect("/ws") as ws:
         ws.send_text(json.dumps({
             "type": "command",
-            "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 client_xy/id
+            "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 id / x / y
         }))
         time.sleep(0.1)
         # 連線還活著，可以再送正常命令

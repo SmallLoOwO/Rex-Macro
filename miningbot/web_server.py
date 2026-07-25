@@ -257,19 +257,16 @@ def _err(status: int, reason: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": reason})
 
 
-def _handle_command(payload: dict, pending: PendingReplies,
-                    canvas_size: tuple = (1920, 1080)) -> None:
+def _handle_command(payload: dict, pending: PendingReplies) -> None:
     """把 command payload 解析後 push 進 PendingReplies。
 
-    P4 擴充：fire_at / reentry_click 用 parse_*_payload 還原原生座標。
+    P5 Task 1 協議重設：fire_at / reentry_click 改走 thin validator，
+    client 端 JS 自己換算原生座標；server 不再收 canvas_size/zoom/pan_offset。
     其他命令沿用 P1 行為（control:* routing key）。
 
-    canvas_size 預設 (1920, 1080) = 假設 client 顯示原生尺寸；
-    實際上 client 會送自己的 canvas_size 在 payload 中，parse 會用它。
-
-    payload 結構（spec §8）：
-    - fire_at / reentry_click：必有 flow + harvest_id（或 attempt_id）+
-      client_xy + canvas_size + zoom + pan_offset（P4 Task 1 schema）
+    payload 結構：
+    - fire_at / reentry_click：必有 flow + harvest_id（或 attempt_id）+ x + y
+      （P5 Task 1 schema；x/y 是 int 範圍 [0, 1920) / [0, 1080)）
     - config_set：必有 field + value（白名單驗證在 main.py 整合時做）
     - pause / resume / request_frame：控制類，無 routing key，用 "control:*"
 
@@ -278,14 +275,7 @@ def _handle_command(payload: dict, pending: PendingReplies,
     cmd = payload.get("cmd")
     if cmd in ("fire_at", "reentry_click"):
         parser = parse_fire_at_payload if cmd == "fire_at" else parse_reentry_click_payload
-        # client 在 payload 中自帶 canvas_size（client 顯示用）
-        client_canvas = payload.get("canvas_size", list(canvas_size))
-        try:
-            client_canvas = tuple(client_canvas)
-        except (TypeError, ValueError):
-            _log.warning("web: %s canvas_size invalid: %r", cmd, payload.get("canvas_size"))
-            return
-        parsed = parser(payload, canvas_size=client_canvas)
+        parsed = parser(payload)
         if parsed is None:
             _log.warning("web: %s payload invalid: %r", cmd, payload)
             return

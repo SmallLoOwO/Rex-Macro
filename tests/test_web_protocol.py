@@ -115,87 +115,126 @@ class TestClientToNativeCoords:
 
 
 class TestParseFireAtPayload:
+    """P5 Task 1：parser 變 thin validator——client 直接送原生 x/y，不再還原座標。
+
+    schema：{cmd, flow, harvest_id|attempt_id, x: int[0,1920), y: int[0,1080)}。
+    """
+
     def test_basic_with_harvest_id(self):
-        # client 點 (480, 270) 在 960×540 canvas（縮小 2x）→ 原生 (960, 540)
         result = parse_fire_at_payload(
             payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
-                     "client_xy": [480, 270], "canvas_size": [960, 540],
-                     "zoom": 1.0, "pan_offset": [0, 0]},
-            canvas_size=(960, 540),
+                     "x": 960, "y": 540},
+        )
+        assert result == {"flow": "harvest", "x": 960, "y": 540, "harvest_id": "007"}
+
+    def test_attempt_id_used_for_reentry_flow(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "reentry", "attempt_id": "attempt_3",
+                     "x": 100, "y": 100},
         )
         assert result is not None
-        assert result["flow"] == "harvest"
-        assert result["harvest_id"] == "007"
-        assert result["x"] == 960
-        assert result["y"] == 540
-
-    def test_with_zoom_and_pan(self):
-        # 沿用 client_to_native_coords 的 combined_zoom_and_pan case
-        result = parse_fire_at_payload(
-            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
-                     "client_xy": [200, 100], "canvas_size": [960, 540],
-                     "zoom": 2.0, "pan_offset": [10, 10]},
-            canvas_size=(960, 540),
-        )
-        assert result == {"flow": "harvest", "harvest_id": "007", "x": 210, "y": 110}
+        assert result["flow"] == "reentry"
+        assert result["attempt_id"] == "attempt_3"
+        assert result["x"] == 100
+        assert result["y"] == 100
 
     def test_missing_cmd_returns_none(self):
         result = parse_fire_at_payload(
-            payload={"flow": "harvest", "harvest_id": "007", "client_xy": [100, 100]},
-            canvas_size=(960, 540),
+            payload={"flow": "harvest", "harvest_id": "007", "x": 100, "y": 100},
         )
         assert result is None
 
     def test_missing_flow_returns_none(self):
         result = parse_fire_at_payload(
-            payload={"cmd": "fire_at", "harvest_id": "007", "client_xy": [100, 100]},
-            canvas_size=(960, 540),
+            payload={"cmd": "fire_at", "harvest_id": "007", "x": 100, "y": 100},
         )
         assert result is None
 
     def test_missing_both_ids_returns_none(self):
         result = parse_fire_at_payload(
-            payload={"cmd": "fire_at", "flow": "harvest", "client_xy": [100, 100]},
-            canvas_size=(960, 540),
+            payload={"cmd": "fire_at", "flow": "harvest", "x": 100, "y": 100},
         )
         assert result is None
 
-    def test_attempt_id_used_for_reentry_flow(self):
+    def test_missing_x_returns_none(self):
         result = parse_fire_at_payload(
-            payload={"cmd": "fire_at", "flow": "reentry", "attempt_id": "attempt_3",
-                     "client_xy": [100, 100]},
-            canvas_size=(1920, 1080),
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007", "y": 100},
         )
-        assert result is not None
-        assert result["flow"] == "reentry"
-        assert result["attempt_id"] == "attempt_3"
+        assert result is None
 
-    def test_invalid_client_xy_returns_none(self):
-        # client_xy 不是 list/tuple of 2 numbers
+    def test_missing_y_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007", "x": 100},
+        )
+        assert result is None
+
+    def test_x_out_of_range_high_returns_none(self):
+        # x=1920 超界（valid range [0, 1920)）
         result = parse_fire_at_payload(
             payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
-                     "client_xy": "not_a_list"},
-            canvas_size=(960, 540),
+                     "x": 1920, "y": 540},
+        )
+        assert result is None
+
+    def test_x_negative_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "x": -1, "y": 540},
+        )
+        assert result is None
+
+    def test_y_out_of_range_high_returns_none(self):
+        # y=1080 超界（valid range [0, 1080)）
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "x": 960, "y": 1080},
+        )
+        assert result is None
+
+    def test_x_not_int_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "x": "abc", "y": 540},
+        )
+        assert result is None
+
+    def test_x_float_returns_none(self):
+        # 嚴格 int；float 不可（避免 960.5 vs 960 模糊）
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "x": 960.5, "y": 540},
+        )
+        assert result is None
+
+    def test_x_bool_returns_none(self):
+        # bool 是 int 子類別，但語意不該被當座標
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "x": True, "y": 540},
         )
         assert result is None
 
 
 class TestParseReentryClickPayload:
+    """P5 Task 1：reentry_click 同樣只收 attempt_id + x/y（thin validator）。"""
+
     def test_basic(self):
         result = parse_reentry_click_payload(
-            payload={"cmd": "reentry_click", "flow": "reentry", "attempt_id": "attempt_2",
-                     "client_xy": [480, 270], "canvas_size": [960, 540]},
-            canvas_size=(960, 540),
+            payload={"cmd": "reentry_click", "flow": "reentry",
+                     "attempt_id": "attempt_2", "x": 960, "y": 540},
         )
-        assert result is not None
-        assert result["flow"] == "reentry"
-        assert result["attempt_id"] == "attempt_2"
-        assert result["x"] == 960
-        assert result["y"] == 540
+        assert result == {"flow": "reentry", "x": 960, "y": 540,
+                          "attempt_id": "attempt_2"}
 
     def test_missing_attempt_id_returns_none(self):
         result = parse_reentry_click_payload(
-            payload={"cmd": "reentry_click", "flow": "reentry", "client_xy": [100, 100]},
-            canvas_size=(960, 540),
+            payload={"cmd": "reentry_click", "flow": "reentry", "x": 100, "y": 100},
+        )
+        assert result is None
+
+    def test_missing_xy_returns_none(self):
+        result = parse_reentry_click_payload(
+            payload={"cmd": "reentry_click", "flow": "reentry",
+                     "attempt_id": "attempt_2"},
         )
         assert result is None

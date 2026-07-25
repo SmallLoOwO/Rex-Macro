@@ -281,13 +281,12 @@ function sendClick(clientX, clientY) {
     statusEl.textContent = '尚無 INTERVENTION_NEEDED 事件，忽略點擊';
     return;
   }
-  // 換算 client → canvas 座標
+  // P5 Task 1：client 端直接算原生座標（避免 server 處理 zoom/pan 座標空間 mismatch）
+  // rect.width 是 transform 後的顯示寬度；canvas.width 是原生 1920
   const rect = canvas.getBoundingClientRect();
-  const cx = clientX - rect.left;
-  const cy = clientY - rect.top;
-  // canvas 顯示尺寸 = canvas_size（CSS pixel）
-  const canvasSize = [rect.width, rect.height];
-  // 送命令：cmd + flow + harvest_id/attempt_id + client_xy + canvas_size + zoom + pan_offset
+  const nativeX = Math.round((clientX - rect.left) * (canvas.width / rect.width));
+  const nativeY = Math.round((clientY - rect.top) * (canvas.height / rect.height));
+  // 送命令：cmd + flow + harvest_id/attempt_id + x + y（thin validator schema）
   const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
   const ep_id = {};
   // routing_key = "harvest:007" 或 "reentry:attempt_3"
@@ -298,12 +297,10 @@ function sendClick(clientX, clientY) {
     type: 'command',
     payload: {
       cmd, flow, ...ep_id,
-      client_xy: [cx, cy],
-      canvas_size: canvasSize,
-      zoom, pan_offset: pan,
+      x: nativeX, y: nativeY,
     },
   }));
-  statusEl.textContent = `已送出點擊 (${Math.round(cx)}, ${Math.round(cy)}) — ${cmd}`;
+  statusEl.textContent = `已送出點擊 (${nativeX}, ${nativeY}) — ${cmd}`;
 }
 
 window.addEventListener('resize', fitCanvas);

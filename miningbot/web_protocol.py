@@ -89,13 +89,17 @@ def client_to_native_coords(
     return (int(native_x), int(native_y))
 
 
-def _parse_pointer_payload(payload: dict, canvas_size: tuple,
-                           native_size: tuple, expected_cmd: str,
-                           id_keys: tuple[str, ...]) -> dict | None:
-    """fire_at / reentry_click 共用解析：驗證 cmd/flow/id + 還原座標。
+def _parse_pointer_payload(payload: dict, expected_cmd: str,
+                           id_keys: tuple[str, ...],
+                           native_size: tuple[int, int] = (1920, 1080)) -> dict | None:
+    """fire_at / reentry_click 共用 thin validator：驗證 cmd/flow/id/x/y 結構與範圍。
 
-    id_keys：可接受的 id 欄位名（fire_at 收 harvest_id 或 attempt_id；
-    reentry_click 只收 attempt_id）；取第一個非 None 的。
+    P5 Task 1 協議重設：client 端 JS 自己用 canvas.width/rect.width 算原生座標，
+    server 不再做 zoom/pan/canvas_size 還原——只驗 payload schema。
+
+    - id_keys：可接受的 id 欄位名（fire_at 收 harvest_id 或 attempt_id；
+      reentry_click 只收 attempt_id）；取第一個非 None 的。
+    - x/y：必須是 int（bool 除外）且落在 [0, native_w) / [0, native_h)。
     """
     if payload.get("cmd") != expected_cmd:
         return None
@@ -110,31 +114,16 @@ def _parse_pointer_payload(payload: dict, canvas_size: tuple,
             break
     if ep_id is None:
         return None
-    cxy = payload.get("client_xy")
-    if not isinstance(cxy, (list, tuple)) or len(cxy) != 2:
+    x = payload.get("x")
+    y = payload.get("y")
+    # bool 是 int 子類別，但語意上不該被當座標；明確排除
+    if isinstance(x, bool) or isinstance(y, bool):
         return None
-    try:
-        cx, cy = float(cxy[0]), float(cxy[1])
-    except (TypeError, ValueError):
+    if not isinstance(x, int) or not isinstance(y, int):
         return None
-    zoom = payload.get("zoom", 1.0)
-    try:
-        zoom = float(zoom)
-        if zoom <= 0:
-            return None
-    except (TypeError, ValueError):
+    nw, nh = native_size
+    if not (0 <= x < nw and 0 <= y < nh):
         return None
-    pan = payload.get("pan_offset", [0, 0])
-    if not isinstance(pan, (list, tuple)) or len(pan) != 2:
-        return None
-    try:
-        px, py = float(pan[0]), float(pan[1])
-    except (TypeError, ValueError):
-        return None
-    x, y = client_to_native_coords(
-        client_xy=(cx, cy), canvas_size=canvas_size, native_size=native_size,
-        pan_offset=(px, py), zoom=zoom,
-    )
     out = {"flow": flow, "x": x, "y": y}
     # 把符合的 id 欄位原樣回填
     for k in id_keys:
@@ -145,22 +134,26 @@ def _parse_pointer_payload(payload: dict, canvas_size: tuple,
     return out
 
 
-def parse_fire_at_payload(payload: dict, canvas_size: tuple,
-                          native_size: tuple = (1920, 1080)) -> dict | None:
+def parse_fire_at_payload(payload: dict) -> dict | None:
     """解析 fire_at 命令；不合法回 None。
+
+    P5 Task 1：thin validator——只驗證 payload 結構（cmd/flow/id/x/y）與
+    x/y 範圍 [0, 1920) / [0, 1080)。座標空間還原交給 client 端 JS。
 
     接受 harvest_id（harvest flow）或 attempt_id（reentry flow）。
     """
     return _parse_pointer_payload(
-        payload, canvas_size, native_size, "fire_at",
+        payload, "fire_at",
         id_keys=("harvest_id", "attempt_id"),
     )
 
 
-def parse_reentry_click_payload(payload: dict, canvas_size: tuple,
-                                native_size: tuple = (1920, 1080)) -> dict | None:
-    """解析 reentry_click 命令；不合法回 None。只接受 attempt_id。"""
+def parse_reentry_click_payload(payload: dict) -> dict | None:
+    """解析 reentry_click 命令；不合法回 None。只接受 attempt_id。
+
+    P5 Task 1：thin validator（同 parse_fire_at_payload）。
+    """
     return _parse_pointer_payload(
-        payload, canvas_size, native_size, "reentry_click",
+        payload, "reentry_click",
         id_keys=("attempt_id",),
     )

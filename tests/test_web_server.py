@@ -44,11 +44,10 @@ def test_websocket_connect_increments_client_count(app_parts):
 
 
 def test_websocket_command_pushes_to_pending(app_parts):
-    """P1 regression：fire_at 命令透過 _handle_command 還原座標後 push 進 pending。
+    """P1 regression：fire_at 命令透過 _handle_command 驗證後 push 進 pending。
 
-    P4 Task 2 起 fire_at 走 parse_fire_at_payload 還原座標路徑；payload 改用
-    client_xy + canvas_size + zoom + pan_offset（見 TestHandleCommandCoordinatesRestore）。
-    本測保持綠色是 P1→P4 contract 遷移的最低門檻。
+    P5 Task 1：座標協議重設——payload 改成直接送原生 x/y（client 端 JS 自己換算），
+    不再送 client_xy/canvas_size/zoom/pan_offset；server 端 parser 變 thin validator。
     """
     app, pending, fallback, _ = app_parts
     client = TestClient(app)
@@ -57,8 +56,7 @@ def test_websocket_command_pushes_to_pending(app_parts):
             "type": "command",
             "payload": {"cmd": "fire_at", "flow": "harvest",
                         "harvest_id": "007",
-                        "client_xy": [851, 189], "canvas_size": [1920, 1080],
-                        "zoom": 1.0, "pan_offset": [0, 0]},
+                        "x": 851, "y": 189},
         }))
         # 給 server 一點時間處理
         import time; time.sleep(0.05)
@@ -72,9 +70,12 @@ def test_websocket_command_pushes_to_pending(app_parts):
 
 
 class TestHandleCommandCoordinatesRestore:
-    """fire_at 命令的座標還原：client 點擊 → 原生座標 push 進 pending。"""
+    """fire_at 命令的 thin-validator push：client 送原生座標 → push 進 pending。
 
-    def test_fire_at_pushes_restored_coords(self):
+    P5 Task 1：座標空間協議重設——server 不再還原座標，只驗證 payload 結構。
+    """
+
+    def test_fire_at_pushes_native_coords(self):
         from miningbot.web_ipc import PendingReplies, FallbackState
         from miningbot.web_server import create_app
         pending = PendingReplies()
@@ -85,8 +86,7 @@ class TestHandleCommandCoordinatesRestore:
             ws.send_text(json.dumps({
                 "type": "command",
                 "payload": {"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
-                            "client_xy": [480, 270], "canvas_size": [960, 540],
-                            "zoom": 1.0, "pan_offset": [0, 0]},
+                            "x": 960, "y": 540},
             }))
             import time; time.sleep(0.1)
         reply = pending.pop("harvest:007")
@@ -104,7 +104,7 @@ class TestHandleCommandCoordinatesRestore:
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({
                 "type": "command",
-                "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 client_xy
+                "payload": {"cmd": "fire_at", "flow": "harvest"},  # 缺 x/y/id
             }))
             import time; time.sleep(0.1)
         assert pending.pop("harvest:007") is None  # 沒進 queue
