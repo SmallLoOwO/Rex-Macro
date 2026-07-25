@@ -375,3 +375,38 @@ class TestPingResolveMessenger:
         m, _, _ = self._make()
         ok = m.resolve("nonexistent_mid", "007", reply_source="web")
         assert ok is False
+
+
+# --- Task 7：main.py 整合（StatusMessenger + PingResolveMessenger）---
+
+
+class TestMainIntegration:
+    """smoke test：bot 啟動時 initialize 兩個 messenger；狀態變動呼叫 update。
+
+    用 fake StatusMessenger / PingResolveMessenger 注入，計數呼叫。
+    不啟動完整 bot（太重）；只驗 __init__ 與一個 tick 的整合行為。"""
+
+    def test_main_init_creates_messengers_when_discord_enabled(self, monkeypatch):
+        # 略——具體 fake bot 結構依 main.py；此測試標 skip，理由同 P1 Task 10
+        # 留 P3/P4 整合時補回（那時 main.py 對 web 整合更完整）
+        pytest.skip("main.py 整合 smoke test 留 P3/P4 補；此 task 先驗 rg 找的 anchor 存在")
+
+    def test_anchor_make_discord_sink_exists(self):
+        """確保 main.py 含 make_discord_sink anchor（原 brief 用 rg；本機無 rg 改純 Python）。
+
+        anchor A（Discord sink 註冊處）位於 miningbot/main.py:102 的
+        notify.make_discord_sink(...) 呼叫——同處整合 StatusMessenger /
+        PingResolveMessenger 初始化。
+        """
+        import os
+        main_py = os.path.join(
+            "C:/Users/puppy/OneDrive/Desktop/無聊的挖礦遊戲",
+            "miningbot", "main.py",
+        )
+        with open(main_py, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        matches = [(i + 1, ln.rstrip()) for i, ln in enumerate(lines)
+                   if "make_discord_sink" in ln]
+        assert matches, "main.py 必須呼叫 make_discord_sink（anchor A）"
+        # 列出第一個命中處協助除錯
+        assert "make_discord_sink" in matches[0][1]

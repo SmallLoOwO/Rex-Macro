@@ -359,6 +359,36 @@ class Bot:
         # 踩 6~11s 冷 init；_get_rapid_engine/_get_tess_api 有鎖冪等，未裝時快速失敗一次）。
         threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
         threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,), daemon=True).start()
+        # P2 Task 7：StatusMessenger（狀態訊息 post-once-then-edit）+ PingResolveMessenger
+        # （NEEDS_HUMAN PING 推播 + 結案編輯同則）初始化——只在 Discord token/channel 已設
+        # 時啟用；失敗只記 log，不影響挖礦（沿用 notify.make_discord_sink 既有慣例）。
+        # _pending_ping_mid 給 anchor D（_resolve_ping_if_any）用：routing_key "harvest:007"
+        # → PING message_id；玩家 reply 完成時對照同一份 dict 編輯 ✅。
+        if cfg.discord_bot_token and cfg.discord_channel_id:
+            from . import notify as _notify_messenger
+            try:
+                self._status_messenger = _notify_messenger.StatusMessenger(
+                    token=cfg.discord_bot_token, channel_id=cfg.discord_channel_id,
+                    edit_min_interval_s=cfg.discord_status_edit_min_interval_s,
+                    send_fn=_notify_messenger.send_message_with_id,
+                    edit_fn=_notify_messenger.edit_message,
+                    log=self.log_discord,
+                )
+                self._ping_messenger = _notify_messenger.PingResolveMessenger(
+                    token=cfg.discord_bot_token, channel_id=cfg.discord_channel_id,
+                    send_fn=_notify_messenger.send_message_with_id,
+                    edit_fn=_notify_messenger.edit_message,
+                    log=self.log_discord,
+                )
+                self._status_messenger.ensure_posted(now=time.monotonic())
+            except Exception as e:
+                self.logger.error("StatusMessenger/PingResolveMessenger 初始化失敗: %s", e)
+                self._status_messenger = None
+                self._ping_messenger = None
+        else:
+            self._status_messenger = None
+            self._ping_messenger = None
+        self._pending_ping_mid: dict[str, str] = {}  # routing_key → PING message_id（anchor D 用）
 
     def _load_panel_templates(self) -> list:
         import glob
@@ -2396,6 +2426,9 @@ class Bot:
                 self._latency.observe("capture", time.perf_counter() - stage_started)
                 self._latest_frame = frame       # 發佈給背景 banner OCR worker（唯讀共享）
                 stage_started = time.perf_counter()
+                # P2 Task 7 anchor C：補捉迭代起點 state，_tick 後用邊沿檢測 NEEDS_HUMAN 進入
+                # （涵蓋 decide_transition 路徑＋_tick_mining 內部 self.state = NEEDS_HUMAN 路徑）。
+                _pre_iter_state = self.state
                 obs = self.observe(frame)
                 self._latency.observe("observe", time.perf_counter() - stage_started)
                 decided = decide_transition(self.state, obs)
@@ -2426,6 +2459,20 @@ class Bot:
                 stage_started = time.perf_counter()
                 self._tick(frame)
                 self._latency.observe("tick", time.perf_counter() - stage_started)
+                # P2 Task 7 anchor B/C：每 tick 末更新 StatusMessenger；同時用邊沿檢測
+                # NEEDS_HUMAN 進入（prev != NEEDS_HUMAN && curr == NEEDS_HUMAN）發 PING。
+                # 邊沿檢測可同時涵蓋 decide_transition 路徑與 _tick_mining 內部直接
+                # 寫 self.state = NEEDS_HUMAN 的路徑（兩種入口都會在 _tick 結束後被看到）。
+                if (_pre_iter_state is not State.NEEDS_HUMAN
+                        and self.state is State.NEEDS_HUMAN):
+                    try:
+                        self._send_needs_human_ping(
+                            harvest_id=self._needs_human_extra_meta.get("harvest_id"),
+                            reason=self._human_reason,
+                        )
+                    except Exception as e:
+                        self.log_discord.warning("_send_needs_human_ping 例外: %s", e)
+                self._update_status_messenger()
                 self._heartbeat()
                 # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工
                 # 期間閒置過久會被 Roblox 踢出）。恢復挖礦/採集時歸 0，下次等待重新計時。
@@ -2445,6 +2492,18 @@ class Bot:
         finally:
             self._running = False
             self._audio_cap.stop()
+            # P2 Task 7 anchor E：shutdown 時 best-effort 把 StatusMessenger 卡片 edit 成
+            # 「已關機」狀態（失敗不影響其他 cleanup； StatusMessenger 可能未初始化）。
+            if getattr(self, "_status_messenger", None) is not None:
+                try:
+                    self._status_messenger.update(
+                        state="STOPPED", last_action="shutdown",
+                        audio_score=0.0, capacity_pct=None,
+                        uptime_s=int(time.time() - self._started),
+                        now=time.monotonic(),
+                    )
+                except Exception as e:
+                    self.log_discord.warning("shutdown StatusMessenger.update 例外: %s", e)
             ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
             # WebIPC thread 收掉（比照 daemon thread 慣例：明確 stop + join，讓 socket
             # 關乾淨；不依賴 process exit 才釋放）
@@ -3010,6 +3069,78 @@ class Bot:
             reply, self._pending_aim = self._pending_aim, None
             self._tick_remote_aim(frame, reply)
         # RESET_WAIT / 其餘 NEEDS_HUMAN: 等待熱鍵，不動作（chill 仍由 observe 監聽）
+
+    # --- P2 Task 7：StatusMessenger / PingResolveMessenger 整合 helper ---
+
+    def _update_status_messenger(self):
+        """每 tick 末呼叫：把目前 state／last_action／音訊／運行時間送 StatusMessenger.update。
+
+        StatusMessenger 內部帶 EditThrottle + should_edit_for_state 雙閘——只有狀態或
+        動作字串變動且過 throttle 才會真的發 edit_message。沒設 Discord token 時 no-op。
+        """
+        if getattr(self, "_status_messenger", None) is None:
+            return
+        try:
+            audio_score = self.listener.latest_score()
+        except Exception:
+            audio_score = 0.0
+        uptime = int(time.time() - self._started)
+        try:
+            self._status_messenger.update(
+                state=self.state.value, last_action=self.last_action,
+                audio_score=audio_score, capacity_pct=getattr(self, "_capacity_pct", None),
+                uptime_s=uptime, now=time.monotonic(),
+            )
+        except Exception as e:
+            self.log_discord.warning("StatusMessenger.update 例外（停用更新）: %s", e)
+
+    def _send_needs_human_ping(self, harvest_id: str | None, reason: str):
+        """NEEDS_HUMAN 進入時呼叫：透過 PingResolveMessenger 推播 <@USER_ID> PING 訊息。
+
+        回傳 message_id（失敗 None）。harvest_id 有值時同步寫入 _pending_ping_mid，
+        供玩家 reply 完成時的 _resolve_ping_if_any 對照同則訊息編輯 ✅。
+        fallback 由 _web_fallback_state 決定（網頁介入失敗退回 Discord 反應按鈕）。
+        """
+        if getattr(self, "_ping_messenger", None) is None:
+            return None
+        # _web_fallback_state 由 P1 web client 介入路徑設置（P4 接線）；本 task 階段
+        # 屬性可能尚未存在 → 用 getattr 防 AttributeError，缺屬性視為 fallback=True
+        # （網頁介入未啟用 → 一律走 Discord 反應按鈕）。
+        web_state = getattr(self, "_web_fallback_state", None)
+        fallback = (web_state is None
+                    or web_state.is_fallback(
+                        now=time.monotonic(), grace_s=cfg.web_fallback_grace_s))
+        try:
+            mid = self._ping_messenger.send_ping(
+                harvest_id=harvest_id, reason=reason, fallback=fallback,
+                now=time.monotonic(),
+            )
+        except Exception as e:
+            self.log_discord.warning("PingResolveMessenger.send_ping 例外: %s", e)
+            return None
+        if mid and harvest_id:
+            self._pending_ping_mid[f"harvest:{harvest_id}"] = mid
+        return mid
+
+    def _resolve_ping_if_any(self, routing_key: str, reply_source: str, detail: str = ""):
+        """玩家 reply 完成時呼叫：把對應的 PING 訊息編輯成 ✅ 結案。
+
+        routing_key 例如 "harvest:007"；對 _pending_ping_mid 找出 PING message_id，
+        然後呼叫 PingResolveMessenger.resolve 編輯同一則。沒對應的 PING 則 no-op。
+
+        P2 Task 7 只放 framework；具體 caller（fire_at / reentry_click 後）接線留 P4。
+        """
+        if getattr(self, "_ping_messenger", None) is None:
+            return
+        mid = self._pending_ping_mid.pop(routing_key, None)
+        if not mid:
+            return
+        harvest_id = (routing_key.split(":", 1)[1]
+                      if ":" in routing_key else None)
+        try:
+            self._ping_messenger.resolve(mid, harvest_id, reply_source, detail)
+        except Exception as e:
+            self.log_discord.warning("PingResolveMessenger.resolve 例外: %s", e)
 
     def _update_reset_chime_active(self):
         """依 state＋計時決定 reset-chime recorder 是否收音；窗外（含回 MINING）清空重錄。
