@@ -98,4 +98,25 @@ def test_get_root_returns_html(app_parts):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
-    pytest.skip("HTML 完整內容 Task 3 後回頭驗證")
+
+
+def test_get_root_returns_html_with_form(app_parts):
+    client, _, _ = app_parts
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    body = r.text
+    # 4 個欄位 form 元素
+    assert "reentry_mode" in body
+    assert "reentry_target_layer" in body
+    assert "reentry_yaw_sample_sweep" in body
+    assert "sweep_pitch_enabled" in body
+    # JS 提交邏輯（fetch /api/config）
+    assert "/api/config" in body
+    assert "fetch" in body.lower() or "XMLHttpRequest" in body
+
+
+def test_get_root_html_has_submit_button(app_parts):
+    client, _, _ = app_parts
+    body = client.get("/").text
+    assert "submit" in body.lower() or "type=\"submit\"" in body or "<button" in body.lower()
