@@ -87,3 +87,80 @@ def client_to_native_coords(
     native_x = max(0, min(native_x, nw - 1))
     native_y = max(0, min(native_y, nh - 1))
     return (int(native_x), int(native_y))
+
+
+def _parse_pointer_payload(payload: dict, canvas_size: tuple,
+                           native_size: tuple, expected_cmd: str,
+                           id_keys: tuple[str, ...]) -> dict | None:
+    """fire_at / reentry_click 共用解析：驗證 cmd/flow/id + 還原座標。
+
+    id_keys：可接受的 id 欄位名（fire_at 收 harvest_id 或 attempt_id；
+    reentry_click 只收 attempt_id）；取第一個非 None 的。
+    """
+    if payload.get("cmd") != expected_cmd:
+        return None
+    flow = payload.get("flow")
+    if not isinstance(flow, str) or not flow:
+        return None
+    ep_id = None
+    for k in id_keys:
+        v = payload.get(k)
+        if isinstance(v, str) and v:
+            ep_id = v
+            break
+    if ep_id is None:
+        return None
+    cxy = payload.get("client_xy")
+    if not isinstance(cxy, (list, tuple)) or len(cxy) != 2:
+        return None
+    try:
+        cx, cy = float(cxy[0]), float(cxy[1])
+    except (TypeError, ValueError):
+        return None
+    zoom = payload.get("zoom", 1.0)
+    try:
+        zoom = float(zoom)
+        if zoom <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    pan = payload.get("pan_offset", [0, 0])
+    if not isinstance(pan, (list, tuple)) or len(pan) != 2:
+        return None
+    try:
+        px, py = float(pan[0]), float(pan[1])
+    except (TypeError, ValueError):
+        return None
+    x, y = client_to_native_coords(
+        client_xy=(cx, cy), canvas_size=canvas_size, native_size=native_size,
+        pan_offset=(px, py), zoom=zoom,
+    )
+    out = {"flow": flow, "x": x, "y": y}
+    # 把符合的 id 欄位原樣回填
+    for k in id_keys:
+        v = payload.get(k)
+        if isinstance(v, str) and v:
+            out[k] = v
+            break
+    return out
+
+
+def parse_fire_at_payload(payload: dict, canvas_size: tuple,
+                          native_size: tuple = (1920, 1080)) -> dict | None:
+    """解析 fire_at 命令；不合法回 None。
+
+    接受 harvest_id（harvest flow）或 attempt_id（reentry flow）。
+    """
+    return _parse_pointer_payload(
+        payload, canvas_size, native_size, "fire_at",
+        id_keys=("harvest_id", "attempt_id"),
+    )
+
+
+def parse_reentry_click_payload(payload: dict, canvas_size: tuple,
+                                native_size: tuple = (1920, 1080)) -> dict | None:
+    """解析 reentry_click 命令；不合法回 None。只接受 attempt_id。"""
+    return _parse_pointer_payload(
+        payload, canvas_size, native_size, "reentry_click",
+        id_keys=("attempt_id",),
+    )

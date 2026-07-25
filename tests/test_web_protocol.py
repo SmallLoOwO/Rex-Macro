@@ -6,6 +6,8 @@ from miningbot.web_protocol import (
     serialize_message,
     parse_message,
     client_to_native_coords,
+    parse_fire_at_payload,
+    parse_reentry_click_payload,
 )
 
 
@@ -110,3 +112,90 @@ class TestClientToNativeCoords:
             canvas_size=(1920, 1080),
             native_size=(1920, 1080),
         ) == (1919, 1079)
+
+
+class TestParseFireAtPayload:
+    def test_basic_with_harvest_id(self):
+        # client 點 (480, 270) 在 960×540 canvas（縮小 2x）→ 原生 (960, 540)
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "client_xy": [480, 270], "canvas_size": [960, 540],
+                     "zoom": 1.0, "pan_offset": [0, 0]},
+            canvas_size=(960, 540),
+        )
+        assert result is not None
+        assert result["flow"] == "harvest"
+        assert result["harvest_id"] == "007"
+        assert result["x"] == 960
+        assert result["y"] == 540
+
+    def test_with_zoom_and_pan(self):
+        # 沿用 client_to_native_coords 的 combined_zoom_and_pan case
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "client_xy": [200, 100], "canvas_size": [960, 540],
+                     "zoom": 2.0, "pan_offset": [10, 10]},
+            canvas_size=(960, 540),
+        )
+        assert result == {"flow": "harvest", "harvest_id": "007", "x": 210, "y": 110}
+
+    def test_missing_cmd_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"flow": "harvest", "harvest_id": "007", "client_xy": [100, 100]},
+            canvas_size=(960, 540),
+        )
+        assert result is None
+
+    def test_missing_flow_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "harvest_id": "007", "client_xy": [100, 100]},
+            canvas_size=(960, 540),
+        )
+        assert result is None
+
+    def test_missing_both_ids_returns_none(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "client_xy": [100, 100]},
+            canvas_size=(960, 540),
+        )
+        assert result is None
+
+    def test_attempt_id_used_for_reentry_flow(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "reentry", "attempt_id": "attempt_3",
+                     "client_xy": [100, 100]},
+            canvas_size=(1920, 1080),
+        )
+        assert result is not None
+        assert result["flow"] == "reentry"
+        assert result["attempt_id"] == "attempt_3"
+
+    def test_invalid_client_xy_returns_none(self):
+        # client_xy 不是 list/tuple of 2 numbers
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "007",
+                     "client_xy": "not_a_list"},
+            canvas_size=(960, 540),
+        )
+        assert result is None
+
+
+class TestParseReentryClickPayload:
+    def test_basic(self):
+        result = parse_reentry_click_payload(
+            payload={"cmd": "reentry_click", "flow": "reentry", "attempt_id": "attempt_2",
+                     "client_xy": [480, 270], "canvas_size": [960, 540]},
+            canvas_size=(960, 540),
+        )
+        assert result is not None
+        assert result["flow"] == "reentry"
+        assert result["attempt_id"] == "attempt_2"
+        assert result["x"] == 960
+        assert result["y"] == 540
+
+    def test_missing_attempt_id_returns_none(self):
+        result = parse_reentry_click_payload(
+            payload={"cmd": "reentry_click", "flow": "reentry", "client_xy": [100, 100]},
+            canvas_size=(960, 540),
+        )
+        assert result is None
