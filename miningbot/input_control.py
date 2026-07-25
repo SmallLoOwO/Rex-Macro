@@ -1,6 +1,12 @@
 import time
+import logging
 import pydirectinput
 import ctypes
+
+# W 鍵追蹤 logger（2026-07-25 使用者要求）：長按／放開各記一筆 DEBUG，事後比對「W 突然放開」
+# 是 bot 主動 key_up 還是 Windows／遊戲側的狀態丟失。key_press（短按）不在此追蹤——
+# 每秒都會跑、量太大且對挖礦前進無影響。logger 走 miningbot 命名空間，與 main 共用設定。
+_log = logging.getLogger("miningbot.input_control")
 
 # 之前輸入太快、遊戲來不及讀，導致 W 沒按下、Shift 沒置中等。整體放慢。
 pydirectinput.PAUSE = 0.04                 # 每個 pydirectinput 動作後的間隔
@@ -17,10 +23,14 @@ def key_press(key: str, delay: float = 0.09):
     time.sleep(delay)
 
 def key_down(key: str):
+    if key == "w":
+        _log.info("key_down('w')")
     pydirectinput.keyDown(key)
     time.sleep(_STEP)
 
 def key_up(key: str):
+    if key == "w":
+        _log.info("key_up('w')")
     pydirectinput.keyUp(key)
     time.sleep(_STEP)
 

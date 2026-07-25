@@ -177,6 +177,9 @@ class Bot:
         self._antiafk_pressed_at = 0.0             # H060：上次真的按下 Space 的時刻（chill 靜音窗錨點）
         self._antiafk_mute_logged = False          # H060：本次按鍵的靜音已記過一筆（避免每幀洗 log）
         self._last_boost = 0.0                       # 上次按 D5 的時間（冷卻用）
+        # boost 沒到期警報（2026-07-25）：MINING 且未暫停時 boost 連續 > boost_stall_warn_s 沒重上
+        # = 遊戲時間可能凍結／焦點丟失／偵測誤判。一次警報後鎖住，恢復（boost 重上）才解鎖，避免洗頻道。
+        self._boost_stall_notified = False
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
         self._last_d3_fire_at: float | None = None  # session 級；實際 hold-click 當下起算
         self._last_boost_check = 0.0                 # boost 偵測節流：上次真的 edge-match 的時間
@@ -733,10 +736,15 @@ class Bot:
             time.sleep(cfg.radar_scan_wait_poll_s)
 
     def _radar_ready(self, frame, which: str) -> bool:
-        """D2 某能力是否該按了（連續使用模式）。which='scan'|'cave'。"""
-        enabled = (cfg.radar_scan_repeat_enabled if which == "scan"
-                   else cfg.radar_cave_skim_enabled)
-        if not enabled or not self._radar_toggle.get(which, True):
+        """D2 某能力是否該按了（連續使用模式）。which='scan'|'cave'。
+
+        啟用來源是 `_radar_toggle[which]`——__init__ 從 cfg 預設值初始化、Discord
+        `掃描/削洞 [開|關]` 在執行期改它，所以 toggle 是同時反映 cfg 與 Discord 指令
+        的真相來源。早期版本在 toggle 之外還檢查 cfg.*_repeat_enabled，但 cfg 是靜態
+        預設、Discord 指令不改它，導致 Discord 開了仍被 cfg=False 壓掉、70 分鐘 MINING
+        零 SCAN/CAVE 動作（2026-07-25 18:25 場實機）。
+        """
+        if not self._radar_toggle.get(which, False):
             return False
         last = self._radar_last.get(which, 0.0)
         if not self._radar_ocr_ok:                    # 後備：OCR 引擎不可用 → 定時
@@ -2419,12 +2427,28 @@ class Bot:
                 summary.p99_ms, summary.max_ms)
 
     def _heartbeat(self):
-        """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。"""
+        """長時間等待時定期記一筆，讓你知道它還在跑、目前音訊分數多少。
+
+        欄位：state／audio／peak／rms 之外，補三個用於對照「W 突然放開／卡住」的訊號
+        （2026-07-25 18:40-19:00 場才看出 audio 靜止，但當時缺這三個訊號無法直接歸因）：
+        - fg：Roblox 是否前景（N＝失焦→可能凍結遊戲時間）
+        - since_boost：距上次 boost 重上的秒數（>90s 通常意味遊戲凍結；boost 自然 ~50s 到期）
+        - since_progress：距上次 frame diff 過門檻的秒數（持續高＝STUCK 偵測矇住）
+        """
         now = time.time()
         if now - self._last_heartbeat >= cfg.heartbeat_interval_s:
-            self.log_hb.info("heartbeat state=%s audio=%.2f peak=%.2f rms=%.6f",
-                             self.state.value, self.listener.latest_score(),
-                             self._peak_audio_since_hb, self.listener.latest_rms())
+            fg_label = "?"
+            try:
+                if self._window_baseline is not None:
+                    fg_label = "Y" if window.query_window(cfg.window_title).foreground else "N"
+            except Exception:
+                pass
+            self.log_hb.info(
+                "heartbeat state=%s fg=%s audio=%.2f peak=%.2f rms=%.6f"
+                " since_boost=%.0fs since_progress=%.0fs",
+                self.state.value, fg_label, self.listener.latest_score(),
+                self._peak_audio_since_hb, self.listener.latest_rms(),
+                now - self._last_boost, now - self._last_progress)
             self._peak_audio_since_hb = 0.0
             self._last_heartbeat = now
 
@@ -2913,10 +2937,36 @@ class Bot:
                              cap_pct, cfg.reset_chime_capacity_arm_pct,
                              cfg.reset_chime_capture_max_s)
 
+    def _check_boost_stall(self, now: float):
+        """MINING 中 boost 連續 > boost_stall_warn_s 沒重上 → 警告一次。
+
+        不同於 STUCK 偵測（靠 frame diff，frame 還在動就 pass）：boost 自然 ~50s 到期，
+        如果連續 >90s 沒重上又沒暫停，**最可能是遊戲時間凍結**——Roblox 視窗失焦時
+        部分遊戲會暫停 server-side tick，UI 圖示還在但世界不動、W 在 Windows 按著
+        但遊戲收不到。實機 2026-07-25 18:40-19:00 即此症狀（heartbeat audio 靜止 20 分）。
+
+        警報帶 fg／boost_present／audio_peak 三個訊號協助對焦點／偵測／音訊三軸歸因。
+        """
+        if self.paused or self.state is not State.MINING:
+            self._boost_stall_notified = False
+            return
+        elapsed = now - self._last_boost
+        if elapsed > cfg.boost_stall_warn_s:
+            if not self._boost_stall_notified:
+                self.logger.warning(
+                    "[boost-stall] MINING 已 %.0fs 未重上 boost（boost_present=%s "
+                    "audio_peak=%.2f）——可能遊戲凍結／焦點丟失／偵測誤判",
+                    elapsed, self._boost_present, self._peak_audio_since_hb)
+                self._boost_stall_notified = True
+        elif elapsed < cfg.boost_cooldown_s:
+            # 恢復了（boost 又被重上）→ 解鎖，允許下次再警報
+            self._boost_stall_notified = False
+
     def _tick_mining(self, frame):
         if getattr(self, '_post_harvest_watch', 0) > 0:
             self._log_w_state("MINING post-harvest tick")
             self._post_harvest_watch -= 1
+        self._check_boost_stall(time.time())        # boost 久沒到期＝遊戲可能凍結
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._activity_ready(frame),   # D4：冷卻好就右鍵刷新事件

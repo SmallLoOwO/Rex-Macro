@@ -94,6 +94,54 @@ def test_radar_commands_are_whitelisted():
         assert discord_commands.RADAR_COMMAND_KIND[name] in ("scan", "cave")
 
 
+# --- Discord toggle 必須壓過 cfg 預設值（regression: 修前 70 分鐘零 SCAN/CAVE） ---
+
+def test_radar_ready_respects_runtime_toggle_over_cfg_default():
+    """Discord 把 _radar_toggle[which] 改 True 後，cfg.*_repeat_enabled=False 不該壓掉它。
+
+    Regression（2026-07-25 18:25 場）：修前 _radar_ready 同時檢查 cfg 與 toggle，
+    cfg 是靜態預設、Discord 指令不改它，導致 70 分鐘 MINING 零 SCAN/CAVE 動作。
+    修法：移除 cfg 檢查；toggle 是唯一真相來源（__init__ 從 cfg 初始化、Discord 改它）。
+    """
+    from miningbot import main
+    from miningbot.config import DEFAULT as cfg
+
+    bot = main.Bot.__new__(main.Bot)
+    bot._radar_toggle = {"scan": True, "cave": True}      # Discord 已下 `掃描 開`、`削洞 開`
+    bot._radar_last = {"scan": 0.0, "cave": 0.0}
+    bot._radar_ocr_ok = False                              # 走定時後備，不依賴 OCR
+    bot._radar_check_at = 0.0
+    bot._radar_local_present = False
+    bot._radar_cave_present = False
+
+    # cfg 預設值應為 False——這正是 bug 的前提
+    assert cfg.radar_scan_repeat_enabled is False
+    assert cfg.radar_cave_skim_enabled is False
+
+    # last=0 → time.time() - 0 > radar_repeat_interval_s(34s) → 該按了
+    # 即使 cfg=False，Discord 開過 toggle 就該觸發
+    assert bot._radar_ready(None, "scan") is True
+    assert bot._radar_ready(None, "cave") is True
+
+
+def test_radar_ready_toggle_off_disables_even_if_cfg_says_on(monkeypatch):
+    """鏡像回歸：toggle 關閉時 cfg=True 也不該觸發——避免把 cfg 與 toggle 顛倒後又錯。"""
+    from miningbot import main
+    monkeypatch.setattr(main.cfg, "radar_scan_repeat_enabled", True)
+    monkeypatch.setattr(main.cfg, "radar_cave_skim_enabled", True)
+
+    bot = main.Bot.__new__(main.Bot)
+    bot._radar_toggle = {"scan": False, "cave": False}    # Discord 已下 關
+    bot._radar_last = {"scan": 0.0, "cave": 0.0}
+    bot._radar_ocr_ok = False
+    bot._radar_check_at = 0.0
+    bot._radar_local_present = False
+    bot._radar_cave_present = False
+
+    assert bot._radar_ready(None, "scan") is False
+    assert bot._radar_ready(None, "cave") is False
+
+
 # --- 採集掃描前等冷卻（使用者指定：等冷卻結束再開始稀有掃描） ---
 
 def test_scan_cooldown_ready_uses_badge_when_ocr_ok():

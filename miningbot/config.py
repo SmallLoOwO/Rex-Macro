@@ -121,6 +121,10 @@ class Config:
     # 逾時不卡死：照常往下掃（保守，寧可白掃一次也不要卡在採集入口）。
     radar_scan_wait_max_s: float = 36.0          # 等待上限（冷卻 30s + 餘裕）
     radar_scan_wait_poll_s: float = 1.0          # 等待期間重讀徽章的間隔
+    # Boost 沒到期警報（2026-07-25 使用者要求）：MINING 且未暫停時 boost 連續 > 此秒數沒重上
+    # = 遊戲時間可能凍結（Roblox 失焦／偵測誤判）。boost 自然 ~50s 到期，給 ~1.5 倍餘裕。
+    # 不同於 STUCK（靠 frame diff 抓不到——frame 還在動就 pass），這條直接看 boost 是否到期。
+    boost_stall_warn_s: float = 90.0
     # 視窗跑位偵測（item ④）：用 Win32 查 Roblox 視窗「前景/位置/大小」，相對啟動時量到的
     # 基準判斷是否跑掉（失焦或被移動/縮放）→ 自動重新聚焦+初始化。用基準相對比較而非寫死
     # 1920x1080，因 DPI 縮放會讓 GetWindowRect 回報縮放後座標（實測此機 125% → 1536x864）。
