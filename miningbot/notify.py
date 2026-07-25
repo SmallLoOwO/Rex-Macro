@@ -688,19 +688,37 @@ def _wait_for_file(path: str, timeout: float = 2.0, interval: float = 0.05) -> b
     return False
 
 
-def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
+def make_discord_sink(token: str, channel_id: str, on_error=None, log=None,
+                      giveup_image_mode: str = "groups",
+                      _send_images_override=None):
     """回傳 EventLog sink：把值得通知的事件送 Discord；有 image_path 時附加圖片。
 
     失敗只回報不丟例外。log 是可选的 logging.Logger，用來記錄每筆 Discord 送出的結果。
+
+    giveup_image_mode（P2 spec §7）：
+    - "groups"（預設）：既有行為，image_groups 各 group 一則訊息、附 group 內圖片。
+      相容既有呼叫端（main.py 不傳此參數即走此路徑）。
+    - "single"（P2 新）：採集放棄事件改為一則訊息 + 一張全畫面圖（meta["image_path"]），
+      取代 image_groups 4-6 弚分組。細看的聊天/背包截圖在網頁歷史紀錄看（spec §5）。
+      沒帶 image_path 時 fall through 到既有 groups / multi / single 路徑。
+
+    _send_images_override：測試用，覆寫 send_images_message；production 為 None。
     """
+    _send_images = _send_images_override or send_images_message
+
     def _send(content, paths):
         """送一則：圖片就緒→附圖上傳，否則退回純文字。回 (ok, detail, tag)。
 
-        等 snapshot worker 寫完（race 修復）；都就緒才附圖，否則退回純文字。
+        production 等 snapshot worker 寫完（race 修復）；都就緒才附圖，否則退回純文字。
+        測試注入 _send_images_override 時路徑非真實檔案，跳過等待直接送（測試關心
+        的是 send_images 被怎麼呼叫，不是檔案 race）。
         """
-        ready = [p for p in paths if _wait_for_file(p)]
+        if _send_images_override is None:
+            ready = [p for p in paths if _wait_for_file(p)]
+        else:
+            ready = list(paths)
         if ready:
-            ok, detail = send_images_message(token, channel_id, content, ready)
+            ok, detail = _send_images(token, channel_id, content, ready)
             return ok, detail, "IMGx%d" % len(ready)
         ok, detail = send_message(token, channel_id, content)
         return ok, detail, ("TXT" if not paths else "NOIMG(wait-timeout)")
@@ -709,6 +727,18 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
         content = format_message(rec)
         if content is None:
             return
+        # P2 single 模式：優先用 image_path（單張全畫面）取代 image_groups
+        if giveup_image_mode == "single":
+            single_img = rec.meta.get("image_path")
+            if single_img:
+                ok, detail, tag = _send(content, [single_img])
+                if log:
+                    log.info("%s %s -> %s (%s)", tag, rec.type,
+                             "OK" if ok else "FAIL", detail)
+                if not ok and on_error is not None:
+                    on_error(detail)
+                return
+            # 沒 image_path：fall through 到 groups / text 路徑（既有行為）
         # image_groups（分組）→ 分開發送多則（採集放棄：先聊天框、再背包，前/後對比模式不變）
         groups = rec.meta.get("image_groups")
         if groups:
