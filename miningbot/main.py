@@ -3144,18 +3144,26 @@ class Bot:
 
         待補（P5／實機驗收）：
         - 失敗時透過 INTERVENTION_RESULT event 回報 web client（目前 silent return）。
-        - 玩家 reply 後呼叫 _resolve_ping_if_any 結案 PING 訊息（Task 5 接線）。
         - 確認 _aim_busy／_aim_context 清理由 caller 負責（與 _execute_aim_fine_fire 慣例一致）。
+
+        P4 Task 5 接線：玩家 reply 處理完成（不論 verify 是否通過）後呼叫
+        _resolve_ping_if_any 結案 PING 訊息——玩家已介入、結案信號比 verify 結果優先。
         """
         hid = ctx.harvest_id
         deadline = time.time() + cfg.remote_aim_budget_s
         ready, detail = self._wait_for_d3_cooldown(deadline)
         if not ready:
             self.log_discord.warning("[%s] web fire: D3 冷卻未就緒： %s", hid, detail)
+            self._resolve_ping_if_any(
+                f"harvest:{hid}", "web", f"web fire 失敗：D3 冷卻未就緒 ({detail})")
             return False, detail
         if not self._focus_roblox():
+            self._resolve_ping_if_any(
+                f"harvest:{hid}", "web", "web fire 失敗：無法聚焦 Roblox")
             return False, "無法聚焦 Roblox"
         if self._mine_resetting:
+            self._resolve_ping_if_any(
+                f"harvest:{hid}", "web", "web fire 失敗：礦坑重置中")
             return False, "礦坑重置中"
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
         # 用當下姿態記錄觀測（_aim_fire_and_verify 內 _record_target_observation 用）
@@ -3163,9 +3171,14 @@ class Bot:
         tgt_layer = ctx.pose_pitch_layer
         self.logger.info("[%s] AIM web fire -> (%d, %d) dir=%d layer=%s",
                          hid, x, y, tgt_dir, tgt_layer)
-        return self._aim_fire_and_verify(
+        ok, verify_detail = self._aim_fire_and_verify(
             (int(x), int(y)), -1.0, tgt_layer, tgt_dir, ctx, hid, deadline,
             chat_base_crop)
+        # 玩家 reply 已處理（不管 verify 結果）→ 結案 PING 訊息
+        self._resolve_ping_if_any(
+            f"harvest:{hid}", "web",
+            f"玩家點擊 ({x},{y}) verify={'通過' if ok else '失敗'}")
+        return ok, verify_detail
 
     def _summarize_survey_ctx(self, ctx) -> str:
         """給 web client 介入面板顯示的 context 摘要（純文字）。
@@ -3238,14 +3251,14 @@ class Bot:
 
         回傳 message_id（失敗 None）。harvest_id 有值時同步寫入 _pending_ping_mid，
         供玩家 reply 完成時的 _resolve_ping_if_any 對照同則訊息編輯 ✅。
-        fallback 由 _web_fallback_state 決定（網頁介入失敗退回 Discord 反應按鈕）。
+        fallback 由 _web_fallback 決定（網頁介入失敗退回 Discord 反應按鈕）。
         """
         if getattr(self, "_ping_messenger", None) is None:
             return None
-        # _web_fallback_state 由 P1 web client 介入路徑設置（P4 接線）；本 task 階段
+        # _web_fallback 由 P1 web client 介入路徑設置（P4 接線）；本 task 階段
         # 屬性可能尚未存在 → 用 getattr 防 AttributeError，缺屬性視為 fallback=True
         # （網頁介入未啟用 → 一律走 Discord 反應按鈕）。
-        web_state = getattr(self, "_web_fallback_state", None)
+        web_state = getattr(self, "_web_fallback", None)
         fallback = (web_state is None
                     or web_state.is_fallback(
                         now=time.monotonic(), grace_s=cfg.web_fallback_grace_s))
@@ -5905,6 +5918,10 @@ class Bot:
         直接定位、無 zoom_region（傳 () 給 record_click）。兩者點擊後的驗證邏輯相同。
 
         zs：snapshot 檔名用的 zoom 後綴（_z{N} 或空字串）。
+
+        回 verdict（still_surface / no_change / moved_unconfirmed / descended）：
+        P4 Task 5 接線讓 _rr_click_from_web 用 verdict 組 _resolve_ping_if_any 的 detail。
+        _rr_click（Discord 路徑）忽略回傳值，沿用既有 awaiting_fine/awaiting_confirm 行為。
         """
         import cv2
         ic.click_at(int(pos[0]), int(pos[1]))
@@ -5930,13 +5947,13 @@ class Bot:
                 + ("（畫面有動，可能只換了重生點）" if frame_changed else "")
                 + "（紅圈＝實際點擊處）。重指細格、`放大 <細格>` 或 `重骰`",
                 image_paths=[mpath])
-            return                                # 留在 awaiting_fine
+            return verdict                        # 留在 awaiting_fine
         if verdict == "no_change":
             self._rr_notify(
                 "❌ 點了畫面無變化、Depth 也讀不到（紅圈＝實際點擊處）。"
                 "重指細格、`放大 <細格>` 或 `重骰`",
                 image_paths=[mpath])
-            return                                # 留在 awaiting_fine
+            return verdict                        # 留在 awaiting_fine
         time.sleep(1.5)                          # 傳送落地
         land = capture.grab()
         lpath = os.path.join(self._rr_snap_dir(),
@@ -5962,7 +5979,7 @@ class Bot:
                 f"左圖紅圈＝點擊處、右圖＝落點。沒問題回 `好` 開挖；點錯回 `重骰`；"
                 f"資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
-            return
+            return verdict
         # verdict == "descended"：Depth=NNNm 已直接證明在礦內；礦內亮度檢查退役
         # （夜間暗景會騙亮度——H046(a) 同源誤判；狀態錨嚴格更強）
         if cfg.reentry_remote_auto_resume:
@@ -5977,6 +5994,7 @@ class Bot:
                 f"❓ 已下礦（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
                 f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
+        return verdict
 
     def _rr_click_from_web(self, ctx, x: int, y: int):
         """從 web 介入面板的玩家 tap 直接點擊＋驗證（跳過 Discord 方位+格+連鎖放大）。
@@ -5995,17 +6013,25 @@ class Bot:
 
         失敗時（still_surface / no_change）只發 _rr_notify，不 fall through 到
         Discord 八方位——玩家可改用文字指令 `重骰`／`跳過`（_handle_reentry_reply
-        不靠 embed 也能解析），或等下一輪 web 介入。詳情待 Task 5/6 補介入面板
-        結果回報與 fallback 切換。
+        不靠 embed 也能解析），或等下一輪 web 介入。詳情待 Task 6 補介入面板
+        結果回報。
+
+        P4 Task 5 接線：玩家 reply 處理完成（不論 verdict 結果）後呼叫
+        _resolve_ping_if_any 結案 PING 訊息——玩家已介入、結案信號比 verdict 優先。
         """
         import cv2
         if not (0 <= int(x) < cfg.screen_w and 0 <= int(y) < cfg.screen_h):
             self._rr_notify(
                 f"❌ web 點擊座標超出螢幕範圍 (x={x}, y={y}；"
                 f"screen={cfg.screen_w}x{cfg.screen_h})，`重骰` 重試或回 Discord 八方位")
+            self._resolve_ping_if_any(
+                f"reentry:{ctx.episode_id}", "web",
+                f"web 點擊座標超出螢幕範圍 ({x},{y})")
             return
         if not self._focus_roblox():
             self._rr_notify("⚠ 無法聚焦 Roblox，web 點擊取消；可 `重骰` 重試")
+            self._resolve_ping_if_any(
+                f"reentry:{ctx.episode_id}", "web", "web 點擊失敗：無法聚焦 Roblox")
             return
         pos = (int(x), int(y))
         layer = ctx.sticky_layer
@@ -6023,7 +6049,11 @@ class Bot:
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         # region=() 標記 web 點擊沒有 zoom 來源區域（有別於 _rr_click 收 zoom_region）
         reentry_remote.record_click(ctx, pos, layer, (), time.time())
-        self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
+        verdict = self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
+        # 玩家 reply 已處理（不管 verdict 結果）→ 結案 PING 訊息
+        self._resolve_ping_if_any(
+            f"reentry:{ctx.episode_id}", "web",
+            f"玩家點擊 ({x},{y}) verdict={verdict}")
 
     def _reentry_await_player_click(self, ctx) -> bool:
         """回礦開場鏈全閘通過後、_rr_sweep_and_send 前先問 web。
