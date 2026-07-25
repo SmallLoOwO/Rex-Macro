@@ -42,3 +42,48 @@ def parse_message(text: str) -> WebMessage | None:
     if not isinstance(t, str) or not isinstance(p, dict):
         return None
     return WebMessage(type=t, payload=p)
+
+
+def client_to_native_coords(
+    client_xy: tuple[float, float],
+    canvas_size: tuple[int, int],
+    native_size: tuple[int, int],
+    pan_offset: tuple[float, float] = (0.0, 0.0),
+    zoom: float = 1.0,
+) -> tuple[int, int]:
+    """把玩家在 canvas 上點的座標還原成遊戲原生解析度座標。
+
+    參數：
+    - client_xy：玩家點擊的 canvas 座標（像素）
+    - canvas_size：canvas 在瀏覽器中顯示的尺寸（CSS 像素）
+    - native_size：遊戲原生解析度（1920×1080）
+    - pan_offset：玩家 pinch-zoom 後平移的量（在 native 空間的位移；預設 (0,0)）
+    - zoom：玩家 pinch-zoom 的倍數（1.0 = fit canvas；2.0 = 放大 2x）
+
+    順序：先除 zoom（退到未 zoom 座標）→ scale 到 native → 加 pan_offset → clamp。
+
+    pan_offset 的定義是「玩家把原圖往哪個方向拖了多少 native 像素」——client 端
+    會在 event handler 裡追蹤，並跟 client_xy 一起送 server。本函式純數學，
+    不處理 client 端手勢。
+
+    clamp 到 [0, native_w-1] / [0, native_h-1]：避免玩家平移出界送了負值或超界。
+    """
+    cx, cy = client_xy
+    cw, ch = canvas_size
+    nw, nh = native_size
+    px, py = pan_offset
+
+    # 先除 zoom：zoom 是「顯示放大」，反向除掉
+    unzoomed_x = cx / zoom
+    unzoomed_y = cy / zoom
+
+    # canvas → native 比例縮放
+    scale_x = nw / cw
+    scale_y = nh / ch
+    native_x = unzoomed_x * scale_x + px
+    native_y = unzoomed_y * scale_y + py
+
+    # clamp
+    native_x = max(0, min(native_x, nw - 1))
+    native_y = max(0, min(native_y, nh - 1))
+    return (int(native_x), int(native_y))
