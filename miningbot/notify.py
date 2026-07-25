@@ -82,6 +82,64 @@ class EditThrottle:
             return True
         return False
 
+
+# --- P2: 訊息內容格式化純函式（spec §7）---
+
+
+def format_status_text(state: str, last_action: str, audio_score: float,
+                       capacity_pct: float | None, uptime_s: int) -> str:
+    """狀態訊息內容（給 StatusMessenger.post/edit 用）。
+
+    跟 status_hud.py 同風格（左下角 HUD 文字版），但搬到 Discord 卡片。
+    state 用既有 _STATE_ZH（status_hud）映射成中文；映射不到用原文。
+    uptime 格式 XhYYm（不顯示秒，discord 卡片不需要那麼細）。
+    """
+    # 從 status_hud 借狀態中文化（避免循環 import，local copy）
+    _STATE_ZH = {
+        "MINING": "挖礦中", "HARVESTING": "採集稀有礦",
+        "NEEDS_HUMAN": "需要人工", "RESET_WAIT": "礦坑重置·待定位",
+        "REENTRY": "重置·自動回礦",
+    }
+    tag = _STATE_ZH.get(state, state)
+    cap_s = f"　容量: {capacity_pct:.0f}%" if capacity_pct is not None else ""
+    h = uptime_s // 3600
+    m = (uptime_s % 3600) // 60
+    return (
+        f"● {tag}\n"
+        f"動作: {last_action}\n"
+        f"音訊: {audio_score:.2f}{cap_s}    運行: {h}h{m:02d}m"
+    )
+
+
+def format_ping_content(harvest_id: str | None, reason: str, fallback: bool) -> str:
+    """NEEDS_HUMAN PING 訊息內容。
+
+    用 <@USER_ID> mention 推播；harvest_id 有則前綴 [XXX]；fallback 與否
+    決定後續玩家該去哪處理（Discord 反應按鈕 vs 網頁點選）。
+    """
+    hid = f"[{harvest_id}] " if harvest_id else ""
+    ping = f"<@{PING_USER_ID}>"
+    if fallback:
+        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（fallback 模式：用 Discord 反應按鈕處理）"
+    else:
+        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（在網頁處理：pinch-zoom 點選截圖）"
+    return body
+
+
+def format_resolve_text(harvest_id: str | None, reply_source: str, detail: str = "") -> str:
+    """NEEDS_HUMAN 結案編輯內容（把原 PING 訊息 edit 成 ✅）。
+
+    reply_source: "web" / "discord" / "skip" / "timeout"；detail 是可选補充
+    （例如玩家點擊座標、verify 結果）。
+    """
+    hid = f"[{harvest_id}] " if harvest_id else ""
+    src_map = {"web": "在網頁處理", "discord": "在 Discord 處理",
+               "skip": "已跳過", "timeout": "已逾時"}
+    src_txt = src_map.get(reply_source, reply_source)
+    detail_s = f"（{detail}）" if detail else ""
+    return f"✅ {hid}已{src_txt}{detail_s}"
+
+
 _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",

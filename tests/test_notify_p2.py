@@ -78,3 +78,75 @@ class TestEditThrottle:
         t.allow_edit(now=0.0)
         t.allow_edit(now=1.0)  # blocked
         assert t.last_edit_at == 0.0
+
+
+# --- Task 3：format_status_text + format_ping_content + format_resolve_text 純函式 ---
+
+from miningbot.notify import (
+    format_status_text, format_ping_content, format_resolve_text,
+)
+
+
+class TestFormatStatusText:
+    def test_basic_format(self):
+        s = format_status_text(
+            state="HARVESTING", last_action="命中 (851,189)",
+            audio_score=0.42, capacity_pct=63.0, uptime_s=8234,
+        )
+        # 各欄位都該出現
+        assert "採集" in s or "HARVESTING" in s
+        assert "命中 (851,189)" in s
+        assert "63%" in s
+        assert "2h17m" in s  # 8234 = 2h 17m 14s
+
+    def test_capacity_none_omitted(self):
+        s = format_status_text("MINING", "x", 0.5, None, 60)
+        assert "容量" not in s
+        assert "1m" in s  # 60 = 1m
+
+    def test_uptime_formats(self):
+        assert "2h17m" in format_status_text("MINING", "x", 0.0, None, 8234)
+        assert "0h00m" in format_status_text("MINING", "x", 0.0, None, 0)
+        assert "1h00m" in format_status_text("MINING", "x", 0.0, None, 3600)
+
+
+class TestFormatPingContent:
+    def test_with_harvest_id_fallback(self):
+        c = format_ping_content(harvest_id="007", reason="稀有礦未自動命中", fallback=True)
+        assert "<@373438562940747776>" in c
+        assert "[007]" in c
+        assert "稀有礦未自動命中" in c
+        # fallback 模式提示玩家在 Discord 操作
+        assert "Discord" in c or "反應" in c or "方位" in c
+
+    def test_with_harvest_id_web(self):
+        c = format_ping_content(harvest_id="007", reason="X", fallback=False)
+        assert "<@373438562940747776>" in c
+        assert "[007]" in c
+        assert "網頁" in c  # 非 fallback 提示在網頁處理
+
+    def test_without_harvest_id(self):
+        c = format_ping_content(harvest_id=None, reason="X", fallback=False)
+        assert "<@373438562940747776>" in c
+        assert "[007]" not in c
+        assert "X" in c
+
+
+class TestFormatResolveText:
+    def test_web_resolve(self):
+        t = format_resolve_text(harvest_id="007", reply_source="web", detail="玩家點擊 (851,189)")
+        assert "✅" in t
+        assert "[007]" in t
+        assert "網頁" in t
+        assert "(851,189)" in t
+
+    def test_discord_resolve(self):
+        t = format_resolve_text(harvest_id="007", reply_source="discord", detail="")
+        assert "✅" in t
+        assert "[007]" in t
+        assert "Discord" in t or "discord" in t
+
+    def test_without_detail(self):
+        t = format_resolve_text(harvest_id="007", reply_source="web", detail="")
+        assert "✅" in t
+        # 沒 detail 也不該崩
