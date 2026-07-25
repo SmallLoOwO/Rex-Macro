@@ -32,6 +32,11 @@ REACTION_USER_API = "https://discord.com/api/v10/channels/{channel_id}/messages/
 # 只有這些「值得通知」的事件會送 Discord；其餘（狀態切換、暫停/繼續、心跳…）不送，避免洗版。
 # PAUSED/RESUMED 不送——會手動暫停的人一定在畫面前，不需要 Discord 提醒。
 # STUCK 不在此：H044 起走 Bot._notify_stuck 專屬路徑（送出後掛 🏠 手動回礦反應鈕）
+
+# 個人 bot 寫死（spec §7）：NEEDS_HUMAN 推播用 <@ID> mention，無需 Config 欄位。
+# Discord mention 格式：<@USER_ID>；USER_ID 必須是字串（數字會被當角色 ID）。
+PING_USER_ID = "373438562940747776"
+
 _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",
