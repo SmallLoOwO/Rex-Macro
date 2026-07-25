@@ -150,3 +150,107 @@ class TestFormatResolveText:
         t = format_resolve_text(harvest_id="007", reply_source="web", detail="")
         assert "✅" in t
         # 沒 detail 也不該崩
+
+
+# --- Task 4：StatusMessenger（post-once-then-edit 生命週期）---
+
+from miningbot.notify import StatusMessenger
+
+
+class TestStatusMessenger:
+    def _make(self, edit_min_interval_s=3.0):
+        sends = []
+        edits = []
+        def send_fn(token, channel_id, content, timeout=10.0):
+            sends.append((content,))
+            return True, "ok", f"mid_{len(sends)}"
+        def edit_fn(token, channel_id, message_id, embed=None, content=None, timeout=10.0):
+            edits.append((message_id, content))
+            return True, "ok"
+        m = StatusMessenger(
+            token="t", channel_id="c", edit_min_interval_s=edit_min_interval_s,
+            send_fn=send_fn, edit_fn=edit_fn,
+        )
+        return m, sends, edits
+
+    def test_ensure_posted_first_time_sends(self):
+        m, sends, _ = self._make()
+        assert m.ensure_posted(now=0.0) is True
+        assert len(sends) == 1
+        assert m.message_id == "mid_1"
+
+    def test_ensure_posted_second_time_noop(self):
+        m, sends, _ = self._make()
+        m.ensure_posted(now=0.0)
+        m.ensure_posted(now=10.0)
+        assert len(sends) == 1
+
+    def test_update_before_post_returns_false(self):
+        # 還沒 post 過，update 無對象可 edit
+        m, _, edits = self._make()
+        ok = m.update("MINING", "x", 0.0, None, 0, now=0.0)
+        assert ok is False
+        assert edits == []
+
+    def test_update_state_change_edits(self):
+        m, _, edits = self._make()
+        m.ensure_posted(now=0.0)
+        ok = m.update("MINING", "x", 0.0, None, 0, now=10.0)
+        assert ok is True
+        assert len(edits) == 1
+        assert edits[0][0] == "mid_1"  # edit 同一則
+
+    def test_update_same_state_same_action_no_edit(self):
+        m, _, edits = self._make()
+        m.ensure_posted(now=0.0)
+        m.update("MINING", "x", 0.0, None, 0, now=10.0)  # first edit (state None→MINING)
+        edits.clear()
+        m.update("MINING", "x", 0.0, None, 0, now=11.0)  # no change
+        assert edits == []
+
+    def test_update_throttle_blocks(self):
+        m, _, edits = self._make(edit_min_interval_s=3.0)
+        m.ensure_posted(now=0.0)
+        m.update("MINING", "x", 0.0, None, 0, now=10.0)  # edit (state None→MINING)
+        edits.clear()
+        # 同 state 但改 action，理論 should_edit=True，但 throttle 還在
+        ok = m.update("MINING", "y", 0.0, None, 0, now=11.0)
+        assert ok is False
+        assert edits == []
+
+    def test_update_after_throttle_allowed(self):
+        m, _, edits = self._make(edit_min_interval_s=3.0)
+        m.ensure_posted(now=0.0)
+        m.update("MINING", "x", 0.0, None, 0, now=10.0)
+        edits.clear()
+        ok = m.update("MINING", "y", 0.0, None, 0, now=13.1)  # throttle 過 + action 變動
+        assert ok is True
+        assert len(edits) == 1
+
+    def test_update_tracks_last_state_and_action(self):
+        m, _, _ = self._make()
+        m.ensure_posted(now=0.0)
+        m.update("MINING", "abc", 0.0, None, 0, now=10.0)
+        assert m.last_state == "MINING"
+        assert m.last_action == "abc"
+
+    def test_send_failure_does_not_set_message_id(self):
+        # send_fn 失敗，message_id 不該被設（下次 ensure_posted 仍可重試）
+        def bad_send(token, channel_id, content, timeout=10.0):
+            return False, "rate limited", None
+        m = StatusMessenger(
+            token="t", channel_id="c", edit_min_interval_s=3.0,
+            send_fn=bad_send, edit_fn=lambda *a, **kw: (True, "ok"),
+        )
+        assert m.ensure_posted(now=0.0) is False
+        assert m.message_id is None
+
+    def test_edit_failure_does_not_update_last_state(self):
+        # edit 失敗，state/action 不該更新（下次仍會 retry）
+        m, _, _ = self._make()
+        # replace edit_fn after construction
+        m._edit_fn = lambda *a, **kw: (False, "edit failed")
+        m.ensure_posted(now=0.0)
+        ok = m.update("MINING", "x", 0.0, None, 0, now=10.0)
+        assert ok is False
+        assert m.last_state is None

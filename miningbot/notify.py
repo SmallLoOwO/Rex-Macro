@@ -730,3 +730,82 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None):
         if not ok and on_error is not None:
             on_error(detail)
     return sink
+
+
+# --- P2: StatusMessenger（狀態訊息 post-once-then-edit；spec §7 A）---
+
+
+class StatusMessenger:
+    """遙控器卡的「狀態顯示」部分用 edit_message 即時更新（取代部分釘底）。
+
+    生命週期：
+    - ensure_posted() 一次：post 初始訊息，拿 message_id
+    - update() 多次：狀態/動作變動 + throttle 通過 → edit_message 同一則
+
+    跟既有 RepinDebouncer 平行（不取代）：RepinDebouncer 仍管卡片釘底（被擠上去時
+    刪舊貼新），StatusMessenger 管卡片內容（不刪不貼，就 edit）。
+
+    send_fn / edit_fn 注入：production 用本模組的 send_message_with_id / edit_message；
+    測試用 fake callable。所有發訊動作失敗只回 False，不丟例外（沿用 notify 既有慣例）。
+    """
+
+    def __init__(self, token: str, channel_id: str, edit_min_interval_s: float,
+                 send_fn, edit_fn, log=None):
+        self._token = token
+        self._channel_id = channel_id
+        self._throttle = EditThrottle(min_interval_s=edit_min_interval_s)
+        self._send_fn = send_fn
+        self._edit_fn = edit_fn
+        self._log = log
+        self._message_id: str | None = None
+        self._last_state: str | None = None
+        self._last_action: str | None = None
+
+    @property
+    def message_id(self) -> str | None:
+        return self._message_id
+
+    @property
+    def last_state(self) -> str | None:
+        return self._last_state
+
+    @property
+    def last_action(self) -> str | None:
+        return self._last_action
+
+    def ensure_posted(self, now: float) -> bool:
+        """post 初始狀態訊息；已 post 過 no-op。回 True = 此次 post 成功 / 已 post。"""
+        if self._message_id is not None:
+            return True
+        content = format_status_text("MINING", "啟動中", 0.0, None, 0)
+        ok, detail, mid = self._send_fn(self._token, self._channel_id, content)
+        if not ok or mid is None:
+            if self._log:
+                self._log.warning("StatusMessenger post 失敗: %s", detail)
+            return False
+        self._message_id = mid
+        # post 視為一次「edit 起點」—— throttle 從此刻起算
+        self._throttle.allow_edit(now)
+        return True
+
+    def update(self, state: str, last_action: str, audio_score: float,
+               capacity_pct: float | None, uptime_s: int, now: float) -> bool:
+        """狀態/動作變動 + throttle 通過 → edit_message。回 True = 此次 edit 成功。"""
+        if self._message_id is None:
+            return False
+        if not should_edit_for_state(self._last_state, state, self._last_action, last_action):
+            return False
+        if not self._throttle.allow_edit(now):
+            return False
+        content = format_status_text(state, last_action, audio_score, capacity_pct, uptime_s)
+        ok, detail = self._edit_fn(
+            self._token, self._channel_id, self._message_id, content=content,
+        )
+        if not ok:
+            if self._log:
+                self._log.warning("StatusMessenger edit 失敗: %s", detail)
+            return False
+        # 成功才更新追蹤狀態
+        self._last_state = state
+        self._last_action = last_action
+        return True
