@@ -839,3 +839,63 @@ class StatusMessenger:
         self._last_state = state
         self._last_action = last_action
         return True
+
+
+# --- P2: PingResolveMessenger（NEEDS_HUMAN 推播 + 結案編輯；spec §7 B / D）---
+
+
+class PingResolveMessenger:
+    """NEEDS_HUMAN PING 推播 + 結案 edit 同則。
+
+    送 PING 訊息用 send_fn（含 message_id 回傳）；結案用 edit_fn 把同則改成 ✅。
+    生命週期：
+    - send_ping() 一次：拿到 message_id，呼叫端存起來
+    - resolve(message_id) 一次：編輯該則為 ✅；只能 resolve 一次（編輯 idempotent 但語意上是結案）
+
+    為了擋下「resolve 一個未經 send_ping 開立的 message_id」（例如 caller 變數初值、
+    跨重啟殘留），本類別內部追蹤本次 send_ping 開立的 ID 集；不在集中即視為未知，
+    回 False。這是防禦性 state，不跨 session 持久化。
+
+    失敗只回 False / None，不丟例外（沿用 notify 既有慣例）。
+    """
+
+    def __init__(self, token: str, channel_id: str, send_fn, edit_fn, log=None):
+        self._token = token
+        self._channel_id = channel_id
+        self._send_fn = send_fn
+        self._edit_fn = edit_fn
+        self._log = log
+        self._issued_ids: set[str] = set()
+
+    def send_ping(self, harvest_id: str | None, reason: str,
+                  fallback: bool, now: float) -> str | None:
+        """發 PING 訊息，回 message_id（失敗 None）。
+
+        now 參數目前未直接使用（保留給未來 rate-limit）；先介面對齊 StatusMessenger。
+        """
+        content = format_ping_content(harvest_id, reason, fallback)
+        ok, detail, mid = self._send_fn(self._token, self._channel_id, content)
+        if not ok or mid is None:
+            if self._log:
+                self._log.warning("PingResolveMessenger send_ping 失敗: %s", detail)
+            return None
+        self._issued_ids.add(mid)
+        return mid
+
+    def resolve(self, message_id: str, harvest_id: str | None,
+                reply_source: str, detail: str = "") -> bool:
+        """把 PING 訊息 edit 成 ✅ 結案。回 True = 編輯成功。
+
+        空字串 / 未經 send_ping 開立的 message_id 一律回 False（避免誤編其他訊息）。
+        """
+        if not message_id or message_id not in self._issued_ids:
+            return False
+        content = format_resolve_text(harvest_id, reply_source, detail)
+        ok, detail_msg = self._edit_fn(
+            self._token, self._channel_id, message_id, content=content,
+        )
+        if not ok:
+            if self._log:
+                self._log.warning("PingResolveMessenger resolve 失敗: %s", detail_msg)
+            return False
+        return True

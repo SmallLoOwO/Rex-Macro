@@ -320,3 +320,58 @@ class TestGiveupSingleImageMode:
         #（這個 case 由實機驗收覆蓋；這裡 skip）
         import pytest
         pytest.skip("image_path=None 路徑需 mock send_message；由實機驗收覆蓋")
+
+
+# --- Task 6：PingResolveMessenger（NEEDS_HUMAN PING + 結案編輯同一則）---
+
+from miningbot.notify import PingResolveMessenger
+
+
+class TestPingResolveMessenger:
+    def _make(self):
+        sends = []
+        edits = []
+        def send_fn(token, channel_id, content, timeout=10.0):
+            sends.append(content)
+            return True, "ok", f"mid_{len(sends)}"
+        def edit_fn(token, channel_id, message_id, embed=None, content=None, timeout=10.0):
+            edits.append((message_id, content))
+            return True, "ok"
+        m = PingResolveMessenger(
+            token="t", channel_id="c", send_fn=send_fn, edit_fn=edit_fn,
+        )
+        return m, sends, edits
+
+    def test_send_ping_returns_message_id(self):
+        m, sends, _ = self._make()
+        mid = m.send_ping(harvest_id="007", reason="X", fallback=True, now=0.0)
+        assert mid == "mid_1"
+        assert len(sends) == 1
+        assert "<@" in sends[0]
+
+    def test_send_ping_failure_returns_none(self):
+        m, _, _ = self._make()
+        m._send_fn = lambda *a, **kw: (False, "rate limited", None)
+        mid = m.send_ping("007", "X", fallback=True, now=0.0)
+        assert mid is None
+
+    def test_resolve_edits_same_message(self):
+        m, _, edits = self._make()
+        mid = m.send_ping("007", "X", fallback=True, now=0.0)
+        ok = m.resolve(mid, "007", reply_source="web", detail="(851,189)")
+        assert ok is True
+        assert len(edits) == 1
+        assert edits[0][0] == mid
+        assert "✅" in edits[0][1]
+
+    def test_resolve_edit_failure_returns_false(self):
+        m, _, _ = self._make()
+        mid = m.send_ping("007", "X", fallback=True, now=0.0)
+        m._edit_fn = lambda *a, **kw: (False, "edit failed")
+        ok = m.resolve(mid, "007", reply_source="web")
+        assert ok is False
+
+    def test_resolve_unknown_message_id_returns_false(self):
+        m, _, _ = self._make()
+        ok = m.resolve("nonexistent_mid", "007", reply_source="web")
+        assert ok is False
