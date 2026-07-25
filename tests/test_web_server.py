@@ -138,3 +138,43 @@ def test_fallback_true_when_no_clients(app_parts):
     with client.websocket_connect("/ws"):
         assert fallback.is_fallback(now=None, grace_s=0.0) is False
     assert fallback.is_fallback(now=None, grace_s=0.0) is True
+
+
+def test_webipc_thread_starts_and_serves_websocket(app_parts, monkeypatch):
+    """WebIPC thread 啟動後能接受 WebSocket 連線（用 uvicorn 跑實際 port）。
+
+    驗證：
+    - thread 啟動後 is_alive()=True
+    - actual_port > 0（OS 分配的隨機 port）
+    - WebSocket 連得進去、client_count 確實 +1
+    - stop()＋join() 收掉 thread
+    """
+    from miningbot.web_server import WebIPCThread
+
+    pending = PendingReplies()
+    fallback = FallbackState()
+    thread = WebIPCThread(pending=pending, fallback=fallback, port=0)  # 0 = 隨機 port
+    thread.start()
+    try:
+        # start() 已 polling 等 socket bind 完；給 uvicorn loop 多一點時間穩定
+        import time; time.sleep(0.3)
+        assert thread.is_alive()
+        assert thread.actual_port > 0
+        # 連連線測試（TestClient 直連 ASGI app，不過 uvicorn network 層）
+        client = TestClient(thread.app)
+        with client.websocket_connect("/ws"):
+            assert fallback.client_count == 1
+    finally:
+        thread.stop()
+        thread.join(timeout=2.0)
+
+
+def test_main_loop_consumes_web_pending_at_safe_point(monkeypatch):
+    """bot 主迴圈 safe point 會 pop web_pending 並執行對應動作。
+
+    用一個 minimal fake bot 驗證迴圈邏輯，不啟動完整 bot。P1 階段先 skip：
+    main.py 的迴圈結構要實際讀過才能寫出有意義的 fake bot 測試；且 P1 只鋪框架
+    （控制類立即處理、fire/click 留給 P4 各狀態處理器自取），真正要驗「消費後
+    系統狀態正確切換」得等 P4 把狀態處理器接上 reply 佇列才有意義。
+    """
+    pytest.skip("具體 fake bot 設計依 main.py 結構；P4 整合狀態處理器時補回")

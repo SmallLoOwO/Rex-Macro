@@ -2307,6 +2307,33 @@ class Bot:
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
+        # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
+        # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
+        # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
+        # web_pending 在主迴圈 safe point（_tick 開頭 _consume_web_pending）消費；
+        # fire_at / reentry_click 由 P4 各狀態處理器（NEEDS_HUMAN／awaiting_fine／
+        # reentry 開場鏈）在它們的 tick 內 self._web_pending.pop(routing_key) 自取。
+        if cfg.web_server_enabled:
+            from .web_server import WebIPCThread
+            from .web_ipc import PendingReplies, FallbackState
+            from .web_sink import WebEventSink
+            self._web_pending = PendingReplies()
+            self._web_fallback = FallbackState()
+            self._web_thread = WebIPCThread(
+                pending=self._web_pending,
+                fallback=self._web_fallback,
+                port=cfg.web_server_port,
+            )
+            self._web_thread.start()
+            self.log.add_sink(WebEventSink(
+                broadcast_callback=lambda msg: self._web_thread.app.state.broadcast(msg)
+            ))
+            self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
+                             self._web_thread.actual_port)
+        else:
+            self._web_pending = None
+            self._web_fallback = None
+            self._web_thread = None
         self.logger.info("初始化完成，開始挖礦")
         # 啟動自檢（preflight）：背景執行緒——它依賴 rapidocr_available()（可能仍在暖機中，
         # 冪等等鎖不搶跑），且 markers/chill_refs/檔案 mtime 這些 I/O 沒必要卡住主迴圈啟動。
@@ -2410,6 +2437,11 @@ class Bot:
             self._running = False
             self._audio_cap.stop()
             ic.key_up("w"); ic.mouse_up()          # 任何結束都放開按鍵
+            # WebIPC thread 收掉（比照 daemon thread 慣例：明確 stop + join，讓 socket
+            # 關乾淨；不依賴 process exit 才釋放）
+            if getattr(self, "_web_thread", None) is not None:
+                self._web_thread.stop()
+                self._web_thread.join(timeout=2.0)
             if not self._drain_snapshot_queue(cfg.snapshot_shutdown_drain_s):
                 self.logger.warning(
                     "snapshot shutdown drain timed out: %d unfinished",
@@ -2921,9 +2953,36 @@ class Bot:
             self.last_action = f"遠端{side}轉未生效"
             self.logger.warning("遠端 %s轉 45° 重試用盡未生效——視角未變，可再送一次", side)
 
+    def _consume_web_pending(self):
+        """主迴圈 safe point 消費 web_pending（WebSocket client 送的命令）。
+
+        P1 Task 10 只鋪框架（spec §8「Bot 端整合」）：
+        - 控制類（pause / resume / request_frame）：在這裡 pop；當前 P1 不接業務
+          邏輯——_handle_web_control 與 self.paused 切換是 P4「即時介入面板」工作。
+          只記 log 確認命令有進到主迴圈。
+        - fire_at / reentry_click：**不在這裡消費**。各狀態處理器（NEEDS_HUMAN /
+          awaiting_fine / reentry 開場鏈）在 P4 整合時會用 self._web_pending.pop(
+          self._current_routing_key()) 自取；P1 留著不動。
+        - 過期 reply：每輪 pop_any_expired 清一次，避免 TTL 60s 過期的舊 reply
+          無限累積佔 slot（spec §8 race 規則：先到先贏，後到丟棄）。
+        """
+        if self._web_pending is None:
+            return  # cfg.web_server_enabled=False
+        for cmd in ("pause", "resume", "request_frame"):
+            reply = self._web_pending.pop(f"control:{cmd}")
+            if reply is not None:
+                # P4 將在這裡分流：pause→self.paused=True、resume→False、
+                # request_frame→broadcast 最新 frame。P1 只記 log 確認框架運作。
+                self.logger.info("web: 收到控制命令 %s（P1 未接業務邏輯）: %r", cmd, reply)
+        # fire_at / reentry_click reply 留著等 P4 各狀態處理器自取（不在此清）
+        expired = self._web_pending.pop_any_expired()
+        if expired:
+            self.logger.info("web: 清掉過期 reply %d 筆", len(expired))
+
     def _tick(self, frame):
         self._update_reset_chime_active()
         self._consume_pending_rotate()
+        self._consume_web_pending()  # web client 命令（P1 Task 10）
         # Discord `ability` 指令消費：可消費狀態才按 X（HARVESTING/REENTRY 插按鍵會
         # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
         if self._pending_ability and can_consume_ability(self.state):
