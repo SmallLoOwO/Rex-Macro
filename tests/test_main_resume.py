@@ -1,8 +1,9 @@
-"""輕量恢復（2026-07-20）：MINING 暫停恢復不再跑 zoom_normalize＋init_mining_sequence。
-
-角度／遠近只在稀有礦重追、回礦、啟動時才會被動到（那些路徑各自歸位）；單純暫停
-期間相機未動，舊版每次恢復都跑 I×30+O×4 歸位＋rotate(.,)/center_crosshair 是白
-做工。測試鎖定 _resume 在 MINING 狀態只做：聚焦＋確認鎬子＋重新握住 W+左鍵，
+"""輕量恢復（2026-07-20，2026-07-25 修正）：MINING 暫停恢復不跑 zoom_normalize＋
+init_mining_sequence 的 rotate(.,)（角度／遠近只在稀有礦重追、回礦、啟動時才會被
+動到，那些路徑各自歸位；單純暫停期間相機未動，歸位是白做工）。但 center_crosshair
+（雙擊 Shift 置中準心）仍要做——相機不動≠游標不動，使用者切去 Discord／瀏覽器、
+_focus_roblox 重聚焦都不會把準心拉回中心，不重置會讓後續偏移計算歪。測試鎖定
+_resume 在 MINING 狀態只做：聚焦＋雙擊 Shift 置中＋確認鎬子＋重新握住 W+左鍵，
 且不再觸發 _zoom_normalize 與 miner.init_mining_sequence。
 """
 from miningbot import main
@@ -34,7 +35,8 @@ def _resume_bot(monkeypatch):
     bot._antiafk_last = 999.0             # 驗證會被重置為 0.0
     bot._rotate_verified = lambda direction: True
     calls = {"focus": 0, "zoom_normalize": 0, "init_mining": 0,
-             "ensure_pickaxe": 0, "key_down": [], "mouse_down": 0}
+             "ensure_pickaxe": 0, "center_crosshair": 0,
+             "key_down": [], "mouse_down": 0}
     bot._focus_roblox = lambda: calls.__setitem__("focus", calls["focus"] + 1)
     bot._zoom_normalize = lambda label: calls.__setitem__(
         "zoom_normalize", calls["zoom_normalize"] + 1)
@@ -45,6 +47,9 @@ def _resume_bot(monkeypatch):
     monkeypatch.setattr(main.miner, "ensure_pickaxe",
                         lambda: calls.__setitem__(
                             "ensure_pickaxe", calls["ensure_pickaxe"] + 1))
+    monkeypatch.setattr(main.ic, "center_crosshair",
+                        lambda: calls.__setitem__(
+                            "center_crosshair", calls["center_crosshair"] + 1))
     monkeypatch.setattr(main.ic, "key_down",
                         lambda k: calls["key_down"].append(k))
     monkeypatch.setattr(main.ic, "key_up", lambda k: None)
@@ -55,14 +60,15 @@ def _resume_bot(monkeypatch):
 
 
 def test_resume_mining_is_lightweight(monkeypatch):
-    """MINING 暫停恢復：不跑 zoom_normalize／init，只聚焦＋確認鎬子＋握住 W+左鍵。"""
+    """MINING 暫停恢復：不跑 zoom_normalize／init，只聚焦＋置中＋確認鎬子＋握住 W+左鍵。"""
     bot, calls = _resume_bot(monkeypatch)
     bot._resume()
     assert bot.paused is False
     assert bot._antiafk_last == 0.0
     assert calls["focus"] == 1                 # 仍重新聚焦（焦點可能飄走）
-    assert calls["zoom_normalize"] == 0        # 不再跑 I×30+O×4 歸位
-    assert calls["init_mining"] == 0           # 不再跑 rotate(.,)/center_crosshair
+    assert calls["zoom_normalize"] == 0        # 不跑 I×30+O×4 歸位（相機遠近未動）
+    assert calls["init_mining"] == 0           # 不跑 rotate(.,)（角度未動）
+    assert calls["center_crosshair"] == 1      # 雙擊 Shift 置中（游標會飄，不同於相機）
     assert calls["ensure_pickaxe"] == 1        # 仍確認鎬子（便宜安全網）
     assert calls["key_down"] == ["w"]          # 重新握住 W
     assert calls["mouse_down"] == 1            # 重新握住左鍵
@@ -76,6 +82,7 @@ def test_resume_non_mining_skips_keybus(monkeypatch):
     assert bot.paused is False
     assert calls["zoom_normalize"] == 0
     assert calls["init_mining"] == 0
+    assert calls["center_crosshair"] == 0      # 非 MINING 不碰鍵鼠
     assert calls["ensure_pickaxe"] == 0        # 非 MINING 不碰鍵鼠
     assert calls["key_down"] == []
     assert calls["mouse_down"] == 0
