@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 from typing import Callable
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
 from miningbot.web_protocol import WebMessage, parse_message, serialize_message
 from miningbot.web_ipc import PendingReplies, FallbackState
@@ -92,6 +93,8 @@ def create_app(
     fallback: FallbackState,
     broadcast_callback: Callable[[WebMessage], None] | None,
     on_startup: Callable[[asyncio.AbstractEventLoop], None] | None = None,
+    config=None,
+    overrides_path: str | None = None,
 ) -> FastAPI:
     """建 FastAPI app。
 
@@ -101,6 +104,9 @@ def create_app(
     on_startup：可選啟動回呼，在 uvicorn lifespan startup 階段（loop 已跑起來）
         被呼叫，傳入當下 event loop。WebIPCThread 用它把 loop 注入 registry，
         讓 broadcast 的 run_coroutine_threadsafe 有 loop 可 schedule。測試不傳。
+    config：P3 玩家設定面板用——傳入 Config instance 時掛 `GET/POST /api/config`
+        與 `GET /`（HTML）三條 route；不傳則只保留 P1 既有 routes（向下相容）。
+    overrides_path：P3 持久化路徑；傳入時啟動讀回套用、POST 寫回。可選。
 
     lifespan 注入（uvicorn 0.51+）：原本 brief 的 `config.lifespan = patched` 行不通
     （uvicorn 0.51 的 config.lifespan 是字串 "auto"，不是 callable）；改用 FastAPI
@@ -147,7 +153,68 @@ def create_app(
             registry.remove(websocket)
             fallback.client_disconnected()
 
+    # P3: 玩家設定面板 endpoints（僅在傳入 config 時掛上；既有呼叫端不受影響）
+    if config is not None:
+        from miningbot.web_config_whitelist import (
+            is_web_configurable, validate_value, WEB_CONFIGURABLE_FIELDS,
+        )
+        from miningbot.web_config_persistence import (
+            load_overrides, save_overrides, apply_overrides_to_config,
+        )
+
+        # 啟動時讀 overrides 套用（building blocks；main.py Task 4 也會做一次冪等）
+        if overrides_path:
+            initial_overrides = load_overrides(overrides_path)
+            apply_overrides_to_config(config, initial_overrides)
+            app.state.overrides = initial_overrides
+            app.state.overrides_path = overrides_path
+        else:
+            app.state.overrides = {}
+            app.state.overrides_path = None
+
+        @app.get("/api/config")
+        def get_config():
+            """回白名單 4 欄現值（不洩漏門檻/ROI/機密）。"""
+            return {f: getattr(config, f) for f in WEB_CONFIGURABLE_FIELDS}
+
+        @app.post("/api/config")
+        def post_config(payload: dict):
+            """驗證 → runtime 改 Config → 持久化 overrides JSON。
+
+            三道閘：缺欄位 400、非白名單 400、值不通過 validate_value 400。
+            """
+            field = payload.get("field")
+            value = payload.get("value")
+            if field is None or value is None:
+                return _err(400, "missing field or value")
+            if not is_web_configurable(field):
+                return _err(400, f"field not web-configurable: {field}")
+            if not validate_value(field, value):
+                return _err(400, f"invalid value for {field}: {value!r}")
+            # runtime 即時生效
+            setattr(config, field, value)
+            # 持久化（若有指定路徑）
+            if app.state.overrides_path:
+                app.state.overrides = save_overrides(
+                    app.state.overrides_path, field, value, app.state.overrides,
+                )
+            return {"ok": True, "field": field, "value": value}
+
+        @app.get("/")
+        def root():
+            """玩家設定面板 HTML（Task 3 補完整內容）。"""
+            from miningbot.web_static import render_index_html
+            return Response(
+                content=render_index_html(config),
+                media_type="text/html",
+            )
+
     return app
+
+
+def _err(status: int, reason: str) -> JSONResponse:
+    """統一 JSON 錯誤回應（HTTP 狀態碼 + reason）。"""
+    return JSONResponse(status_code=status, content={"error": reason})
 
 
 def _handle_command(payload: dict, pending: PendingReplies) -> None:
