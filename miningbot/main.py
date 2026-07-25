@@ -5461,6 +5461,11 @@ class Bot:
         self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
         # H052：舊「俯仰歸位疑似被吃」警告已移除——非凍結＝生效（誤報來源），
         # 真凍結由 plan_opening_gate 擋在拍照前，不會走到這裡。
+        # P4 Task 4：web 在線 → 先問 web（玩家 pinch-zoom + tap 直接點傳送板），
+        # reply 直接走 _rr_click_from_web 點擊+驗證（跳過底下 Discord 八方位+格+連鎖
+        # 放大）；無 reply／無 web → fall through 既有 Discord 流程（fallback）。
+        if self._reentry_await_player_click(self._rr_ctx):
+            return
         self._rr_sweep_and_send()
         # Task 4：sweep 發圖後貼 embed 卡片（首次貼；reroll 時 edit 同一則）
         if self._rr_embed_mid:
@@ -5884,10 +5889,25 @@ class Bot:
                              f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full{zs}.png")
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         reentry_remote.record_click(ctx, pos, layer, ctx.zoom_region, time.time())
+        self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
+
+    def _rr_click_and_verify(self, ctx, pos, cur, layer, mpath, zs):
+        """點擊 pos + post-click 三態驗證（still_surface / no_change /
+        moved_unconfirmed / descended）。
+
+        H046(c) 狀態錨輪詢：Depth 從 Surface 翻成 NNNm＝真下礦；幀差降為輔助訊號
+        （重複點已成功的傳送板畫面可能不動＝假失敗、地表→地表換重生點畫面大動
+        ＝假成功，轉移式驗證兩頭都會判錯）。
+
+        P4 Task 4 抽出給 _rr_click／_rr_click_from_web 共用——前置作業（focus、
+        漂移守門、marker snapshot、record_click）由 caller 各自處理：_rr_click 走
+        Discord 細格→pos＋zoom_region 漂移守門；_rr_click_from_web 拿玩家原生 (x, y)
+        直接定位、無 zoom_region（傳 () 給 record_click）。兩者點擊後的驗證邏輯相同。
+
+        zs：snapshot 檔名用的 zoom 後綴（_z{N} 或空字串）。
+        """
+        import cv2
         ic.click_at(int(pos[0]), int(pos[1]))
-        # 驗證（H046(c)）：狀態錨輪詢——Depth 從 Surface 翻成 NNNm＝真下礦。
-        # 幀差降為輔助訊號：重複點已成功的傳送板畫面可能不動（假失敗）、地表→
-        # 地表換重生點畫面大動（假成功），轉移式驗證兩頭都會判錯。
         deadline = time.time() + cfg.reentry_teleport_wait_s
         frame_changed = False
         while True:
@@ -5957,6 +5977,102 @@ class Bot:
                 f"❓ 已下礦（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
                 f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
+
+    def _rr_click_from_web(self, ctx, x: int, y: int):
+        """從 web 介入面板的玩家 tap 直接點擊＋驗證（跳過 Discord 方位+格+連鎖放大）。
+
+        P4 Task 4 minimum viable：玩家在介入面板 pinch-zoom + tap 點位置 → server 還原
+        原生 (x, y) → 沿用 _rr_click_and_verify 的「點擊 → plan_click_verdict」尾段，
+        不走 Discord 細格代碼、不做 zoom_region 漂移守門（web 點擊沒有 zoom 來源幀）。
+
+        與 _rr_click 差異：
+        - 無 fine_cell→pos 轉換（玩家直接給原生座標）
+        - 無 zoom_region 漂移守門（無 zoom_base；pinch-zoom 是 web client 端顯示用，
+          不影響 bot 端的螢幕座標）
+        - record_click 收到的 region=()（與 _rr_click 收 zoom_region 對齊語意：
+          該次點擊的「來源區域」對 web 是整個螢幕，沒有放大來源可記）
+        - 快照檔名加 _web 後綴以便事後分析區分 Discord／web 點擊來源
+
+        失敗時（still_surface / no_change）只發 _rr_notify，不 fall through 到
+        Discord 八方位——玩家可改用文字指令 `重骰`／`跳過`（_handle_reentry_reply
+        不靠 embed 也能解析），或等下一輪 web 介入。詳情待 Task 5/6 補介入面板
+        結果回報與 fallback 切換。
+        """
+        import cv2
+        if not (0 <= int(x) < cfg.screen_w and 0 <= int(y) < cfg.screen_h):
+            self._rr_notify(
+                f"❌ web 點擊座標超出螢幕範圍 (x={x}, y={y}；"
+                f"screen={cfg.screen_w}x{cfg.screen_h})，`重骰` 重試或回 Discord 八方位")
+            return
+        if not self._focus_roblox():
+            self._rr_notify("⚠ 無法聚焦 Roblox，web 點擊取消；可 `重骰` 重試")
+            return
+        pos = (int(x), int(y))
+        layer = ctx.sticky_layer
+        cur = capture.grab()
+        marker = reentry_remote.draw_click_marker(cur, pos)
+        os.makedirs(self._rr_snap_dir(), exist_ok=True)
+        zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
+        mpath = os.path.join(
+            self._rr_snap_dir(),
+            f"ep{ctx.episode_id}_click{len(ctx.clicks)}_marker_web{zs}.png")
+        cv2.imwrite(mpath, marker)
+        fpath = os.path.join(
+            self._rr_snap_dir(),
+            f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full_web{zs}.png")
+        cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
+        # region=() 標記 web 點擊沒有 zoom 來源區域（有別於 _rr_click 收 zoom_region）
+        reentry_remote.record_click(ctx, pos, layer, (), time.time())
+        self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
+
+    def _reentry_await_player_click(self, ctx) -> bool:
+        """回礦開場鏈全閘通過後、_rr_sweep_and_send 前先問 web。
+
+        web 在線 → 推截圖 + INTERVENTION_NEEDED context（routing_key=reentry:{episode_id}）
+        → 等玩家 pinch-zoom + tap（預算 cfg.remote_aim_budget_s）→ reply 直接走
+        _rr_click_from_web（跳過 Discord 方位+格+連鎖放大整條鏈）。
+
+        回 True＝web 已處理（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
+        回 False＝無 web 連線／fallback 中／無 reply（timeout）／聚焦失敗 →
+        caller fall through 既有 Discord 流程。
+
+        attempt_id（wire protocol 對 reentry flow 的 id 欄位名）＝ episode_id：
+        每集唯一、與 Discord 卡片標題 #ep{episode_id} 一致，玩家可對照。
+        INTERVENTION_NEEDED event 內含 routing_key，web client 直接 echo 回 attempt_id。
+        """
+        web_state = getattr(self, "_web_fallback", None)
+        web_pending = getattr(self, "_web_pending", None)
+        if (web_pending is None or web_state is None
+                or web_state.is_fallback(
+                    now=time.monotonic(), grace_s=cfg.web_fallback_grace_s)):
+            return False
+        routing_key = f"reentry:{ctx.episode_id}"
+        if not self._focus_roblox():
+            self.log_discord.info(
+                "[RR#%s] 回礦 web 介入：無法聚焦 Roblox，跳過走 Discord 八方位",
+                ctx.episode_id)
+            return False
+        frame = capture.grab()
+        if frame is None:
+            return False
+        self._send_web_intervention_event(
+            flow="reentry", routing_key=routing_key,
+            frame=frame,
+            ctx_summary=f"reentry episode={ctx.episode_id}",
+        )
+        reply = self._await_web_pointer_reply(
+            routing_key=routing_key, timeout_s=cfg.remote_aim_budget_s)
+        if reply is None:
+            self.log_discord.info(
+                "[RR#%s] 回礦 web 介入：reply timeout，fall through Discord 八方位",
+                ctx.episode_id)
+            return False
+        self.log_discord.info(
+            "[RR#%s] 回礦 web 介入：收到 reply %r，跳過 Discord 方位+格+連鎖放大",
+            ctx.episode_id, reply)
+        self._rr_click_from_web(
+            ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)))
+        return True
 
     def _rr_yaw_sample(self, ctx):
         """成功收尾後原地拍八方位，收 yaw 分類語料（H059；cfg.reentry_yaw_sample_sweep）。

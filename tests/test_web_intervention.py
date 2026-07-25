@@ -28,3 +28,16 @@ def test_main_execute_remote_fire_short_circuits_on_web_reply():
     斷言：pos == (x, y)；未呼叫 _detect_core_in_cell / _refind_tracker_near。
     """
     pytest.skip("main.py _execute_remote_fire 整合需 fake bot；P5 或實機驗收補")
+
+
+def test_main_reentry_consumes_web_click_reply():
+    """回礦 _rr_open_episode 開場鏈全閘通過後應先檢查 web_pending，若有玩家 reply
+    直接走 _rr_click_from_web。
+
+    fake bot 需模擬：_web_pending 在線、_web_fallback.is_fallback()=False、
+    capture.grab() 回固定幀、_send_web_intervention_event / _focus_roblox no-op、
+    _await_web_pointer_reply 回 {x, y, attempt_id}、_rr_click_from_web stub 記錄
+    被呼叫的 (x, y)。
+    斷言：未進入既有 Discord 八方位流程（_rr_sweep_and_send 不被呼叫、未貼 embed）。
+    """
+    pytest.skip("main.py reentry click 整合需 fake bot；P5 或實機驗收補")
