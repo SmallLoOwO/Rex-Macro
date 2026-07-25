@@ -1,9 +1,12 @@
 """WebIPC server 整合測試：WebSocket 連線 + 命令 push + client count。"""
+import asyncio
 import json
+import threading
 import pytest
 from fastapi.testclient import TestClient
 
 from miningbot.web_ipc import PendingReplies, FallbackState
+from miningbot.web_protocol import WebMessage
 from miningbot.web_server import create_app
 
 
@@ -11,10 +14,17 @@ from miningbot.web_server import create_app
 def app_parts():
     pending = PendingReplies()
     fallback = FallbackState()
-    broadcast_calls = []
-    broadcast_callback = lambda msg: broadcast_calls.append(msg)
-    app = create_app(pending, fallback, broadcast_callback)
-    return app, pending, fallback, broadcast_calls
+    app = create_app(pending, fallback, broadcast_callback=None)
+    # 模擬 WebIPC thread 已注入 loop：TestClient 內部 loop 跟 broadcast 用的 loop
+    # 必須是同一個會跑的 loop；用一個獨立 loop 在背景 thread 跑，
+    #讓 broadcast 的 run_coroutine_threadsafe 有地方 schedule。
+    registry = app.state.registry
+    loop = asyncio.new_event_loop()
+    registry.set_loop(loop)
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    yield app, pending, fallback, []
+    loop.call_soon_threadsafe(loop.stop)
 
 
 def test_health_endpoint(app_parts):
@@ -83,3 +93,48 @@ def test_multiple_clients_counted(app_parts):
          client.websocket_connect("/ws"):
         assert fallback.client_count == 2
     assert fallback.client_count == 0
+
+
+def test_event_broadcast_reaches_connected_client(app_parts):
+    app, pending, fallback, _ = app_parts
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        # 給連線建立時間
+        import time; time.sleep(0.05)
+        # 模擬 bot 推一個事件
+        app.state.broadcast(WebMessage(type="event", payload={"event": "NEEDS_HUMAN"}))
+        received = ws.receive_text()
+        msg = json.loads(received)
+        assert msg["type"] == "event"
+        assert msg["payload"]["event"] == "NEEDS_HUMAN"
+
+
+def test_broadcast_only_reaches_current_clients(app_parts):
+    app, pending, fallback, _ = app_parts
+    client = TestClient(app)
+    # 沒連線，broadcast 不該炸
+    app.state.broadcast(WebMessage(type="event", payload={"event": "X"}))
+    # 連一個、broadcast、收
+    with client.websocket_connect("/ws") as ws:
+        import time; time.sleep(0.05)
+        app.state.broadcast(WebMessage(type="event", payload={"event": "Y"}))
+        received = ws.receive_text()
+        assert json.loads(received)["payload"]["event"] == "Y"
+
+
+def test_broadcast_failure_does_not_raise(app_parts):
+    app, pending, fallback, _ = app_parts
+    client = TestClient(app)
+    with client.websocket_connect("/ws"):
+        import time; time.sleep(0.05)
+    # 連線已斷；broadcast 不該丟例外
+    app.state.broadcast(WebMessage(type="event", payload={"event": "Z"}))
+
+
+def test_fallback_true_when_no_clients(app_parts):
+    app, pending, fallback, _ = app_parts
+    client = TestClient(app)
+    assert fallback.is_fallback(now=None, grace_s=0.0) is True  # grace=0 立刻 fallback
+    with client.websocket_connect("/ws"):
+        assert fallback.is_fallback(now=None, grace_s=0.0) is False
+    assert fallback.is_fallback(now=None, grace_s=0.0) is True
