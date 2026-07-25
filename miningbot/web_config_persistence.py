@@ -35,12 +35,16 @@ def load_overrides(path: str) -> dict[str, Any]:
 
 
 def save_overrides(path: str, field: str, value: Any,
-                   current_overrides: dict[str, Any]) -> dict[str, Any]:
+                   current_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     """合併新欄位寫回 JSON；回新 dict（不 mutate current_overrides）。
+
+    current_overrides=None（新預設）= 重讀檔案（消除 caller 維護 in-memory cache 的需求）。
+    仍接受 caller 注入 current_overrides（向下相容既有測試）。
 
     寫檔用 tempfile + os.replace 原子替換，避免寫到一半被中斷導致檔案損壞。
     """
-    new_overrides = dict(current_overrides)
+    base = current_overrides if current_overrides is not None else load_overrides(path)
+    new_overrides = dict(base)
     new_overrides[field] = value
     # 原子寫檔：先寫 tmp，再 rename
     tmp_path = path + ".tmp"

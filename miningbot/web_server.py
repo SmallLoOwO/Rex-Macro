@@ -163,13 +163,13 @@ def create_app(
         )
 
         # 啟動時讀 overrides 套用（building blocks；main.py Task 4 也會做一次冪等）
+        # 不快取 in-memory overrides——save_overrides 會重讀檔，避免 HTTP/WS 兩條路徑
+        # 各自維護 cache 導致相互覆寫（P3 final-review Important 1）。
         if overrides_path:
             initial_overrides = load_overrides(overrides_path)
             apply_overrides_to_config(config, initial_overrides)
-            app.state.overrides = initial_overrides
             app.state.overrides_path = overrides_path
         else:
-            app.state.overrides = {}
             app.state.overrides_path = None
 
         @app.get("/api/config")
@@ -193,11 +193,9 @@ def create_app(
                 return _err(400, f"invalid value for {field}: {value!r}")
             # runtime 即時生效
             setattr(config, field, value)
-            # 持久化（若有指定路徑）
+            # 持久化（若有指定路徑）——不帶 current_overrides，save_overrides 自會重讀檔
             if app.state.overrides_path:
-                app.state.overrides = save_overrides(
-                    app.state.overrides_path, field, value, app.state.overrides,
-                )
+                save_overrides(app.state.overrides_path, field, value)
             return {"ok": True, "field": field, "value": value}
 
         @app.get("/")

@@ -2352,7 +2352,6 @@ class Bot:
         if applied:
             self.logger.info("config_overrides.json 套用 %d 欄: %s",
                              len(applied), applied)
-        self._current_overrides = initial_overrides
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -3064,9 +3063,14 @@ class Bot:
             if field is not None and value is not None:
                 if is_web_configurable(field) and validate_value(field, value):
                     setattr(cfg, field, value)
-                    self._current_overrides = save_overrides(
-                        self._overrides_path, field, value, self._current_overrides,
-                    )
+                    # 持久化失敗只回報不中斷 main loop（runtime 已生效，重啟會還原）
+                    try:
+                        save_overrides(self._overrides_path, field, value)
+                    except OSError as e:
+                        if self.logger:
+                            self.logger.warning(
+                                "web config_set 持久化失敗（runtime 已生效，重啟會還原）: %s",
+                                e)
                     self.logger.info("web config_set: %s=%r", field, value)
                 else:
                     self.logger.warning(

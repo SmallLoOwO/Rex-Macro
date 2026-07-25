@@ -1,8 +1,6 @@
 # tests/test_web_config_persistence.py
 """P3 玩家設定面板：config_overrides.json 讀寫純函式。"""
 import json
-import pytest
-from pathlib import Path
 from miningbot.web_config_persistence import (
     load_overrides, save_overrides, apply_overrides_to_config,
 )
@@ -58,6 +56,19 @@ class TestSaveOverrides:
         result = save_overrides(p, "sweep_pitch_enabled", True, current_overrides=original)
         # 輸入 dict 不該被改
         assert original == {"reentry_mode": "auto"}
+        assert result == {"reentry_mode": "auto", "sweep_pitch_enabled": True}
+
+    def test_save_overrides_reloads_when_current_overrides_none(self, tmp_path):
+        """current_overrides=None 時重讀檔；不依賴 caller 維護 in-memory cache。
+
+        場景：HTTP POST 存了 reentry_mode=auto，稍後 WS config_set 存另一欄——
+        WS caller 不知道 HTTP 那次寫了什麼，傳 None 該重讀檔，不能覆掉 reentry_mode。
+        """
+        p = str(tmp_path / "overrides.json")
+        # 先寫一個既有 override（模擬另一條路徑已寫檔）
+        save_overrides(p, "reentry_mode", "auto", current_overrides={})
+        # 另一個 caller 不知道前一個，傳 None → 該重讀
+        result = save_overrides(p, "sweep_pitch_enabled", True)
         assert result == {"reentry_mode": "auto", "sweep_pitch_enabled": True}
 
 
