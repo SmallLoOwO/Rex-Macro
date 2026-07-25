@@ -37,6 +37,51 @@ REACTION_USER_API = "https://discord.com/api/v10/channels/{channel_id}/messages/
 # Discord mention 格式：<@USER_ID>；USER_ID 必須是字串（數字會被當角色 ID）。
 PING_USER_ID = "373438562940747776"
 
+
+# --- P2: 狀態訊息 post-once-then-edit 純函式（spec §7 A 混合更新策略）---
+# 遙控器卡是 1 則常駐訊息；狀態/動態用 edit_message 即時更新（重要內容），
+# 運行時間/音訊等不重要內容靠下次 repin 順帶刷新。
+
+
+def should_edit_for_state(old_state: str | None, new_state: str,
+                          old_action: str | None, new_action: str) -> bool:
+    """狀態/動作變動是否該觸發立即 edit_message。
+
+    spec §7 A：狀態 transition（MINING→HARVESTING 等）跟關鍵動作字串變動
+    （命中座標、verify 結果）都該即時 edit；其餘（運行時間、音訊分數）靠 repin。
+
+    old_state=None 視為強制觸發（首次 post 之後的呼叫端會用 None 起步）。
+    """
+    if old_state is None or old_state != new_state:
+        return True
+    # 狀態相同，看動作字串
+    if old_action != new_action:
+        return True
+    return False
+
+
+class EditThrottle:
+    """狀態訊息 edit_message 降頻器：避免狀態機快速擺盪洗版。
+
+    每次 allow_edit(now) 檢查距上次 edit 是否 >= min_interval_s；通過則更新
+    last_edit_at。不通過不更新（保留原本時間基準）。
+    時間由呼叫端注入（time.monotonic），方便單元測試。
+    """
+
+    def __init__(self, min_interval_s: float):
+        self.min_interval_s = min_interval_s
+        self._last_edit_at: float | None = None
+
+    @property
+    def last_edit_at(self) -> float | None:
+        return self._last_edit_at
+
+    def allow_edit(self, now: float) -> bool:
+        if self._last_edit_at is None or (now - self._last_edit_at) >= self.min_interval_s:
+            self._last_edit_at = now
+            return True
+        return False
+
 _TEMPLATES = {
     "RARE_FOUND":      lambda m: "🔔 偵測到稀有礦（chill）！開始自動採集…",
     "TRACKER_FOUND":   lambda m: f"📍 找到追蹤框{m.get('pos', '')}，準備 D3 採集",
