@@ -264,6 +264,8 @@ class WebIPCThread:
         fallback: FallbackState,
         port: int = 8765,
         host: str = "127.0.0.1",
+        config=None,
+        overrides_path: str | None = None,
     ):
         self.pending = pending
         self.fallback = fallback
@@ -272,9 +274,12 @@ class WebIPCThread:
         self._thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
         self.actual_port: int = 0
+        # P3：config + overrides_path 傳給 create_app，讓 HTTP endpoints
+        # （GET/POST /api/config、GET /）能在 thread 內掛上。不傳時向下相容（P1 既有測試）。
         self.app = create_app(
             pending, fallback, broadcast_callback=None,
             on_startup=self._on_startup,
+            config=config, overrides_path=overrides_path,
         )
 
     def _on_startup(self, loop: asyncio.AbstractEventLoop) -> None:

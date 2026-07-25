@@ -120,3 +120,22 @@ def test_get_root_html_has_submit_button(app_parts):
     client, _, _ = app_parts
     body = client.get("/").text
     assert "submit" in body.lower() or "type=\"submit\"" in body or "<button" in body.lower()
+
+
+# --- Task 4：main.py 整合 smoke tests（留 P4 補；同 P1 Task 10 / P2 Task 7 慣例） ---
+
+
+def test_main_init_loads_overrides(tmp_path, monkeypatch):
+    """bot 啟動時讀 config_overrides.json 套用 Config。
+
+    略——具體 fake bot 結構依 main.py；留 P4 整合時補回（同 P1 Task 10 / P2 Task 7 慣例）。
+    """
+    pytest.skip("main.py 整合 smoke test 留 P4 補")
+
+
+def test_main_consume_web_pending_handles_config_set():
+    """web_pending 收到 control:config_set 命令時，bot runtime 改 Config + 持久化。
+
+    略——同上，留 P4 補。
+    """
+    pytest.skip("具體 fake bot 結構依 main.py；留 P4 補")

@@ -2338,6 +2338,21 @@ class Bot:
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
+        # P3 玩家設定面板（spec §6）：啟動時讀 config_overrides.json 套用 Config（覆蓋
+        # default + .env 之上；玩家在網頁改的值會在這裡讀回）。檔案不存在/損壞時 load_overrides
+        # 回 {}（沿用 notify.py「失敗只回報不中斷」慣例），bot 用 default 開機。
+        # 路徑放在 cfg.log_dir 底下（與其他 runtime 狀態檔同目錄；不污染 repo）。
+        from .web_config_persistence import (
+            load_overrides, apply_overrides_to_config, save_overrides,
+        )
+        overrides_path = os.path.join(cfg.log_dir, "config_overrides.json")
+        self._overrides_path = overrides_path
+        initial_overrides = load_overrides(overrides_path)
+        applied = apply_overrides_to_config(cfg, initial_overrides)
+        if applied:
+            self.logger.info("config_overrides.json 套用 %d 欄: %s",
+                             len(applied), applied)
+        self._current_overrides = initial_overrides
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -2354,6 +2369,8 @@ class Bot:
                 pending=self._web_pending,
                 fallback=self._web_fallback,
                 port=cfg.web_server_port,
+                config=cfg,  # P3：給 HTTP endpoints 用
+                overrides_path=overrides_path,  # P3：持久化路徑
             )
             self._web_thread.start()
             self.log.add_sink(WebEventSink(
@@ -3034,6 +3051,28 @@ class Bot:
                 # P4 將在這裡分流：pause→self.paused=True、resume→False、
                 # request_frame→broadcast 最新 frame。P1 只記 log 確認框架運作。
                 self.logger.info("web: 收到控制命令 %s（P1 未接業務邏輯）: %r", cmd, reply)
+        # P3 玩家設定面板（spec §6）：WebSocket 命令 config_set 走 web_pending 異步處理
+        # （HTTP POST /api/config 是同步路徑，由 web_server FastAPI route 直接處理；
+        # 兩條路徑都呼叫同一個 setattr + save_overrides——重複是有意的，保持 web_server
+        # 與 main.py 解耦，web_server 不需 bot 實例）。loop 處理多筆累積的 config_set。
+        from .web_config_whitelist import is_web_configurable, validate_value
+        from .web_config_persistence import save_overrides
+        reply = self._web_pending.pop("control:config_set")
+        while reply is not None:
+            field = reply.get("field")
+            value = reply.get("value")
+            if field is not None and value is not None:
+                if is_web_configurable(field) and validate_value(field, value):
+                    setattr(cfg, field, value)
+                    self._current_overrides = save_overrides(
+                        self._overrides_path, field, value, self._current_overrides,
+                    )
+                    self.logger.info("web config_set: %s=%r", field, value)
+                else:
+                    self.logger.warning(
+                        "web config_set 拒絕（白名單或 validate 不過）: %s=%r",
+                        field, value)
+            reply = self._web_pending.pop("control:config_set")
         # fire_at / reentry_click reply 留著等 P4 各狀態處理器自取（不在此清）
         expired = self._web_pending.pop_any_expired()
         if expired:
