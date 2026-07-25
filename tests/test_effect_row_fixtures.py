@@ -1,11 +1,12 @@
 """效果列徽章格定位＋D2 掃描確認的實機 fixture 回歸（2026-07-25 校準）。
 
-fixture 是 5 個真實遊戲畫面的 `cfg.scan_confirm_region` 裁圖（右下角效果列整條）：
-    local_only          D2 左鍵後，只有 Local 徽章       → 掃描成功
-    local_and_caveskim  左鍵＋Z 都在場，Local 被推到右格 → 掃描成功
-    caveskim_only       只按了 Z（同樣是雷達徽章）       → **不可**判成掃描成功
-    d4_used_only        只有 D4 的 Used 徽章             → 不成功
-    no_effects          效果列全空                       → 不成功
+fixture 是 6 個真實遊戲畫面的 `cfg.scan_confirm_region` 裁圖（右下角效果列整條）：
+    local_only              D2 左鍵後，只有 Local 徽章（x=1676）  → 掃描成功
+    local_and_caveskim      左鍵＋Z，Local 1676、Cave Skim 1612    → 掃描成功
+    local_displaced_3slots  Z→D5→左鍵，Local 被推到 1548          → 掃描成功
+    caveskim_only           只按了 Z（同樣是雷達徽章）             → **不可**判成成功
+    d4_used_only            只有 D4 的 Used 徽章                   → 不成功
+    no_effects              效果列全空                             → 不成功
 
 背景：舊的 scan_confirm_region 是左下估值，離線重放 22 幀 TP=0（讀到左側礦物面板文字）。
 改成整條效果列後，因為徽章疊加會位移，必須逐格 OCR——固定單格與整條一次 OCR 都已實測失敗。
@@ -41,12 +42,32 @@ def _load(name):
 @pytest.mark.parametrize("name,expected", [
     ("local_only", 1),
     ("local_and_caveskim", 2),
+    ("local_displaced_3slots", 3),
     ("caveskim_only", 1),
     ("d4_used_only", 1),
     ("no_effects", 0),
 ])
 def test_find_effect_slots_counts(name, expected):
     assert len(vision.find_effect_slots(_load(name))) == expected
+
+
+def test_local_found_when_displaced_from_anchor():
+    """回歸本體：Local 不在最右格時仍要找得到。
+
+    fixture 是實機依序按 Z → D5 → 左鍵疊出來的三格（Cave Skim 佔最右 1676、
+    boost 佔 1612、Local 被推到 1548）。舊的固定格作法會讀到最右格的 Cave Skim
+    並判定掃描失敗——這正是這次修的東西。
+    """
+    band = _load("local_displaced_3slots")
+    slots = vision.find_effect_slots(band)
+    assert len(slots) == 3
+    xs = [x for (x, _, _, _) in slots]
+    assert xs == sorted(xs)
+    # 格距 64：1548 / 1612 / 1676（band 從 x=1150 起算 → 398 / 462 / 526）
+    assert xs[1] - xs[0] == pytest.approx(64, abs=6)
+    assert xs[2] - xs[1] == pytest.approx(64, abs=6)
+    # Local 落最左格，離最右格 128px——固定單格必漏
+    assert xs[2] - xs[0] == pytest.approx(128, abs=10)
 
 
 def test_slots_are_square_and_in_row():
@@ -87,7 +108,8 @@ def _scan_ok(name):
 
 
 @pytestmark_ocr
-@pytest.mark.parametrize("name", ["local_only", "local_and_caveskim"])
+@pytest.mark.parametrize("name", ["local_only", "local_and_caveskim",
+                                  "local_displaced_3slots"])
 def test_scan_confirm_positive(name):
     assert _scan_ok(name) is True
 
