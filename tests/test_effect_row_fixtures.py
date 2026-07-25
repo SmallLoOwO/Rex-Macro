@@ -119,3 +119,27 @@ def test_scan_confirm_positive(name):
 def test_scan_confirm_negative(name):
     """Cave Skim 是最關鍵的負樣本：同樣是 D2 的雷達徽章，只按 Z 不等於掃描成功。"""
     assert _scan_ok(name) is False
+
+
+# --- 連續使用的就緒判定：兩個能力各自認自己的徽章（實機圖端到端） ---
+
+def _texts(name):
+    band = _load(name)
+    return [ocr.read_text(band[y:y + h, x:x + w], cfg.tesseract_path)
+            for (x, y, w, h) in vision.find_effect_slots(band)]
+
+
+@pytestmark_ocr
+@pytest.mark.parametrize("name,local,cave", [
+    ("local_only", True, False),
+    ("caveskim_only", False, True),
+    ("local_and_caveskim", True, True),
+    ("local_displaced_3slots", True, True),
+    ("d4_used_only", False, False),
+    ("no_effects", False, False),
+])
+def test_badge_classification_on_real_frames(name, local, cave):
+    """徽章在＝該能力還在冷卻。兩個都是雷達徽章、外觀相近，必須分得開。"""
+    texts = _texts(name)
+    assert harvester.scan_succeeded(texts) is local
+    assert harvester.cave_skim_present(texts) is cave

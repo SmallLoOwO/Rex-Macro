@@ -134,14 +134,33 @@ def use_activity():        # 對照原巨集：放左鍵 → D4 → 點擊 → D
     ic.key_press("4"); ic.mouse_click(button="right", hold=0.08)  # 右鍵=刷新事件（使用者確認；加強事件之後再做）
     ic.key_press("1"); ic.mouse_down()
 
-def use_activity_keep():  # D4 保留當前事件：左鍵確認（對照 use_activity 的右鍵刷新）
+def use_activity_keep():  # D4 保留當前事件：左鍵＝**加強**事件（對照 use_activity 的右鍵刷新）
     ic.mouse_up(); ic.settle()
-    ic.key_press("4"); ic.mouse_click(button="left", hold=0.08)   # 左鍵=確認/保留事件
+    # 左鍵是「加強事件」，**不會**把事件洗掉（2026-07-25 使用者更正；舊註解寫「確認/保留」
+    # 容易讓人以為是唯讀確認）。想留住的事件按左鍵只會變強，故 keep 路徑用它是安全的；
+    # 會不可逆換掉事件的是右鍵（use_activity）。
+    ic.key_press("4"); ic.mouse_click(button="left", hold=0.08)
     ic.key_press("1"); ic.mouse_down()
 
 def use_scan():            # SCAN 變體：D2→點擊→Z→D5→點擊→D1→續挖（對照 boost+scan .mcr）
     ic.mouse_up(); ic.key_press("2"); ic.mouse_click(); ic.key_press("z")
     ic.key_press("5"); ic.mouse_click(); ic.key_press("1"); ic.mouse_down()
+
+# 以下兩個是「連續使用」用的單一能力版本（對照 use_boost 的形狀：放左鍵→換道具→用→
+# 回 D1→續挖）。與 use_scan 的差別是**只觸發一個能力**，兩者冷卻各自獨立，才能像
+# D4/D5 那樣各自到期各自重按。
+# ⚠ 數字鍵是 toggle：雷達已在手上時再按 `2` 會收起來。這裡安全是因為挖礦中手上是
+#   D1 鎬子，按 `2` 屬於「換槽」而非「同槽切換」——與 use_boost 按 `5` 同理。
+
+def use_radar_scan():      # D2 左鍵 Cyberscan：範圍自動採礦＋Surreal+ 掛追蹤框
+    ic.mouse_up(); ic.settle()
+    ic.key_press("2"); ic.mouse_click(hold=0.08)
+    ic.key_press("1"); ic.mouse_down()
+
+def use_cave_skim():       # D2 Z Cave Skim：削掉特殊洞穴的洞穴方塊（Crystallized Stone/Ice）
+    ic.mouse_up(); ic.settle()
+    ic.key_press("2"); ic.key_press("z")
+    ic.key_press("1"); ic.mouse_down()
 
 def handle_cave(rotate=None):  # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
     import time

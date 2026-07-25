@@ -188,6 +188,15 @@ class Bot:
         self._bc_last_pair_screen = None             # 上次存 FOV 前後幀對時的螢幕計數（節流錨）
         self._bc_last_unreadable = 0.0               # 計數器讀不出 → 全幀快照節流（模板增補素材）
         self._last_activity_check = 0.0              # D4 冷卻偵測節流：上次真的 edge-match 的時間
+        # D2 雷達連續使用（2026-07-25）：兩個能力冷卻獨立，各記各的上次觸發時刻。
+        # _radar_toggle 是 Discord 執行期開關（config 是預設值，指令改這裡不動檔案）。
+        self._radar_last = {"scan": 0.0, "cave": 0.0}
+        self._radar_toggle = {"scan": cfg.radar_scan_repeat_enabled,
+                              "cave": cfg.radar_cave_skim_enabled}
+        self._radar_check_at = 0.0                   # 徽章偵測節流錨
+        self._radar_local_present = False            # 節流間沿用的快取
+        self._radar_cave_present = False
+        self._radar_ocr_ok = True                    # OCR 引擎可用否（run() 啟動時探測；False→定時後備）
         self._activity_present = False               # 上次偵測到的 D4 冷卻圖示在否（節流間沿用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._d4_unknown_at = 0.0                    # D4 事件文字認不得的 hold 起點（0=沒在 hold；雙樣本確認用）
@@ -639,6 +648,41 @@ class Bot:
                 cfg.activity_cooldown_edge_threshold, cfg.buff_scales) is not None
         return miner.cooldown_ready(self._activity_present, time.time() - self._last_activity,
                                     cfg.activity_cooldown_grace_s)
+
+    def _radar_badges(self, frame):
+        """效果列現況 → (local_present, cave_skim_present)；節流快取。
+
+        就緒判定與 D4 同語意：徽章**不在**＝冷卻好。徽章位置會隨 buff 疊加漂移，
+        故走 find_effect_slots 逐格 OCR（不可釘死座標，見 vision.find_effect_slots）。
+        零格時直接早退不跑 OCR——挖礦中大多數時間效果列是空的，省掉每輪的 tesseract。
+        """
+        now = time.time()
+        if now - self._radar_check_at < cfg.radar_check_interval_s:
+            return self._radar_local_present, self._radar_cave_present
+        self._radar_check_at = now
+        band = capture.crop(frame, cfg.scan_confirm_region)
+        slots = vision.find_effect_slots(band)
+        if not slots:
+            self._radar_local_present = self._radar_cave_present = False
+            return False, False
+        texts = [ocr.read_text(band[y:y + h, x:x + w], cfg.tesseract_path)
+                 for (x, y, w, h) in slots]
+        self._radar_local_present = harvester.scan_succeeded(texts)
+        self._radar_cave_present = harvester.cave_skim_present(texts)
+        return self._radar_local_present, self._radar_cave_present
+
+    def _radar_ready(self, frame, which: str) -> bool:
+        """D2 某能力是否該按了（連續使用模式）。which='scan'|'cave'。"""
+        enabled = (cfg.radar_scan_repeat_enabled if which == "scan"
+                   else cfg.radar_cave_skim_enabled)
+        if not enabled or not self._radar_toggle.get(which, True):
+            return False
+        last = self._radar_last.get(which, 0.0)
+        if not self._radar_ocr_ok:                    # 後備：OCR 引擎不可用 → 定時
+            return (time.time() - last) > cfg.radar_repeat_interval_s
+        local, cave = self._radar_badges(frame)
+        present = local if which == "scan" else cave
+        return miner.cooldown_ready(present, time.time() - last, cfg.radar_grace_s)
 
     def _handle_use_d4(self, frame):
         """D4 就緒時的 keep/reroll 決策（2026-07-19 01:16 未知連刷對策）。
@@ -1918,7 +1962,11 @@ class Bot:
                 f"📊 **狀態**：{self.state.value}（{self.last_action}）"
                 + ("（暫停）" if self.paused else "") + "\n"
                 f"⏱ 運行 {up // 60}m{up % 60:02d}s    🔊 音訊 {audio_score:.2f}\n"
-                f"📈 boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}\n"
+                f"📈 boost {s['boosts']} · 刷新 {s['rerolls']} · 稀有 {s['rares']} · 卡住 {s['stuck']}"
+                f" · 掃描 {s.get('radar_scans', 0)} · 削洞 {s.get('cave_skims', 0)}\n"
+                + harvester.format_radar_status(self._radar_toggle["scan"],
+                                                self._radar_toggle["cave"],
+                                                self._radar_ocr_ok) + "\n"
                 f"📝 保留：{kept}")
             self.log_discord.info("CMD status -> state=%s", self.state.value)
 
@@ -2006,6 +2054,28 @@ class Bot:
                     f"⛏ 手動回礦已排入{unpause}（狀態: {self.state.value}）→ 下個 tick 進 REENTRY")
             self.log_discord.info("CMD 回礦 -> accepted=%s state=%s", ok, self.state.value)
 
+        elif cmd in discord_commands.RADAR_COMMAND_KIND:
+            which = discord_commands.RADAR_COMMAND_KIND[cmd]
+            label = "掃描(D2 左鍵)" if which == "scan" else "削洞(D2 Z)"
+            want = discord_commands.parse_radar_toggle(args)
+            if want == "bad":
+                notify.send_message(token, ch,
+                    f"❓ 用法：`{cmd} 開` / `{cmd} 關`（不帶參數＝查詢目前狀態）")
+                self.log_discord.info("CMD %s bad args=%r", cmd, args)
+                return
+            if want is not None:
+                self._radar_toggle[which] = want
+                if want:
+                    # 剛開啟時清掉上次觸發時刻，讓它下一輪就能按（不必等 grace）
+                    self._radar_last[which] = 0.0
+                self.log_discord.info("CMD %s -> %s", cmd, "on" if want else "off")
+            notify.send_message(token, ch,
+                f"{'✅ 已更新' if want is not None else 'ℹ️ 目前設定'}｜{label}："
+                f"{'開' if self._radar_toggle[which] else '關'}\n"
+                + harvester.format_radar_status(self._radar_toggle["scan"],
+                                                self._radar_toggle["cave"],
+                                                self._radar_ocr_ok))
+
         elif cmd == "help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
@@ -2017,6 +2087,10 @@ class Bot:
                 "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
                 "採集/回礦中不接受，不排隊）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
+                "`削洞 [開|關]` — D2 的 Z（Cave Skim）連續使用：冷卻好就自動再按，"
+                "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
+                "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
+                "   ↳ ⚠ 掃描與採集流程搶同一條 D2 冷卻，開著可能讓 chill 採集掃不出追蹤框\n"
                 "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
                 "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
                 "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
@@ -2168,12 +2242,26 @@ class Bot:
         # WARN 診斷寫進 logs/preflight_alerts.md 供後續 agent 巡檢，**不進即時 Discord 通知**
         # （使用者回饋 2026-07-07：降級診斷不該洗掉要即時閱讀的訊息）。啟動 Discord 通知
         # 只保留「已啟動＋保留事件」這種掛機者當下需要看的內容。
+        # 雷達連續使用的就緒判定靠 OCR 讀效果列徽章；引擎不可用就退回定時後備。
+        # 在這裡探測（非每輪）：tesserocr_available 是冪等有鎖的主動探測，同 preflight 慣例。
+        try:
+            self._radar_ocr_ok = ocr.tesserocr_available(cfg.tesseract_path)
+        except Exception:
+            self._radar_ocr_ok = False
+        if (self._radar_toggle["scan"] or self._radar_toggle["cave"]):
+            self.logger.info("D2 雷達連續使用：%s（OCR 就緒判定=%s）",
+                             harvester.format_radar_status(
+                                 self._radar_toggle["scan"], self._radar_toggle["cave"],
+                                 self._radar_ocr_ok).splitlines()[0],
+                             "可用" if self._radar_ocr_ok else "不可用→定時後備")
+
         def _preflight_and_notify():
             self._run_preflight()
             if cfg.discord_bot_token and cfg.discord_channel_id:
                 from . import notify
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = (f"🤖 Bot 已啟動｜仰角：{self._startup_pitch_status}\n"
+                        f"{harvester.format_radar_status(self._radar_toggle['scan'], self._radar_toggle['cave'], self._radar_ocr_ok)}\n"
                         f"目前保留事件：\n{kept}")
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
                 # 遙控器：啟動訊息貼完後清掉跨重啟殘留的舊遙控器、貼新的到頻道底。
@@ -2768,8 +2856,8 @@ class Bot:
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._activity_ready(frame),   # D4：冷卻好就右鍵刷新事件
-            scan_event=False,                             # D2 只在採集流程用
-            cave_event=False,                             # Z 雷達擱置
+            scan_event=self._radar_ready(frame, "scan"),  # D2 左鍵：連續使用（預設關，搶採集冷卻）
+            cave_event=self._radar_ready(frame, "cave"),  # D2 Z：連續使用（削洞穴方塊）
             window_unfocused=self._window_displaced(),    # item ④：視窗跑位（失焦/移動/縮放）
         )
         action = miner.dispatch_event(flags)
@@ -2802,6 +2890,20 @@ class Bot:
             if pair_due:
                 time.sleep(cfg.boost_fov_settle_s)   # 等 FOV 展開（僅取樣輪，~每 N 次一次）
                 self._boost_fov_pair_save(frame, screen)
+        elif action == "CAVE":
+            self.log_act.info("mining: Cave Skim 冷卻好 -> D2 Z（削洞穴方塊）")
+            self.last_action = "削洞穴(D2 Z)"
+            self.stats["cave_skims"] = self.stats.get("cave_skims", 0) + 1
+            miner.use_cave_skim()
+            self._radar_last["cave"] = time.time()
+            self._radar_check_at = 0.0                # 下輪立刻重讀徽章確認真的觸發
+        elif action == "SCAN":
+            self.log_act.info("mining: Cyberscan 冷卻好 -> D2 左鍵（範圍自動採礦）")
+            self.last_action = "雷達掃描(D2 左鍵)"
+            self.stats["radar_scans"] = self.stats.get("radar_scans", 0) + 1
+            miner.use_radar_scan()
+            self._radar_last["scan"] = time.time()
+            self._radar_check_at = 0.0
         elif action == "USE_D4":
             self._handle_use_d4(frame)
         elif action is None:

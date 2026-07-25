@@ -425,6 +425,40 @@ def scan_succeeded(texts) -> bool:
     return False
 
 
+def format_radar_status(scan_on: bool, cave_on: bool, ocr_ok: bool = True) -> str:
+    """D2 雷達連續使用的啟用情形（啟動訊息／`status` 共用一行文字）。
+
+    掛機者要一眼看出「現在會不會自動重按」，所以直接寫開/關，不寫 config 欄位名。
+    OCR 不可用時就緒判定退回定時後備，會影響準確度 → 明講，不靜默降級。
+    """
+    def mark(on):
+        return "✅ 開" if on else "⬜ 關"
+    line = f"掃描(D2 左鍵)：{mark(scan_on)}｜削洞(D2 Z)：{mark(cave_on)}"
+    if (scan_on or cave_on) and not ocr_ok:
+        line += "（OCR 不可用 → 改用定時後備）"
+    if scan_on:
+        line += "\n⚠ 掃描開啟中：與採集流程搶同一條 D2 冷卻，chill 觸發採集時可能掃不出框"
+    return line
+
+
+def cave_skim_present(texts) -> bool:
+    """效果列文字裡有沒有「Cave Skim」徽章＝D2 的 Z 還在冷卻中。
+
+    與 scan_succeeded 對稱：呼叫端逐格 OCR 後把各格文字丟進來。徽章文字分兩行，
+    OCR 實測讀成 'cave\\nskim'。任一 token 像 cave 或 skim 都算——兩個字都夠獨特，
+    對 'Local'/'Used' 的相似度遠低於門檻，不會互相誤判。
+    """
+    for text in texts or []:
+        for tok in (text or "").lower().split():
+            t = tok.strip(":.,!1234567890 ")
+            if not t:
+                continue
+            for want in ("cave", "skim"):
+                if t == want or SequenceMatcher(None, t, want).ratio() >= 0.75:
+                    return True
+    return False
+
+
 def plan_boost_pair_due(screen_count, last_pair_count, every_n: int) -> bool:
     """FOV 前後幀對取樣節流（2026-07-19）：螢幕計數每前進 every_n 存一組。
 

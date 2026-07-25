@@ -103,6 +103,18 @@ class Config:
     activity_cooldown_grace_s: float = 3.0                     # 按 D4 後等冷卻圖示出現的寬限（避免重複按）
     activity_reroll_interval_s: float = 30.0                   # 後備：無冷卻圖模板時每隔多久刷新一次
     activity_check_interval_s: float = 3.0                     # D4 冷卻偵測節流：比 boost 更疏（D4 冷卻更長，掃更疏即可）
+
+    # D2 雷達連續使用（2026-07-25）：比照 D4/D5「冷卻好就再按」，用來持續清洞穴方塊。
+    # 就緒判定＝效果列**沒有**對應徽章（vision.find_effect_slots + OCR，同 D4 的
+    # cooldown_ready 語意）；徽章實測 t+0.4s 出現、~30s 後隨冷卻消失。
+    # 兩個能力冷卻**各自獨立**（wiki：左鍵 30s／Z 30s／右鍵 25s 三條分開）。
+    # ⚠ scan（左鍵）預設關：它與採集流程的 harvester.execute_scan 搶同一條 30s 冷卻，
+    #   開著會讓 chill 觸發採集時掃不出追蹤框 → 白掃 8 方位。Z 不與任何流程衝突。
+    radar_scan_repeat_enabled: bool = False      # D2 左鍵 Cyberscan 自動重複（會搶採集冷卻）
+    radar_cave_skim_enabled: bool = False        # D2 Z Cave Skim 自動重複（削洞穴方塊）
+    radar_check_interval_s: float = 3.0          # 徽章偵測節流（同 activity_check_interval_s 量級）
+    radar_grace_s: float = 4.0                   # 按下後等徽章出現的寬限（實測 t+0.4s 出現，留餘裕）
+    radar_repeat_interval_s: float = 34.0        # 後備定時：OCR 引擎不可用時改用（實測徽章 31s 在、34s 沒）
     # 視窗跑位偵測（item ④）：用 Win32 查 Roblox 視窗「前景/位置/大小」，相對啟動時量到的
     # 基準判斷是否跑掉（失焦或被移動/縮放）→ 自動重新聚焦+初始化。用基準相對比較而非寫死
     # 1920x1080，因 DPI 縮放會讓 GetWindowRect 回報縮放後座標（實測此機 125% → 1536x864）。

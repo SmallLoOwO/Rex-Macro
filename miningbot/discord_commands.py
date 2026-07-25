@@ -5,9 +5,36 @@ from dataclasses import dataclass
 COMMAND_NAMES = frozenset({
     "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
     "ability", "回礦", "reenter", "校準", "calib", "轉", "rotate",
+    "掃描", "scan", "削洞", "caveskim",
 })
 
 _ROTATE_WORDS = {"右": 1, "right": 1, "r": 1, "左": -1, "left": -1, "l": -1}
+
+# `掃描`／`削洞` 的開關字（連續使用模式）。無參數＝只查詢不改，避免手滑打成切換。
+_ON_WORDS = frozenset({"開", "on", "啟用", "1", "true"})
+_OFF_WORDS = frozenset({"關", "off", "停用", "0", "false"})
+
+RADAR_COMMAND_KIND = {"掃描": "scan", "scan": "scan",
+                      "削洞": "cave", "caveskim": "cave"}
+
+
+def parse_radar_toggle(args):
+    """`掃描`／`削洞` 的開關解析（純函式）。
+
+    回 True/False＝要設成開/關；None＝只查詢（無參數）；"bad"＝看不懂的參數。
+    看不懂時回 "bad" 而非預設切換——連續使用會持續消耗冷卻，寧可回提示也不要
+    因為打錯字就默默開起來（掃描開著會搶採集流程的 D2 冷卻）。
+    """
+    if not args:
+        return None
+    if len(args) != 1:
+        return "bad"
+    a = args[0].lower()
+    if a in _ON_WORDS:
+        return True
+    if a in _OFF_WORDS:
+        return False
+    return "bad"
 
 
 @dataclass(frozen=True)
