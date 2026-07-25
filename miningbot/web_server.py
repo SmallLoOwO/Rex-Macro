@@ -137,6 +137,20 @@ def create_app(
     def health():
         return {"ok": True}
 
+    @app.get("/intervention")
+    def intervention():
+        """P4 Task 6：介入面板 HTML（pinch-zoom canvas + tap UI）。
+
+        純前端：連 /ws → 收 INTERVENTION_NEEDED event + binary PNG → 顯示 →
+        玩家 pinch/scroll zoom + tap → 送 fire_at / reentry_click。
+        不需 Config；unconditional mount（手機開瀏覽器直接連 URL）。
+        """
+        from miningbot.web_static import render_intervention_html
+        return Response(
+            content=render_intervention_html(),
+            media_type="text/html",
+        )
+
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket):
         await websocket.accept()

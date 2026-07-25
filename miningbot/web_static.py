@@ -107,3 +107,209 @@ def _esc(s: str) -> str:
             .replace('"', "&quot;")
             .replace("<", "&lt;")
             .replace(">", "&gt;"))
+
+
+def render_intervention_html() -> str:
+    """P4 即時介入面板：pinch-zoom canvas + tap UI。
+
+    連 WebSocket → 收 INTERVENTION_NEEDED event → 顯示截圖 →
+    玩家 pinch/scroll zoom + 點擊 → 送 fire_at / reentry_click 命令。
+    """
+    return """<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MiningBot 介入面板</title>
+<style>
+body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
+       display: flex; flex-direction: column; height: 100vh; }
+header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
+         display: flex; justify-content: space-between; align-items: center; }
+#status { font-size: 0.9rem; color: #888; }
+#container { flex: 1; position: relative; overflow: hidden; touch-action: none; }
+canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
+</style>
+</head>
+<body>
+<header>
+  <strong>MiningBot 介入面板</strong>
+  <span id="status">等待 bot 事件…</span>
+</header>
+<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳；點擊送出位置</div>
+<div id="container">
+  <canvas id="canvas"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const container = document.getElementById('container');
+const statusEl = document.getElementById('status');
+
+const CANVAS_NATIVE = [1920, 1080];
+let scale = 1;          // fit-to-container 初始 scale
+let zoom = 1.0;         // pinch/scroll zoom（疊加在 scale 之上）
+let pan = [0, 0];       // 拖曳 pan（native 座標）
+let currentEvent = null;  // {flow, routing_key, summary}
+let ws = null;
+
+function fitCanvas() {
+  const cw = container.clientWidth;
+  const ch = container.clientHeight;
+  scale = Math.min(cw / CANVAS_NATIVE[0], ch / CANVAS_NATIVE[1]);
+  redraw();
+}
+
+function redraw() {
+  const totalScale = scale * zoom;
+  canvas.style.width = (CANVAS_NATIVE[0] * totalScale) + 'px';
+  canvas.style.height = (CANVAS_NATIVE[1] * totalScale) + 'px';
+  canvas.style.transform = `translate(${-pan[0] * totalScale}px, ${-pan[1] * totalScale}px)`;
+}
+
+function showImage(pngBytes) {
+  const blob = new Blob([pngBytes], { type: 'image/png' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = CANVAS_NATIVE[0];
+    canvas.height = CANVAS_NATIVE[1];
+    ctx.drawImage(img, 0, 0, CANVAS_NATIVE[0], CANVAS_NATIVE[1]);
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      showImage(e.data);
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_NEEDED') {
+      currentEvent = msg.payload;
+      statusEl.textContent = `需要介入：${msg.payload.summary || msg.payload.flow}`;
+    } else if (msg.type === 'ping') {
+      // server heartbeat；用 ws.pong 不過 ws API 用不著，這裡 noop
+    }
+  };
+  ws.onclose = () => {
+    statusEl.textContent = 'WebSocket 斷線，5s 後重連…';
+    setTimeout(connect, 5000);
+  };
+}
+
+// 點擊送出（pointer 無拖曳時）
+let pointerDownPos = null;
+let didDrag = false;
+container.addEventListener('pointerdown', (e) => {
+  pointerDownPos = [e.clientX, e.clientY];
+  didDrag = false;
+});
+container.addEventListener('pointermove', (e) => {
+  if (pointerDownPos) {
+    const dx = e.clientX - pointerDownPos[0];
+    const dy = e.clientY - pointerDownPos[1];
+    if (Math.abs(dx) + Math.abs(dy) > 5) didDrag = true;
+  }
+  // 拖曳 pan（pointer isDown + didDrag）
+  if (pointerDownPos && didDrag && e.buttons > 0) {
+    const totalScale = scale * zoom;
+    pan[0] -= (e.movementX || 0) / totalScale;
+    pan[1] -= (e.movementY || 0) / totalScale;
+    redraw();
+  }
+});
+container.addEventListener('pointerup', (e) => {
+  if (pointerDownPos && !didDrag) {
+    // tap：算原生座標送出
+    sendClick(e.clientX, e.clientY);
+  }
+  pointerDownPos = null;
+  didDrag = false;
+});
+container.addEventListener('pointercancel', () => {
+  pointerDownPos = null;
+  didDrag = false;
+});
+
+// 滾輪 zoom
+container.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  zoom = Math.max(0.5, Math.min(8.0, zoom * factor));
+  redraw();
+}, { passive: false });
+
+// 雙指 pinch（手機）— 簡化版，只認兩指距離變化
+let pinchInitialDist = null;
+let pinchInitialZoom = null;
+container.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    pinchInitialDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY,
+    );
+    pinchInitialZoom = zoom;
+  }
+});
+container.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && pinchInitialDist !== null) {
+    e.preventDefault();
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY,
+    );
+    zoom = Math.max(0.5, Math.min(8.0, pinchInitialZoom * (dist / pinchInitialDist)));
+    redraw();
+  }
+}, { passive: false });
+container.addEventListener('touchend', () => {
+  pinchInitialDist = null;
+  pinchInitialZoom = null;
+});
+
+function sendClick(clientX, clientY) {
+  if (!currentEvent) {
+    statusEl.textContent = '尚無 INTERVENTION_NEEDED 事件，忽略點擊';
+    return;
+  }
+  // 換算 client → canvas 座標
+  const rect = canvas.getBoundingClientRect();
+  const cx = clientX - rect.left;
+  const cy = clientY - rect.top;
+  // canvas 顯示尺寸 = canvas_size（CSS pixel）
+  const canvasSize = [rect.width, rect.height];
+  // 送命令：cmd + flow + harvest_id/attempt_id + client_xy + canvas_size + zoom + pan_offset
+  const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
+  const ep_id = {};
+  // routing_key = "harvest:007" 或 "reentry:attempt_3"
+  const [flow, epId] = currentEvent.routing_key.split(':', 2);
+  if (flow === 'harvest') ep_id.harvest_id = epId;
+  else ep_id.attempt_id = epId;
+  ws.send(JSON.stringify({
+    type: 'command',
+    payload: {
+      cmd, flow, ...ep_id,
+      client_xy: [cx, cy],
+      canvas_size: canvasSize,
+      zoom, pan_offset: pan,
+    },
+  }));
+  statusEl.textContent = `已送出點擊 (${Math.round(cx)}, ${Math.round(cy)}) — ${cmd}`;
+}
+
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
+connect();
+</script>
+</body>
+</html>
+"""

@@ -8,6 +8,41 @@ web_pending → main.py 整合點（manual_survey / reentry click）需要 fake 
 import pytest
 
 
+def test_get_intervention_returns_html():
+    """GET /intervention 回 HTML：含 canvas + fire_at/reentry_click + WebSocket。"""
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    fallback = FallbackState()
+    app = create_app(pending, fallback, broadcast_callback=None)
+    client = TestClient(app)
+    r = client.get("/intervention")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    body = r.text
+    # canvas + 點擊邏輯
+    assert "<canvas" in body.lower() or "canvas" in body
+    assert "fire_at" in body or "reentry_click" in body
+    assert "WebSocket" in body or "websocket" in body.lower() or "ws://" in body or "/ws" in body
+
+
+def test_intervention_html_has_pinch_zoom_or_scroll_zoom():
+    """pinch-zoom（手機）+ scroll-wheel zoom（桌機）至少一個。"""
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    fallback = FallbackState()
+    app = create_app(pending, fallback, broadcast_callback=None)
+    client = TestClient(app)
+    body = client.get("/intervention").text
+    # 至少有一個 zoom 手勢實作（wheel 事件 / touchmove / pointermove）
+    has_zoom = ("wheel" in body.lower() or "touchmove" in body.lower()
+                or "touchstart" in body.lower() or "pointermove" in body.lower())
+    assert has_zoom
+
+
 def test_main_harvest_manual_survey_consumes_web_reply():
     """manual_survey 進入時應檢查 web_pending，若有玩家 reply 直接走 fire+verify。
 
