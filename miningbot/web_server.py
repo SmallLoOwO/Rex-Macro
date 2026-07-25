@@ -251,6 +251,16 @@ class WebIPCThread:
             if self._server.should_exit:
                 break  # uvicorn 綁失敗（例如 port 被佔）；讓 actual_port 留 0
             time.sleep(0.02)
+        # 5s 超時仍無 actual_port：uvicorn 可能還在 init 或 bind 失敗（且沒有自己
+        # 設 should_exit）。silent return 會讓呼叫端 log 出 http://127.0.0.1:0
+        # 看似成功；這裡顯式警告＋請求 thread 退出，避免 daemon 殘留與假啟動訊息。
+        if self.actual_port == 0:
+            _log.warning(
+                "WebIPC server 5s 內未 bind socket；uvicorn 可能還在 init 或綁失敗"
+                "（should_exit=%s）——已請求 thread 退出，actual_port 留 0",
+                self._server.should_exit,
+            )
+            self._server.should_exit = True
 
     def stop(self) -> None:
         """設 should_exit=True，uvicorn 主迴圈下一輪會收掉。"""

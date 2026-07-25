@@ -2328,8 +2328,17 @@ class Bot:
             self.log.add_sink(WebEventSink(
                 broadcast_callback=lambda msg: self._web_thread.app.state.broadcast(msg)
             ))
-            self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
-                             self._web_thread.actual_port)
+            # actual_port=0 代表 start() 5s 內 uvicorn 沒 bind 到 socket（已在
+            # WebIPCThread.start() 警告並請求 thread 退出）。這裡守第二道防線：
+            # 避免印出 http://127.0.0.1:0 讓操作者誤認啟動成功。
+            if self._web_thread.actual_port > 0:
+                self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
+                                 self._web_thread.actual_port)
+            else:
+                self.logger.warning(
+                    "WebIPC server 啟動失敗／逾期（actual_port=0）"
+                    "——thread 已請求退出，broadcast 將 no-op"
+                )
         else:
             self._web_pending = None
             self._web_fallback = None
