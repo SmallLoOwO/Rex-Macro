@@ -25,6 +25,25 @@ def _reaction_message(**counts):
     }
 
 
+def _stub_reaction_clear(monkeypatch, ok=True, detail="HTTP 204"):
+    """攔截 clear_reaction/add_reaction，回傳被清掉的 (message_id, emoji) list。
+
+    測試絕不能真的打 Discord API——沒攔到就會發出真實 HTTP 請求。
+    """
+    cleared = []
+
+    def fake_clear(token, channel_id, message_id, emoji, timeout=10.0):
+        if ok:
+            cleared.append((message_id, emoji))
+        return ok, detail
+
+    monkeypatch.setattr(notify, "clear_reaction", fake_clear)
+    monkeypatch.setattr(
+        notify, "add_reaction",
+        lambda *_args, **_kwargs: (True, "HTTP 204"))
+    return cleared
+
+
 def _bare_reentry_bot():
     bot = Bot.__new__(Bot)
     bot.state = State.REENTRY
@@ -32,6 +51,7 @@ def _bare_reentry_bot():
     bot._rr_reactions_seen = {emoji: 1 for emoji in reentry_remote.REENTRY_REACTIONS}
     bot._rr_busy = False
     bot._pending_reentry = None
+    bot._reaction_clear_ok = True
     bot.log_discord = _LogRecorder()
     return bot
 
@@ -85,10 +105,13 @@ def test_rr_reaction_uses_one_message_fetch_and_sends_immediate_ack(monkeypatch)
         lambda token, channel_id, content: sent.append(content) or (True, "HTTP 200"))
     monkeypatch.setattr("miningbot.main.cfg.discord_bot_token", "token")
     monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
+    cleared = _stub_reaction_clear(monkeypatch)
 
     bot._poll_rr_reactions()
 
     assert fetches == [("token", "channel", "rr-message")]
+    # 2026-07-26：按完把該表情歸零，📷 重掃可以連按（不必先取消反應）
+    assert cleared == [("rr-message", "📷")]
     assert bot._pending_reentry is not None
     raw, reply = bot._pending_reentry
     assert raw == "reaction:📷"
@@ -122,6 +145,7 @@ def test_remote_control_reactions_use_one_message_fetch(monkeypatch):
     bot.human_cleared = False
     bot._pending_ability = False
     bot._calib_session = None
+    bot._reaction_clear_ok = True
     bot.log_discord = _LogRecorder()
     reposted = []
 
@@ -134,11 +158,14 @@ def test_remote_control_reactions_use_one_message_fetch(monkeypatch):
             AssertionError("遙控器不應再逐 emoji 發 GET")))
     bot._pause = lambda: setattr(bot, "paused", True)
     bot._repost_remote_control = lambda: reposted.append(True)
+    cleared = _stub_reaction_clear(monkeypatch)
 
     bot._poll_remote_reactions()
 
     assert bot.paused is True
-    assert reposted == [True]
+    # 2026-07-26：改成原地清掉按下的那顆表情，訊息不再刪貼
+    assert reposted == []
+    assert cleared == [("remote-message", "⏸️")]
 
 
 def _bare_remote_bot(state=State.MINING):
@@ -152,6 +179,7 @@ def _bare_remote_bot(state=State.MINING):
     bot._pending_ability = False
     bot._manual_reentry = False
     bot._calib_session = None
+    bot._reaction_clear_ok = True
     bot.log_discord = _LogRecorder()
     return bot
 
@@ -170,11 +198,13 @@ def test_remote_control_home_reaction_queues_manual_reentry(monkeypatch):
     monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
     bot._reentry_active = lambda: True
     bot._repost_remote_control = lambda: reposted.append(True)
+    cleared = _stub_reaction_clear(monkeypatch)
 
     bot._poll_remote_reactions()
 
     assert bot._manual_reentry is True
-    assert reposted == [True]
+    assert reposted == []
+    assert cleared == [("remote-message", "🏠")]
     assert any("回礦已排入" in m for m in sent)
 
 
@@ -192,6 +222,7 @@ def test_remote_control_home_reaction_rejected_in_harvesting(monkeypatch):
     monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
     bot._reentry_active = lambda: True
     bot._repost_remote_control = lambda: reposted.append(True)
+    _stub_reaction_clear(monkeypatch)
 
     bot._poll_remote_reactions()
 
@@ -616,3 +647,117 @@ def test_adopt_sticky_for_world_skips_when_user_pinned():
     bot._adopt_sticky_for_world("Lucernia")
 
     assert bot._rr_sticky_layer == "Shamrock"            # 不覆寫使用者選擇
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26 使用者要求：「discord 遙控器應該善用刪除反應的功能，這樣就不用一直
+# 將訊息與反應全部刪除」。
+#
+# 舊行為的理由寫在程式碼裡：「DM 不能 remove_reaction（HTTP 403 code 50003），
+# repost 是等效方案」。但遙控器早就搬到伺服器頻道——實測頻道 type=0（guild text）、
+# bot 的頻道 overwrite 含 MANAGE_MESSAGES——前提早就不成立，代價卻一直付著：
+# 每按一次按鈕就刪一則、貼一則，還要重貼 5 個表情（7 次 API vs 現在的 2 次）。
+# ---------------------------------------------------------------------------
+
+
+class _FullLogRecorder(_LogRecorder):
+    """_reset_reaction_button 會用到 .info 以外的層級。"""
+
+    def warning(self, message, *args):
+        self.records.append(message % args if args else message)
+
+
+def _reset_bot():
+    bot = Bot.__new__(Bot)
+    bot._reaction_clear_ok = True
+    bot.log_discord = _FullLogRecorder()
+    return bot
+
+
+class TestResetReactionButton:
+    def test_clears_then_readds_and_restores_baseline(self, monkeypatch):
+        """清空 → 機器人重貼自己那顆 → 基線回 1（按鈕還在，且可以立刻再按）。"""
+        bot = _reset_bot()
+        calls = []
+        monkeypatch.setattr(
+            notify, "clear_reaction",
+            lambda t, c, m, e, timeout=10.0: calls.append(("clear", e)) or (True, "HTTP 204"))
+        monkeypatch.setattr(
+            notify, "add_reaction",
+            lambda t, c, m, e, timeout=10.0: calls.append(("add", e)) or (True, "HTTP 204"))
+        seen = {"⏸️": 2}
+
+        assert bot._reset_reaction_button("mid", "⏸️", seen) is True
+        assert calls == [("clear", "⏸️"), ("add", "⏸️")]
+        assert seen["⏸️"] == 1, "基線必須回到 1，否則下次點擊算不出 increment"
+
+    def test_permission_failure_disables_permanently(self, monkeypatch):
+        """403/50013 = 這個頻道永遠做不到 → 設旗標，之後不再白試。"""
+        bot = _reset_bot()
+        attempts = []
+
+        def fake_clear(t, c, m, e, timeout=10.0):
+            attempts.append(e)
+            return False, "HTTP 403: {\"code\": 50013, \"message\": \"Missing Permissions\"}"
+
+        monkeypatch.setattr(notify, "clear_reaction", fake_clear)
+        assert bot._reset_reaction_button("mid", "⏸️", {}) is False
+        assert bot._reaction_clear_ok is False
+        # 第二次不該再打 API
+        assert bot._reset_reaction_button("mid", "▶️", {}) is False
+        assert attempts == ["⏸️"]
+
+    def test_dm_channel_code_also_disables(self, monkeypatch):
+        """50003 = Cannot execute action on a DM channel（舊註解講的就是這個）。"""
+        bot = _reset_bot()
+        monkeypatch.setattr(
+            notify, "clear_reaction",
+            lambda *_a, **_k: (False, "HTTP 403: {\"code\": 50003}"))
+        assert bot._reset_reaction_button("mid", "⏸️", {}) is False
+        assert bot._reaction_clear_ok is False
+
+    def test_transient_failure_does_not_disable(self, monkeypatch):
+        """網路/rate limit 是暫時的——不可因此永久降級。"""
+        bot = _reset_bot()
+        monkeypatch.setattr(
+            notify, "clear_reaction",
+            lambda *_a, **_k: (False, "HTTP 429: rate limited"))
+        assert bot._reset_reaction_button("mid", "⏸️", {}) is False
+        assert bot._reaction_clear_ok is True, "暫時性失敗下次仍要再試"
+
+    def test_no_message_id_is_noop(self, monkeypatch):
+        bot = _reset_bot()
+        monkeypatch.setattr(
+            notify, "clear_reaction",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不該打 API")))
+        assert bot._reset_reaction_button(None, "⏸️", {}) is False
+
+
+class TestRemoteControlFallsBackToRepost:
+    def test_repost_only_when_clear_unavailable(self, monkeypatch):
+        """權限被收回時必須退回舊的刪貼路徑，功能不能因此壞掉。"""
+        bot = _bare_remote_bot()
+        reposted = []
+        monkeypatch.setattr(
+            notify, "fetch_message",
+            lambda *_args: _reaction_message(
+                **{"▶️": 1, "⏸️": 2, "⚡": 1, "📷": 1, "🏠": 1}))
+        monkeypatch.setattr(
+            notify, "clear_reaction",
+            lambda *_a, **_k: (False, "HTTP 403: {\"code\": 50013}"))
+        bot._pause = lambda: setattr(bot, "paused", True)
+        bot._repost_remote_control = lambda: reposted.append(True)
+
+        bot._poll_remote_reactions()
+
+        assert bot.paused is True
+        assert reposted == [True], "清不掉反應時仍要靠刪貼讓按鈕可再按"
+
+
+def test_reaction_clear_unsupported_classification():
+    """純函式：哪些失敗算「永久做不到」。"""
+    assert notify.reaction_clear_unsupported("HTTP 403: {\"code\": 50013}") is True
+    assert notify.reaction_clear_unsupported("HTTP 403: {\"code\": 50003}") is True
+    assert notify.reaction_clear_unsupported("HTTP 429: rate limited") is False
+    assert notify.reaction_clear_unsupported("HTTP 500") is False
+    assert notify.reaction_clear_unsupported("") is False

@@ -284,6 +284,10 @@ class Bot:
         self._remote_message_id: str | None = None
         self._remote_reactions_seen: dict[str, int] = {}
         self._remote_last_shown: tuple | None = None    # 上次 PATCH 時的 (paused, state)，避免重複 PATCH
+        # 反應清除可用性（2026-07-26）：按完按鈕原地把該表情清空再重貼，訊息不必刪貼。
+        # 需要 MANAGE_MESSAGES（實測本頻道有）；被收回權限或改回 DM 時第一次 403 就
+        # 永久降級（遙控器回刪貼、其餘卡片回「使用者自行取消反應」的舊語意）。
+        self._reaction_clear_ok = True
         # 釘底防抖（2026-07-19 spec）：看到新訊息只立旗標，頻道安靜滿
         # cfg.discord_repin_quiet_s 才刪舊貼新（_repin_tick）；回礦收尾由 _rr_finalize
         # 主動立遙控器旗標——修「回礦完成後要等使用者發話遙控器才出現」的消費競態。
@@ -1743,6 +1747,8 @@ class Bot:
                 notify.edit_message(token, ch, mid, embed=embed)
                 self._list_current_world = world
                 self.log_discord.info("list 分頁切換 -> %s（反應 +%d）", world, delta)
+                # 2026-07-26：切完把該表情歸零——不然使用者要「取消再點」才切得回來
+                self._reset_reaction_button(mid, emoji, self._list_reactions_seen)
                 return                              # 一次輪詢只切一頁
 
     # ---- 遙控器（單一持久訊息 + 反應按鈕）--------------------------------------
@@ -1864,8 +1870,10 @@ class Bot:
     def _repost_remote_control(self):
         """刪舊遙控器、貼新的到頻道底。
 
-        兩個呼叫路徑：(1) 被其他訊息擠上去時重新釘底（_poll_discord 2a）；(2) 按鈕觸發後刪舊貼新——
-        DM 無法移除他人表情（HTTP 403 code 50003），repost 讓新訊息表情歸零、使用者可立即再點。
+        兩個呼叫路徑：(1) 被其他訊息擠上去時重新釘底（_poll_discord 2a）——這條是本函式
+        的**主要用途**；(2) 按鈕觸發後表情歸零的**降級路徑**：2026-07-26 起優先走
+        `_reset_reaction_button`（原地清那顆表情，訊息不動），只有清不掉（權限被收回／
+        改回 DM，HTTP 403 code 50003/50013）才落到這裡。
         刪除結果必記 log（舊設計不記，刪除失敗無從診斷）；刪失敗不擋重貼。
         """
         from . import notify
@@ -1937,11 +1945,45 @@ class Bot:
             ok, detail = notify.delete_message(token, ch, mid)
             self.log_discord.info("stale calib card mid=%s deleted -> %s", mid, detail)
 
-    def _poll_remote_reactions(self):
-        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並刪舊貼新遙控器。
+    def _reset_reaction_button(self, mid, emoji: str, seen: dict) -> bool:
+        """按鈕按完歸零：清掉該表情的所有反應 → 機器人重貼一次 → 基線回 1。
 
-        動作觸發後刪舊貼新（DM 無法清除他人表情 HTTP 403 code 50003，repost 是等效方案：
-        新訊息表情歸零可立即再點）；代價＝每次點擊 DM 多一則訊息（使用者已接受）。
+        2026-07-26 使用者要求「善用刪除反應的功能，這樣就不用一直將訊息與反應全部
+        刪除」。做完之後訊息原地不動、同一顆按鈕可以立刻再按。
+
+        回 True＝已歸零；False＝這個頻道做不到（呼叫端該降級）。
+        `_reaction_clear_ok` 記住永久性失敗（403/50003/50013），之後不再白試——
+        暫時性失敗（網路/rate limit）不設旗標，下次照常再試。
+        """
+        from . import notify
+        if not mid or not self._reaction_clear_ok:
+            return False
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ok, detail = notify.clear_reaction(token, ch, mid, emoji)
+        if not ok:
+            if notify.reaction_clear_unsupported(detail):
+                self._reaction_clear_ok = False
+                self.log_discord.info(
+                    "反應清除不可用（%s）→ 之後一律降級（遙控器回刪貼、其餘靠使用者自行取消）",
+                    detail)
+            else:
+                self.log_discord.info("反應清除失敗（暫時性，下次再試）：%s", detail)
+            return False
+        # 機器人重貼自己那一顆，按鈕才不會消失；基線隨之回到 1
+        added, add_detail = notify.add_reaction(token, ch, mid, emoji)
+        seen[emoji] = 1 if added else 0
+        if not added:
+            self.log_discord.info("反應清除後重貼 %s 失敗：%s", emoji, add_detail)
+        return True
+
+    def _poll_remote_reactions(self):
+        """輪詢遙控器反應：偵測 ▶️/⏸️ 新點擊 → 觸發 resume/pause，並把按下的表情歸零。
+
+        動作觸發後**只清那顆表情再重貼**（2026-07-26），訊息原地不動。
+        舊做法是刪舊訊息貼新的，理由寫著「DM 無法清除他人表情 HTTP 403 code 50003」
+        ——但遙控器早就搬到伺服器頻道（實測 type=0、bot 有 MANAGE_MESSAGES），
+        那個前提已經不成立，代價卻一直付著：每按一次按鈕就多一則訊息、7 次 API。
+        真的清不掉（權限被收回／改回 DM）才降級回刪貼。
 
         單次抓 Message Object 的 reactions count；count 基線採同步語意，使用者自己取消
         反應時基線下降，下次再點即可再次觸發。fetch 失敗回 None 時保留舊基線。
@@ -2025,9 +2067,13 @@ class Bot:
                                       delta, already)
             break                              # 一次輪詢只處理一個動作
         if action_taken:
-            # 動作觸發後刪舊貼新：表情歸零＝使用者可立即再點
-            # （DM 不能 remove_reaction HTTP 403 code 50003，repost 是等效方案）
-            self._repost_remote_control()
+            # 表情歸零＝使用者可立即再點。優先原地清反應（訊息不動）；
+            # 清不掉才退回舊的刪貼路徑。
+            emoji = next((em for em, _ in increments if actions.get(em) == action_taken),
+                         None)
+            if not (emoji and self._reset_reaction_button(
+                    mid, emoji, self._remote_reactions_seen)):
+                self._repost_remote_control()
 
     def _handle_discord_command(self, command: discord_commands.DiscordCommand):
         """解析並執行 Discord 命令，更新 _keep_ores 並回覆結果。
@@ -5750,6 +5796,10 @@ class Bot:
                 continue
             self._queue_reentry_reply(
                 f"reaction:{emoji}", reply, source=f"reaction:{emoji}+{delta}")
+            # 2026-07-26：按完歸零，同一顆（📷 重掃／🎲 重骰…）可以連按。
+            # 清不掉就維持舊語意（使用者自行取消反應再點）——回礦卡不做刪貼降級，
+            # 它的釘底另有 _rr_repost_embed 管，這裡刪貼會跟釘底防抖打架。
+            self._reset_reaction_button(mid, emoji, self._rr_reactions_seen)
             break                                # 一次輪詢只處理一個
 
     def _notify_stuck(self, reason: str):
@@ -7378,8 +7428,12 @@ class Bot:
         sess.reactions_seen = seen
 
     def _repost_calib_embed(self, warn: str = ""):
-        """刪舊卡貼新卡：DM 無法清他人反應（HTTP 403 code 50003），repost 讓反應歸零
-        可立即再點（與遙控器同一條已驗證路徑）。"""
+        """刪舊卡貼新卡（校準卡刻意維持刪貼，不改走 2026-07-26 的清反應路徑）。
+
+        理由：⬆️⬇️🧭 每按一次都會 `_calib_snapshot` 往頻道貼一張新截圖，卡片必然被
+        擠上去；而卡片內容（offset／幅度）本身也每次都變。刪貼一次同時解決「內容更新」
+        與「回到頻道底」，換成 edit＋清反應反而要多做一次釘底。
+        校準是短暫的互動 session，這裡的訊息量本來就有限。"""
         from . import notify
         old = self._calib_session.message_id
         if old:

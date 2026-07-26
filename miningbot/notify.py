@@ -571,6 +571,58 @@ def remove_reaction(token: str, channel_id: str, message_id: str,
         return False, f"{type(e).__name__}: {e}"
 
 
+def clear_reaction(token: str, channel_id: str, message_id: str,
+                   emoji: str, timeout: float = 10.0):
+    """清掉某個表情的**所有**反應（含機器人自己）。DELETE /reactions/{emoji}。回 (ok, detail)。
+
+    2026-07-26 使用者要求「善用刪除反應的功能，不用一直把訊息與反應全部刪除」。
+    這是取代遙控器「刪舊訊息貼新的」的關鍵——按鈕按完把該表情清空、機器人重貼一次，
+    計數就回到基線 1，同一顆按鈕可以立刻再按，而訊息本身原地不動。
+    成本 2 次 API（clear + add）vs 舊做法 7 次（delete + post + 5 個 add_reaction），
+    而且頻道不會每按一次就多一則訊息。
+
+    **需要 Manage Messages**（本端點一律要，不分自己或他人的反應）。實測 2026-07-26：
+    頻道 type=0（guild text）、bot 在該頻道的 overwrite 有 MANAGE_MESSAGES——
+    也就是說程式碼裡「DM 不能移除他人表情（HTTP 403 code 50003）」那個前提早就
+    不成立了，遙控器設定從 DM 換到伺服器頻道之後沒有人回頭改。
+    缺權限時呼叫端要能降級（回 repost 舊路徑），故失敗只回 (False, detail) 不丟例外。
+    """
+    if not token or not channel_id or not message_id:
+        return False, "缺少 token / channel_id / message_id"
+    url = REACTIONS_API.format(
+        channel_id=channel_id, message_id=message_id,
+        emoji=urllib.parse.quote(emoji, safe=""))
+    req = urllib.request.Request(
+        url, method="DELETE",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "miningbot (local automation, 1.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def reaction_clear_unsupported(detail: str) -> bool:
+    """clear_reaction 的失敗 detail 是否代表「這個頻道本來就做不到」（純函式）。
+
+    True＝權限/頻道型別問題，重試永遠不會成功，呼叫端該永久降級回 repost；
+    False＝暫時性失敗（網路、rate limit、5xx），下次照常再試。
+
+    50003 = Cannot execute action on a DM channel；50013 = Missing Permissions。
+    """
+    text = str(detail or "")
+    if "50003" in text or "50013" in text:
+        return True
+    return "HTTP 403" in text
+
+
 def delete_message(token: str, channel_id: str, message_id: str,
                    timeout: float = 10.0):
     """刪除機器人自己發的訊息。DELETE /channels/{id}/messages/{mid}。回 (ok, detail)。
