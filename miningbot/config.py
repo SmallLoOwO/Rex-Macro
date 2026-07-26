@@ -486,6 +486,14 @@ class Config:
     # 會自動退回既有 Discord fallback（PING、八方位圖、文字命令、遙控器）。
     web_server_enabled: bool = True              # 啟用網頁伺服器（綁 127.0.0.1）
     web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
+    # 綁定位址＝這台機器的 Tailscale IP（2026-07-26 使用者指定）。手機在同一個
+    # tailnet 直接開 http://100.110.130.17:8765 就進得去，不必再跑 `tailscale serve`。
+    # 綁在這張網卡而不是 "0.0.0.0" 是刻意的：介入面板**沒有任何認證**，能直接驅動
+    # 遊戲；綁 0.0.0.0 等於把它開給所在區網（咖啡廳 Wi-Fi 也算）。tailnet 的裝置
+    # 授權就是這裡唯一的門。
+    # ⚠ Tailscale 沒啟動時這個位址不存在 → bind 失敗。main.py 會自動退回
+    #   127.0.0.1 重試（log 會說），所以本機仍然開得起來，不會整個網頁 UI 消失。
+    web_server_host: str = "100.110.130.17"
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
     websocket_ping_interval_s: float = 30.0
     # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，

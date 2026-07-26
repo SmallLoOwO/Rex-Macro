@@ -31,42 +31,53 @@ Discord **沒有被取代**——見下面的分工表。
 
 ## 設定（一次性）
 
-網頁伺服器跟 bot **同一個 process**（daemon thread），綁 `127.0.0.1:8765`——
-不對外開，所以不必動 Windows 防火牆。
+網頁伺服器跟 bot **同一個 process**（daemon thread）。
 
-要用手機連，靠 Tailscale 出 HTTPS：
-
-```powershell
-# 1. Bot 主機裝好 Tailscale 並登入（手機也加入同一個 tailnet）
-# 2. 開一條 serve
-tailscale serve https / http://localhost:8765
-# 3. 看網址
-tailscale serve status
-```
-
-手機開 `https://<machine>.<tailnet>.ts.net` 就是介入面板。
-
-**不需要再加帳號密碼或 token**——tailnet 的設備授權就是認證，只有你自己的裝置連得進來。
+預設**直接綁這台機器的 Tailscale IP**，手機在同一個 tailnet 開
+`http://100.110.130.17:8765` 就進得去，不必再跑 `tailscale serve`。
 
 相關設定（`miningbot/config.py`）：
 
 | 欄位 | 預設 | 意思 |
 |---|---|---|
 | `web_server_enabled` | `True` | 關掉的話整個網頁子系統不啟動，所有流程自動退回 Discord |
-| `web_server_port` | `8765` | 綁 `127.0.0.1` 的 port |
+| `web_server_host` | `100.110.130.17` | 綁定位址＝本機 Tailscale IP |
+| `web_server_port` | `8765` | port |
 | `web_fallback_grace_s` | `30.0` | 最後一個 client 斷線後，等多久才判定「網頁沒人」 |
 
-啟動成功時 `miningbot.log` 會有一行 `WebIPC server 啟動：http://127.0.0.1:8765`。
+啟動成功時 `miningbot.log` 有一行 `WebIPC server 啟動：http://100.110.130.17:8765`，
+Discord 啟動訊息也會帶同一個網址。
+
+**Tailscale 沒開機自啟怎麼辦**：那個 IP 不存在 → bind 失敗 → bot 自動退回
+`127.0.0.1` 重試，log 與 Discord 都會明說「綁不到 …，手機連不進來」。等 Tailscale
+起來後重啟 bot 即可，網頁 UI 不會整個消失。
+
+**為什麼不綁 `0.0.0.0`**：介入面板**沒有任何認證**，能直接驅動遊戲。綁 `0.0.0.0`
+等於把它開給所在區網（咖啡廳 Wi-Fi 也算）。綁在 Tailscale 那張網卡，tailnet 的裝置
+授權就是唯一的門，這是刻意的取捨。
+
+想改回 spec 原設計（綁 `127.0.0.1` + Tailscale 代理出 HTTPS）也可以：
+
+```powershell
+tailscale serve https / http://localhost:8765
+tailscale serve status
+```
 
 ## 四個頁面
 
+頁面頂端有導覽列（設定／介入／歷史）互相跳，不必記網址。
+
 | 路徑 | 做什麼 |
 |---|---|
-| `/intervention` | **介入面板**——收到 bot 的截圖，雙指放大後點位置 |
+| `/intervention` | **介入面板**——收到 bot 的截圖，雙指放大後點位置；回礦時多一顆「跳過」 |
 | `/` | 玩家設定（4 個欄位） |
-| `/history` | 歷史紀錄：episode 列表，可依類型／關鍵字篩選 |
-| `/annotate?episode=<id>` | 標註工具：在快照上拖方形、填礦名／稀有度／症狀 |
+| `/history` | 歷史紀錄：episode 列表，依類型／結果／**日期**／關鍵字篩選 |
+| `/episode?id=<id>` | **episode 詳細頁**：事件時間軸 + 快照縮圖（按 label 分組）+ 標註歷程 |
+| `/annotate?episode=<id>&snapshot=<path>` | 標註工具：拖方形、填礦名／稀有度／症狀 |
+| `/snapshot?path=<abs path>` | 把快照 PNG 送給瀏覽器（縮圖與標註頁的圖都靠它） |
 | `/health` | 給人確認 server 活著（不是給玩家看的） |
+
+一般流程是 `/history` → 點 episode → 詳細頁看時間軸與縮圖 → 點縮圖進標註。
 
 ### 介入面板怎麼用
 
@@ -106,7 +117,7 @@ Config default → `.env` → `config_overrides.json`（最高）。
 
 | 症狀 | 先查 |
 |---|---|
-| 手機連不上 | `tailscale serve status`；再確認 `miningbot.log` 有沒有 `WebIPC server 啟動` |
+| 手機連不上 | `miningbot.log` 的 `WebIPC server 啟動：` 那行是不是 `100.110.130.17`；若寫 `127.0.0.1` 代表 Tailscale 沒起來、已自動退回本機 |
 | 網頁開得起來但沒反應 | 狀態列是不是「WebSocket 斷線」。斷線會每 5s 自動重連 |
 | 一直走 Discord 八方位圖 | 網頁沒連著，或斷線後還沒過 30s grace；`discord.log` 會記 `fall through Discord 八方位` |
 | 點了沒下文 | 看 `miningbot.log` 的 `AIM web fire` / `回礦 web 介入`；逾時會明寫 timeout |
@@ -121,6 +132,12 @@ Config default → `.env` → `config_overrides.json`（最高）。
 
 ## 給接手的 AI agent
 
+### 安全邊界
+
+`/snapshot` 讓外部指定要讀哪個檔，防護是 **realpath 必須落在 `snapshots_root` 底下**
+＋只放行 `.png`。改這條 route 時別退化成字串比對——`..` 與 symlink 要在 realpath
+階段攤平才擋得住（同 `_is_safe_category` 的教訓）。
+
 ### 千萬別做的事
 
 **不要把 web 模組改成 deferred import。** `miningbot/main.py` 檔頭那段
@@ -130,14 +147,20 @@ if cfg.web_server_enabled:
     from . import web_server as _web_server_preload
 ```
 
-看起來像可以延後載入的東西，實際上是 **H061 的修復**。`Bot.__init__` 在 `run()` 之前
-就已經 spawn 了四個 worker thread，其中 `ocr.rapidocr_available` 與
-`ocr.tesserocr_available` 各自在 thread 裡跑 C 擴展的 deferred import。主執行緒這時再
-deferred import fastapi 鏈就是**三方 import lock 死結**——實機三次啟動全部卡死，連
-worker thread 一起靜默。
+看起來像可以延後載入的東西，實際上是 **H061 的修復**。原本這行寫在 `Bot.run()` 裡，
+而 `run()` 跑在 daemon thread；實機直譯器當時沒裝 uvicorn → `ModuleNotFoundError` →
+`pythonw` 沒有 console，預設的 `threading.excepthook` 把 traceback 印到不存在的
+stderr → **整個失敗蒸發**。HUD 還活著、`init_mining_sequence` 已按下 W＋左鍵，看起來
+就是「只挖 D1、主迴圈沒進、log 停住」。三次實機啟動都這樣，事後查了一整輪才定位。
 
-通則：**這個 repo 任何新的重型 import 都放模組層**，不要放在 thread 已啟動之後的路徑。
-`tests/test_startup_import_order.py` 守著這條。
+⚠ 調查期間曾誤判成「多執行緒 import lock 死結」——那個結論**是錯的**。之所以能自圓其
+說，是因為重現用 `uv run`（venv 有 uvicorn），**整條調查比對了錯的直譯器**。查實機
+問題第一件事是確認 production 跟你手上的重現環境是不是同一顆 Python。
+
+通則仍然成立：**重型 import 放模組層**，不要放在 thread 已啟動之後的路徑。另外兩道
+防線也別拆——`status_hud._run_bot_guarded`（執行緒 crash 必留 log + 彈框）與
+`run()` 裡 WebIPC 區塊的 try/except（web 壞掉不可停止挖礦）。
+`tests/test_startup_import_order.py` 守著這幾條。
 
 ### 架構要點
 
@@ -167,6 +190,10 @@ bot 廣播了、測試也綠了，但 `render_intervention_html` 的 JS 根本�
 
 - 網頁的 `control:pause` / `resume` / `request_frame` 管線通了但**兩邊都沒接 UI**——
   這是設計（spec §2：遙控器 Discord 主用、網頁不接手），不是半成品。
+  `control:skip` 則已接（介入面板的「跳過」，走 `reentry_remote.parse_reply("跳過")`
+  同一條路徑）。
+- `/history` 的「結果」欄目前永遠是 `—`：`load_episodes` 還沒有結果來源
+  （harvest.log 尚未接進去）。篩選 UI 保留著，接上就會動。
 - 素材庫沒有按色系分子目錄。原因見
   [`tests/fixtures/aim/README.md`](../tests/fixtures/aim/README.md)：自動收集的 `auto_*`
   無從判斷色系。

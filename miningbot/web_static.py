@@ -1,4 +1,36 @@
-"""網頁前端 HTML render（P3 玩家設定面板）。"""
+"""網頁前端 HTML render（設定 / 介入 / 歷史 / episode 詳細 / 標註）。"""
+
+
+# --- 全站導覽（2026-07-26 補）------------------------------------------------
+#
+# 先前四個頁面之間**沒有任何連結**：開根網址只看得到 4 欄設定表單，
+# /intervention、/history、/annotate 全要手打網址才進得去——功能其實都在，
+# 只是使用者找不到（實機回報「網頁內容特別簡潔，感覺有部分功能沒放進去」）。
+#
+# 手機優先：橫向捲動的一列，點擊區夠大；current 標當前頁。
+_NAV_ITEMS = (
+    ("/", "⚙️ 設定"),
+    ("/intervention", "🎯 介入"),
+    ("/history", "📜 歷史"),
+)
+
+NAV_CSS = """
+.nav { display: flex; gap: 0.4rem; padding: 0.5rem; background: #1b1b1b;
+       overflow-x: auto; border-bottom: 1px solid #333; }
+.nav a { flex: 0 0 auto; padding: 0.45rem 0.9rem; border-radius: 999px;
+         background: #2a2a2a; color: #ddd; text-decoration: none;
+         font-size: 0.9rem; white-space: nowrap; }
+.nav a.current { background: #0084ff; color: #fff; }
+"""
+
+
+def render_nav(current: str) -> str:
+    """回導覽列 HTML。current 是當前路徑（例如 "/history"）。"""
+    parts = []
+    for href, label in _NAV_ITEMS:
+        cls = ' class="current"' if href == current else ""
+        parts.append(f'<a href="{href}"{cls}>{label}</a>')
+    return '<nav class="nav">%s</nav>' % "".join(parts)
 
 
 def render_index_html(config) -> str:
@@ -19,7 +51,7 @@ def render_index_html(config) -> str:
 <head>
 <meta charset="utf-8">
 <title>MiningBot 玩家設定</title>
-<style>
+<style>{NAV_CSS}
 body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }}
 label {{ display: block; margin: 1rem 0 0.3rem; font-weight: bold; }}
 input, select {{ width: 100%; padding: 0.4rem; box-sizing: border-box; }}
@@ -31,6 +63,7 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
 </style>
 </head>
 <body>
+{render_nav("/")}
 <h1>MiningBot 玩家設定</h1>
 
 <form id="settings-form">
@@ -120,8 +153,10 @@ def render_history_html(episodes: list[dict]) -> str:
     rows = "".join(
         f'<tr data-id="{_esc(e.get("harvest_id", ""))}"'
         f' data-type="{_esc(e.get("type", ""))}"'
-        f' data-result="{_esc(e.get("result", ""))}">'
-        f'<td><a href="/annotate?episode={_esc(e.get("harvest_id", ""))}">'
+        f' data-result="{_esc(e.get("result", ""))}"'
+        f' data-date="{_date_str(e.get("first_ts"))}">'
+        # 連詳細頁而不是直接跳標註：先看「這一集發生什麼」才知道要標哪張
+        f'<td><a href="/episode?id={_esc(e.get("harvest_id", ""))}">'
         f'{_esc(e.get("harvest_id", ""))}</a></td>'
         f'<td>{_esc(e.get("type", ""))}</td>'
         f'<td class="result">{_esc(e.get("result") or "—")}</td>'
@@ -136,7 +171,7 @@ def render_history_html(episodes: list[dict]) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiningBot 歷史紀錄</title>
-<style>
+<style>{NAV_CSS}
 body {{ font-family: sans-serif; max-width: 900px; margin: 1rem auto;
        padding: 0 0.5rem; }}
 h1 {{ font-size: 1.2rem; }}
@@ -155,6 +190,7 @@ a {{ color: #0084ff; text-decoration: none; }}
 </style>
 </head>
 <body>
+{render_nav("/history")}
 <h1>MiningBot 歷史紀錄</h1>
 
 <form class="filters" id="filters" onsubmit="return false;">
@@ -173,9 +209,16 @@ a {{ color: #0084ff; text-decoration: none; }}
       <option value="unknown">未確認</option>
     </select>
   </label>
+  <label>日期起
+    <input type="date" id="filter-from">
+  </label>
+  <label>日期迄
+    <input type="date" id="filter-to">
+  </label>
   <label>關鍵字（episode id）
     <input type="text" id="filter-search" placeholder="007">
   </label>
+  <button type="button" id="filter-clear">清除</button>
 </form>
 
 <table id="episodes">
@@ -184,26 +227,46 @@ a {{ color: #0084ff; text-decoration: none; }}
 </thead>
 <tbody>{rows}</tbody>
 </table>
-<p class="hint">點 Episode 連到標註工具；結果欄目前尚無資料來源。</p>
+<p class="hint">顯示 <span id="match-count">—</span> 筆・點 Episode 進詳細頁（時間軸／快照／標註）；結果欄目前尚無資料來源。</p>
 
 <script>
 const typeF = document.getElementById('filter-type');
 const resultF = document.getElementById('filter-result');
 const searchF = document.getElementById('filter-search');
+const fromF = document.getElementById('filter-from');
+const toF = document.getElementById('filter-to');
+const clearBtn = document.getElementById('filter-clear');
+const countEl = document.getElementById('match-count');
 function applyFilters() {{
   const t = typeF.value;
   const r = resultF.value;
   const q = searchF.value.trim().toLowerCase();
+  // data-date 是 YYYY-MM-DD，跟 <input type="date"> 的 value 同格式，
+  // 所以字串比較就等同日期比較（不必 parse）。空值＝不設限。
+  const from = fromF.value;
+  const to = toF.value;
+  let shown = 0;
   for (const tr of document.querySelectorAll('#episodes tbody tr')) {{
+    const d = tr.dataset.date || '';
     const okT = t === 'all' || tr.dataset.type === t;
     const okR = r === 'all' || tr.dataset.result === r;
     const okQ = !q || (tr.dataset.id || '').toLowerCase().includes(q);
-    tr.classList.toggle('hidden', !(okT && okR && okQ));
+    const okFrom = !from || (d && d >= from);
+    const okTo = !to || (d && d <= to);
+    const ok = okT && okR && okQ && okFrom && okTo;
+    tr.classList.toggle('hidden', !ok);
+    if (ok) shown++;
   }}
+  if (countEl) countEl.textContent = shown + ' / ' + document.querySelectorAll('#episodes tbody tr').length;
 }}
-typeF.addEventListener('change', applyFilters);
-resultF.addEventListener('change', applyFilters);
+for (const el of [typeF, resultF, fromF, toF]) el.addEventListener('change', applyFilters);
 searchF.addEventListener('input', applyFilters);
+clearBtn.addEventListener('click', () => {{
+  typeF.value = 'all'; resultF.value = 'all';
+  searchF.value = ''; fromF.value = ''; toF.value = '';
+  applyFilters();
+}});
+applyFilters();
 </script>
 </body>
 </html>
@@ -252,7 +315,7 @@ def render_annotate_html(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>MiningBot 標註工具</title>
-<style>
+<style>{NAV_CSS}
 body {{ margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
        display: flex; flex-direction: column; height: 100vh; }}
 header {{ padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
@@ -290,6 +353,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 </style>
 </head>
 <body>
+{render_nav("/annotate")}
 <header>
   <strong>MiningBot 標註工具</strong>　episode: <code>{_esc(episode_id)}</code>
 </header>
@@ -533,6 +597,141 @@ document.getElementById('submit').addEventListener('click', async () => {{
 """
 
 
+def render_episode_html(detail: dict, annotations: list[dict]) -> str:
+    """episode 詳細頁（spec §5 B）：事件時間軸 + 快照縮圖按 label 分組 + 標註歷程。
+
+    2026-07-26 補：`/api/episode/{id}` 這條 endpoint 從 P5 就存在，但**前端零使用**
+    ——後端做了、前端沒接，跟 INTERVENTION_RESULT 同一型缺口。歷史頁先前直接跳
+    `/annotate`，玩家永遠看不到「這一集到底發生了什麼」。
+
+    detail：``web_history.load_episode_detail`` 回的 dict
+    annotations：``web_history.list_annotations_for_episode`` 回的 list
+
+    縮圖用 ``/snapshot?path=...`` 取圖（那條 route 也是這次才補的；先前 <img> 必破圖）。
+    """
+    ep_id = str(detail.get("harvest_id", ""))
+    ep_type = str(detail.get("type", ""))
+    snaps = list(detail.get("snapshots", []))
+    snaps.sort(key=lambda r: r.get("written_at") or 0)
+
+    # 時間軸：一列一筆，時間 + label
+    timeline = "".join(
+        f'<li><span class="t">{_format_ts(r.get("written_at"))}</span>'
+        f'<code>{_esc(r.get("label", "?"))}</code></li>'
+        for r in snaps
+    ) or '<li class="empty">此 episode 沒有快照紀錄</li>'
+
+    # 縮圖按 label 分組（同一 label 常有 before/after 或多方位，擺一起才看得出對照）
+    groups: dict[str, list[dict]] = {}
+    for r in snaps:
+        groups.setdefault(str(r.get("label", "?")), []).append(r)
+    thumb_blocks = []
+    for label in sorted(groups):
+        cards = "".join(
+            '<figure><a href="/annotate?episode={ep}&snapshot={q}" '
+            'title="標註這張">'
+            '<img loading="lazy" src="/snapshot?path={q}" alt="{lb}"></a>'
+            '<figcaption>{ts}</figcaption></figure>'.format(
+                ep=_esc(ep_id),
+                q=_url_q(str(r.get("path", ""))),
+                lb=_esc(label),
+                ts=_format_ts(r.get("written_at")),
+            )
+            for r in groups[label]
+        )
+        thumb_blocks.append(
+            f'<section class="grp"><h3>{_esc(label)}'
+            f'<span class="n">{len(groups[label])}</span></h3>'
+            f'<div class="thumbs">{cards}</div></section>'
+        )
+    thumbs = "".join(thumb_blocks) or '<p class="empty">沒有快照可顯示</p>'
+
+    ann_rows = "".join(
+        f'<tr><td><code>{_esc(str(a.get("image", "")))}</code></td>'
+        f'<td>{_esc(str(a.get("tier") or "—"))}</td>'
+        f'<td>{_esc(str(a.get("variant") or "—"))}</td>'
+        f'<td>{_esc(str(a.get("mineral") or "—"))}</td>'
+        f'<td>{_esc(str(a.get("symptom") or "—"))}</td>'
+        f'<td>{_esc(str(a.get("related_incident") or "—"))}</td></tr>'
+        for a in annotations
+    ) or ('<tr><td colspan="6" class="empty">尚無標註'
+          '——點上面任一張縮圖開始標</td></tr>')
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>episode {_esc(ep_id)}</title>
+<style>{NAV_CSS}
+body {{ font-family: sans-serif; max-width: 1000px; margin: 0 auto 3rem;
+       padding: 0 0.6rem; }}
+h1 {{ font-size: 1.15rem; margin: 0.8rem 0 0.2rem; }}
+h2 {{ font-size: 0.95rem; margin: 1.6rem 0 0.4rem; color: #444;
+     border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }}
+h3 {{ font-size: 0.85rem; margin: 0.8rem 0 0.3rem; color: #666; }}
+h3 .n {{ background: #eee; border-radius: 999px; padding: 0 0.45rem;
+        margin-left: 0.4rem; font-weight: normal; }}
+.meta {{ color: #777; font-size: 0.85rem; }}
+ul.timeline {{ list-style: none; padding: 0; margin: 0;
+              max-height: 16rem; overflow-y: auto; }}
+ul.timeline li {{ display: flex; gap: 0.6rem; padding: 0.15rem 0;
+                 font-size: 0.82rem; border-bottom: 1px solid #f0f0f0; }}
+ul.timeline .t {{ color: #888; flex: 0 0 10.5rem; }}
+.thumbs {{ display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.3rem; }}
+.thumbs figure {{ margin: 0; flex: 0 0 auto; text-align: center; }}
+.thumbs img {{ height: 110px; border: 1px solid #ccc; border-radius: 4px;
+              display: block; background: #fafafa; }}
+.thumbs figcaption {{ font-size: 0.7rem; color: #888; margin-top: 0.15rem; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ padding: 0.35rem 0.4rem; border-bottom: 1px solid #ddd;
+         text-align: left; font-size: 0.82rem; }}
+th {{ background: #f5f5f5; }}
+.empty {{ color: #999; }}
+a {{ color: #0084ff; text-decoration: none; }}
+</style>
+</head>
+<body>
+{render_nav("/history")}
+<h1>episode {_esc(ep_id)} <span class="meta">（{_esc(ep_type)}）</span></h1>
+<p class="meta">{_format_ts(detail.get("first_ts"))}
+  ~ {_format_ts(detail.get("last_ts"))}　快照 {detail.get("count", 0)} 張
+  ・<a href="/history">← 回列表</a></p>
+
+<h2>事件時間軸</h2>
+<ul class="timeline">{timeline}</ul>
+
+<h2>快照（按 label 分組，點縮圖去標註）</h2>
+{thumbs}
+
+<h2>玩家介入／標註歷程</h2>
+<table>
+<thead><tr><th>素材</th><th>tier</th><th>變體</th><th>礦物</th>
+<th>症狀</th><th>關聯事故</th></tr></thead>
+<tbody>{ann_rows}</tbody>
+</table>
+</body>
+</html>
+"""
+
+
+def _url_q(s: str) -> str:
+    """把字串 escape 成可放進 URL query 的值（同時對 HTML 屬性安全）。"""
+    from urllib.parse import quote
+    return _esc(quote(str(s), safe=""))
+
+
+def _date_str(ts) -> str:
+    """unix timestamp → "YYYY-MM-DD"（給 <input type=\"date\"> 直接字串比較）。"""
+    if ts is None:
+        return ""
+    try:
+        import time
+        return time.strftime("%Y-%m-%d", time.localtime(float(ts)))
+    except (TypeError, ValueError):
+        return ""
+
+
 def _format_ts(ts) -> str:
     """把 unix timestamp（float/int）格式化成本地時間字串；None 回 '—'。"""
     if ts is None:
@@ -559,27 +758,36 @@ def render_intervention_html() -> str:
     連 WebSocket → 收 INTERVENTION_NEEDED event → 顯示截圖 →
     玩家 pinch/scroll zoom + 點擊 → 送 fire_at / reentry_click 命令。
     """
-    return """<!DOCTYPE html>
+    return _INTERVENTION_HTML.replace(
+        "%(nav_css)s", NAV_CSS).replace(
+        "%(nav)s", render_nav("/intervention"))
+
+
+_INTERVENTION_HTML = """<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>MiningBot 介入面板</title>
-<style>
+<style>%(nav_css)s
 body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
        display: flex; flex-direction: column; height: 100vh; }
 header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
          display: flex; justify-content: space-between; align-items: center; }
 #status { font-size: 0.9rem; color: #888; }
+#skip { padding: 0.35rem 0.8rem; border: 0; border-radius: 4px;
+        background: #6d6d6d; color: #fff; font-size: 0.85rem; cursor: pointer; }
 #container { flex: 1; position: relative; overflow: hidden; touch-action: none; }
 canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
 </style>
 </head>
 <body>
+%(nav)s
 <header>
   <strong>MiningBot 介入面板</strong>
   <span id="status">等待 bot 事件…</span>
+  <button id="skip" type="button" hidden>⏭️ 跳過</button>
 </header>
 <div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳；點擊送出位置</div>
 <div id="container">
@@ -591,6 +799,7 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const container = document.getElementById('container');
 const statusEl = document.getElementById('status');
+const skipBtn = document.getElementById('skip');
 
 const CANVAS_NATIVE = [1920, 1080];
 let scale = 1;          // fit-to-container 初始 scale
@@ -647,6 +856,8 @@ function connect() {
     if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_NEEDED') {
       currentEvent = msg.payload;
       setStatus(`需要介入：${msg.payload.summary || msg.payload.flow}`, 'need');
+      // 「跳過」只對回礦有意義（spec §4 回礦流程第 6 點）；harvest 沒有等價路徑
+      skipBtn.hidden = (msg.payload.flow !== 'reentry');
     } else if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_RESULT') {
       // bot 處理完玩家這一點的結果（spec 驗收 A「verify 結果回傳網頁顯示 ✅ / ❌」）。
       // verdict 由 main._broadcast_intervention_result 給：
@@ -656,7 +867,7 @@ function connect() {
       const v = msg.payload.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
       setStatus(msg.payload.summary || v, ok ? 'ok' : 'fail');
-      if (ok) currentEvent = null;
+      if (ok) { currentEvent = null; skipBtn.hidden = true; }
     } else if (msg.type === 'ping') {
       // server heartbeat；用 ws.pong 不過 ws API 用不著，這裡 noop
     }
@@ -763,6 +974,15 @@ function sendClick(clientX, clientY) {
   }));
   setStatus(`已送出點擊 (${nativeX}, ${nativeY}) — ${cmd}，等待 bot 回覆…`, 'need');
 }
+
+// 「跳過」：走 bot 既有的回礦跳過路徑（等同在 Discord 打「跳過」）
+skipBtn.addEventListener('click', () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'command', payload: { cmd: 'skip' } }));
+  setStatus('已送出跳過，等待 bot 收尾…', 'need');
+  skipBtn.hidden = true;
+  currentEvent = null;
+});
 
 window.addEventListener('resize', fitCanvas);
 fitCanvas();

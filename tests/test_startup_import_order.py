@@ -151,11 +151,22 @@ def test_web_status_line_reports_each_case():
     from miningbot.config import DEFAULT as cfg
     from tests.fake_bot import make_fake_bot
 
-    bot = make_fake_bot(bind=["_format_web_status"], _web_thread=None)
+    bot = make_fake_bot(bind=["_format_web_status", "_web_url"], _web_thread=None)
 
-    # 1) 起來了
+    # 1) 起來了——網址用**實際綁上的** host
     bot._web_thread = type("T", (), {"actual_port": 8765})()
-    assert "http://127.0.0.1:8765" in bot._format_web_status()
+    bot._web_host = "100.64.0.1"
+    assert "http://100.64.0.1:8765" in bot._format_web_status()
+
+    # 1b) 綁不到設定值、退回本機 → 要警告「手機連不進來」，不能給假網址
+    bot._web_host = "127.0.0.1"
+    old_host = cfg.web_server_host
+    try:
+        cfg.web_server_host = "100.64.0.1"
+        line = bot._format_web_status()
+        assert "http://127.0.0.1:8765" in line and "連不進來" in line
+    finally:
+        cfg.web_server_host = old_host
 
     # 2) 缺件降級
     bot._web_thread = None

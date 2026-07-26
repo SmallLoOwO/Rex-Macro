@@ -2365,6 +2365,16 @@ class Bot:
             return
         self._queue_reentry_reply(content, reply, source="text")
 
+    def _web_url(self) -> str:
+        """網頁 UI 對外網址（Discord 啟動訊息與 log 共用）。
+
+        用**實際綁上的** host（_web_host）而不是設定值——退回 127.0.0.1 時，
+        給玩家一個連不進去的 Tailscale 網址只會浪費他一輪嘗試。
+        """
+        thread = getattr(self, "_web_thread", None)
+        port = getattr(thread, "actual_port", 0) or cfg.web_server_port
+        return f"http://{getattr(self, '_web_host', cfg.web_server_host)}:{port}"
+
     def _format_web_status(self) -> str:
         """啟動 Discord 訊息用的網頁 UI 一行狀態。
 
@@ -2377,7 +2387,12 @@ class Bot:
         """
         thread = getattr(self, "_web_thread", None)
         if thread is not None and getattr(thread, "actual_port", 0) > 0:
-            return f"🌐 網頁 UI：http://127.0.0.1:{thread.actual_port}"
+            url = self._web_url()
+            bound = getattr(self, "_web_host", cfg.web_server_host)
+            if bound == "127.0.0.1" and cfg.web_server_host != "127.0.0.1":
+                return (f"🌐 網頁 UI：{url}　⚠ 綁不到 {cfg.web_server_host}"
+                        "（Tailscale 沒起來？）——手機連不進來")
+            return f"🌐 網頁 UI：{url}"
         if WEB_IMPORT_ERROR:
             return (f"🌐 網頁 UI：**停用**（缺 fastapi/uvicorn：{WEB_IMPORT_ERROR}）"
                     "——介入流程走 Discord")
@@ -2505,6 +2520,7 @@ class Bot:
         self._web_fallback = None
         self._web_thread = None
         self._web_start_error: str | None = None
+        self._web_host: str = cfg.web_server_host
         if cfg.web_server_enabled:
             try:
                 # 這三行只是把名字綁進 local scope——模組本身已在檔頭 import 完（H061），
@@ -2514,30 +2530,52 @@ class Bot:
                 from .web_sink import WebEventSink
                 self._web_pending = PendingReplies()
                 self._web_fallback = FallbackState()
-                self._web_thread = WebIPCThread(
-                    pending=self._web_pending,
-                    fallback=self._web_fallback,
-                    port=cfg.web_server_port,
-                    config=cfg,  # P3：給 HTTP endpoints 用
-                    overrides_path=overrides_path,  # P3：持久化路徑
-                    # P5：snapshot_index 與 fixtures 目錄必須顯式轉發——不傳的話
-                    # create_app 預設 None，會讓 /api/history、/api/episode、
-                    # /api/annotate、/history 四條 route 在 production 全回 503。
-                    snapshot_index_path=os.path.join(cfg.log_dir,
-                                                     "snapshot_index.jsonl"),
-                    fixtures_dir=_AUTO_FIXTURE_ROOT,
-                )
-                self._web_thread.start()
+                # bind 位址退回鏈：先試設定的位址（預設＝Tailscale IP），失敗再試
+                # 127.0.0.1。Tailscale 沒開機自啟時那個 IP 根本不存在，硬綁會讓整個
+                # 網頁 UI 消失；退回本機至少在 bot 機器上還開得起來，而且 log 會說明。
+                hosts = [cfg.web_server_host]
+                if cfg.web_server_host != "127.0.0.1":
+                    hosts.append("127.0.0.1")
+                for attempt_host in hosts:
+                    self._web_thread = WebIPCThread(
+                        pending=self._web_pending,
+                        fallback=self._web_fallback,
+                        host=attempt_host,
+                        port=cfg.web_server_port,
+                        config=cfg,  # P3：給 HTTP endpoints 用
+                        overrides_path=overrides_path,  # P3：持久化路徑
+                        # P5：snapshot_index 與 fixtures 目錄必須顯式轉發——不傳的話
+                        # create_app 預設 None，會讓 /api/history、/api/episode、
+                        # /api/annotate、/history 四條 route 在 production 全回 503。
+                        snapshot_index_path=os.path.join(cfg.log_dir,
+                                                         "snapshot_index.jsonl"),
+                        fixtures_dir=_AUTO_FIXTURE_ROOT,
+                        # 沒有它 /snapshot 回 503 → 標註頁與歷史縮圖全是破圖
+                        snapshots_root=os.path.join(cfg.log_dir, "snapshots"),
+                    )
+                    self._web_thread.start()
+                    if self._web_thread.actual_port > 0:
+                        self._web_host = attempt_host
+                        break
+                    self.logger.warning("WebIPC 綁 %s 失敗", attempt_host)
+                    try:
+                        self._web_thread.stop()
+                    except Exception:
+                        pass
                 self.log.add_sink(WebEventSink(
                     broadcast_callback=(
                         lambda msg: self._web_thread.app.state.broadcast(msg))
                 ))
                 # actual_port=0 代表 start() 5s 內 uvicorn 沒 bind 到 socket（已在
                 # WebIPCThread.start() 警告並請求 thread 退出）。這裡守第二道防線：
-                # 避免印出 http://127.0.0.1:0 讓操作者誤認啟動成功。
+                # 避免印出 http://...:0 讓操作者誤認啟動成功。
                 if self._web_thread.actual_port > 0:
-                    self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
-                                     self._web_thread.actual_port)
+                    self.logger.info("WebIPC server 啟動：%s", self._web_url())
+                    if self._web_host != cfg.web_server_host:
+                        self.logger.warning(
+                            "綁不到設定的 %s（Tailscale 沒起來？）——已退回 %s，"
+                            "手機連不進來；等 Tailscale 起來後重啟 bot 即可。",
+                            cfg.web_server_host, self._web_host)
                 else:
                     self.logger.warning(
                         "WebIPC server 啟動失敗／逾期（actual_port=0）"
@@ -3227,6 +3265,17 @@ class Bot:
         """
         if self._web_pending is None:
             return  # cfg.web_server_enabled=False
+        # 網頁「跳過」按鈕（spec §4 回礦流程第 6 點）。走既有 reentry 指令路徑：
+        # reentry_remote.parse_reply("跳過") → kind="skip" → _queue_reentry_reply，
+        # 跟玩家在 Discord 打「跳過」完全同一條，主迴圈消費邏輯零改動。
+        # 先前玩家在網頁點失敗後只能切回 Discord 打字，等於白做一半。
+        if self._web_pending.pop("control:skip") is not None:
+            reply = reentry_remote.parse_reply("跳過")
+            if reply is not None and self._pending_reentry is None:
+                self._queue_reentry_reply("跳過", reply, source="web")
+                self.logger.info("web: 跳過（排入 reentry pending）")
+            else:
+                self.logger.info("web: 跳過被忽略（上一則指令還在執行或非回礦中）")
         for cmd in ("pause", "resume", "request_frame"):
             reply = self._web_pending.pop(f"control:{cmd}")
             if reply is not None:

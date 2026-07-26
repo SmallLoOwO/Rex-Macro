@@ -24,11 +24,17 @@ def test_render_history_html_includes_episode_id():
 
 
 def test_render_history_html_episode_row_links_to_annotate_or_detail():
-    """每列應有連到詳情的錨點（/annotate?episode= 或 /api/episode/）。"""
+    """每列應有連到詳情的錨點。
+
+    2026-07-26 起連的是 `/episode?id=`（詳細頁：時間軸／快照分組／標註歷程），
+    不再直接跳 `/annotate`——先看「這一集發生什麼」才知道要標哪一張。
+    """
     episodes = [{"harvest_id": "042", "type": "harvest", "count": 1,
                  "first_ts": None, "last_ts": None, "snapshots": []}]
     html = render_history_html(episodes)
-    assert "/annotate?episode=042" in html or "/api/episode/042" in html
+    assert ("/episode?id=042" in html
+            or "/annotate?episode=042" in html
+            or "/api/episode/042" in html)
 
 
 def test_render_history_html_has_type_filter():
@@ -144,3 +150,116 @@ def test_render_annotate_html_has_pinch_zoom_or_wheel_zoom():
     has_zoom = ("wheel" in html or "touchmove" in html
                 or "touchstart" in html)
     assert has_zoom
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26 實機回報「網頁內容特別簡潔，感覺有部分功能沒放進去」。
+# 查下去功能其實都在，但四個頁面**彼此沒有任何連結**，而且標註頁的 <img> 永遠破圖
+# （沒有 serve 快照的 route）、`/api/episode/{id}` 前端零使用。以下守住這批補完。
+# ---------------------------------------------------------------------------
+
+
+import pytest  # noqa: E402
+from miningbot.web_static import (  # noqa: E402
+    render_nav, render_episode_html, render_intervention_html,
+    render_annotate_html, render_index_html,
+)
+
+
+class _Cfg:
+    reentry_mode = "remote"
+    reentry_target_layer = ""
+    reentry_yaw_sample_sweep = False
+    sweep_pitch_enabled = False
+
+
+@pytest.mark.parametrize("name,html_fn", [
+    ("index", lambda: render_index_html(_Cfg())),
+    ("history", lambda: render_history_html([])),
+    ("annotate", lambda: render_annotate_html("7", "", (["Rare"], ["原色"]))),
+    ("intervention", render_intervention_html),
+])
+def test_every_page_has_nav(name, html_fn):
+    """四個頁面都要有導覽列，否則功能找得到卻進不去。"""
+    html = html_fn()
+    assert 'class="nav"' in html, f"{name} 缺導覽列"
+    for href in ("/intervention", "/history"):
+        assert href in html, f"{name} 導覽列缺 {href}"
+    assert ".nav a.current" in html, f"{name} 缺導覽列 CSS"
+
+
+def test_nav_marks_current_page():
+    assert 'href="/history" class="current"' in render_nav("/history")
+    assert 'href="/" class="current"' in render_nav("/")
+
+
+def _detail(**over):
+    d = {"harvest_id": "42", "type": "harvest", "count": 2,
+         "first_ts": 1784270000.0, "last_ts": 1784270900.0,
+         "snapshots": [
+             {"written_at": 1784270000.0, "label": "sweep_dir1",
+              "path": r"C:\logs\snapshots\reentry\a.png"},
+             {"written_at": 1784270900.0, "label": "sweep_dir1",
+              "path": r"C:\logs\snapshots\reentry\b.png"},
+         ]}
+    d.update(over)
+    return d
+
+
+def test_episode_page_has_timeline_thumbs_and_annotations():
+    html = render_episode_html(_detail(), annotations=[])
+    assert "事件時間軸" in html
+    assert "sweep_dir1" in html
+    # 縮圖必須走 /snapshot（先前根本沒有這條 route，<img> 一律破圖）
+    assert "/snapshot?path=" in html
+    assert "尚無標註" in html
+
+
+def test_episode_page_groups_snapshots_by_label():
+    """同 label 的多張要收在同一組——before/after 對照才看得出來。"""
+    html = render_episode_html(_detail(), annotations=[])
+    assert html.count("<section class=\"grp\">") == 1
+    assert html.count("/snapshot?path=") == 2
+
+
+def test_episode_page_renders_annotations():
+    html = render_episode_html(_detail(), annotations=[
+        {"image": "auto_42_fail.png", "tier": "Rare", "variant": "Spectral",
+         "mineral": "Tin", "symptom": "false_negative",
+         "related_incident": "H057"},
+    ])
+    for token in ("auto_42_fail.png", "Rare", "Spectral", "Tin",
+                  "false_negative", "H057"):
+        assert token in html, token
+
+
+def test_episode_page_url_encodes_windows_paths():
+    """Windows 路徑的反斜線與冒號必須 URL-encode，否則 query 解析錯。"""
+    html = render_episode_html(_detail(), annotations=[])
+    assert "C%3A%5Clogs" in html
+    assert r"path=C:\logs" not in html
+
+
+def test_episode_page_survives_empty_snapshots():
+    html = render_episode_html(_detail(snapshots=[], count=0), annotations=[])
+    assert "沒有快照" in html
+
+
+def test_history_has_date_filter():
+    """spec §5 A 明列日期篩選；先前只有類型／結果／關鍵字。"""
+    html = render_history_html([
+        {"harvest_id": "1", "type": "harvest", "count": 1,
+         "first_ts": 1784270000.0, "last_ts": 1784270000.0, "snapshots": []}])
+    assert 'id="filter-from"' in html and 'id="filter-to"' in html
+    assert 'type="date"' in html
+    # 每列要帶 data-date 供比較（YYYY-MM-DD，跟 <input type=date> 同格式）
+    assert "data-date=\"2026-" in html
+
+
+def test_intervention_has_skip_button():
+    """spec §4 回礦流程第 6 點：失敗時玩家可按「跳過」，不必切回 Discord 打字。"""
+    html = render_intervention_html()
+    assert 'id="skip"' in html
+    assert "'skip'" in html or '"skip"' in html
+    # 只對 reentry 顯示（harvest 沒有等價路徑）
+    assert "flow !== 'reentry'" in html

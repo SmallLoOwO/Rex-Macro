@@ -103,6 +103,7 @@ def create_app(
     overrides_path: str | None = None,
     snapshot_index_path: str | None = None,
     fixtures_dir: str | None = None,
+    snapshots_root: str | None = None,
     ping_interval_s: float = 30.0,
 ) -> FastAPI:
     """建 FastAPI app。
@@ -165,6 +166,44 @@ def create_app(
     # ── P5 Task 6：歷史紀錄 + 標註 endpoints（unconditional mount） ─────────
     app.state.snapshot_index_path = snapshot_index_path
     app.state.fixtures_dir = fixtures_dir
+    app.state.snapshots_root = snapshots_root
+
+    @app.get("/snapshot")
+    def get_snapshot(path: str):
+        """把快照 PNG 送給瀏覽器（2026-07-26 補；先前完全沒有這條）。
+
+        沒有它，`/annotate` 的 `<img src=...>` 永遠是破圖——標註工具（spec §5 C）
+        整個不能用，而歷史頁的縮圖也無從顯示。後端把路徑寫進 snapshot_index.jsonl，
+        前端卻拿不到圖，是典型的「兩邊各做一半」。
+
+        Security：快照路徑來自 query string，等於讓外部指定要讀哪個檔。防護是
+        **realpath 必須落在 snapshots_root 底下**——比字串比對可靠，symlink 與
+        `..` 都會在 realpath 階段被攤平。另外只放行 .png，避免有人拿它讀 log/設定檔。
+        （沿用 _is_safe_category 的教訓：路徑檢查一律在正規化**之後**做。）
+        """
+        if snapshots_root is None:
+            return _err(503, "snapshots root not configured")
+        root = os.path.realpath(snapshots_root)
+        target = os.path.realpath(path)
+        if os.path.splitext(target)[1].lower() != ".png":
+            return _err(400, "only .png is served")
+        # commonpath 會在不同磁碟機時丟 ValueError（Windows），視同越界
+        try:
+            inside = os.path.commonpath([root, target]) == root
+        except ValueError:
+            inside = False
+        if not inside:
+            _log.warning("web: /snapshot 拒絕越界路徑 %r（root=%r）", path, root)
+            return _err(403, "path outside snapshots root")
+        if not os.path.isfile(target):
+            return _err(404, "snapshot not found")
+        try:
+            with open(target, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            _log.warning("web: /snapshot 讀檔失敗 %s: %s", target, e)
+            return _err(404, "snapshot unreadable")
+        return Response(content=data, media_type="image/png")
 
     @app.get("/api/history")
     def get_api_history():
@@ -223,6 +262,30 @@ def create_app(
         episodes = load_episodes(snapshot_index_path)
         return Response(
             content=render_history_html(episodes),
+            media_type="text/html",
+        )
+
+    @app.get("/episode")
+    def get_episode_page(id: str):
+        """episode 詳細頁 HTML（spec §5 B）——時間軸 + 縮圖分組 + 標註歷程。
+
+        2026-07-26 補：`/api/episode/{id}` 從 P5 就在，但沒有任何前端頁面用它。
+        """
+        if snapshot_index_path is None:
+            return _err(503, "history not configured")
+        from miningbot.web_history import (
+            load_episode_detail, list_annotations_for_episode,
+        )
+        from miningbot.web_static import render_episode_html
+        detail = load_episode_detail(id, snapshot_index_path)
+        if detail is None:
+            return _err(404, f"episode not found: {id}")
+        annotations = (
+            list_annotations_for_episode(id, fixtures_dir)
+            if fixtures_dir else []
+        )
+        return Response(
+            content=render_episode_html(detail, annotations),
             media_type="text/html",
         )
 
@@ -455,6 +518,7 @@ class WebIPCThread:
         overrides_path: str | None = None,
         snapshot_index_path: str | None = None,
         fixtures_dir: str | None = None,
+        snapshots_root: str | None = None,
     ):
         self.pending = pending
         self.fallback = fallback
@@ -479,6 +543,7 @@ class WebIPCThread:
             config=config, overrides_path=overrides_path,
             snapshot_index_path=snapshot_index_path,
             fixtures_dir=fixtures_dir,
+            snapshots_root=snapshots_root,
             ping_interval_s=ping_interval_s,
         )
 
