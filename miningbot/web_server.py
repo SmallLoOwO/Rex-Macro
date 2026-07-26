@@ -4,7 +4,9 @@ WebIPC thread（Task 10 整合進 main.py）跑 uvicorn server；client 連線�
 FallbackState.client_count；命令透過 parse_message 解析後 push 進 PendingReplies。
 """
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -98,6 +100,8 @@ def create_app(
     on_startup: Callable[[asyncio.AbstractEventLoop], None] | None = None,
     config=None,
     overrides_path: str | None = None,
+    snapshot_index_path: str | None = None,
+    fixtures_dir: str | None = None,
     ping_interval_s: float = 30.0,
 ) -> FastAPI:
     """建 FastAPI app。
@@ -111,6 +115,11 @@ def create_app(
     config：P3 玩家設定面板用——傳入 Config instance 時掛 `GET/POST /api/config`
         與 `GET /`（HTML）三條 route；不傳則只保留 P1 既有 routes（向下相容）。
     overrides_path：P3 持久化路徑；傳入時啟動讀回套用、POST 寫回。可選。
+    snapshot_index_path：P5 Task 6 歷史/標註面板用——snapshot_index.jsonl 路徑
+        （通常 ``<log_dir>/snapshot_index.jsonl``）。未傳時 history/episode/history
+        HTML 三條 route 回 503；annotate HTML 不靠它（只渲染表單）。
+    fixtures_dir：P5 Task 6 標註寫入目標目錄（如 ``tests/fixtures``）。未傳時
+        POST /api/annotate 回 503。
     ping_interval_s：P4 WebSocket heartbeat 間隔（秒）。**P5 Task 2 已退役**——
         text-message "ping" 只能在 TCP 全斷才拋例外，無法偵測手機背景化／
         Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn 預設 20s 協議級
@@ -149,6 +158,87 @@ def create_app(
         from miningbot.web_static import render_intervention_html
         return Response(
             content=render_intervention_html(),
+            media_type="text/html",
+        )
+
+    # ── P5 Task 6：歷史紀錄 + 標註 endpoints（unconditional mount） ─────────
+    app.state.snapshot_index_path = snapshot_index_path
+    app.state.fixtures_dir = fixtures_dir
+
+    @app.get("/api/history")
+    def get_api_history():
+        """回所有 episode 列表（spec §5；web_history.load_episodes）。"""
+        if snapshot_index_path is None:
+            return _err(503, "history not configured")
+        from miningbot.web_history import load_episodes
+        return load_episodes(snapshot_index_path)
+
+    @app.get("/api/episode/{episode_id}")
+    def get_api_episode(episode_id: str):
+        """回單一 episode 詳細；找不到 404；未配置 503。"""
+        if snapshot_index_path is None:
+            return _err(503, "history not configured")
+        from miningbot.web_history import load_episode_detail
+        detail = load_episode_detail(episode_id, snapshot_index_path)
+        if detail is None:
+            return _err(404, f"episode not found: {episode_id}")
+        return detail
+
+    @app.post("/api/annotate")
+    def post_api_annotate(payload: dict):
+        """驗證 annotation dict → 原子寫入 tests/fixtures/<category>/<stem>.json。
+
+        回 201 成功；400 schema 不通過；503 未配置 fixtures_dir。
+        category 推導順序：payload.category > image 路徑前綴 > 預設 "aim"。
+        """
+        if fixtures_dir is None:
+            return _err(503, "history not configured")
+        from miningbot.web_annotation import validate_annotation
+        if not validate_annotation(payload):
+            return _err(400, "invalid annotation payload")
+        category = _derive_category(payload)
+        image_field = payload["image"]
+        stem = os.path.splitext(os.path.basename(image_field))[0]
+        target_dir = os.path.join(fixtures_dir, *category.split("/"))
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = os.path.join(target_dir, stem + ".json")
+            _atomic_write_json(target_path, payload)
+        except OSError as e:
+            _log.warning("web: /api/annotate 寫入失敗 (%s): %s", target_path, e)
+            return _err(500, f"write failed: {e}")
+        return JSONResponse(
+            status_code=201,
+            content={"ok": True, "path": target_path, "category": category},
+        )
+
+    @app.get("/history")
+    def get_history():
+        """歷史面板 HTML（Task 7 補完整 UI；Task 6 先 routing 通）。"""
+        if snapshot_index_path is None:
+            return _err(503, "history not configured")
+        from miningbot.web_history import load_episodes
+        from miningbot.web_static import render_history_html
+        episodes = load_episodes(snapshot_index_path)
+        return Response(
+            content=render_history_html(episodes),
+            media_type="text/html",
+        )
+
+    @app.get("/annotate")
+    def get_annotate(episode: str | None = None, snapshot: str | None = None):
+        """標註工具 HTML（Task 7 補完整 UI；Task 6 先 routing 通）。
+
+        不需 snapshot_index_path——只渲染表單。rarity_choices 從 game_data 撈。
+        """
+        from miningbot.web_static import render_annotate_html
+        rarity_choices = _rarity_choices_from_game_data()
+        return Response(
+            content=render_annotate_html(
+                episode_id=episode or "",
+                snapshot_path=snapshot or "",
+                rarity_choices=rarity_choices,
+            ),
             media_type="text/html",
         )
 
@@ -240,6 +330,51 @@ def create_app(
 def _err(status: int, reason: str) -> JSONResponse:
     """統一 JSON 錯誤回應（HTTP 狀態碼 + reason）。"""
     return JSONResponse(status_code=status, content={"error": reason})
+
+
+def _derive_category(payload: dict) -> str:
+    """從 payload 推 fixtures 子目錄：payload.category > image 前綴 > "aim"。
+
+    payload 显式帶 ``category`` 時（如 "reentry/teleport_board"）優先採用；
+    否則看 image 是否含路徑前綴（如 "reentry/teleport_board/x.png"）；
+    都沒有就用 "aim"（spec §5：玩家最常標註 harvest 手動瞄準素材）。
+    """
+    cat = payload.get("category")
+    if isinstance(cat, str) and cat:
+        # 不容許絕對路徑 / .. 跳出 fixtures_dir
+        norm = os.path.normpath(cat).lstrip(os.sep).lstrip("/")
+        if ".." not in norm.split("/"):
+            return norm
+    image = payload.get("image")
+    if isinstance(image, str) and "/" in image:
+        head = os.path.dirname(image)
+        norm = os.path.normpath(head).lstrip(os.sep).lstrip("/")
+        if norm and ".." not in norm.split("/"):
+            return norm
+    return "aim"
+
+
+def _atomic_write_json(target_path: str, data: dict) -> None:
+    """tempfile + os.replace 原子寫 JSON；與 P5 Task 5 main.py 一致。"""
+    tmp_path = target_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
+    os.replace(tmp_path, target_path)
+
+
+def _rarity_choices_from_game_data() -> tuple[list[str], list[str]]:
+    """從 game_data.rare_ores() 撈 tier 清單；檔缺/壞 → 空 list。
+
+    純读取 game_data 全域快取；rare_ores 已有 try/except 容錯。未啟動 world
+    時回全世界聯集（保守，spec §5：寧可多列型別讓玩家選）。
+    """
+    try:
+        from miningbot.game_data import rare_ores
+        from miningbot.web_annotation import rarity_choices_from_game_data
+        return rarity_choices_from_game_data(list(rare_ores().values()))
+    except Exception as e:
+        _log.warning("web: rarity_choices 撈取失敗（fallback 空 list）: %s", e)
+        return [], ["原色", "Spectral", "Ionized"]
 
 
 def _handle_command(payload: dict, pending: PendingReplies) -> None:

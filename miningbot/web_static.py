@@ -109,6 +109,59 @@ def _esc(s: str) -> str:
             .replace(">", "&gt;"))
 
 
+def render_history_html(episodes: list[dict]) -> str:
+    """P5 Task 7：歷史紀錄面板 HTML（episode 列表 + 篩選）。
+
+    Task 6 只放骨架（routing 可動）；Task 7 補完整 UI。
+    """
+    items = "".join(
+        f'<li data-id="{_esc(e.get("harvest_id", ""))}">'
+        f'{_esc(e.get("harvest_id", ""))} ({_esc(e.get("type", ""))}) '
+        f'count={e.get("count", 0)}</li>'
+        for e in episodes
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>MiningBot 歷史紀錄</title>
+</head>
+<body>
+<h1>MiningBot 歷史紀錄</h1>
+<p>Task 6 stub；Task 7 補完整 UI。</p>
+<ul>{items}</ul>
+</body>
+</html>
+"""
+
+
+def render_annotate_html(
+    episode_id: str,
+    snapshot_path: str,
+    rarity_choices: tuple[list[str], list[str]],
+) -> str:
+    """P5 Task 7：標註工具 HTML（顯示 snapshot + 正方形標註 + 症狀選擇）。
+
+    Task 6 只放骨架（routing 可動）；Task 7 補完整 UI。
+    rarity_choices = (tiers, variants)；目前只用來確認 caller 接得到。
+    """
+    tiers, variants = rarity_choices
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>MiningBot 標註工具</title>
+</head>
+<body>
+<h1>MiningBot 標註工具</h1>
+<p>Task 6 stub；Task 7 補完整 UI。</p>
+<p>episode={_esc(episode_id)} snapshot={_esc(snapshot_path)}</p>
+<p>tiers={_esc(",".join(tiers))} variants={_esc(",".join(variants))}</p>
+</body>
+</html>
+"""
+
+
 def render_intervention_html() -> str:
     """P4 即時介入面板：pinch-zoom canvas + tap UI。
 
