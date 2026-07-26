@@ -140,6 +140,16 @@ class Bot:
             cfg.boost_count_ledger, cfg.log_dir)
         self.logger = diagnostics.setup_logging(cfg.log_dir, cfg.log_level)
         self.logger.info("runtime log directory: %s", cfg.log_dir)
+        # H061：把直譯器印出來。這台機器有兩個 Python——`pythonw -m miningbot`（實機、
+        # Microsoft Store 版）與 `uv sync` 灌的 .venv，套件不一定同步。H061 就是
+        # 「.venv 有 uvicorn、實機沒有」，而整輪調查都在 .venv 裡重現不出來。
+        # 一行 log 就能讓「你重現的環境跟實機是不是同一個」變成看一眼的事。
+        self.logger.info("interpreter: %s", sys.executable)
+        if WEB_IMPORT_ERROR:
+            self.logger.warning(
+                "網頁 UI 依賴缺件 → 已自動停用：%s。挖礦與 Discord 不受影響"
+                "（介入流程走 fallback）；要啟用請對**這個直譯器**裝 fastapi/uvicorn。",
+                WEB_IMPORT_ERROR)
         # 子系統 logger（分檔隔離噪音：心跳/重複動作/採集細節各自獨立檔）
         self.log_hb = diagnostics.get_logger("heartbeat")      # -> heartbeat.log
         self.log_act = diagnostics.get_logger("mining")        # -> actions.log

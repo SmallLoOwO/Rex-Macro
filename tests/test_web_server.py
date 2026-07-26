@@ -2,6 +2,7 @@
 import asyncio
 import json
 import threading
+import time
 import pytest
 from fastapi.testclient import TestClient
 
@@ -190,16 +191,57 @@ def test_multiple_clients_counted(app_parts):
     assert fallback.client_count == 0
 
 
+# --- WebSocket 廣播測試的兩個共用工具（2026-07-26 修 flaky）-------------------
+#
+# 舊寫法是 `websocket_connect` 之後 `time.sleep(0.05)` 賭連線已註冊，然後直接
+# `ws.receive_text()`。兩個問題都實際發生過：
+#   1. 0.05s 不夠時 broadcast 打在還沒註冊的連線上 → 訊息永遠不會來 →
+#      `receive_text()` **無限阻塞**，整個 pytest suite 掛死（實測卡超過 20 分鐘，
+#      要 py-spy dump 才知道卡在這裡）。比失敗更糟：CI 只會看到 timeout。
+#   2. 偶爾又會收到前一則廣播 → `assert 'X' == 'Y'` 隨機紅燈。
+#
+# 改成：等真正的註冊信號（fallback.client_count），收訊息一律帶 timeout。
+
+
+def _wait_for_clients(fallback, n, timeout=5.0):
+    """等到 server 端真的把連線註冊進去；逾時直接 fail（不要靜默往下跑）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if fallback.client_count >= n:
+            return
+        time.sleep(0.01)
+    raise AssertionError(
+        f"{timeout}s 內 client_count 沒到 {n}（實際 {fallback.client_count}）")
+
+
+def _receive_text(ws, timeout=10.0):
+    """帶 timeout 的 receive_text——絕不讓測試無限阻塞。"""
+    box = {}
+
+    def _recv():
+        try:
+            box["value"] = ws.receive_text()
+        except BaseException as e:      # noqa: BLE001 - 原樣帶回主執行緒
+            box["error"] = e
+
+    t = threading.Thread(target=_recv, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise AssertionError(f"{timeout}s 內沒收到任何 WebSocket 訊息")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def test_event_broadcast_reaches_connected_client(app_parts):
     app, pending, fallback, _ = app_parts
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
-        # 給連線建立時間
-        import time; time.sleep(0.05)
+        _wait_for_clients(fallback, 1)
         # 模擬 bot 推一個事件
         app.state.broadcast(WebMessage(type="event", payload={"event": "NEEDS_HUMAN"}))
-        received = ws.receive_text()
-        msg = json.loads(received)
+        msg = json.loads(_receive_text(ws))
         assert msg["type"] == "event"
         assert msg["payload"]["event"] == "NEEDS_HUMAN"
 
@@ -209,12 +251,11 @@ def test_broadcast_only_reaches_current_clients(app_parts):
     client = TestClient(app)
     # 沒連線，broadcast 不該炸
     app.state.broadcast(WebMessage(type="event", payload={"event": "X"}))
-    # 連一個、broadcast、收
+    # 連一個、broadcast、收——收到的必須是 Y（X 是連線前廣播的，不該補送）
     with client.websocket_connect("/ws") as ws:
-        import time; time.sleep(0.05)
+        _wait_for_clients(fallback, 1)
         app.state.broadcast(WebMessage(type="event", payload={"event": "Y"}))
-        received = ws.receive_text()
-        assert json.loads(received)["payload"]["event"] == "Y"
+        assert json.loads(_receive_text(ws))["payload"]["event"] == "Y"
 
 
 def test_broadcast_failure_does_not_raise(app_parts):
