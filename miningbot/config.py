@@ -495,6 +495,13 @@ class Config:
     #   127.0.0.1 重試（log 會說），所以本機仍然開得起來，不會整個網頁 UI 消失。
     web_server_host: str = "100.110.130.17"
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
+    # 網頁介入等玩家操作的預算（2026-07-26）。舊版借用 remote_aim_budget_s=120s，
+    # 而且完全沒有通知——玩家得剛好開著面板盯著才知道要點，實機 07-26 18:32
+    # 就這樣白等 120s 逾時（log: `[RR#26] 回礦 web 介入：reply timeout`）。
+    # 現在配合 Discord 提醒 + 分頁標題閃爍把首輪拉長到 5 分鐘：逾時代表「人不在」，
+    # 不是「人來不及」，退回 Discord 才有意義。retry 輪短一些（人已經在了）。
+    web_intervention_budget_s: float = 300.0
+    web_intervention_retry_budget_s: float = 120.0
     websocket_ping_interval_s: float = 30.0
     # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，
     # 無法偵測手機背景化／Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn

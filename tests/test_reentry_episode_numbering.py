@@ -113,3 +113,63 @@ def test_next_episode_id_from_ledger_is_what_main_uses():
     assert "next_episode_id_from_ledger" in src
     assert reentry_remote.next_episode_id_from_ledger(
         [b'{"episode": 25, "outcome": "started"}']) == 26
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26：「回礦的功能依舊不能在網頁上使用」的根因與修法。
+#
+# 實機 log（18:32~18:34）：
+#   [RR#26] 回礦 web 介入：reply timeout（attempt 1/3），fall through Discord 八方位
+# 網頁**有連上**（不是 fallback），但舊順序是「先問 web、逾時才掃八方位」，
+# 而問 web 時只推「當下這一幀」——回礦開場人站在地表，傳送板九成不在視野內。
+# 玩家看著一張沒有目標的圖，唯一能做的就是等它逾時。
+# ---------------------------------------------------------------------------
+
+
+class TestSweepHappensBeforeAskingWeb:
+    def test_open_episode_sweeps_before_web_intervention(self):
+        """順序防迴歸：_rr_open_episode 必須先拿到八方位圖，才問 web。"""
+        import inspect
+        src = inspect.getsource(main.Bot._rr_open_episode)
+        sweep_at = src.index("_rr_sweep_capture")
+        ask_at = src.index("_reentry_await_player_click")
+        assert sweep_at < ask_at, "必須先掃八方位再問 web，否則玩家沒東西可點"
+
+    def test_web_path_does_not_sweep_twice(self):
+        """兩條路徑共用同一次旋轉——絕不能為了 web 再轉一圈（~15s 且會改面向）。"""
+        import inspect
+        src = inspect.getsource(main.Bot._rr_open_episode)
+        assert src.count("self._rr_sweep_capture(") == 1
+
+    def test_discord_send_is_separate_from_capture(self):
+        """拍照與發 Discord 拆開，web 接手時才不會順便洗版 8 張圖。"""
+        assert hasattr(main.Bot, "_rr_sweep_capture")
+        assert hasattr(main.Bot, "_rr_sweep_send_discord")
+        capture_src = main.Bot._rr_sweep_capture.__code__.co_names
+        assert "_rr_notify" not in capture_src, "拍照函式不該自己發 Discord"
+
+    def test_capture_returns_web_pngs_only_when_asked(self):
+        """encode_for_web=False 時不做多餘的 PNG 編碼（Discord 路徑用不到）。"""
+        import inspect
+        sig = inspect.signature(main.Bot._rr_sweep_capture)
+        assert "encode_for_web" in sig.parameters
+        assert sig.parameters["encode_for_web"].default is False
+
+
+class TestWebInterventionBudget:
+    def test_budget_is_long_enough_to_notice(self):
+        """舊值 120s 借用 remote_aim_budget_s，且完全沒有通知——人根本來不及。
+
+        現在配合 Discord 提醒 + 分頁標題閃爍，首輪拉長；逾時才真的代表「人不在」。
+        """
+        from miningbot.config import Config
+        c = Config()
+        assert c.web_intervention_budget_s >= 300.0
+        assert c.web_intervention_retry_budget_s <= c.web_intervention_budget_s
+
+    def test_reentry_uses_web_budget_not_aim_budget(self):
+        """防迴歸：別再借用 remote_aim_budget_s（那是採集開火的預算）。"""
+        import inspect
+        src = inspect.getsource(main.Bot._reentry_await_player_click)
+        assert "web_intervention_budget_s" in src
+        assert "remote_aim_budget_s" not in src

@@ -165,54 +165,188 @@ def test_main_execute_remote_fire_short_circuits_on_web_reply(monkeypatch):
         f"玩家已經點好位置，不該再跑偵測，實際：{detect_calls}")
 
 
-def test_main_reentry_consumes_web_click_reply(monkeypatch):
-    """回礦開場鏈通過後先問 web，有 reply 就走 _rr_click_from_web 並回 True。
+def _reentry_bot(monkeypatch, **over):
+    """回礦 web 介入用的 fake bot（八方位版）。
 
-    回 True ＝ caller 跳過 Discord 八方位＋格＋連鎖放大整條鏈。
+    `_web_client_online` 綁真方法，讓 FakeFallback 真的決定走不走 web 路徑。
     """
-    import numpy as np
+    from tests.fake_bot import make_fake_bot, FakeFallback, FakeWebThread
     import miningbot.main as main_mod
-    from tests.fake_bot import (make_fake_bot, FakeFallback, FakeWebThread,
-                                FakeReentryCtx)
 
-    frame = np.zeros((1080, 1920, 3), np.uint8)
-    monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
-
-    clicked = []
-    events = []
-
-    def _click(ctx, x, y):
-        clicked.append((x, y))
-        return "descended"
-
-    bot = make_fake_bot(
-        bind=["_reentry_await_player_click"],
+    monkeypatch.setattr(main_mod.notify, "send_message_with_id",
+                        lambda *a, **kw: (True, "ok", "notify-mid"))
+    monkeypatch.setattr(main_mod.notify, "delete_message",
+                        lambda *a, **kw: (True, "HTTP 204"))
+    attrs = dict(
         _web_pending=object(),
         _web_fallback=FakeFallback(fallback=False),
         _web_thread=FakeWebThread(),
         _focus_roblox=lambda: True,
-        _send_web_intervention_event=lambda **kw: events.append(kw["routing_key"]),
-        _await_web_pointer_reply=lambda routing_key, timeout_s: {"x": 640, "y": 400},
-        _rr_click_from_web=_click,
+        _web_url=lambda: "http://test:8765",
+        _web_intervention_mid=None,
+        _pending_reentry=None,
     )
+    attrs.update(over)
+    return make_fake_bot(
+        bind=["_reentry_await_player_click", "_web_client_online",
+              "_queue_web_reentry_control", "_notify_web_intervention_pending",
+              "_resolve_web_intervention_ping"],
+        **attrs)
 
-    handled = bot._reentry_await_player_click(FakeReentryCtx(episode_id="3"))
 
-    assert handled is True, "descended 應回 True＝web 已處理、caller 跳過 Discord 鏈"
-    assert clicked == [(640, 400)]
-    assert events == ["reentry:3"], f"routing_key 應為 reentry:episode_id，實際：{events}"
+_PNGS = [(i, b"png%d" % i) for i in range(8)]
 
 
-def test_main_reentry_returns_false_when_web_offline():
+def test_main_reentry_pushes_all_eight_frames(monkeypatch):
+    """核心修復：推的是**八方位整組**，不是「當下這一幀」。
+
+    2026-07-26 實機：舊版只推當下一幀，而回礦開場站在地表、傳送板九成不在視野內
+    ——玩家看著一張沒有目標的圖無從點起，白等 120s 逾時
+    （log: `[RR#26] 回礦 web 介入：reply timeout（attempt 1/3）`）。
+    """
+    pushed = []
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append((kw["routing_key"], len(kw["frames"]))) or True),
+        _await_web_reentry_action=lambda routing_key, timeout_s: (
+            "click", {"x": 640, "y": 400, "dir": 3}),
+        _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
+    )
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+
+    assert bot._reentry_await_player_click(ctx, _PNGS) is True
+    assert pushed == [("reentry:26", 8)], f"應推 8 張，實際：{pushed}"
+
+
+def test_main_reentry_click_carries_direction(monkeypatch):
+    """玩家點的是第幾張 → bot 必須先轉到那個方位再點。
+
+    沒有 dir 就等於對著別的方向的畫面座標開槍。
+    """
+    clicked = []
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: True,
+        _await_web_reentry_action=lambda routing_key, timeout_s: (
+            "click", {"x": 851, "y": 189, "dir": 5}),
+        _rr_click_from_web=lambda ctx, x, y, dir_idx=None: (
+            clicked.append((x, y, dir_idx)) or "descended"),
+    )
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+
+    assert bot._reentry_await_player_click(ctx, _PNGS) is True
+    assert clicked == [(851, 189, 5)]
+
+
+def test_main_reentry_notifies_discord_that_web_is_waiting(monkeypatch):
+    """網頁在等你點 → Discord 要發提醒（否則只有「剛好在看」才有用）。
+
+    而且結束時要把提醒收回，不留一串殭屍訊息。
+    """
+    import miningbot.main as main_mod
+    sent, deleted = [], []
+    monkeypatch.setattr(main_mod.notify, "send_message_with_id",
+                        lambda t, c, text: (sent.append(text), (True, "ok", "mid-1"))[1])
+    monkeypatch.setattr(main_mod.notify, "delete_message",
+                        lambda t, c, mid: (deleted.append(mid), (True, "HTTP 204"))[1])
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: True,
+        _await_web_reentry_action=lambda routing_key, timeout_s: (
+            "click", {"x": 1, "y": 1, "dir": 1}),
+        _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
+    )
+    # 上面的 _reentry_bot 也 patch 了這兩個，重新蓋掉以取得本測試的記錄器
+    monkeypatch.setattr(main_mod.notify, "send_message_with_id",
+                        lambda t, c, text: (sent.append(text), (True, "ok", "mid-1"))[1])
+    monkeypatch.setattr(main_mod.notify, "delete_message",
+                        lambda t, c, mid: (deleted.append(mid), (True, "HTTP 204"))[1])
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 2, "Shamrock"
+
+    bot._reentry_await_player_click(ctx, _PNGS)
+
+    assert len(sent) == 1, "介入開始要發一則 Discord 提醒"
+    assert "26" in sent[0] and "http://test:8765/intervention" in sent[0]
+    assert deleted == ["mid-1"], "介入結束要把提醒收回"
+
+
+def test_main_reentry_panel_buttons_queue_existing_commands(monkeypatch):
+    """面板的 🎲重骰／⏭️跳過 走既有 reentry 指令佇列（與 Discord 打字等價）。"""
+    queued = []
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: True,
+        _await_web_reentry_action=lambda routing_key, timeout_s: ("reroll", None),
+        _queue_reentry_reply=lambda raw, reply, source: queued.append((raw, reply.kind, source)),
+        _broadcast_intervention_result=lambda *a, **kw: None,
+    )
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+
+    assert bot._reentry_await_player_click(ctx, _PNGS) is True
+    assert queued == [("重骰", "reroll", "web")]
+
+
+def test_main_reentry_sweep_button_recaptures_and_repushes(monkeypatch):
+    """⟳重掃 → 就地重掃一圈、重推新圖，不算失敗、也不退回 Discord。"""
+    pushes = []
+    actions = iter([("sweep", None), ("click", {"x": 5, "y": 5, "dir": 2})])
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: (
+            pushes.append(len(kw["frames"])) or True),
+        _await_web_reentry_action=lambda routing_key, timeout_s: next(actions),
+        _rr_sweep_capture=lambda encode_for_web=False: ([], 0, _PNGS[:8]),
+        _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
+    )
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+
+    assert bot._reentry_await_player_click(ctx, _PNGS) is True
+    assert pushes == [8, 8], f"重掃後要重推一次，實際：{pushes}"
+
+
+def test_main_reentry_timeout_falls_back_to_discord(monkeypatch):
+    """逾時＝人不在 → 回 False，caller 發 Discord 八方位（既有流程接手）。"""
+    bot = _reentry_bot(
+        monkeypatch,
+        _send_web_intervention_frames=lambda **kw: True,
+        _await_web_reentry_action=lambda routing_key, timeout_s: (None, None),
+    )
+    from tests.fake_bot import FakeReentryCtx
+    ctx = FakeReentryCtx(episode_id="26")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+
+    assert bot._reentry_await_player_click(ctx, _PNGS) is False
+
+
+def test_main_reentry_returns_false_when_web_offline(monkeypatch):
     """web 離線 → 回 False，caller fall through 既有 Discord 流程。"""
-    from tests.fake_bot import make_fake_bot, FakeFallback, FakeReentryCtx
-
-    bot = make_fake_bot(
-        bind=["_reentry_await_player_click"],
-        _web_pending=object(),
+    from tests.fake_bot import FakeFallback, FakeReentryCtx
+    touched = []
+    bot = _reentry_bot(
+        monkeypatch,
         _web_fallback=FakeFallback(fallback=True),
+        _send_web_intervention_frames=lambda **kw: touched.append("push") or True,
     )
-    assert bot._reentry_await_player_click(FakeReentryCtx()) is False
+    assert bot._reentry_await_player_click(FakeReentryCtx(), _PNGS) is False
+    assert touched == [], "fallback 中不該推任何東西"
+
+
+def test_main_reentry_returns_false_without_frames(monkeypatch):
+    """一張都沒編碼成功（encode 全失敗）→ 不要推空面板給玩家看。"""
+    from tests.fake_bot import FakeReentryCtx
+    bot = _reentry_bot(monkeypatch)
+    assert bot._reentry_await_player_click(FakeReentryCtx(), []) is False
 
 
 def test_web_fire_at_full_pipeline():
@@ -331,6 +465,8 @@ class _FakeWebThread:
 
 class _FakeCtx:
     episode_id = "test_ep"
+    attempt = 1
+    sticky_layer = "Shamrock"
 
 
 def _build_stub_bot_for_reentry(monkeypatch):
@@ -349,18 +485,32 @@ def _build_stub_bot_for_reentry(monkeypatch):
 
     # _reentry_await_player_click 的協作物件
     bot._focus_roblox = lambda: True
+    bot._pending_reentry = None
+    bot._web_intervention_mid = None
+    bot._web_url = lambda: "http://test:8765"
     # capture.grab 在主迴圈 thread 上跑，monkeypatch module attr 即可
     monkeypatch.setattr(main_mod.capture, "grab", lambda: object())
+    # Discord 提醒訊息（2026-07-26）：測試不打真 API
+    monkeypatch.setattr(main_mod.notify, "send_message_with_id",
+                        lambda *a, **kw: (True, "ok", "notify-mid"))
+    monkeypatch.setattr(main_mod.notify, "delete_message",
+                        lambda *a, **kw: (True, "HTTP 204"))
     sent = []
-    bot._send_web_intervention_event = lambda **kw: sent.append(kw)
+    bot._send_web_intervention_frames = lambda **kw: (sent.append(kw) or True)
     bot._sent_intervention_events = sent
+    # 重掃/retry 會就地再掃一圈——回固定的 8 張，不碰真實旋轉
+    bot._rr_sweep_capture = lambda encode_for_web=False: ([], 0, _STUB_PNGS)
+    bot._RR_WEB_CONTROLS = Bot._RR_WEB_CONTROLS
 
     # 把真實 method 綁到 stub
-    bot._reentry_await_player_click = types.MethodType(
-        Bot._reentry_await_player_click, bot)
-    bot._broadcast_intervention_result = types.MethodType(
-        Bot._broadcast_intervention_result, bot)
+    for name in ("_reentry_await_player_click", "_broadcast_intervention_result",
+                 "_web_client_online", "_notify_web_intervention_pending",
+                 "_resolve_web_intervention_ping"):
+        setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     return bot
+
+
+_STUB_PNGS = [(i, b"png") for i in range(8)]
 
 
 def test_reentry_await_player_click_broadcasts_intervention_result_on_non_descended(monkeypatch):
@@ -377,13 +527,15 @@ def test_reentry_await_player_click_broadcasts_intervention_result_on_non_descen
     replies = iter([{"x": 100, "y": 100},
                     {"x": 200, "y": 200},
                     {"x": 300, "y": 300}])
-    bot._await_web_pointer_reply = lambda routing_key, timeout_s: next(replies)
+    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("click", next(replies))
     # 三次都非 descended
-    bot._rr_click_from_web = lambda ctx, x, y: "still_surface"
+    bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: "still_surface"
 
-    result = bot._reentry_await_player_click(_FakeCtx())
+    result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
 
-    assert result is True  # 三次失敗仍 return True（跳過 Discord sweep）
+    # 2026-07-26 語意變更：三次都失敗改回 False＝退回 Discord 八方位。
+    # 舊版回 True 讓 caller 不發 Discord 卡片，玩家等於兩邊都沒得操作。
+    assert result is False
     calls = bot._web_thread.app.state.registry.calls
     results = [c for c in calls
                if isinstance(c, WebMessage)
@@ -396,8 +548,8 @@ def test_reentry_await_player_click_broadcasts_intervention_result_on_non_descen
     assert "放棄" in verdicts
     # summary 含玩家可行動資訊
     summaries = [r.payload.get("summary", "") for r in results]
-    assert any("重骰" in s or "跳過" in s for s in summaries), (
-        f"INTERVENTION_RESULT summary 應提示玩家可用 `重骰`／`跳過`，實際：{summaries}")
+    assert any("重骰" in s or "跳過" in s or "Discord" in s for s in summaries), (
+        f"INTERVENTION_RESULT summary 應告訴玩家接下來怎麼辦，實際：{summaries}")
 
 
 def test_reentry_await_player_click_retries_until_descended(monkeypatch):
@@ -407,11 +559,11 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
     bot = _build_stub_bot_for_reentry(monkeypatch)
 
     replies = iter([{"x": 100, "y": 100}, {"x": 200, "y": 200}])
-    bot._await_web_pointer_reply = lambda routing_key, timeout_s: next(replies)
+    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("click", next(replies))
     verdicts = iter(["still_surface", "descended"])
-    bot._rr_click_from_web = lambda ctx, x, y: next(verdicts)
+    bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: next(verdicts)
 
-    result = bot._reentry_await_player_click(_FakeCtx())
+    result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
 
     assert result is True  # descended 從 caller 角度仍是「web 已處理」
     calls = bot._web_thread.app.state.registry.calls
@@ -423,16 +575,16 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
     assert results[0].payload["verdict"] == "still_surface"
     # 應該重新 grab + 重發 INTERVENTION_NEEDED
     assert len(bot._sent_intervention_events) >= 2, (
-        f"retry 前應重發 INTERVENTION_NEEDED，實際 send 次數："
+        f"retry 前應重掃並重推八方位，實際 push 次數："
         f"{len(bot._sent_intervention_events)}")
 
 
 def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
     """P5 Task 2: reply timeout 時 fall through Discord（return False），不廣播放棄。"""
     bot = _build_stub_bot_for_reentry(monkeypatch)
-    bot._await_web_pointer_reply = lambda routing_key, timeout_s: None
+    bot._await_web_reentry_action = lambda routing_key, timeout_s: (None, None)
 
-    result = bot._reentry_await_player_click(_FakeCtx())
+    result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
 
     assert result is False
     calls = bot._web_thread.app.state.registry.calls
@@ -1049,3 +1201,95 @@ def test_intervention_panel_js_handles_result_event():
     assert "INTERVENTION_RESULT" in html, "介入面板 JS 沒處理 INTERVENTION_RESULT"
     assert "fire_ok" in html and "descended" in html, (
         "成功 verdict 判定沒寫進 JS——無法區分 ✅／❌")
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26：面板本身的三顆按鈕與八方位導覽。
+#
+# 使用者回報「回礦的功能依舊不能在網頁上使用」。查 log 是
+# `[RR#26] 回礦 web 介入：reply timeout（attempt 1/3）`——網頁連著、但面板上
+# 只有一張沒有傳送板的圖，玩家無從點起也沒有任何其他操作可做。
+# ---------------------------------------------------------------------------
+
+
+def _panel_html():
+    from miningbot.web_static import render_intervention_html
+    return render_intervention_html()
+
+
+class TestPanelHasReentryControls:
+    def test_direction_navigation_present(self):
+        """左右切方位是整個回礦網頁流程可用與否的關鍵。"""
+        html = _panel_html()
+        assert "INTERVENTION_FRAME" in html, "缺多幀接收邏輯"
+        assert "showFrame" in html and "curFrame" in html
+
+    def test_three_action_buttons_present(self):
+        html = _panel_html()
+        for label in ("重掃", "重骰", "跳過"):
+            assert label in html, f"面板缺 {label} 按鈕"
+        for cmd in ("'sweep'", "'reroll'", "'skip'"):
+            assert cmd in html, f"面板沒送出 {cmd} 命令"
+
+    def test_click_carries_direction(self):
+        html = _panel_html()
+        assert "payload.dir" in html, "點擊必須帶上方位，否則 bot 會在錯的面向點下去"
+
+    def test_notification_affordances_present(self):
+        """玩家不會一直盯著這頁：標題閃爍 + 提示音。"""
+        html = _panel_html()
+        assert "startFlashing" in html and "document.title" in html
+        assert "AudioContext" in html, "提示音要用 Web Audio 合成（CSP 擋外部音檔）"
+
+    def test_no_external_resources(self):
+        """CSP 會擋掉所有外部資源——面板必須完全自足。"""
+        html = _panel_html()
+        for bad in ("http://cdn", "https://cdn", "<script src=", "<link rel=\"stylesheet\""):
+            assert bad not in html, f"面板引用了外部資源：{bad}"
+
+
+class TestPanelControlCommandsReachPending:
+    """三顆按鈕送出的命令要真的進得了 PendingReplies（不然按了沒反應）。"""
+
+    def _push(self, cmd):
+        import json
+        import time
+        from fastapi.testclient import TestClient
+        from miningbot.web_ipc import PendingReplies, FallbackState
+        from miningbot.web_server import create_app
+        pending = PendingReplies()
+        app = create_app(pending, FallbackState(), broadcast_callback=None)
+        with TestClient(app).websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "command", "payload": {"cmd": cmd}}))
+            time.sleep(0.1)
+        return pending.pop(f"control:{cmd}")
+
+    def test_sweep_reaches_pending(self):
+        assert self._push("sweep") is not None
+
+    def test_reroll_reaches_pending(self):
+        assert self._push("reroll") is not None
+
+    def test_skip_reaches_pending(self):
+        assert self._push("skip") is not None
+
+
+def test_reentry_click_with_dir_reaches_pending():
+    """端到端：帶 dir 的點擊要完整送達 bot 端。"""
+    import json
+    import time
+    from fastapi.testclient import TestClient
+    from miningbot.web_ipc import PendingReplies, FallbackState
+    from miningbot.web_server import create_app
+    pending = PendingReplies()
+    app = create_app(pending, FallbackState(), broadcast_callback=None)
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "type": "command",
+            "payload": {"cmd": "reentry_click", "flow": "reentry",
+                        "attempt_id": "26", "x": 851, "y": 189, "dir": 4},
+        }))
+        time.sleep(0.1)
+    reply = pending.pop("reentry:26")
+    assert reply is not None
+    assert reply["dir"] == 4 and reply["x"] == 851 and reply["y"] == 189

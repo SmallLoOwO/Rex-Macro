@@ -139,6 +139,16 @@ conventions.
     the server only thin-validates `x ∈ [0,1920)`, `y ∈ [0,1080)` (`parse_fire_at_payload`).
     Auto-collected fixtures (`_save_auto_fixture`) are best-effort: write failures
     log and swallow, never break the main loop.
+14. Reentry web intervention runs **after** the eight-direction sweep, never before:
+    the teleport board is almost never in the opening view, so a single current frame
+    gives the player nothing to click. `_rr_sweep_capture` runs once and feeds both
+    paths (web push and Discord images) — never sweep twice for the web. A web
+    `reentry_click` carrying `dir` (1-8) must rotate to that direction before
+    clicking; if rotation is eaten, abandon the click rather than clicking blind.
+    Panel buttons (`sweep`/`reroll`/`skip`) are picked up inside the wait loop, not
+    by `_consume_web_pending` — the main loop is blocked there. Exhausting the retry
+    budget falls back to Discord (returns False) so the player is never left with
+    neither surface.
 
 ## DEVELOPMENT WORKFLOW
 

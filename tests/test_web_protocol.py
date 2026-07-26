@@ -238,3 +238,47 @@ class TestParseReentryClickPayload:
                      "attempt_id": "attempt_2"},
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26：reentry_click 多帶選用的 dir（1~8）。
+#
+# 面板顯示的是八方位掃描當下的畫面，玩家點的是「第 N 張裡的某個位置」。
+# 沒有 dir，bot 只會在**當下面向**點那個座標——等於對著別的方向開槍。
+# ---------------------------------------------------------------------------
+from miningbot.web_protocol import parse_reentry_click_payload as _parse_rc
+
+
+def _rc(**over):
+    p = {"cmd": "reentry_click", "flow": "reentry", "attempt_id": "26",
+         "x": 100, "y": 200}
+    p.update(over)
+    return p
+
+
+class TestReentryClickDirection:
+    def test_dir_passed_through(self):
+        assert _parse_rc(_rc(dir=5))["dir"] == 5
+
+    def test_dir_optional_for_single_frame_clients(self):
+        """舊 client（單幀模式）不帶 dir——維持原行為，不可因此整包被拒。"""
+        parsed = _parse_rc(_rc())
+        assert parsed is not None and "dir" not in parsed
+
+    def test_dir_boundaries_accepted(self):
+        assert _parse_rc(_rc(dir=1))["dir"] == 1
+        assert _parse_rc(_rc(dir=8))["dir"] == 8
+
+    def test_out_of_range_dir_is_dropped_not_clamped(self):
+        """超界寧可不轉，也不要轉到錯的方位（clamp 會靜默點錯地方）。"""
+        for bad in (0, 9, -1, 100):
+            assert "dir" not in _parse_rc(_rc(dir=bad))
+
+    def test_non_integer_dir_dropped(self):
+        for bad in ("3", 3.5, None, True, [3]):
+            assert "dir" not in _parse_rc(_rc(dir=bad))
+
+    def test_invalid_payload_still_rejected_with_dir(self):
+        """dir 合法不能讓壞座標矇混過關。"""
+        assert _parse_rc(_rc(dir=3, x=-5)) is None
+        assert _parse_rc(_rc(dir=3, x=1920)) is None

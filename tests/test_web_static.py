@@ -286,8 +286,9 @@ def test_intervention_has_skip_button():
     html = render_intervention_html()
     assert 'id="skip"' in html
     assert "'skip'" in html or '"skip"' in html
-    # 只對 reentry 顯示（harvest 沒有等價路徑）
-    assert "flow !== 'reentry'" in html
+    # 只對 reentry 顯示（harvest 沒有等價路徑）。2026-07-26 起「跳過」與「重掃」
+    # 「重骰」同進退，用 isReentry 一起開關，不再各自寫 flow !== 'reentry'。
+    assert "isReentry" in html and "flow === 'reentry'" in html
 
 
 # ---------------------------------------------------------------------------

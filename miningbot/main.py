@@ -288,6 +288,8 @@ class Bot:
         # 需要 MANAGE_MESSAGES（實測本頻道有）；被收回權限或改回 DM 時第一次 403 就
         # 永久降級（遙控器回刪貼、其餘卡片回「使用者自行取消反應」的舊語意）。
         self._reaction_clear_ok = True
+        # 網頁介入進行中的 Discord 提醒訊息 id（介入結束就收回，不留殭屍訊息）
+        self._web_intervention_mid: str | None = None
         # 釘底防抖（2026-07-19 spec）：看到新訊息只立旗標，頻道安靜滿
         # cfg.discord_repin_quiet_s 才刪舊貼新（_repin_tick）；回礦收尾由 _rr_finalize
         # 主動立遙控器旗標——修「回礦完成後要等使用者發話遙控器才出現」的消費競態。
@@ -3375,6 +3377,53 @@ class Bot:
 
     # --- P4 Task 3：web_pending reply pop 整合（harvest manual_survey 進入點） ---
 
+    def _encode_png(self, frame):
+        """frame → PNG bytes；失敗回 None（只記 log，不炸主流程）。"""
+        import cv2
+        ok, buf = cv2.imencode(".png", frame)
+        if not ok:
+            self.log_discord.warning(
+                "web intervention: PNG encode 失敗（frame shape=%r）",
+                getattr(frame, "shape", None))
+            return None
+        return buf.tobytes()
+
+    def _send_web_intervention_frames(self, flow: str, routing_key: str,
+                                      frames, ctx_summary: str,
+                                      note: str = "") -> bool:
+        """推**多張**幀 + INTERVENTION_NEEDED 給 web client（2026-07-26）。
+
+        `frames`＝``[(dir_idx, png_bytes)]``。每張圖前面先送一則 INTERVENTION_FRAME
+        meta（帶 index／dir），client 據此把緊接著的 binary 放進對應格子——WebSocket
+        同一條連線保證順序，所以「meta 後面那張就是它的圖」成立。
+        全部送完才送 INTERVENTION_NEEDED，client 收到時 8 張都已到齊。
+
+        為什麼要多張：回礦開場站在地表，傳送板九成不在當下視野內。舊版只推一幀，
+        玩家看著一張沒有目標的圖無從點起，只能等 120s 逾時（07-26 18:32 實錄）。
+
+        回 True＝已推送；False＝沒有 web thread／一張都沒編碼成功。
+        """
+        if self._web_thread is None or not frames:
+            return False
+        registry = self._web_thread.app.state.registry
+        from .web_protocol import WebMessage
+        total = len(frames)
+        for seq, (dir_idx, png) in enumerate(frames):
+            registry.broadcast(WebMessage(
+                type="event",
+                payload={"event": "INTERVENTION_FRAME", "flow": flow,
+                         "routing_key": routing_key, "index": seq,
+                         "total": total, "dir": int(dir_idx) + 1},
+            ))
+            registry.broadcast_binary(png)
+        registry.broadcast(WebMessage(
+            type="event",
+            payload={"event": "INTERVENTION_NEEDED", "flow": flow,
+                     "routing_key": routing_key, "summary": ctx_summary,
+                     "mode": "sweep", "frame_count": total, "note": note},
+        ))
+        return True
+
     def _send_web_intervention_event(self, flow: str, routing_key: str,
                                      frame, ctx_summary: str) -> None:
         """推截圖 + INTERVENTION_NEEDED context 給 web client（透過 ConnectionRegistry）。
@@ -3421,6 +3470,36 @@ class Bot:
                 return reply
             time.sleep(0.5)
         return None
+
+    # 網頁回礦面板上「不是點畫面」的那幾顆按鈕 → 既有回礦指令 kind。
+    # 主迴圈此刻卡在 _reentry_await_player_click 裡，`_consume_web_pending`
+    # 跑不到，所以這些 control key 必須由等待迴圈自己撿。
+    _RR_WEB_CONTROLS = {"skip": "跳過", "reroll": "重骰", "sweep": "掃"}
+
+    def _await_web_reentry_action(self, routing_key: str, timeout_s: float):
+        """等玩家在回礦面板上做一件事；回 ``(kind, payload)``。
+
+        kind："click"（payload＝reply dict）／"skip"／"reroll"／"sweep"／
+        None（逾時，payload 也是 None）。
+
+        同時輪詢點擊 reply 與控制鍵，因為主迴圈整個卡在這裡——控制鍵若只靠
+        `_consume_web_pending`，玩家按了「重骰」要等這輪逾時（最長 5 分鐘）才生效。
+        """
+        if self._web_pending is None:
+            return None, None
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            reply = self._web_pending.pop(routing_key)
+            if reply is not None:
+                return "click", reply
+            for cmd in self._RR_WEB_CONTROLS:
+                if self._web_pending.pop(f"control:{cmd}") is not None:
+                    return cmd, None
+            if self._mine_resetting:
+                # 等待期間礦坑又重置：八方位圖已過時，別讓玩家對著舊圖點
+                return None, None
+            time.sleep(0.5)
+        return None, None
 
     def _save_auto_fixture(
         self,
@@ -3715,6 +3794,45 @@ class Bot:
         if mid and harvest_id:
             self._pending_ping_mid[f"harvest:{harvest_id}"] = mid
         return mid
+
+    def _notify_web_intervention_pending(self, ctx, frame_count: int) -> None:
+        """網頁開始等玩家點時，在 Discord 發一則帶網址的提醒（2026-07-26）。
+
+        為什麼需要：網頁介入唯一的通知管道就是「玩家剛好開著面板」。實機 07-26
+        18:32 白等 120s 逾時，網頁明明連著——人只是沒在看。Discord 有推播，
+        提醒放這裡才叫得動人。
+
+        訊息在本輪介入結束時由 `_resolve_web_intervention_ping` 刪掉，
+        不留一串「等你點」的殭屍訊息。發送失敗只記 log（提醒是加值，不能擋回礦）。
+        """
+        from . import notify
+        url = f"{self._web_url()}/intervention"
+        text = (f"🌐 **網頁在等你點**：回礦 #{ctx.episode_id}"
+                f"（attempt {ctx.attempt}）已拍好 {frame_count} 個方位\n"
+                f"{url}\n"
+                f"左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。"
+                f"不理它會在 {int(cfg.web_intervention_budget_s / 60)} 分鐘後改用 Discord 八方位。")
+        try:
+            ok, _detail, mid = notify.send_message_with_id(
+                cfg.discord_bot_token, cfg.discord_channel_id, text)
+        except Exception as e:
+            self.log_discord.warning("web 介入提醒發送例外：%s", e)
+            return
+        self._web_intervention_mid = mid if ok else None
+
+    def _resolve_web_intervention_ping(self, ctx) -> None:
+        """本輪 web 介入結束（成功／逾時／退回 Discord）→ 收掉那則提醒訊息。"""
+        from . import notify
+        mid = getattr(self, "_web_intervention_mid", None)
+        if not mid:
+            return
+        self._web_intervention_mid = None
+        try:
+            ok, detail = notify.delete_message(
+                cfg.discord_bot_token, cfg.discord_channel_id, mid)
+            self.log_discord.info("web 介入提醒收回 mid=%s -> %s", mid, detail)
+        except Exception as e:
+            self.log_discord.warning("web 介入提醒收回例外：%s", e)
 
     def _resolve_ping_if_any(self, routing_key: str, reply_source: str, detail: str = ""):
         """玩家 reply 完成時呼叫：把對應的 PING 訊息編輯成 ✅ 結案。
@@ -5967,12 +6085,22 @@ class Bot:
         self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
         # H052：舊「俯仰歸位疑似被吃」警告已移除——非凍結＝生效（誤報來源），
         # 真凍結由 plan_opening_gate 擋在拍照前，不會走到這裡。
-        # P4 Task 4：web 在線 → 先問 web（玩家 pinch-zoom + tap 直接點傳送板），
-        # reply 直接走 _rr_click_from_web 點擊+驗證（跳過底下 Discord 八方位+格+連鎖
-        # 放大）；無 reply／無 web → fall through 既有 Discord 流程（fallback）。
-        if self._reentry_await_player_click(self._rr_ctx):
+        # 先掃八方位，再問 web（2026-07-26 改）。
+        #
+        # 舊順序是「先問 web，逾時才掃」，而問 web 時推的是**當下這一幀**——但回礦
+        # 開場站在地表，傳送板九成不在視野內，玩家看著一張沒有目標的圖根本無從點起。
+        # 實機 07-26 18:32 就是這樣白等 120s：log 有 `reply timeout（attempt 1/3）`，
+        # 網頁明明連著（不是 fallback），只是沒東西可點。掃完再推，玩家才有得選。
+        #
+        # 掃描本身兩條路徑共用（_rr_sweep_capture），不會為了 web 多轉一圈。
+        captured = self._rr_sweep_capture(encode_for_web=self._web_client_online())
+        if captured is None:
+            return                                # 掃到一半遇到重置：下一輪 tick 處理
+        pairs, rot_missed, web_pngs = captured
+        if self._reentry_await_player_click(self._rr_ctx, web_pngs, rot_missed):
             return
-        self._rr_sweep_and_send()
+        # web 沒接手（沒連線／逾時／放棄）→ 發同一批圖到 Discord 走既有流程
+        self._rr_sweep_send_discord(pairs, rot_missed)
         # Task 4：sweep 發圖後貼 embed 卡片（首次貼；reroll 時 edit 同一則）
         if self._rr_embed_mid:
             self._rr_edit_embed()
@@ -6015,7 +6143,37 @@ class Bot:
         self._rr_pitch_back_px = None        # 新 episode：session 仰角記帳歸零（用 config 標準角）
 
     def _rr_sweep_and_send(self, prefix_msg: str = ""):
-        """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）→ 分則發送。"""
+        """八方位拍照 → 疊粗網格 → 發 Discord（原本的整條路徑，維持不變）。"""
+        captured = self._rr_sweep_capture()
+        if captured is None:
+            return                                # 重置中：上層 tick 下一輪處理
+        pairs, rot_missed, _ = captured
+        self._rr_sweep_send_discord(pairs, rot_missed, prefix_msg)
+
+    def _web_client_online(self) -> bool:
+        """現在有沒有 WebSocket client 可以接手介入（grace period 內算有）。"""
+        web_state = getattr(self, "_web_fallback", None)
+        if web_state is None or getattr(self, "_web_pending", None) is None:
+            return False
+        return not web_state.is_fallback(
+            now=time.monotonic(), grace_s=cfg.web_fallback_grace_s)
+
+    def _rr_sweep_capture(self, encode_for_web: bool = False):
+        """八方位拍照（`,`×8 驗證式，轉滿一圈回原向）→ 疊粗網格（同步寫檔）。
+
+        回 ``(pairs, rot_missed, web_pngs)``；``pairs`` 是 ``[(dir_idx, grid_path)]``，
+        ``web_pngs`` 是 ``[(dir_idx, png_bytes)]``（``encode_for_web=False`` 時為空）。
+        重置中途中斷回 ``None``（上層 tick 下一輪處理 reset）。
+
+        2026-07-26 從 `_rr_sweep_and_send` 拆出來：web 介入需要**同一批**八方位圖，
+        但不該順便發一輪 Discord（8 張圖洗版）。拆開之後兩條路徑共用一次實際旋轉
+        ——絕不能為了 web 再掃一圈，那是 ~15s 的遊戲輸入且會改變面向。
+
+        web 用的是**沒有網格線的原始幀**：Discord 要格子是因為玩家只能用文字說
+        「C2」；網頁可以直接點像素，格線只會擋住畫面。
+        PNG 就地編碼而不是事後從檔案讀回——`self._snapshot` 是非同步寫檔，
+        推送當下檔案可能還沒落盤。
+        """
         ctx = self._rr_ctx
         # 鏡頭距離歸位（2026-07-19）：每次 sweep（開場/📷 重掃/重骰）前無條件歸一，
         # 快照之間才可比對；使用者 `遠`/`近` 調過的距離會被重置（刻意——快照一致性
@@ -6033,15 +6191,20 @@ class Bot:
                                 ctx.episode_id, ctx.cur_dir)
         ctx.shots = []
         pairs = []                                # [(dir_idx, grid_path)]
+        web_pngs = []                             # [(dir_idx, png_bytes)]
         zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         rot_missed = 0
         for i in range(8):
             if self._mine_resetting:
-                return                            # 上層 tick 下一輪處理 reset
+                return None                       # 上層 tick 下一輪處理 reset
             f = capture.grab()
             # 檔名/標籤一律 1 起算（2026-07-18 使用者要求；ctx.shots 內部仍 0-based）
             path = self._snapshot(f, f"reentry_ep{ctx.episode_id}_dir{i + 1}{zs}")
             ctx.shots.append((i, path or ""))
+            if encode_for_web:
+                png = self._encode_png(f)
+                if png is not None:
+                    web_pngs.append((i, png))
             grid_img = f.copy()
             remote_aim.draw_grid(grid_img, 6, 4)
             gpath = self._rr_sync_write(grid_img,
@@ -6052,13 +6215,19 @@ class Bot:
             # 拍照照拍（至少有圖可看），但記數警告，讓使用者知道標籤不可信。
             if not self._rotate_verified(1):
                 rot_missed += 1
+        if rot_missed:
+            self.logger.warning("[RR#%s] 八方位拍照有 %d 次旋轉重試用盡未生效——方位標籤已錯位",
+                                ctx.episode_id, rot_missed)
+        return pairs, rot_missed, web_pngs
+
+    def _rr_sweep_send_discord(self, pairs, rot_missed: int, prefix_msg: str = ""):
+        """把 `_rr_sweep_capture` 拍好的八方位網格圖分兩則發到 Discord。"""
+        ctx = self._rr_ctx
         head = (prefix_msg or
                 f"⛏ 回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}\n"
                 f"回 `方位 粗格`（如 `3 C2`，方位 1-8）指位；`重骰` 換重生點；"
                 f"`歸位`/`上|下 [px]` 調視角；`層 <名>` 改目標層；`跳過` 回挖礦")
         if rot_missed:
-            self.logger.warning("[RR#%s] 八方位拍照有 %d 次旋轉重試用盡未生效——方位標籤已錯位",
-                                ctx.episode_id, rot_missed)
             head = (f"⚠ 八方位拍照中有 {rot_missed} 次旋轉未生效——方位標籤可能偏，"
                     f"建議 📷 重掃\n") + head
         batch = [p for _, p in pairs if p]
@@ -6489,8 +6658,12 @@ class Bot:
                 image_paths=[mpath, lpath])
         return verdict
 
-    def _rr_click_from_web(self, ctx, x: int, y: int):
+    def _rr_click_from_web(self, ctx, x: int, y: int, dir_idx=None):
         """從 web 介入面板的玩家 tap 直接點擊＋驗證（跳過 Discord 方位+格+連鎖放大）。
+
+        `dir_idx`（2026-07-26，1 起算的介面值）＝玩家點的是八方位裡的第幾張。
+        給了就先轉到該方位再點——面板顯示的是 sweep 當下的畫面，不轉過去點下去
+        會落在完全不同的地方。轉向被吃時放棄本次點擊（回 None），絕不硬點。
 
         P4 Task 4 minimum viable：玩家在介入面板 pinch-zoom + tap 點位置 → server 還原
         原生 (x, y) → 沿用 _rr_click_and_verify 的「點擊 → plan_click_verdict」尾段，
@@ -6548,6 +6721,22 @@ class Bot:
             self._resolve_ping_if_any(
                 f"reentry:{ctx.episode_id}", "web", "web 點擊失敗：無法聚焦 Roblox")
             return None
+        # 玩家點的是八方位裡的某一張 → 先轉到那個方位（沿用 _rr_zoom 的轉向慣例）。
+        # 不轉就點＝對著別的方向的畫面座標開槍。轉向被吃時寧可放棄本次，
+        # 讓 caller 重掃一圈重推——硬點的後果是點在地形上，白費一次 attempt。
+        if dir_idx is not None:
+            tgt = (int(dir_idx) - 1) % 8          # 介面 1-8 → 內部 0-7
+            steps = harvester.plan_return_rotations(ctx.cur_dir % 8, tgt)
+            for _ in range(abs(steps)):
+                if self._rotate_verified(1 if steps > 0 else -1):
+                    ctx.cur_dir += 1 if steps > 0 else -1
+            if ctx.cur_dir % 8 != tgt:
+                self.logger.warning(
+                    "[RR#%s] web 點擊轉向被吃（想去 dir%d，實際 dir%d）——放棄本次點擊",
+                    ctx.episode_id, tgt + 1, ctx.cur_dir % 8 + 1)
+                self._broadcast_intervention_result(
+                    ctx, "轉向被吃", f"轉不到方位 {tgt + 1}，重掃一次再試")
+                return None
         pos = (int(x), int(y))
         layer = ctx.sticky_layer
         cur = capture.grab()
@@ -6583,32 +6772,31 @@ class Bot:
             f"玩家點擊 ({x},{y}) verdict={verdict}")
         return verdict
 
-    def _reentry_await_player_click(self, ctx) -> bool:
-        """回礦開場鏈全閘通過後、_rr_sweep_and_send 前先問 web。
+    def _reentry_await_player_click(self, ctx, web_pngs, rot_missed: int = 0) -> bool:
+        """八方位掃完之後先問 web：把 8 張圖推給玩家，讓他直接點傳送板。
 
-        web 在線 → 推截圖 + INTERVENTION_NEEDED context（routing_key=reentry:{episode_id}）
-        → 等玩家 pinch-zoom + tap（預算 cfg.remote_aim_budget_s）→ reply 直接走
-        _rr_click_from_web（跳過 Discord 方位+格+連鎖放大整條鏈）。
+        `web_pngs`＝``[(dir_idx, png_bytes)]``（`_rr_sweep_capture(encode_for_web=True)`
+        產出）。玩家在面板上左右切方位、在圖上點下去 → reply 帶 ``dir`` + ``x/y`` →
+        `_rr_click_from_web` 先轉到該方位再點該像素，整條 Discord「方位 粗格 → 放大
+        → 細格」的間接表達鏈就不必走了。
 
-        P5 Task 2：verdict 非 descended 時不立刻 return——推 INTERVENTION_RESULT
-        給 web client（client UI 顯示「未成功，再點一次或重骰／跳過」）→ 重新抓幀、
-        重發 INTERVENTION_NEEDED、等下一個 reply。最多 3 次；3 次都未 descended 推
-        verdict="放棄" 並 return True（caller 跳過 Discord sweep），玩家需改用文字指令
-        （`重骰`／`跳過`）收尾。
+        **2026-07-26 的順序修正**：舊版在 sweep **之前**問 web，而且只推「當下這一
+        幀」。回礦開場人站在地表，傳送板九成不在視野內——玩家看著一張沒有目標的圖
+        根本無從點起，只能眼睜睜等 120s 逾時。實機 log 就是這樣：
+        `[RR#26] 回礦 web 介入：reply timeout（attempt 1/3）`，網頁明明連著。
+        改成掃完再推之後，玩家看到的是完整一圈，傳送板必在其中一張裡。
 
-        回 True＝web 已處理（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
-        回 False＝無 web 連線／fallback 中／無 reply（timeout）／聚焦失敗／
-                frame grab 失敗 → caller fall through 既有 Discord 流程。
+        面板上的 ⟳重掃／🎲重骰／⏭️跳過 也在這裡收（主迴圈此刻卡在本函式，
+        `_consume_web_pending` 跑不到）——重掃就地再掃一圈重推，重骰/跳過排進
+        既有 `_pending_reentry` 由主迴圈下個 tick 消費。
+
+        回 True＝web 已接手（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
+        回 False＝無 web 連線／逾時／聚焦失敗 → caller fall through Discord 流程。
 
         attempt_id（wire protocol 對 reentry flow 的 id 欄位名）＝ episode_id：
         每集唯一、與 Discord 卡片標題 #ep{episode_id} 一致，玩家可對照。
-        INTERVENTION_NEEDED event 內含 routing_key，web client 直接 echo 回 attempt_id。
         """
-        web_state = getattr(self, "_web_fallback", None)
-        web_pending = getattr(self, "_web_pending", None)
-        if (web_pending is None or web_state is None
-                or web_state.is_fallback(
-                    now=time.monotonic(), grace_s=cfg.web_fallback_grace_s)):
+        if not self._web_client_online() or not web_pngs:
             return False
         routing_key = f"reentry:{ctx.episode_id}"
         if not self._focus_roblox():
@@ -6617,70 +6805,105 @@ class Bot:
                 ctx.episode_id)
             return False
 
-        # P5 Task 2 retry loop——3 次都失敗就放棄（推 verdict="放棄" 並 return True）
         max_attempts = 3
-        retry_timeout_s = 30.0           # retry 比 initial budget 短，避免拖太久
-
-        # 推 initial INTERVENTION_NEEDED（含當下幀）；retry 前會重推一次更新幀
-        frame = capture.grab()
-        if frame is None:
+        note = ("⚠ 掃描時有 %d 次旋轉未生效，方位標籤可能偏——建議先 ⟳ 重掃"
+                % rot_missed) if rot_missed else ""
+        summary = f"回礦 #{ctx.episode_id}（attempt {ctx.attempt}）｜目標層：{ctx.sticky_layer}"
+        if not self._send_web_intervention_frames(
+                flow="reentry", routing_key=routing_key, frames=web_pngs,
+                ctx_summary=summary, note=note):
             return False
-        self._send_web_intervention_event(
-            flow="reentry", routing_key=routing_key,
-            frame=frame,
-            ctx_summary=f"reentry episode={ctx.episode_id}",
-        )
+        # 網頁在等你點——Discord 發一則提醒（玩家不必剛好開著面板盯著）
+        self._notify_web_intervention_pending(ctx, len(web_pngs))
 
-        for attempt in range(1, max_attempts + 1):
-            timeout = cfg.remote_aim_budget_s if attempt == 1 else retry_timeout_s
-            reply = self._await_web_pointer_reply(
-                routing_key=routing_key, timeout_s=timeout)
-            if reply is None:
-                self.log_discord.info(
-                    "[RR#%s] 回礦 web 介入：reply timeout（attempt %d/%d），"
-                    "fall through Discord 八方位",
-                    ctx.episode_id, attempt, max_attempts)
-                return False
-            self.log_discord.info(
-                "[RR#%s] 回礦 web 介入：收到 reply %r（attempt %d/%d），"
-                "跳過 Discord 方位+格+連鎖放大",
-                ctx.episode_id, reply, attempt, max_attempts)
-            verdict = self._rr_click_from_web(
-                ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)))
-            if verdict == "descended":
-                return True
-            # verdict 為 None（座標超界／聚焦失敗）或 still_surface／no_change／
-            # moved_unconfirmed——都視為可 retry 的非 descended 結果
-            verdict_label = verdict if verdict else "硬失敗"
-            if attempt < max_attempts:
-                self._broadcast_intervention_result(
-                    ctx, verdict_label,
-                    "未成功，再點一次或 `重骰`／`跳過`")
-                # 重新抓幀 + 重發 INTERVENTION_NEEDED（玩家看得到當下畫面再點）
-                frame = capture.grab()
-                if frame is None:
-                    self.log_discord.warning(
-                        "[RR#%s] 回礦 web 介入：retry 前 frame grab 失敗，放棄",
-                        ctx.episode_id)
+        try:
+            for attempt in range(1, max_attempts + 1):
+                timeout = (cfg.web_intervention_budget_s if attempt == 1
+                           else cfg.web_intervention_retry_budget_s)
+                kind, reply = self._await_web_reentry_action(
+                    routing_key=routing_key, timeout_s=timeout)
+                if kind is None:
+                    self.log_discord.info(
+                        "[RR#%s] 回礦 web 介入：逾時無回應（attempt %d/%d，等了 %.0fs），"
+                        "fall through Discord 八方位",
+                        ctx.episode_id, attempt, max_attempts, timeout)
                     return False
-                self._send_web_intervention_event(
-                    flow="reentry", routing_key=routing_key,
-                    frame=frame,
-                    ctx_summary=(
-                        f"reentry episode={ctx.episode_id} "
-                        f"retry {attempt + 1}/{max_attempts}"),
-                )
-                continue
-            # 3 次都未 descended：告知玩家改用文字指令；return True 跳過 Discord sweep
-            self.log_discord.warning(
-                "[RR#%s] 回礦 web 介入：%d 次都未 descended（最後 verdict=%s），"
-                "改用 Discord 文字指令 `重骰`／`跳過`",
-                ctx.episode_id, max_attempts, verdict_label)
-            self._broadcast_intervention_result(
-                ctx, "放棄",
-                f"{max_attempts} 次未成功，請用 `重骰`／`跳過` 處理")
-            return True
-        return True  # unreachable；保險起見
+                if kind in self._RR_WEB_CONTROLS and kind != "sweep":
+                    # 重骰／跳過：排進既有 reentry 指令佇列，主迴圈下個 tick 消費
+                    return self._queue_web_reentry_control(ctx, kind)
+                if kind == "sweep":
+                    captured = self._rr_sweep_capture(encode_for_web=True)
+                    if captured is None:
+                        return False              # 重置中：上層 tick 處理
+                    _pairs, rot_missed, web_pngs = captured
+                    if not web_pngs:
+                        return False
+                    self._send_web_intervention_frames(
+                        flow="reentry", routing_key=routing_key, frames=web_pngs,
+                        ctx_summary=summary,
+                        note=("⚠ 重掃後仍有 %d 次旋轉未生效" % rot_missed) if rot_missed else "")
+                    self.log_discord.info("[RR#%s] 回礦 web 介入：玩家按 ⟳ 重掃",
+                                          ctx.episode_id)
+                    continue                      # 不算掉一次 attempt 預算之外的事
+                # kind == "click"
+                dir_idx = reply.get("dir")
+                self.log_discord.info(
+                    "[RR#%s] 回礦 web 介入：收到點擊 dir=%s (%s,%s)（attempt %d/%d）",
+                    ctx.episode_id, dir_idx, reply.get("x"), reply.get("y"),
+                    attempt, max_attempts)
+                verdict = self._rr_click_from_web(
+                    ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)),
+                    dir_idx=dir_idx)
+                if verdict == "descended":
+                    return True
+                # verdict 為 None（座標超界／聚焦失敗／轉向被吃）或 still_surface／
+                # no_change／moved_unconfirmed——都視為可 retry 的非 descended 結果
+                verdict_label = verdict if verdict else "硬失敗"
+                if attempt < max_attempts:
+                    self._broadcast_intervention_result(
+                        ctx, verdict_label, "沒下去，重新掃一圈給你再點一次")
+                    # 點完面向已變、畫面也可能不同——重掃一圈再推，不要讓玩家對舊圖點
+                    captured = self._rr_sweep_capture(encode_for_web=True)
+                    if captured is None:
+                        return False
+                    _pairs, rot_missed, web_pngs = captured
+                    if not web_pngs:
+                        return False
+                    self._send_web_intervention_frames(
+                        flow="reentry", routing_key=routing_key, frames=web_pngs,
+                        ctx_summary=f"{summary}｜第 {attempt + 1}/{max_attempts} 次",
+                        note="上一次沒下去，再挑一次")
+                    continue
+                # 3 次都未 descended：不要再獨佔玩家，退回 Discord 讓兩邊都能操作
+                self.log_discord.warning(
+                    "[RR#%s] 回礦 web 介入：%d 次都未 descended（最後 verdict=%s），"
+                    "退回 Discord 八方位",
+                    ctx.episode_id, max_attempts, verdict_label)
+                self._broadcast_intervention_result(
+                    ctx, "放棄",
+                    f"{max_attempts} 次未成功，已改用 Discord 八方位；也可按 🎲 重骰")
+                return False
+            return False
+        finally:
+            self._resolve_web_intervention_ping(ctx)
+
+    def _queue_web_reentry_control(self, ctx, kind: str) -> bool:
+        """把面板的 🎲重骰／⏭️跳過 排進既有 reentry 指令佇列（主迴圈下個 tick 消費）。
+
+        走 `reentry_remote.parse_reply` 同一條路，跟玩家在 Discord 打字完全等價。
+        回 True＝已排入（caller 不必再發 Discord 八方位）。
+        """
+        raw = self._RR_WEB_CONTROLS[kind]
+        reply = reentry_remote.parse_reply(raw)
+        if reply is None or self._pending_reentry is not None:
+            self.log_discord.info(
+                "[RR#%s] 回礦 web %s 被忽略（解析失敗或上一則指令還在執行）",
+                ctx.episode_id, raw)
+            return False
+        self._queue_reentry_reply(raw, reply, source="web")
+        self._broadcast_intervention_result(ctx, kind, f"已收到「{raw}」，處理中…")
+        self.log_discord.info("[RR#%s] 回礦 web 介入：玩家按 %s", ctx.episode_id, raw)
+        return True
 
     def _broadcast_intervention_result(
             self, ctx, verdict: str, summary: str, flow: str = "reentry") -> None:

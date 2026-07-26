@@ -152,8 +152,19 @@ def parse_reentry_click_payload(payload: dict) -> dict | None:
     """解析 reentry_click 命令；不合法回 None。只接受 attempt_id。
 
     P5 Task 1：thin validator（同 parse_fire_at_payload）。
+
+    2026-07-26 多帶一個 **選用**的 ``dir``（1~8）：玩家點的是八方位裡的第幾張。
+    bot 收到後會先轉到該方位再點——面板顯示的是 sweep 當下的畫面，不轉過去點
+    等於對著別的方向開槍。舊 client 不帶 dir（單幀模式）時維持原行為（點當下畫面）。
+    超出 1~8 或非整數一律視為沒帶（寧可不轉也不要轉錯方向）。
     """
-    return _parse_pointer_payload(
+    parsed = _parse_pointer_payload(
         payload, "reentry_click",
         id_keys=("attempt_id",),
     )
+    if parsed is None:
+        return None
+    d = payload.get("dir")
+    if isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 8:
+        parsed["dir"] = d
+    return parsed

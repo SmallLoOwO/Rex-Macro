@@ -921,13 +921,33 @@ _INTERVENTION_HTML = """<!DOCTYPE html>
 body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
        display: flex; flex-direction: column; height: 100vh; }
 header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
-         display: flex; justify-content: space-between; align-items: center; }
-#status { font-size: 0.9rem; color: #888; }
-#skip { padding: 0.35rem 0.8rem; border: 0; border-radius: 4px;
-        background: #6d6d6d; color: #fff; font-size: 0.85rem; cursor: pointer; }
+         display: flex; justify-content: space-between; align-items: center;
+         gap: 0.6rem; flex-wrap: wrap; }
+#status { font-size: 0.9rem; color: #888; flex: 1 1 100%; }
+/* 方位切換 + 動作鍵。回礦時傳送板通常不在當下視野內，所以面板必須讓玩家
+   在八個方位之間翻找——這一列就是整個回礦網頁流程可用與否的關鍵。 */
+#toolbar { display: flex; gap: 0.35rem; align-items: center; padding: 0.4rem 0.6rem;
+           background: #262626; border-bottom: 1px solid #444;
+           overflow-x: auto; }
+#toolbar button { flex: 0 0 auto; padding: 0.45rem 0.7rem; border: 0;
+                  border-radius: 6px; background: #3a3a3a; color: #eee;
+                  font-size: 0.9rem; cursor: pointer; }
+#toolbar button:disabled { opacity: 0.35; cursor: default; }
+#toolbar button.act { background: #4a4a4a; }
+#toolbar button.skip { background: #6d6d6d; }
+#dir-label { flex: 0 0 auto; font-size: 0.95rem; font-weight: bold;
+             min-width: 5.5rem; text-align: center; }
+/* 方位小圓點：一眼看出總共幾張、現在第幾張、哪些已經看過 */
+#dots { display: flex; gap: 0.25rem; flex: 0 0 auto; }
+#dots span { width: 0.55rem; height: 0.55rem; border-radius: 50%;
+             background: #555; display: block; }
+#dots span.on { background: #0084ff; }
+#dots span.seen { background: #888; }
 #container { flex: 1; position: relative; overflow: hidden; touch-action: none; }
 canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
+#note { padding: 0.3rem 1rem; background: #5a4a1e; font-size: 0.8rem;
+        color: #ffe9b0; display: none; }
 </style>
 </head>
 <body>
@@ -935,9 +955,18 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 <header>
   <strong>MiningBot 介入面板</strong>
   <span id="status">等待 bot 事件…</span>
-  <button id="skip" type="button" hidden>⏭️ 跳過</button>
 </header>
-<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳；點擊送出位置</div>
+<div id="toolbar">
+  <button id="prev" type="button" title="上一個方位">&#9664;</button>
+  <span id="dir-label">&#8212;</span>
+  <button id="next" type="button" title="下一個方位">&#9654;</button>
+  <span id="dots"></span>
+  <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
+  <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
+  <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
+</div>
+<div id="note"></div>
+<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置</div>
 <div id="container">
   <canvas id="canvas"></canvas>
 </div>
@@ -947,20 +976,74 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const container = document.getElementById('container');
 const statusEl = document.getElementById('status');
+const noteEl = document.getElementById('note');
+const dirLabel = document.getElementById('dir-label');
+const dotsEl = document.getElementById('dots');
+const prevBtn = document.getElementById('prev');
+const nextBtn = document.getElementById('next');
+const sweepBtn = document.getElementById('sweep');
+const rerollBtn = document.getElementById('reroll');
 const skipBtn = document.getElementById('skip');
 
 const CANVAS_NATIVE = [1920, 1080];
 let scale = 1;          // fit-to-container 初始 scale
 let zoom = 1.0;         // pinch/scroll zoom（疊加在 scale 之上）
 let pan = [0, 0];       // 拖曳 pan（native 座標）
-let currentEvent = null;  // {flow, routing_key, summary}
+let currentEvent = null;  // {flow, routing_key, summary, mode, frame_count}
 let ws = null;
 
-// 狀態列上色：手機在陽光下看小字很吃力，成功/失敗要一眼分得出來。
+// 八方位圖：frames[i] = {img, dir}；pendingMeta 是「下一個 binary 屬於誰」。
+// WebSocket 同一條連線保證順序，所以 meta 後面緊接著的那張就是它的圖。
+let frames = [];
+let pendingMeta = null;
+let curFrame = 0;
+let seen = new Set();
+
 const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
 function setStatus(text, kind) {
   statusEl.textContent = text;
   statusEl.style.color = STATUS_COLORS[kind] || STATUS_COLORS.idle;
+}
+
+// ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
+// 玩家不會一直盯著這一頁。沒有這段，網頁介入等於「剛好有看到才有用」——
+// 實機 2026-07-26 就是這樣白等到逾時。
+const BASE_TITLE = 'MiningBot 介入面板';
+let flashTimer = null;
+function startFlashing(label) {
+  stopFlashing();
+  let on = false;
+  flashTimer = setInterval(() => {
+    on = !on;
+    document.title = on ? ('\\u{1F534} ' + label) : BASE_TITLE;
+  }, 1000);
+}
+function stopFlashing() {
+  if (flashTimer) { clearInterval(flashTimer); flashTimer = null; }
+  document.title = BASE_TITLE;
+}
+// 專心看著這一頁時不必再閃
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) stopFlashing();
+});
+
+function beep() {
+  // Web Audio 合成，不載外部音檔——CSP 擋掉所有外部資源，音檔一定會失敗。
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ac = new AC();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.45);
+    osc.start();
+    osc.stop(ac.currentTime + 0.5);
+    setTimeout(() => ac.close(), 1000);
+  } catch (e) { /* 自動播放被瀏覽器擋：靜音即可，標題閃爍仍在 */ }
 }
 
 function fitCanvas() {
@@ -977,15 +1060,51 @@ function redraw() {
   canvas.style.transform = `translate(${-pan[0] * totalScale}px, ${-pan[1] * totalScale}px)`;
 }
 
-function showImage(pngBytes) {
-  const blob = new Blob([pngBytes], { type: 'image/png' });
+function drawFrame(i) {
+  const f = frames[i];
+  if (!f || !f.img) return;
+  canvas.width = CANVAS_NATIVE[0];
+  canvas.height = CANVAS_NATIVE[1];
+  ctx.drawImage(f.img, 0, 0, CANVAS_NATIVE[0], CANVAS_NATIVE[1]);
+  seen.add(i);
+  renderNav();
+  redraw();
+}
+
+function renderNav() {
+  const n = frames.length;
+  const multi = n > 1;
+  prevBtn.disabled = !multi;
+  nextBtn.disabled = !multi;
+  dirLabel.textContent = n
+    ? ('方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1)) + '/' + n)
+    : '\\u2014';
+  dotsEl.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('span');
+    if (i === curFrame) d.className = 'on';
+    else if (seen.has(i)) d.className = 'seen';
+    dotsEl.appendChild(d);
+  }
+}
+
+function showFrame(i) {
+  if (!frames.length) return;
+  curFrame = (i + frames.length) % frames.length;
+  // 換方位時把縮放/平移歸位——放大看完某一角再切張，維持舊視窗只會看到一片放大的地面
+  zoom = 1.0; pan = [0, 0];
+  drawFrame(curFrame);
+}
+
+function loadImage(bytes, slot) {
+  const blob = new Blob([bytes], { type: 'image/png' });
   const url = URL.createObjectURL(blob);
   const img = new Image();
   img.onload = () => {
-    canvas.width = CANVAS_NATIVE[0];
-    canvas.height = CANVAS_NATIVE[1];
-    ctx.drawImage(img, 0, 0, CANVAS_NATIVE[0], CANVAS_NATIVE[1]);
+    if (frames[slot]) frames[slot].img = img;
     URL.revokeObjectURL(url);
+    if (slot === curFrame) drawFrame(slot);
+    renderNav();
   };
   img.src = url;
 }
@@ -996,28 +1115,51 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (e) => {
     if (e.data instanceof ArrayBuffer) {
-      showImage(e.data);
+      // 有 meta＝八方位其中一張；沒有＝舊的單幀路徑（harvest 開火用）
+      if (pendingMeta) {
+        const slot = pendingMeta.index;
+        frames[slot] = { img: null, dir: pendingMeta.dir };
+        loadImage(e.data, slot);
+        pendingMeta = null;
+      } else {
+        frames = [{ img: null, dir: 1 }];
+        curFrame = 0; seen = new Set();
+        loadImage(e.data, 0);
+      }
       return;
     }
     let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
-    if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_NEEDED') {
-      currentEvent = msg.payload;
-      setStatus(`需要介入：${msg.payload.summary || msg.payload.flow}`, 'need');
-      // 「跳過」只對回礦有意義（spec §4 回礦流程第 6 點）；harvest 沒有等價路徑
-      skipBtn.hidden = (msg.payload.flow !== 'reentry');
-    } else if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_RESULT') {
-      // bot 處理完玩家這一點的結果（spec 驗收 A「verify 結果回傳網頁顯示 ✅ / ❌」）。
+    try { msg = JSON.parse(e.data); } catch (err) { return; }
+    const p = (msg && msg.payload) || {};
+    if (!msg || msg.type !== 'event') return;
+    if (p.event === 'INTERVENTION_FRAME') {
+      if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; }
+      pendingMeta = { index: p.index, dir: p.dir, total: p.total };
+    } else if (p.event === 'INTERVENTION_NEEDED') {
+      currentEvent = p;
+      const isReentry = p.flow === 'reentry';
+      setStatus('需要介入：' + (p.summary || p.flow), 'need');
+      noteEl.style.display = p.note ? 'block' : 'none';
+      noteEl.textContent = p.note || '';
+      // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑
+      for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = !isReentry;
+      curFrame = 0;
+      renderNav();
+      if (frames.length) drawFrame(0);
+      startFlashing(p.summary || '需要介入');
+      beep();
+    } else if (p.event === 'INTERVENTION_RESULT') {
       // verdict 由 main._broadcast_intervention_result 給：
       //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset
-      //   reentry: descended / still_surface / 放棄 / rejected_reset
-      // 成功就把 currentEvent 清掉——這一輪介入結束，再點也沒有對應的 routing_key。
-      const v = msg.payload.verdict || '';
+      //   reentry: descended / still_surface / 放棄 / rejected_reset / 轉向被吃
+      const v = p.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
-      setStatus(msg.payload.summary || v, ok ? 'ok' : 'fail');
-      if (ok) { currentEvent = null; skipBtn.hidden = true; }
-    } else if (msg.type === 'ping') {
-      // server heartbeat；用 ws.pong 不過 ws API 用不著，這裡 noop
+      setStatus(p.summary || v, ok ? 'ok' : 'fail');
+      stopFlashing();
+      if (ok) {
+        currentEvent = null;
+        for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = true;
+      }
     }
   };
   ws.onclose = () => {
@@ -1039,7 +1181,6 @@ container.addEventListener('pointermove', (e) => {
     const dy = e.clientY - pointerDownPos[1];
     if (Math.abs(dx) + Math.abs(dy) > 5) didDrag = true;
   }
-  // 拖曳 pan（pointer isDown + didDrag）
   if (pointerDownPos && didDrag && e.buttons > 0) {
     const totalScale = scale * zoom;
     pan[0] -= (e.movementX || 0) / totalScale;
@@ -1049,7 +1190,6 @@ container.addEventListener('pointermove', (e) => {
 });
 container.addEventListener('pointerup', (e) => {
   if (pointerDownPos && !didDrag) {
-    // tap：算原生座標送出
     sendClick(e.clientX, e.clientY);
   }
   pointerDownPos = null;
@@ -1101,38 +1241,51 @@ function sendClick(clientX, clientY) {
     setStatus('尚無 INTERVENTION_NEEDED 事件，忽略點擊', 'idle');
     return;
   }
-  // P5 Task 1：client 端直接算原生座標（避免 server 處理 zoom/pan 座標空間 mismatch）
-  // rect.width 是 transform 後的顯示寬度；canvas.width 是原生 1920
+  // client 端直接算原生座標（避免 server 處理 zoom/pan 座標空間 mismatch）
   const rect = canvas.getBoundingClientRect();
   const nativeX = Math.round((clientX - rect.left) * (canvas.width / rect.width));
   const nativeY = Math.round((clientY - rect.top) * (canvas.height / rect.height));
-  // 送命令：cmd + flow + harvest_id/attempt_id + x + y（thin validator schema）
   const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
   const ep_id = {};
-  // routing_key = "harvest:007" 或 "reentry:attempt_3"
-  const [flow, epId] = currentEvent.routing_key.split(':', 2);
+  // routing_key = "harvest:007" 或 "reentry:26"
+  const parts = currentEvent.routing_key.split(':', 2);
+  const flow = parts[0];
+  const epId = parts[1];
   if (flow === 'harvest') ep_id.harvest_id = epId;
   else ep_id.attempt_id = epId;
-  ws.send(JSON.stringify({
-    type: 'command',
-    payload: {
-      cmd, flow, ...ep_id,
-      x: nativeX, y: nativeY,
-    },
-  }));
-  setStatus(`已送出點擊 (${nativeX}, ${nativeY}) — ${cmd}，等待 bot 回覆…`, 'need');
+  const payload = Object.assign({ cmd, flow }, ep_id, { x: nativeX, y: nativeY });
+  // 帶上方位：bot 收到後會先轉過去再點（面板顯示的是掃描當下的畫面）
+  if (flow === 'reentry' && frames[curFrame]) payload.dir = frames[curFrame].dir;
+  ws.send(JSON.stringify({ type: 'command', payload }));
+  const dirTxt = payload.dir ? ('方位 ' + payload.dir + ' 的 ') : '';
+  setStatus('已送出' + dirTxt + '(' + nativeX + ', ' + nativeY + ')，等待 bot 執行…', 'need');
+  stopFlashing();
 }
 
-// 「跳過」：走 bot 既有的回礦跳過路徑（等同在 Discord 打「跳過」）
-skipBtn.addEventListener('click', () => {
+function sendControl(cmd, label) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: 'command', payload: { cmd: 'skip' } }));
-  setStatus('已送出跳過，等待 bot 收尾…', 'need');
-  skipBtn.hidden = true;
+  ws.send(JSON.stringify({ type: 'command', payload: { cmd } }));
+  setStatus('已送出' + label + '，等待 bot…', 'need');
+  stopFlashing();
+}
+
+prevBtn.addEventListener('click', () => showFrame(curFrame - 1));
+nextBtn.addEventListener('click', () => showFrame(curFrame + 1));
+sweepBtn.addEventListener('click', () => sendControl('sweep', '重掃'));
+rerollBtn.addEventListener('click', () => sendControl('reroll', '重骰'));
+skipBtn.addEventListener('click', () => {
+  sendControl('skip', '跳過');
   currentEvent = null;
 });
+// 鍵盤左右鍵切方位（桌機看八張圖時比點按鈕快）
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') showFrame(curFrame - 1);
+  else if (e.key === 'ArrowRight') showFrame(curFrame + 1);
+});
 
+for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = true;
 window.addEventListener('resize', fitCanvas);
+renderNav();
 fitCanvas();
 connect();
 </script>

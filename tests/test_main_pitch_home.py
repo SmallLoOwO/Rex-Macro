@@ -124,7 +124,14 @@ def _rr_open_gate_bot(monkeypatch, measured_results):
     bot._pitch_drag_measured = measured
     bot._maybe_arm_chime = lambda pct: None
     bot._rr_notify = lambda msg, **kw: bot.notes.append(msg)
-    bot._rr_sweep_and_send = lambda **kw: bot.sweeps.append(1)
+    # 2026-07-26：拍照與發圖已拆成 _rr_sweep_capture / _rr_sweep_send_discord，
+    # 中間夾一次 web 介入詢問。這裡 stub 三者——本檔驗的是「開場閘有沒有放行到拍照」，
+    # 不是拍照本身；sweeps 記的仍是「有沒有走到拍照那一步」。
+    bot._rr_sweep_capture = lambda encode_for_web=False: (
+        bot.sweeps.append(1) or ([], 0, []))
+    bot._rr_sweep_send_discord = lambda pairs, rot_missed, prefix_msg="": None
+    bot._web_client_online = lambda: False
+    bot._reentry_await_player_click = lambda ctx, web_pngs, rot_missed=0: False
     bot._rr_embed_mid = None
     bot._rr_post_embed = lambda: None
     bot.last_action = ""
@@ -175,7 +182,11 @@ def test_rr_open_pitch_no_retry_when_ok(monkeypatch):
     bot._pitch_drag_measured = lambda label, drag: attempts.append(label) or (True, 19.7, 0.31)
     bot._maybe_arm_chime = lambda pct: None
     bot._rr_notify = lambda msg, **kw: notes.append(msg)
-    bot._rr_sweep_and_send = lambda **kw: None
+    # 2026-07-26：拍照/發圖已拆開，中間夾一次 web 介入詢問——三個都要 stub
+    bot._rr_sweep_capture = lambda encode_for_web=False: ([], 0, [])
+    bot._rr_sweep_send_discord = lambda pairs, rot_missed, prefix_msg="": None
+    bot._web_client_online = lambda: False
+    bot._reentry_await_player_click = lambda ctx, web_pngs, rot_missed=0: False
     bot._rr_embed_mid = None
     bot._rr_post_embed = lambda: None
     monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
@@ -209,7 +220,11 @@ def _rr_open_bot(monkeypatch, session_back, drags):
     bot._pitch_drag_measured = measured
     bot._maybe_arm_chime = lambda pct: None
     bot._rr_notify = lambda msg, **kw: None
-    bot._rr_sweep_and_send = lambda **kw: None
+    # 2026-07-26：拍照/發圖已拆開，中間夾一次 web 介入詢問——三個都要 stub
+    bot._rr_sweep_capture = lambda encode_for_web=False: ([], 0, [])
+    bot._rr_sweep_send_discord = lambda pairs, rot_missed, prefix_msg="": None
+    bot._web_client_online = lambda: False
+    bot._reentry_await_player_click = lambda ctx, web_pngs, rot_missed=0: False
     bot._rr_embed_mid = None
     bot._rr_post_embed = lambda: None
     monkeypatch.setattr(main.ic, "pitch_reset",

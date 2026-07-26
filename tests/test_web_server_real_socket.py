@@ -143,3 +143,127 @@ def test_http_routes_still_work_on_real_server(server):
     with urllib.request.urlopen(url, timeout=5) as r:
         assert r.status == 200
         assert json.loads(r.read().decode("utf-8")) == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26：八方位推送的 wire contract（真 socket）。
+#
+# 面板把「meta 之後緊接著的那個 binary」配成一張圖。這個假設完全建立在
+# server 真的照 meta→binary→meta→binary… 的順序送達。順序一旦錯位，
+# 玩家點的方位就跟 bot 轉過去的方位不一致——會直接點在錯的地方。
+# ---------------------------------------------------------------------------
+
+
+def _recv_sequence(ws, n, timeout=10.0):
+    """收 n 則訊息，回 [("text", payload) | ("bytes", data)]。"""
+    out = []
+    deadline = time.monotonic() + timeout
+    while len(out) < n and time.monotonic() < deadline:
+        msg = ws.recv(timeout=max(0.1, deadline - time.monotonic()))
+        if isinstance(msg, (bytes, bytearray)):
+            out.append(("bytes", bytes(msg)))
+        else:
+            out.append(("text", json.loads(msg)["payload"]))
+    return out
+
+
+def test_sweep_frames_arrive_as_meta_then_binary_pairs(server):
+    """三張圖 → meta/binary 交錯到達，且 index 與圖內容對得起來。"""
+    from websockets.sync.client import connect
+    from miningbot.web_protocol import WebMessage
+
+    thread, _, fallback = server
+    registry = thread.app.state.registry
+    url = f"ws://127.0.0.1:{thread.actual_port}/ws"
+    with connect(url, open_timeout=5) as ws:
+        deadline = time.monotonic() + 5.0
+        while fallback.client_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        for seq in range(3):
+            registry.broadcast(WebMessage(type="event", payload={
+                "event": "INTERVENTION_FRAME", "flow": "reentry",
+                "routing_key": "reentry:26", "index": seq, "total": 3,
+                "dir": seq + 1}))
+            registry.broadcast_binary(b"PNG-%d" % seq)
+        registry.broadcast(WebMessage(type="event", payload={
+            "event": "INTERVENTION_NEEDED", "flow": "reentry",
+            "routing_key": "reentry:26", "summary": "回礦 #26",
+            "mode": "sweep", "frame_count": 3}))
+        got = _recv_sequence(ws, 7)
+
+    kinds = [p["event"] if k == "text" else "BINARY" for k, p in got]
+    assert kinds == [
+        "INTERVENTION_FRAME", "BINARY",
+        "INTERVENTION_FRAME", "BINARY",
+        "INTERVENTION_FRAME", "BINARY",
+        "INTERVENTION_NEEDED",
+    ], f"順序錯位，前端會把圖配到錯的方位：{kinds}"
+    for seq in range(3):
+        meta = got[seq * 2][1]
+        assert meta["index"] == seq and meta["dir"] == seq + 1
+        assert got[seq * 2 + 1][1] == b"PNG-%d" % seq
+
+
+def test_main_push_helper_sends_needs_last(server):
+    """`Bot._send_web_intervention_frames` 真的走完整條路：8 張圖 + 最後一則 NEEDS。
+
+    NEEDS 是「開工訊號」——它到的時候 8 張必須都已經在 client 手上，
+    否則玩家看到「需要介入」卻是空白畫面。
+    """
+    import logging
+    import types as _types
+    from websockets.sync.client import connect
+    from miningbot.main import Bot
+
+    thread, _, fallback = server
+
+    class _Bot:
+        pass
+
+    bot = _Bot()
+    bot._web_thread = thread
+    bot.log_discord = logging.getLogger("test_sweep_wire")
+    bot._send_web_intervention_frames = _types.MethodType(
+        Bot._send_web_intervention_frames, bot)
+
+    url = f"ws://127.0.0.1:{thread.actual_port}/ws"
+    with connect(url, open_timeout=5) as ws:
+        deadline = time.monotonic() + 5.0
+        while fallback.client_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        pushed = bot._send_web_intervention_frames(
+            flow="reentry", routing_key="reentry:26",
+            frames=[(i, b"x%d" % i) for i in range(8)],
+            ctx_summary="回礦 #26（attempt 2）｜目標層：Shamrock",
+            note="")
+        got = _recv_sequence(ws, 17)
+
+    assert pushed is True
+    assert len([1 for k, _ in got if k == "bytes"]) == 8
+    last_kind, last = got[-1]
+    assert last_kind == "text" and last["event"] == "INTERVENTION_NEEDED"
+    assert last["frame_count"] == 8 and last["routing_key"] == "reentry:26"
+    # dir 是 1 起算的介面值（與 Discord「方位 1-8」一致）
+    dirs = [p["dir"] for k, p in got if k == "text" and p["event"] == "INTERVENTION_FRAME"]
+    assert dirs == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_panel_control_buttons_reach_pending_over_real_socket(server):
+    """面板三顆按鈕（重掃/重骰/跳過）經真 socket 要能送達 PendingReplies。"""
+    from websockets.sync.client import connect
+
+    thread, pending, _ = server
+    url = f"ws://127.0.0.1:{thread.actual_port}/ws"
+    with connect(url, open_timeout=5) as ws:
+        for cmd in ("sweep", "reroll", "skip"):
+            ws.send(json.dumps({"type": "command", "payload": {"cmd": cmd}}))
+        deadline = time.monotonic() + 5.0
+        got = {}
+        while len(got) < 3 and time.monotonic() < deadline:
+            for cmd in ("sweep", "reroll", "skip"):
+                if cmd not in got:
+                    v = pending.pop(f"control:{cmd}")
+                    if v is not None:
+                        got[cmd] = v
+            time.sleep(0.02)
+    assert set(got) == {"sweep", "reroll", "skip"}, f"按鈕沒送達：{sorted(got)}"

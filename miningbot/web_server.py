@@ -622,6 +622,9 @@ def _handle_command(payload: dict, pending: PendingReplies) -> None:
       （P5 Task 1 schema；x/y 是 int 範圍 [0, 1920) / [0, 1080)）
     - config_set：必有 field + value（白名單驗證在 main.py 整合時做）
     - pause / resume / request_frame：控制類，無 routing key，用 "control:*"
+    - skip / reroll / sweep（2026-07-26 回礦面板三顆按鈕）：同樣走 "control:*"，
+      由 main._await_web_reentry_action 在等待迴圈裡直接撿——主迴圈此刻卡在
+      介入等待中，`_consume_web_pending` 跑不到，只靠它們會等到本輪逾時才生效。
 
     若 payload 缺 routing key 必要欄位或 parse 失敗，記 log 不 push（防護）。
     """
