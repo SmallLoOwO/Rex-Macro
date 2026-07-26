@@ -22,6 +22,54 @@ from typing import Any, Iterator
 _REENTRY_LABEL_RE = re.compile(r"^reentry_ep(\d+)(?:_|$)")
 
 
+# ── 標註優先序（2026-07-26）────────────────────────────────────────────────
+#
+# episode 詳細頁先前把快照按 label **字母排序**，於是 `aim_overlay_*` 永遠排在
+# `sweep_empty_*` 前面、而一整批已經很成熟的東西（聊天框、背包、chill）夾在中間，
+# 玩家要標的圖散落在整頁各處。
+#
+# 排序依據改成「這張圖對改善偵測有多少價值」，來自使用者的實機判斷：
+# **chill 標語、背包、聊天框都已經是成熟的 OCR 路徑**，標了也改善不了什麼；
+# 真正還沒解決的是**八方位掃描**與**礦物／追蹤框偵測**——那兩條才需要人標。
+#
+# 每筆是 (regex, tier)；由上往下**第一個命中者勝**，都沒命中落到 _DEFAULT_TIER。
+# 要調整優先序只改這張表，render 端不必動。
+_ANNOTATION_TIERS: tuple[tuple[re.Pattern, int], ...] = (
+    # tier 0：偵測未解決——八方位掃描全空、追蹤框被拒、瞄準失敗、交人工
+    (re.compile(r"sweep_empty|sweep_seen_once|_rejected|aim_fail"
+                r"|needs_human|manual_survey|_miss(_|$)|gone_unconfirmed"), 0),
+    # tier 1：已知失敗但非上述兩條主線——OCR 讀不出、事件文字未知、聊天框沒開
+    (re.compile(r"unreadable|unknown|_fail(_|$)"), 1),
+    # tier 2：成功對照組——兩側夾的另一側，標註價值中等
+    (re.compile(r"sweep_confirmed|sweep_accepted|_accepted|_fired"
+                r"|aim_fire|_fire_|success"), 2),
+)
+# 其餘（聊天／背包／chill／rare_found／俯仰／重置／回礦 yaw 語料）＝成熟流程紀錄
+_DEFAULT_TIER = 3
+
+ANNOTATION_TIER_LABELS: tuple[str, ...] = (
+    "🔴 待標註——偵測未解決（八方位掃描／追蹤框／瞄準）",
+    "🟠 已知失敗——OCR 讀不出／事件未知",
+    "🟡 成功對照組——兩側夾的另一側",
+    "⚪ 成熟流程紀錄——聊天／背包／chill／俯仰／回礦語料",
+)
+
+
+def annotation_tier(label: str) -> int:
+    """快照 label → 標註優先序 tier（數字越小越該先標）。
+
+    純函式，只看 label 字串；episode 數字前綴（``113_``）不影響比對，因為所有
+    pattern 都是子字串比對而非錨定開頭。
+
+    回 0~3，對應 ``ANNOTATION_TIER_LABELS`` 的索引。
+    """
+    text = str(label or "")
+    for pattern, tier in _ANNOTATION_TIERS:
+        if pattern.search(text):
+            return tier
+    return _DEFAULT_TIER
+
+
 def _iter_snapshot_records(path: str) -> Iterator[dict]:
     """逐行讀 snapshot_index.jsonl；壞行（含寫到一半的 partial line）靜默略過。
 

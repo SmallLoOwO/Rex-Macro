@@ -232,10 +232,18 @@ def test_episode_page_has_timeline_thumbs_and_annotations():
     assert "尚無標註" in html
 
 
-def test_episode_page_groups_snapshots_by_label():
-    """同 label 的多張要收在同一組——before/after 對照才看得出來。"""
+def test_episode_page_keeps_same_label_shots_adjacent():
+    """同 label 的多張要相鄰——before/after 對照才看得出來。
+
+    2026-07-26：版面從「一個 label 一個整寬 <section>」改成「一個 tier 一個
+    wrap 網格」（18~32 張一集，整寬堆疊要捲很久）。分組的**用途**不變，改由
+    排序保證相鄰，所以這裡驗相鄰而不是驗已移除的 section 標籤。
+    """
     html = render_episode_html(_detail(), annotations=[])
-    assert html.count("<section class=\"grp\">") == 1
+    body = html[html.index("快照（依標註優先序"):]
+    a, b = body.index("a.png"), body.index("b.png")
+    between = body[min(a, b):max(a, b)]
+    assert between.count("<figure>") == 1, "同 label 的兩張中間不該插入別的圖"
     assert html.count("/snapshot?path=") == 2
 
 

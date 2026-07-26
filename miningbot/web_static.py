@@ -687,13 +687,30 @@ def render_episode_html(detail: dict, annotations: list[dict]) -> str:
     groups: dict[str, list[dict]] = {}
     for r in snaps:
         groups.setdefault(str(r.get("label", "?")), []).append(r)
-    thumb_blocks = []
-    for label in sorted(groups):
+
+    # 分組順序改按**標註優先序**，不再按字母（2026-07-26）：關鍵的排最上面。
+    # 舊版 sorted(groups) 讓一整批成熟的東西（聊天框／背包／chill）夾在中間，
+    # 真正要標的 sweep_empty / aim_overlay 散落各處。同 tier 內按最早時間排，
+    # 讓同一輪掃描的八個方位維持 dir0→dir7 的自然順序。
+    from miningbot.web_history import annotation_tier, ANNOTATION_TIER_LABELS
+
+    def _group_key(label: str):
+        first = min((r.get("written_at") or 0) for r in groups[label])
+        return (annotation_tier(label), first, label)
+
+    ordered_labels = sorted(groups, key=_group_key)
+
+    # 每個 tier 一個**橫向流動網格**，而不是「一個 label 一個整寬區塊」。
+    # 舊版 18 個 label ＝ 18 個堆疊區塊，一集要捲很久才看得完；改成 wrap 之後
+    # 同一 tier 的圖全部排在一起，一眼掃得到。label 移到縮圖下方當說明，
+    # 同 label 的多張（before/after）靠排序保持相鄰。
+    tier_buckets: dict[int, list[str]] = {}
+    for label in ordered_labels:
         cards = "".join(
             '<figure><a href="/annotate?episode={ep}&snapshot={q}" '
             'title="標註這張">'
             '<img loading="lazy" src="/snapshot?path={q}" alt="{lb}"></a>'
-            '<figcaption>{ts}</figcaption></figure>'.format(
+            '<figcaption><span class="lb">{lb}</span>{ts}</figcaption></figure>'.format(
                 ep=_esc(ep_id),
                 q=_url_q(str(r.get("path", ""))),
                 lb=_esc(label),
@@ -701,10 +718,16 @@ def render_episode_html(detail: dict, annotations: list[dict]) -> str:
             )
             for r in groups[label]
         )
+        tier_buckets.setdefault(annotation_tier(label), []).append(cards)
+
+    thumb_blocks = []
+    for tier in sorted(tier_buckets):
+        n = sum(len(groups[lb]) for lb in ordered_labels
+                if annotation_tier(lb) == tier)
         thumb_blocks.append(
-            f'<section class="grp"><h3>{_esc(label)}'
-            f'<span class="n">{len(groups[label])}</span></h3>'
-            f'<div class="thumbs">{cards}</div></section>'
+            f'<h3 class="tier t{tier}">{_esc(ANNOTATION_TIER_LABELS[tier])}'
+            f'<span class="n">{n}</span></h3>'
+            f'<div class="thumbs">{"".join(tier_buckets[tier])}</div>'
         )
     thumbs = "".join(thumb_blocks) or '<p class="empty">沒有快照可顯示</p>'
 
@@ -734,14 +757,24 @@ h2 {{ font-size: 0.95rem; margin: 1.6rem 0 0.4rem; color: #444;
 h3 {{ font-size: 0.85rem; margin: 0.8rem 0 0.3rem; color: #666; }}
 h3 .n {{ background: #eee; border-radius: 999px; padding: 0 0.45rem;
         margin-left: 0.4rem; font-weight: normal; }}
+/* tier 標題：把「該標哪些」講白，玩家不必自己記哪些 label 是成熟的 */
+h3.tier {{ margin: 1.4rem 0 0.2rem; font-size: 0.9rem; font-weight: bold;
+          color: #222; border-bottom: 2px solid #ddd; padding-bottom: 0.25rem; }}
+h3.tier.t0 {{ border-bottom-color: #e5534b; }}
+h3.tier.t1 {{ border-bottom-color: #e08c3b; }}
+h3.tier.t2 {{ border-bottom-color: #d9b02c; }}
+h3.tier.t3 {{ border-bottom-color: #ccc; color: #777; }}
 .meta {{ color: #777; font-size: 0.85rem; }}
 ul.timeline {{ list-style: none; padding: 0; margin: 0;
               max-height: 16rem; overflow-y: auto; }}
 ul.timeline li {{ display: flex; gap: 0.6rem; padding: 0.15rem 0;
                  font-size: 0.82rem; border-bottom: 1px solid #f0f0f0; }}
 ul.timeline .t {{ color: #888; flex: 0 0 10.5rem; }}
-.thumbs {{ display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.3rem; }}
-.thumbs figure {{ margin: 0; flex: 0 0 auto; text-align: center; }}
+/* wrap 而不是單列橫捲：一集動輒 18~32 張，橫捲要一直拖才看得完下一張。 */
+.thumbs {{ display: flex; flex-wrap: wrap; gap: 0.6rem; padding-bottom: 0.3rem; }}
+.thumbs figure {{ margin: 0; flex: 0 0 auto; text-align: center; max-width: 320px; }}
+.thumbs figcaption .lb {{ display: block; font-family: monospace;
+              font-size: 0.68rem; color: #555; word-break: break-all; }}
 /* max-width 是必要的，不是美化：聊天裁圖是 1220×37 這種極端長寬比，只設
    height:110px 會把縮圖拉成 3629px 寬（2026-07-26 實測），一列要橫捲很久才看得完
    下一張。夾住寬度並 object-fit: contain 保持比例。 */
@@ -767,7 +800,7 @@ a {{ color: #0084ff; text-decoration: none; }}
 <h2>事件時間軸</h2>
 <ul class="timeline">{timeline}</ul>
 
-<h2>快照（按 label 分組，點縮圖去標註）</h2>
+<h2>快照（依標註優先序，點縮圖去標註）</h2>
 {thumbs}
 
 <h2>玩家介入／標註歷程</h2>
