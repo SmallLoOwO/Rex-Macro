@@ -359,6 +359,10 @@ def render_annotate_html(
         # /api/annotate 把絕對路徑當 category 前綴。
         img_basename = snapshot_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     img_basename_js = _js_str(img_basename)
+    # source_path＝原始全幀路徑，POST 時一起送給 /api/annotate 用來裁出配對 PNG
+    # （spec §5「每張 2 檔」）。server 端會走跟 /snapshot 同一份路徑守門，
+    # 所以這裡送完整路徑是安全的——它本來就是 server 自己寫進 snapshot_index 的值。
+    img_source_js = _js_str(snapshot_path or "")
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -617,6 +621,7 @@ document.getElementById('submit').addEventListener('click', async () => {{
   const category = document.getElementById('category').value.trim();
   const payload = {{
     image: {img_basename_js},
+    source_path: {img_source_js},
     annotation: {{
       type: 'square',
       cx: Math.round(selRect.x),

@@ -42,6 +42,29 @@ auto_<episode_id>_fail.png / .json         verify 未通過（症狀組）
 網頁補 rarity／礦名／症狀／關聯事故編號。**根因描述不寫在 `.json` 裡**，寫
 `docs/incidents.md`（spec §12 非目標）。
 
+## `/annotate` 手動標註素材（2026-07-26 起也是兩檔一組）
+
+玩家在歷史頁點任一張快照縮圖進 `/annotate`，在**全幀**上拖曳出方框送出後，
+`POST /api/annotate` 會寫：
+
+```
+<原始快照 stem>.png    ← 以方框中心裁出的 320×270 粗格裁圖
+<原始快照 stem>.json   ← metadata；cx/cy 已換算成**裁圖內座標**
+```
+
+裁圖尺寸與自動收集路徑共用 `web_annotation.cell_crop_box`（`screen_w//6 ×
+screen_h//4`），因為 `detect_tracker_core` 實機吃的就是這個尺寸——這批素材的
+用途正是加強目標框偵測，尺寸不對就餵不進去。
+
+⚠ **先前這條路徑只寫 `.json`**（2026-07-26 修正）：`image` 欄放原始快照 basename，
+但那個檔名在本目錄根本不存在，等於產出指向空氣的孤兒。若日後又看到只有 `.json`
+沒有同名 `.png` 的素材，就是這個迴歸復發——`tests/test_web_annotate_png_pair.py`
+盯著它。
+
+⚠ 方框只是 `.json` 裡的 metadata，**不是裁圖邊界**。存整片 320×270 是刻意的：
+本目錄最重要的負樣本（`101_terrain_fp_d1.png`）靠的就是「框心 256 vs 亮綠地形
+25631」的面積差，裁成貼著框邊的小圖就再也看不出兩側夾。
+
 ## 為什麼不照 spec 分 `green/`、`terrain_false_positive/` 子目錄
 
 `docs/superpowers/specs/2026-07-26-web-ui-design.md` §5 畫的是按色系分子目錄，但同一份

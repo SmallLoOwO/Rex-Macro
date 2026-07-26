@@ -3571,12 +3571,12 @@ class Bot:
         # annotation_xy = tap 在 cell_crop local 座標（crop 經 clamp 後 tap 可能不在正中心）。
         try:
             if pre_fire_frame is not None:
-                cell_w = cfg.screen_w // 6
-                cell_h = cfg.screen_h // 4
-                cx0 = max(0, int(x) - cell_w // 2)
-                cy0 = max(0, int(y) - cell_h // 2)
-                cx1 = min(cfg.screen_w, cx0 + cell_w)
-                cy1 = min(cfg.screen_h, cy0 + cell_h)
+                # 裁切幾何抽到 web_annotation.cell_crop_box 共用：網頁手動標註
+                # （POST /api/annotate）也要產出同形狀的裁圖，兩邊各寫一份的話
+                # 同一個 fixtures 目錄會混進尺寸不一的素材。
+                from .web_annotation import cell_crop_box
+                cx0, cy0, cx1, cy1 = cell_crop_box(
+                    cfg.screen_w, cfg.screen_h, int(x), int(y))
                 cell_crop = pre_fire_frame[cy0:cy1, cx0:cx1]
                 self._save_auto_fixture(
                     flow="harvest", episode_id=str(hid),

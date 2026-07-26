@@ -22,6 +22,7 @@ from miningbot.web_protocol import (
     parse_reentry_click_payload, serialize_message,
 )
 from miningbot.web_ipc import PendingReplies, FallbackState
+from miningbot.web_annotation import cell_crop_box
 
 
 _log = logging.getLogger(__name__)
@@ -196,22 +197,9 @@ def create_app(
         `..` 都會在 realpath 階段被攤平。另外只放行 .png，避免有人拿它讀 log/設定檔。
         （沿用 _is_safe_category 的教訓：路徑檢查一律在正規化**之後**做。）
         """
-        if snapshots_root is None:
-            return _err(503, "snapshots root not configured")
-        root = os.path.realpath(snapshots_root)
-        target = os.path.realpath(path)
-        if os.path.splitext(target)[1].lower() != ".png":
-            return _err(400, "only .png is served")
-        # commonpath 會在不同磁碟機時丟 ValueError（Windows），視同越界
-        try:
-            inside = os.path.commonpath([root, target]) == root
-        except ValueError:
-            inside = False
-        if not inside:
-            _log.warning("web: /snapshot 拒絕越界路徑 %r（root=%r）", path, root)
-            return _err(403, "path outside snapshots root")
-        if not os.path.isfile(target):
-            return _err(404, "snapshot not found")
+        target, reason = _safe_snapshot_target(path, snapshots_root)
+        if target is None:
+            return _err(reason[0], reason[1])
         try:
             with open(target, "rb") as f:
                 data = f.read()
@@ -241,10 +229,22 @@ def create_app(
 
     @app.post("/api/annotate")
     def post_api_annotate(payload: dict):
-        """驗證 annotation dict → 原子寫入 tests/fixtures/<category>/<stem>.json。
+        """驗證 annotation → 寫 tests/fixtures/<category>/<stem>.{png,json} 兩檔一組。
 
         回 201 成功；400 schema 不通過；503 未配置 fixtures_dir。
         category 推導順序：payload.category > image 路徑前綴 > 預設 "aim"。
+
+        **PNG 是必要的，不是加值**（spec §5「每張 2 檔」）：素材的用途就是拿去
+        加強目標框偵測，只有 json 沒有裁圖等於什麼都沒收到。先前這條路徑只寫
+        json，產出的是指向 `tests/fixtures/` 內不存在檔名的孤兒——實測 `aim/`
+        底下 3 個 png、0 個 json，兩邊從來對不起來。
+
+        `source_path`（前端送）＝該張快照的原始全幀路徑，用來裁 crop。走跟
+        `/snapshot` 同一份路徑守門。沒帶 source_path 的舊 client 維持只寫 json
+        （向下相容），但會記 warning。
+
+        寫入順序是 **PNG 先、JSON 後**：PNG 失敗就直接回錯，絕不留下沒有配對
+        圖的孤兒 json——那正是這次要修掉的狀態。
         """
         if fixtures_dir is None:
             return _err(503, "history not configured")
@@ -255,16 +255,43 @@ def create_app(
         image_field = payload["image"]
         stem = os.path.splitext(os.path.basename(image_field))[0]
         target_dir = os.path.join(fixtures_dir, *category.split("/"))
+        record = {k: v for k, v in payload.items() if k != "source_path"}
+        png_path = None
+        source_path = payload.get("source_path")
         try:
             os.makedirs(target_dir, exist_ok=True)
+        except OSError as e:
+            _log.warning("web: /api/annotate 建目錄失敗 (%s): %s", target_dir, e)
+            return _err(500, f"write failed: {e}")
+
+        if isinstance(source_path, str) and source_path:
+            target, reason = _safe_snapshot_target(source_path, snapshots_root)
+            if target is None:
+                return _err(reason[0], f"source_path: {reason[1]}")
+            ann = record["annotation"]
+            png_path = os.path.join(target_dir, stem + ".png")
+            ok, detail, local_cx, local_cy = _write_cell_crop_png(
+                target, png_path, ann["cx"], ann["cy"])
+            if not ok:
+                _log.warning("web: /api/annotate 裁圖失敗 (%s): %s", png_path, detail)
+                return _err(500, f"crop failed: {detail}")
+            # 座標改成裁圖內座標——json 描述的是它旁邊那張 png，不是原始全幀
+            record["annotation"] = {**ann, "cx": local_cx, "cy": local_cy}
+        else:
+            _log.warning(
+                "web: /api/annotate 沒帶 source_path，只寫 json（%s）——"
+                "這張素材沒有配對裁圖，無法拿去加強偵測", stem)
+
+        try:
             target_path = os.path.join(target_dir, stem + ".json")
-            _atomic_write_json(target_path, payload)
+            _atomic_write_json(target_path, record)
         except OSError as e:
             _log.warning("web: /api/annotate 寫入失敗 (%s): %s", target_path, e)
             return _err(500, f"write failed: {e}")
         return JSONResponse(
             status_code=201,
-            content={"ok": True, "path": target_path, "category": category},
+            content={"ok": True, "path": target_path, "category": category,
+                     "png": png_path},
         )
 
     @app.get("/history")
@@ -443,6 +470,76 @@ def create_app(
             )
 
     return app
+
+
+def _safe_snapshot_target(path: str, snapshots_root: str | None):
+    """把外部給的快照路徑收斂成「可以讀的真實檔案」；回 (target, None) 或 (None, (status, reason))。
+
+    路徑來自 query string／POST body，等於讓外部指定要讀哪個檔。防護是
+    **realpath 必須落在 snapshots_root 底下**——比字串比對可靠，symlink 與
+    `..` 都會在 realpath 階段被攤平。另外只放行 .png，避免有人拿它讀 log／設定檔。
+    （沿用 _is_safe_category 的教訓：路徑檢查一律在正規化**之後**做。）
+
+    /snapshot 與 /api/annotate 共用同一份守門——annotate 也要照著這個路徑去讀
+    原始快照來裁 PNG，兩邊的安全性檢查不能各寫一套。
+    """
+    if snapshots_root is None:
+        return None, (503, "snapshots root not configured")
+    root = os.path.realpath(snapshots_root)
+    target = os.path.realpath(path)
+    if os.path.splitext(target)[1].lower() != ".png":
+        return None, (400, "only .png is served")
+    # commonpath 會在不同磁碟機時丟 ValueError（Windows），視同越界
+    try:
+        inside = os.path.commonpath([root, target]) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        _log.warning("web: 拒絕越界快照路徑 %r（root=%r）", path, root)
+        return None, (403, "path outside snapshots root")
+    if not os.path.isfile(target):
+        return None, (404, "snapshot not found")
+    return target, None
+
+
+def _write_cell_crop_png(source_path: str, target_png: str, cx: int, cy: int):
+    """從原始全幀裁出粗格大小的 crop 寫成素材 PNG；回 (ok, detail, local_cx, local_cy)。
+
+    spec §5「每張 2 檔」：`<name>.png` 是**檢測函式輸入格式**的裁圖，`<name>.json`
+    是 metadata。先前手動標註只寫 json，產出的是指向不存在檔案的孤兒——而
+    `aim/` 素材的用途正是「加強目標框偵測」，沒有那張裁圖就完全沒有價值。
+
+    座標換算：回傳的 local_cx/local_cy 是方框中心在**裁圖內**的座標。這與自動
+    收集路徑的 `annotation_xy` 語意一致（main.py 傳 `(x - cx0, y - cy0)`），
+    也對得上 spec 的範例（`cx: 211, cy: 189` 落在 320×270 裡）。
+
+    CJK path safety（tests/fixtures/README.md 硬規則）：`cv2.imread` / `imwrite`
+    在中文路徑下會**靜默失敗**，一律走 `np.fromfile` + `imdecode` /
+    `imencode` + `tofile`。這個 repo 的路徑就含中文，踩過。
+    """
+    import cv2
+    import numpy as np
+
+    try:
+        buf = np.fromfile(source_path, dtype=np.uint8)
+        frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    except (OSError, ValueError) as e:
+        return False, f"讀取原始快照失敗: {e}", 0, 0
+    if frame is None:
+        return False, "原始快照無法解碼", 0, 0
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = cell_crop_box(w, h, cx, cy)
+    crop = frame[y0:y1, x0:x1]
+    if crop.size == 0:
+        return False, f"裁圖為空（cx={cx}, cy={cy}, frame={w}x{h}）", 0, 0
+    try:
+        ok, encoded = cv2.imencode(".png", crop)
+        if not ok:
+            return False, "PNG encode 失敗", 0, 0
+        encoded.tofile(target_png)
+    except (OSError, ValueError) as e:
+        return False, f"寫入素材 PNG 失敗: {e}", 0, 0
+    return True, None, int(cx) - x0, int(cy) - y0
 
 
 def _err(status: int, reason: str) -> JSONResponse:

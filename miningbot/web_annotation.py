@@ -69,6 +69,34 @@ def rarity_choices_from_game_data(
     return sorted(tiers), list(_VARIANTS)
 
 
+def cell_crop_box(frame_w: int, frame_h: int, cx: int, cy: int,
+                  cols: int = 6, rows: int = 4) -> tuple[int, int, int, int]:
+    """以 (cx, cy) 為中心裁一塊「粗格大小」的框；回 (x0, y0, x1, y1)。
+
+    素材的 PNG 必須是**檢測函式吃的格式**（spec §5：「裁好的 crop（檢測函式輸入
+    格式）」），對 `aim/` 而言就是 320×270 的粗格裁圖——`detect_tracker_core`
+    實機吃的正是這個尺寸，既有 fixture（`101_core_green_c1.png` 等）也都是。
+    存全幀或存一個貼著框邊的小圖都不能直接餵給它：前者尺寸不對，後者看不到
+    旁邊的地形，而 `aim/README.md` 的兩側夾正是靠「框心 vs 亮綠地形」的面積差
+    ——沒有周邊脈絡就無從判斷。
+
+    cols/rows 預設 6×4 是 main.py 自動收集路徑既有的切法
+    （`cfg.screen_w // 6`、`cfg.screen_h // 4` → 1920/1080 下即 320×270），
+    這裡改吃畫面尺寸而不是 Config，讓網頁路徑不必抓 cfg 也能算。
+
+    邊界行為刻意與 main.py 既有寫法逐字一致（先 max(0, ...) 再
+    min(邊界, x0 + 寬)）：貼著畫面右／下緣時裁圖會**比一格窄**，而不是把
+    起點往回推。兩條路徑必須產出同形狀的素材，否則同一批 fixture 尺寸不一。
+    """
+    cw = max(1, frame_w // cols)
+    ch = max(1, frame_h // rows)
+    x0 = max(0, int(cx) - cw // 2)
+    y0 = max(0, int(cy) - ch // 2)
+    x1 = min(frame_w, x0 + cw)
+    y1 = min(frame_h, y0 + ch)
+    return x0, y0, x1, y1
+
+
 def build_annotation(
     image: str,
     annotation: dict,
