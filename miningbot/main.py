@@ -1,4 +1,5 @@
 import os
+import sys
 import math
 import time
 import logging
@@ -49,10 +50,22 @@ from .preflight import PreflightFacts, run_checks
 #
 # ⚠ 不要因為「啟動慢」把這段搬回 run() 或改成 lazy import——那會直接重現 H061。
 # 同理，未來新增任何重型第三方 import 都放模組層，不要放進 thread 已啟動之後的路徑。
+#
+# fastapi/uvicorn 缺件時**降級不中斷**：實機用 `pythonw -m miningbot`（Microsoft Store
+# 版 Python）跑，那個直譯器跟 `uv sync` 灌的 .venv 是兩個環境——H061 的真正起點就是
+# 「.venv 有 uvicorn、實機直譯器沒有」。這裡吞掉 ImportError 並關掉 web 子系統，讓挖礦
+# 照跑（每條 web 路徑都守 _web_pending is None，會自動退回 Discord fallback）。
+# 沿用本專案既有慣例：外部引擎/素材缺件時降級 + 明確警告，不靜默改變行為。
+WEB_IMPORT_ERROR: str | None = None
 if cfg.web_server_enabled:
-    from . import web_server as _web_server_preload   # noqa: F401
-    from . import web_ipc as _web_ipc_preload         # noqa: F401
-    from . import web_sink as _web_sink_preload       # noqa: F401
+    try:
+        from . import web_server as _web_server_preload   # noqa: F401
+        from . import web_ipc as _web_ipc_preload         # noqa: F401
+        from . import web_sink as _web_sink_preload       # noqa: F401
+    except ImportError as _web_import_exc:                # pragma: no cover - 環境相依
+        WEB_IMPORT_ERROR = (
+            f"{_web_import_exc}（直譯器 {sys.executable}）")
+        cfg.web_server_enabled = False
 
 # 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
 # 用 emoji 而非 Discord Components 按鈕：本專案全程 stdlib urllib，無 Websocket/interaction 基礎建設；
@@ -2342,6 +2355,26 @@ class Bot:
             return
         self._queue_reentry_reply(content, reply, source="text")
 
+    def _format_web_status(self) -> str:
+        """啟動 Discord 訊息用的網頁 UI 一行狀態。
+
+        使用者反覆問「網址呢」——先前只有 miningbot.log 印 WebIPC URL，Discord 一個字都
+        沒有，網頁到底通不通只能自己猜。三種情況各自講清楚：
+
+        - 起來了 → 給網址（127.0.0.1，跨裝置要自己接 Tailscale serve）
+        - 缺件降級 → 明說缺什麼，不然又是一次無聲失效（H061 的教訓）
+        - 設定關掉 → 明說是設定
+        """
+        thread = getattr(self, "_web_thread", None)
+        if thread is not None and getattr(thread, "actual_port", 0) > 0:
+            return f"🌐 網頁 UI：http://127.0.0.1:{thread.actual_port}"
+        if WEB_IMPORT_ERROR:
+            return (f"🌐 網頁 UI：**停用**（缺 fastapi/uvicorn：{WEB_IMPORT_ERROR}）"
+                    "——介入流程走 Discord")
+        if not cfg.web_server_enabled:
+            return "🌐 網頁 UI：停用（設定）——介入流程走 Discord"
+        return "🌐 網頁 UI：啟動失敗（見 miningbot.log）——介入流程走 Discord"
+
     def _apply_startup_overrides(self) -> str:
         """P3 玩家設定面板（spec §6）：啟動時讀 config_overrides.json 套用 Config。
 
@@ -2488,7 +2521,16 @@ class Bot:
             self._web_pending = None
             self._web_fallback = None
             self._web_thread = None
-            self.logger.info("網頁 UI 停用（cfg.web_server_enabled=False，H061）")
+            if WEB_IMPORT_ERROR:
+                # 這是**降級**不是設定：使用者以為網頁開著，實際上跑不起來。
+                # 講清楚缺什麼、缺在哪個直譯器，否則又變成一次無聲失效。
+                self.logger.warning(
+                    "網頁 UI 停用——web 模組 import 失敗：%s。"
+                    "實機用的直譯器沒裝 fastapi/uvicorn（`uv sync` 只灌 .venv，"
+                    "`pythonw -m miningbot` 走的是另一個 Python）。"
+                    "所有介入流程自動退回 Discord fallback。", WEB_IMPORT_ERROR)
+            else:
+                self.logger.info("網頁 UI 停用（cfg.web_server_enabled=False）")
         self.logger.info("初始化完成，開始挖礦")
         # 啟動自檢（preflight）：背景執行緒——它依賴 rapidocr_available()（可能仍在暖機中，
         # 冪等等鎖不搶跑），且 markers/chill_refs/檔案 mtime 這些 I/O 沒必要卡住主迴圈啟動。
@@ -2515,6 +2557,7 @@ class Bot:
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = (f"🤖 Bot 已啟動｜仰角：{self._startup_pitch_status}\n"
                         f"{harvester.format_radar_status(self._radar_toggle['scan'], self._radar_toggle['cave'], self._radar_ocr_ok)}\n"
+                        f"{self._format_web_status()}\n"
                         f"目前保留事件：\n{kept}")
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
                 # 遙控器：啟動訊息貼完後清掉跨重啟殘留的舊遙控器、貼新的到頻道底。

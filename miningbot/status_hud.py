@@ -95,12 +95,58 @@ class StatusHUD:
         if not self._bot_thread_started:
             self._bot_thread_started = True
             import threading
-            threading.Thread(target=self.bot.run, daemon=True).start()
+            threading.Thread(target=self._run_bot_guarded, daemon=True).start()
         self.root.after(200, self._poll)
+
+    def _run_bot_guarded(self):
+        """bot 執行緒進入點：任何未捕捉例外都必須留下痕跡（H061）。
+
+        H061 根因不是「卡住」而是**無聲死亡**：`Bot.run()` 在 daemon thread 裡丟
+        `ModuleNotFoundError`（實機直譯器缺 uvicorn），Python 預設的
+        `threading.excepthook` 把 traceback 印到 stderr——但 `pythonw` **沒有 console**，
+        於是 traceback 蒸發。HUD 主執行緒照樣活著、`init_mining_sequence` 已經按下
+        W＋左鍵，畫面上看起來是「bot 在挖 D1 但什麼都不做」，log 停在最後一行再也不動。
+        實機三次啟動全部這樣，事後查了整整一輪都以為是 hang。
+
+        現在包一層：例外寫進 log（fatal + traceback）、寫進 HUD 讓使用者當下就看得到、
+        並清掉 `_running` 讓 HUD 收掉視窗，不再留一個假裝還活著的畫面。
+        """
+        try:
+            self.bot.run()
+        except BaseException:
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                self.bot.logger.fatal("bot 執行緒異常結束:\n%s", tb)
+            except Exception:
+                pass
+            # HUD 直接顯示第一行原因（完整 traceback 在 miningbot.log）
+            last = tb.strip().splitlines()[-1] if tb.strip() else "未知例外"
+            try:
+                self.bot.last_action = f"⛔ bot 執行緒異常結束：{last}"
+            except Exception:
+                pass
+            self._thread_crash = last
+            try:
+                self.bot._running = False
+            except Exception:
+                pass
 
     def _poll(self):
         b = self.bot
         if not getattr(b, "_running", True):
+            # H061：bot 執行緒是**異常**結束的話，先彈錯誤框再收視窗。舊版一律直接
+            # destroy，crash 與正常關閉長得一模一樣，使用者只看到「HUD 自己不見了」。
+            crash = getattr(self, "_thread_crash", None)
+            if crash:
+                try:
+                    import tkinter.messagebox as mb
+                    mb.showerror(
+                        "MiningBot 異常結束",
+                        f"{crash}\n\n完整 traceback 在 miningbot.log（搜尋"
+                        f"「bot 執行緒異常結束」）。")
+                except Exception:
+                    pass
             self.root.destroy()
             return
         state = b.state.value
