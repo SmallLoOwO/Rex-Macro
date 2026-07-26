@@ -23,6 +23,10 @@ from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord
 # `from . import notify` deferred import，其中 Bot.__init__ 那次已排在 OCR worker
 # thread 之後。函式內既有的 local import 保留不動（從 sys.modules 取，無 import 工作）。
 from . import notify
+# web_config_persistence / web_config_whitelist 是純 Python（json + os），跟 web_server
+# 那條 fastapi 重型鏈無關，但同樣不放在 thread 啟動之後才 import（H061 通則）。
+from . import web_config_persistence
+from .web_config_whitelist import is_web_configurable, validate_value
 from . import calibrate_pitch
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
@@ -398,23 +402,31 @@ class Bot:
         # 踩 6~11s 冷 init；_get_rapid_engine/_get_tess_api 有鎖冪等，未裝時快速失敗一次）。
         threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
         threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,), daemon=True).start()
-        # P2 Task 7：PingResolveMessenger（NEEDS_HUMAN PING 推播 + 結案編輯同則）初始化
-        # ——只在 Discord token/channel 已設時啟用；失敗只記 log，不影響挖礦（沿用
-        # notify.make_discord_sink 既有慣例）。
-        # _pending_ping_mid 給 anchor D（_resolve_ping_if_any）用：routing_key "harvest:007"
-        # → PING message_id；玩家 reply 完成時對照同一份 dict 編輯 ✅。
-        #
-        # 2026-07-26：原本這裡還會建一個 StatusMessenger，post 一則**獨立**的純文字狀態
-        # 訊息。那違反 spec §7 A「遙控器卡（合併狀態顯示，1 則常駐）」——遙控器 embed
-        # 本來就有 `**狀態**` 欄，等於同一份狀態在頻道裡有兩則。已移除，狀態顯示併回
-        # 遙控器卡（見 _build_remote_embed）。
+        self._init_discord_messengers()
+
+    def _init_discord_messengers(self):
+        """P2 Task 7：PingResolveMessenger（NEEDS_HUMAN PING 推播 + 結案編輯同則）初始化。
+
+        只在 Discord token/channel 已設時啟用；失敗只記 log，不影響挖礦（沿用
+        notify.make_discord_sink 既有慣例）。
+        _pending_ping_mid 給 anchor D（_resolve_ping_if_any）用：routing_key "harvest:007"
+        → PING message_id；玩家 reply 完成時對照同一份 dict 編輯 ✅。
+
+        2026-07-26：原本這裡還會建一個 StatusMessenger，post 一則**獨立**的純文字狀態
+        訊息。那違反 spec §7 A「遙控器卡（合併狀態顯示，1 則常駐）」——遙控器 embed
+        本來就有 `**狀態**` 欄，等於同一份狀態在頻道裡有兩則。已移除，狀態顯示併回
+        遙控器卡（見 _build_remote_embed）。
+
+        從 __init__ 抽出成獨立 method（2026-07-26）：__init__ 整段太重（音訊、模板、
+        thread）無法在測試裡跑，這個區塊的整合行為因此從 P2 一路 skip 到現在。抽出後
+        可用 Bot.__new__ 的 fake bot 直接驗，不必啟動整台 bot。
+        """
         if cfg.discord_bot_token and cfg.discord_channel_id:
-            from . import notify as _notify_messenger
             try:
-                self._ping_messenger = _notify_messenger.PingResolveMessenger(
+                self._ping_messenger = notify.PingResolveMessenger(
                     token=cfg.discord_bot_token, channel_id=cfg.discord_channel_id,
-                    send_fn=_notify_messenger.send_message_with_id,
-                    edit_fn=_notify_messenger.edit_message,
+                    send_fn=notify.send_message_with_id,
+                    edit_fn=notify.edit_message,
                     log=self.log_discord,
                 )
             except Exception as e:
@@ -2330,6 +2342,29 @@ class Bot:
             return
         self._queue_reentry_reply(content, reply, source="text")
 
+    def _apply_startup_overrides(self) -> str:
+        """P3 玩家設定面板（spec §6）：啟動時讀 config_overrides.json 套用 Config。
+
+        覆蓋順序＝ Config default → .env → config_overrides.json（最高優先）。玩家在
+        網頁改的值會在這裡讀回。檔案不存在/損壞時 load_overrides 回 {}（沿用 notify.py
+        「失敗只回報不中斷」慣例），bot 用 default 開機。路徑放在 cfg.log_dir 底下
+        （與其他 runtime 狀態檔同目錄；不污染 repo）。
+
+        回 overrides_path 給 caller（WebIPCThread 要拿去做 HTTP POST /api/config 的
+        持久化目標）；同時記在 self._overrides_path 供 _consume_web_pending 用。
+
+        從 run() 抽出成獨立 method（2026-07-26）：run() 前半段是 focus/UI 檢查/歸位
+        等整串實機 I/O，測試無法跑到這裡，這個區塊的整合行為因此從 P3 一路 skip。
+        """
+        overrides_path = os.path.join(cfg.log_dir, "config_overrides.json")
+        self._overrides_path = overrides_path
+        applied = web_config_persistence.apply_overrides_to_config(
+            cfg, web_config_persistence.load_overrides(overrides_path))
+        if applied:
+            self.logger.info("config_overrides.json 套用 %d 欄: %s",
+                             len(applied), applied)
+        return overrides_path
+
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
         # H061：web 模組的 import 已在模組層完成（見檔頭），這裡不再有 deferred import。
@@ -2407,20 +2442,7 @@ class Bot:
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
-        # P3 玩家設定面板（spec §6）：啟動時讀 config_overrides.json 套用 Config（覆蓋
-        # default + .env 之上；玩家在網頁改的值會在這裡讀回）。檔案不存在/損壞時 load_overrides
-        # 回 {}（沿用 notify.py「失敗只回報不中斷」慣例），bot 用 default 開機。
-        # 路徑放在 cfg.log_dir 底下（與其他 runtime 狀態檔同目錄；不污染 repo）。
-        from .web_config_persistence import (
-            load_overrides, apply_overrides_to_config, save_overrides,
-        )
-        overrides_path = os.path.join(cfg.log_dir, "config_overrides.json")
-        self._overrides_path = overrides_path
-        initial_overrides = load_overrides(overrides_path)
-        applied = apply_overrides_to_config(cfg, initial_overrides)
-        if applied:
-            self.logger.info("config_overrides.json 套用 %d 欄: %s",
-                             len(applied), applied)
+        overrides_path = self._apply_startup_overrides()
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -3134,8 +3156,6 @@ class Bot:
         # （HTTP POST /api/config 是同步路徑，由 web_server FastAPI route 直接處理；
         # 兩條路徑都呼叫同一個 setattr + save_overrides——重複是有意的，保持 web_server
         # 與 main.py 解耦，web_server 不需 bot 實例）。loop 處理多筆累積的 config_set。
-        from .web_config_whitelist import is_web_configurable, validate_value
-        from .web_config_persistence import save_overrides
         reply = self._web_pending.pop("control:config_set")
         while reply is not None:
             field = reply.get("field")
@@ -3145,7 +3165,8 @@ class Bot:
                     setattr(cfg, field, value)
                     # 持久化失敗只回報不中斷 main loop（runtime 已生效，重啟會還原）
                     try:
-                        save_overrides(self._overrides_path, field, value)
+                        web_config_persistence.save_overrides(
+                            self._overrides_path, field, value)
                     except OSError as e:
                         if self.logger:
                             self.logger.warning(

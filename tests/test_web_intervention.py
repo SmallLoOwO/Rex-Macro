@@ -46,39 +46,173 @@ def test_intervention_html_has_pinch_zoom_or_scroll_zoom():
     assert has_zoom
 
 
-def test_main_harvest_manual_survey_consumes_web_reply():
-    """manual_survey 進入時應檢查 web_pending，若有玩家 reply 直接走 fire+verify。
+# ---------------------------------------------------------------------------
+# main.py 整合測試（2026-07-26 補回 P4/P5 留下的三個 skip）
+#
+# 這三個測試從 P4 一路 skip 到 P5，理由都是「需要 fake bot」。harness 現在在
+# tests/fake_bot.py；沒有它，所有 web 測試都只驗 standalone WebIPCThread，
+# 「Bot 上的整合方法有沒有真的接起來」是完全的盲區——H061 就發生在這個盲區裡。
+# ---------------------------------------------------------------------------
 
-    fake bot 需模擬：_web_pending 在線、_web_fallback.is_fallback()=False、
-    capture.grab() 回固定幀、_send_web_intervention_event / _focus_roblox no-op、
-    _await_web_pointer_reply 回 {x, y}、_execute_remote_fire_from_web stub 回 (True, ...)。
-    斷言：未進入既有 Discord 八方位流程（notify.send_images_message 不被呼叫）。
+
+def test_main_harvest_manual_survey_consumes_web_reply(monkeypatch):
+    """manual_survey 進入時檢查 web_pending，有玩家 reply 就直接走 fire+verify。
+
+    斷言：走了 _execute_remote_fire_from_web，且**沒有**進 Discord 八方位流程
+    （notify.send_images_message / send_message 都不該被呼叫）。
     """
-    pytest.skip("main.py manual_survey 整合需 fake bot；P5 或實機驗收補")
+    import numpy as np
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot, FakeFallback, FakeHarvestCtx
+
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
+    discord_calls = []
+    monkeypatch.setattr(main_mod.notify, "send_images_message",
+                        lambda *a, **kw: (discord_calls.append("images"), (True, "ok"))[1])
+    monkeypatch.setattr(main_mod.notify, "send_message",
+                        lambda *a, **kw: (discord_calls.append("text"), (True, "ok"))[1])
+
+    fired = []
+
+    def _fire(ctx, x, y):
+        fired.append((x, y))
+        return True, "confirmed"
+
+    bot = make_fake_bot(
+        bind=["_execute_manual_survey"],
+        _web_pending=object(),                      # truthy＝web 在線
+        _web_fallback=FakeFallback(fallback=False),
+        _focus_roblox=lambda: True,
+        _send_web_intervention_event=lambda **kw: None,
+        _summarize_survey_ctx=lambda ctx: "summary",
+        _await_web_pointer_reply=lambda routing_key, timeout_s: {"x": 851, "y": 189},
+        _execute_remote_fire_from_web=_fire,
+    )
+
+    ok, detail = bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert fired == [(851, 189)], f"應把 web reply 座標交給 fire 路徑，實際：{fired}"
+    assert ok is True and detail == "confirmed"
+    assert discord_calls == [], f"web 在線時不該碰 Discord 八方位流程，實際：{discord_calls}"
 
 
-def test_main_execute_remote_fire_short_circuits_on_web_reply():
-    """_execute_remote_fire_from_web 收到 (x, y) 應直接呼叫 _aim_fire_and_verify。
+def test_main_manual_survey_falls_through_to_discord_when_web_offline(monkeypatch):
+    """反向：web 離線（fallback=True）時完全不走 web 路徑。
 
-    fake bot 需模擬：_wait_for_d3_cooldown 回 (True, "")、_focus_roblox 回 True、
-    _mine_resetting=False、capture.grab / capture.crop 回固定幀、
-    _aim_fire_and_verify stub 記錄被呼叫的 pos+deadline+chat_base_crop。
-    斷言：pos == (x, y)；未呼叫 _detect_core_in_cell / _refind_tracker_near。
+    只驗「沒推 INTERVENTION_NEEDED、沒等 reply」——底下整條 Discord 八方位鏈牽涉
+    D2 掃描與旋轉實機 I/O，不在此測試範圍（由既有 Discord 測試覆蓋）。
     """
-    pytest.skip("main.py _execute_remote_fire 整合需 fake bot；P5 或實機驗收補")
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot, FakeFallback, FakeHarvestCtx
+
+    monkeypatch.setattr(main_mod.notify, "send_message", lambda *a, **kw: (True, "ok"))
+    touched = []
+    bot = make_fake_bot(
+        bind=["_execute_manual_survey"],
+        _web_pending=object(),
+        _web_fallback=FakeFallback(fallback=True),   # 網頁沒人在線
+        _send_web_intervention_event=lambda **kw: touched.append("event"),
+        _await_web_pointer_reply=lambda **kw: touched.append("await"),
+        # fall through 後第一件事就是 _focus_roblox；讓它失敗即刻收尾，
+        # 不必把整條 Discord 鏈都 stub 出來
+        _focus_roblox=lambda: False,
+    )
+
+    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert touched == [], f"fallback 中不該走 web 介入，實際碰到：{touched}"
 
 
-def test_main_reentry_consumes_web_click_reply():
-    """回礦 _rr_open_episode 開場鏈全閘通過後應先檢查 web_pending，若有玩家 reply
-    直接走 _rr_click_from_web。
+def test_main_execute_remote_fire_short_circuits_on_web_reply(monkeypatch):
+    """_execute_remote_fire_from_web 收到 (x, y) 直接開火，不再跑偵測。
 
-    fake bot 需模擬：_web_pending 在線、_web_fallback.is_fallback()=False、
-    capture.grab() 回固定幀、_send_web_intervention_event / _focus_roblox no-op、
-    _await_web_pointer_reply 回 {x, y, attempt_id}、_rr_click_from_web stub 記錄
-    被呼叫的 (x, y)。
-    斷言：未進入既有 Discord 八方位流程（_rr_sweep_and_send 不被呼叫、未貼 embed）。
+    斷言：_aim_fire_and_verify 收到的 pos 就是玩家點的原生座標；
+    _detect_core_in_cell / _refind_tracker_near 一次都沒被呼叫（玩家點哪打哪）。
     """
-    pytest.skip("main.py reentry click 整合需 fake bot；P5 或實機驗收補")
+    import numpy as np
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot, FakeWebThread, FakeHarvestCtx
+
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
+    monkeypatch.setattr(main_mod.capture, "crop", lambda f, r: f)
+
+    fire_args = []
+    detect_calls = []
+
+    def _fire_and_verify(pos, *a, **kw):
+        fire_args.append(pos)
+        return True, "confirmed"
+
+    bot = make_fake_bot(
+        bind=["_execute_remote_fire_from_web", "_broadcast_intervention_result",
+              "_resolve_ping_if_any"],
+        _web_thread=FakeWebThread(),
+        _wait_for_d3_cooldown=lambda deadline: (True, ""),
+        _focus_roblox=lambda: True,
+        _save_auto_fixture=lambda **kw: None,
+        _detect_core_in_cell=lambda *a, **kw: detect_calls.append("core"),
+        _refind_tracker_near=lambda *a, **kw: detect_calls.append("refind"),
+        _aim_fire_and_verify=_fire_and_verify,
+    )
+
+    ok, _ = bot._execute_remote_fire_from_web(FakeHarvestCtx(), x=851, y=189)
+
+    assert ok is True
+    assert fire_args == [(851, 189)], f"開火座標應原封不動，實際：{fire_args}"
+    assert detect_calls == [], (
+        f"玩家已經點好位置，不該再跑偵測，實際：{detect_calls}")
+
+
+def test_main_reentry_consumes_web_click_reply(monkeypatch):
+    """回礦開場鏈通過後先問 web，有 reply 就走 _rr_click_from_web 並回 True。
+
+    回 True ＝ caller 跳過 Discord 八方位＋格＋連鎖放大整條鏈。
+    """
+    import numpy as np
+    import miningbot.main as main_mod
+    from tests.fake_bot import (make_fake_bot, FakeFallback, FakeWebThread,
+                                FakeReentryCtx)
+
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
+
+    clicked = []
+    events = []
+
+    def _click(ctx, x, y):
+        clicked.append((x, y))
+        return "descended"
+
+    bot = make_fake_bot(
+        bind=["_reentry_await_player_click"],
+        _web_pending=object(),
+        _web_fallback=FakeFallback(fallback=False),
+        _web_thread=FakeWebThread(),
+        _focus_roblox=lambda: True,
+        _send_web_intervention_event=lambda **kw: events.append(kw["routing_key"]),
+        _await_web_pointer_reply=lambda routing_key, timeout_s: {"x": 640, "y": 400},
+        _rr_click_from_web=_click,
+    )
+
+    handled = bot._reentry_await_player_click(FakeReentryCtx(episode_id="3"))
+
+    assert handled is True, "descended 應回 True＝web 已處理、caller 跳過 Discord 鏈"
+    assert clicked == [(640, 400)]
+    assert events == ["reentry:3"], f"routing_key 應為 reentry:episode_id，實際：{events}"
+
+
+def test_main_reentry_returns_false_when_web_offline():
+    """web 離線 → 回 False，caller fall through 既有 Discord 流程。"""
+    from tests.fake_bot import make_fake_bot, FakeFallback, FakeReentryCtx
+
+    bot = make_fake_bot(
+        bind=["_reentry_await_player_click"],
+        _web_pending=object(),
+        _web_fallback=FakeFallback(fallback=True),
+    )
+    assert bot._reentry_await_player_click(FakeReentryCtx()) is False
 
 
 def test_web_fire_at_full_pipeline():

@@ -264,12 +264,42 @@ def test_webipc_thread_starts_and_serves_websocket(app_parts, monkeypatch):
         thread.join(timeout=2.0)
 
 
-def test_main_loop_consumes_web_pending_at_safe_point(monkeypatch):
-    """bot 主迴圈 safe point 會 pop web_pending 並執行對應動作。
+def test_main_loop_consumes_web_pending_at_safe_point(tmp_path):
+    """bot 主迴圈 safe point 會 pop web_pending 的控制類命令。
 
-    用一個 minimal fake bot 驗證迴圈邏輯，不啟動完整 bot。P1 階段先 skip：
-    main.py 的迴圈結構要實際讀過才能寫出有意義的 fake bot 測試；且 P1 只鋪框架
-    （控制類立即處理、fire/click 留給 P4 各狀態處理器自取），真正要驗「消費後
-    系統狀態正確切換」得等 P4 把狀態處理器接上 reply 佇列才有意義。
+    2026-07-26 補回（原 P1 skip，理由「fake bot 設計依 main.py 結構」）。
+    控制類（pause / resume / request_frame）目前只記 log 不接業務邏輯——這是**設計**
+    而非未完成：spec §2 的分工表明列「挖礦中遙控器（暫停…）Discord ✅ 主用／網頁
+    不接手」，網頁端也沒有這幾顆按鈕。本測試鎖住的是「pop 得到、且不會漏進佇列」。
+
+    fire_at / reentry_click 不在這裡消費（各狀態處理器自取），一併驗它們**留著**。
     """
-    pytest.skip("具體 fake bot 設計依 main.py 結構；P4 整合狀態處理器時補回")
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:pause", {"cmd": "pause"})
+    pending.push("control:resume", {"cmd": "resume"})
+    pending.push("control:request_frame", {"cmd": "request_frame"})
+    pending.push("harvest:007", {"x": 1, "y": 2})      # 狀態處理器自取，不該被清掉
+
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+    )
+    bot._consume_web_pending()
+
+    assert pending.pop("control:pause") is None, "pause 應已被主迴圈消費"
+    assert pending.pop("control:resume") is None
+    assert pending.pop("control:request_frame") is None
+    assert pending.pop("harvest:007") == {"x": 1, "y": 2}, (
+        "fire_at reply 必須留給 awaiting_fine 狀態處理器自取，不可在 safe point 清掉")
+
+
+def test_consume_web_pending_noop_without_web():
+    """web_server_enabled=False 時 _web_pending is None → 直接 return，不得炸。"""
+    from tests.fake_bot import make_fake_bot
+
+    bot = make_fake_bot(bind=["_consume_web_pending"], _web_pending=None)
+    bot._consume_web_pending()   # 不拋例外即通過

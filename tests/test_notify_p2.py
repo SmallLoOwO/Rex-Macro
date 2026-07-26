@@ -307,18 +307,39 @@ class TestGiveupSingleImageMode:
         assert sends[0][1] == ["chat_before.png", "chat_after.png"]
         assert sends[1][1] == ["bp_before.png", "bp_after.png"]
 
-    def test_single_mode_without_image_path_falls_back_to_text(self):
-        # 沒 image_path 就純文字（image_groups 也沒有的特殊情況）
+    def test_single_mode_without_image_path_falls_back_to_text(self, monkeypatch):
+        """single 模式但 meta 沒帶 image_path → fall through 到既有 groups/純文字路徑。
+
+        2026-07-26 補回（原 skip「需 mock send_message；由實機驗收覆蓋」——實機驗收
+        從來沒排到，而 monkeypatch notify.send_message 就夠了，不必打 urllib）。
+        """
+        from miningbot import notify
+
+        texts = []
+        monkeypatch.setattr(
+            notify, "send_message",
+            lambda token, ch, content, **kw: (texts.append(content), (True, "ok"))[1])
+
         sink, sends = self._fake_image_groups_sink("single")
         rec = self._make_giveup_rec()
         rec.meta["image_path"] = None
-        # 期望：純文字訊息（fake_send_images 沒被呼叫，但 send_message 被呼叫）
-        # 我們的 fake 只 override send_images；send_message 仍是 urllib 真呼叫
-        # → 測試只在 image_groups 存在時驗證 single 路徑；image_path=None 走 send_message
-        # 略過深度測試，避免真的打 urllib
-        #（這個 case 由實機驗收覆蓋；這裡 skip）
-        import pytest
-        pytest.skip("image_path=None 路徑需 mock send_message；由實機驗收覆蓋")
+        rec.meta.pop("image_groups", None)      # 連 groups 都沒有＝只剩純文字路徑
+        sink(rec)
+
+        assert sends == [], f"沒有任何圖片時不該呼叫 send_images_message，實際：{sends}"
+        assert len(texts) == 1, f"應退回純文字送出一則，實際：{texts}"
+
+    def test_single_mode_without_image_path_still_uses_groups(self):
+        """single 模式沒 image_path、但有 image_groups → 走既有 groups 路徑（相容）。
+
+        這是 make_discord_sink docstring 明講的 fall through 行為，先前沒有測試守著。
+        """
+        sink, sends = self._fake_image_groups_sink("single")
+        rec = self._make_giveup_rec()
+        rec.meta["image_path"] = None
+        sink(rec)
+
+        assert len(sends) >= 1, "有 image_groups 時應照既有分組路徑送出"
 
 
 # --- Task 6：PingResolveMessenger（NEEDS_HUMAN PING + 結案編輯同一則）---
@@ -386,10 +407,62 @@ class TestMainIntegration:
     不啟動完整 bot（太重）；只驗 __init__ 與一個 tick 的整合行為。"""
 
     def test_main_init_creates_messengers_when_discord_enabled(self, monkeypatch):
-        # 略——具體 fake bot 結構依 main.py；此測試標 skip，理由同 P1 Task 10
-        # 留 P3/P4 整合時補回（那時 main.py 對 web 整合更完整）
-        import pytest
-        pytest.skip("main.py 整合 smoke test 留 P3/P4 補；此 task 先驗 rg 找的 anchor 存在")
+        """Discord token/channel 都設好 → 建出 PingResolveMessenger + 降頻器。
+
+        2026-07-26 補回（原 skip「具體 fake bot 結構依 main.py」）：這段原本內嵌在
+        Bot.__init__，那裡還有音訊裝置、模板載入、四個 worker thread，測試跑不起來
+        ——已抽成 Bot._init_discord_messengers()，可用 fake bot 直接驗。
+        """
+        from miningbot import notify
+        from miningbot.config import DEFAULT as cfg
+        from tests.fake_bot import make_fake_bot
+
+        monkeypatch.setattr(cfg, "discord_bot_token", "tok")
+        monkeypatch.setattr(cfg, "discord_channel_id", "chan")
+
+        bot = make_fake_bot(bind=["_init_discord_messengers"])
+        bot._init_discord_messengers()
+
+        assert isinstance(bot._ping_messenger, notify.PingResolveMessenger)
+        assert bot._pending_ping_mid == {}
+        assert isinstance(bot._remote_edit_throttle, notify.EditThrottle)
+        assert (bot._remote_edit_throttle.min_interval_s
+                == cfg.discord_status_edit_min_interval_s)
+
+    def test_main_init_skips_messengers_without_discord(self, monkeypatch):
+        """沒設 token/channel → _ping_messenger 是 None，其餘照樣備妥（不得 AttributeError）。"""
+        from miningbot.config import DEFAULT as cfg
+        from tests.fake_bot import make_fake_bot
+
+        monkeypatch.setattr(cfg, "discord_bot_token", "")
+        monkeypatch.setattr(cfg, "discord_channel_id", "")
+
+        bot = make_fake_bot(bind=["_init_discord_messengers"])
+        bot._init_discord_messengers()
+
+        assert bot._ping_messenger is None
+        assert bot._pending_ping_mid == {}
+        assert bot._remote_edit_throttle is not None
+
+    def test_main_init_survives_messenger_construction_failure(self, monkeypatch):
+        """messenger 建構炸掉只記 log、不擋挖礦（沿用 make_discord_sink 慣例）。"""
+        from miningbot import notify
+        from miningbot.config import DEFAULT as cfg
+        from tests.fake_bot import make_fake_bot
+
+        monkeypatch.setattr(cfg, "discord_bot_token", "tok")
+        monkeypatch.setattr(cfg, "discord_channel_id", "chan")
+
+        def _boom(*a, **kw):
+            raise RuntimeError("discord down")
+
+        monkeypatch.setattr(notify, "PingResolveMessenger", _boom)
+
+        bot = make_fake_bot(bind=["_init_discord_messengers"])
+        bot._init_discord_messengers()          # 不得拋出
+
+        assert bot._ping_messenger is None
+        assert bot._remote_edit_throttle is not None
 
     def test_anchor_make_discord_sink_exists(self):
         """確保 main.py 含 make_discord_sink anchor（原 brief 用 rg；本機無 rg 改純 Python）。
