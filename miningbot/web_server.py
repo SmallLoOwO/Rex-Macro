@@ -453,6 +453,8 @@ class WebIPCThread:
         host: str = "127.0.0.1",
         config=None,
         overrides_path: str | None = None,
+        snapshot_index_path: str | None = None,
+        fixtures_dir: str | None = None,
     ):
         self.pending = pending
         self.fallback = fallback
@@ -468,10 +470,15 @@ class WebIPCThread:
         )
         # P3：config + overrides_path 傳給 create_app，讓 HTTP endpoints
         # （GET/POST /api/config、GET /）能在 thread 內掛上。不傳時向下相容（P1 既有測試）。
+        # P5：snapshot_index_path + fixtures_dir 必須從 Bot.__init__ 顯式轉發，
+        # 否則 create_app 預設 None → /api/history、/api/episode、/api/annotate、
+        # /history 全回 503（main.py 是 production 路徑唯一呼叫端）。
         self.app = create_app(
             pending, fallback, broadcast_callback=None,
             on_startup=self._on_startup,
             config=config, overrides_path=overrides_path,
+            snapshot_index_path=snapshot_index_path,
+            fixtures_dir=fixtures_dir,
             ping_interval_s=ping_interval_s,
         )
 

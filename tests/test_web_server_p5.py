@@ -304,3 +304,64 @@ def test_get_annotate_works_even_when_not_configured():
     r = client.get("/annotate", params={"episode": "007"})
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
+
+
+# ── WebIPCThread snapshot_index_path / fixtures_dir 傳遞 ────────────────────
+# P5 final-review Critical fix：WebIPCThread 必須把這兩個 path 顯式轉發給
+# create_app；否則 production 路徑（main.py 唯一呼叫端）會讓 P5 所有 route
+# 回 503——測試端用 create_app 直掛察覺不到這條縫。
+
+
+def test_webipcthread_forwards_snapshot_and_fixtures_paths(tmp_path):
+    """WebIPCThread 接受 snapshot_index_path / fixtures_dir 並轉發給 create_app。
+
+    驗證 production 路徑（main.py 實例化 WebIPCThread）呼叫 /api/history 不回 503。
+    不啟動 uvicorn——只測 ``thread.app`` 是否正確掛上 path（FastAPI TestClient 直連）。
+    """
+    import os
+
+    from miningbot.web_ipc import FallbackState, PendingReplies
+    from miningbot.web_server import WebIPCThread
+
+    idx = tmp_path / "snapshot_index.jsonl"
+    _write_jsonl(str(idx), [
+        {"written_at": 1000.0, "label": "007_a", "path": "/a.png",
+         "harvest_id": "007"},
+    ])
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+
+    thread = WebIPCThread(
+        pending=PendingReplies(),
+        fallback=FallbackState(),
+        port=0,
+        snapshot_index_path=str(idx),
+        fixtures_dir=str(fixtures),
+    )
+    # 不啟動 uvicorn；直接用 TestClient 打 thread.app
+    client = TestClient(thread.app)
+    r = client.get("/api/history")
+    assert r.status_code == 200, (
+        "WebIPCThread 必須把 snapshot_index_path 轉發給 create_app；"
+        "503 代表 production 路徑下 /api/history 全壞（final-review Critical）"
+    )
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["harvest_id"] == "007"
+
+    # POST /api/annotate 也應正常（fixtures_dir 轉發）
+    payload = {
+        "image": "auto_007_test.png",
+        "annotation": {"type": "square", "cx": 100, "cy": 100, "size": 50},
+        "tier": None, "variant": None, "mineral": None,
+        "source": {"kind": "manual"},
+        "symptom": "false_positive",
+        "related_incident": None,
+    }
+    r2 = client.post("/api/annotate", json=payload)
+    assert r2.status_code == 201, (
+        "WebIPCThread 必須把 fixtures_dir 轉發給 create_app；"
+        "503 代表 production 路徑下 /api/annotate 全壞（final-review Critical）"
+    )
+    written = os.path.join(str(fixtures), "aim", "auto_007_test.json")
+    assert os.path.exists(written)

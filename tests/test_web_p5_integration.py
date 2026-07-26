@@ -126,11 +126,12 @@ class TestAnnotateRoundTrip:
         # 來回 validate_annotation 仍通過（list 加的 _source_file 不影響 schema）
         assert validate_annotation(ann) is True
 
-    def test_annotate_subdir_layout_blocks_top_level_list(self, tmp_path):
-        """CONCERN（cross-layer gap，不修 prod）：POST /api/annotate 預設寫到
-        ``aim/`` 子目錄，但 ``list_annotations_for_episode`` 只掃頂層 → parent 撈空。
+    def test_annotate_subdir_layout_top_level_list_finds_it(self, tmp_path):
+        """POST /api/annotate 預設寫到 ``aim/`` 子目錄；
+        ``list_annotations_for_episode`` 走 ``os.walk`` 遞迴，從 parent dir 即可撈回。
 
-        鎖住當前行為；後續 follow-up 可考慮把 list 改成遞迴掃描。
+        P5 final-review Important fix：舊版 ``os.listdir`` 只掃頂層 → parent 撈空，
+        玩家可 POST 但 list 回空。此測試 lock 新的遞迴行為。
         """
         fixtures = tmp_path / "fixtures"
         fixtures.mkdir()
@@ -140,11 +141,11 @@ class TestAnnotateRoundTrip:
         assert r.status_code == 201
 
         parent_result = list_annotations_for_episode("007", str(fixtures))
-        assert parent_result == [], (
-            "list_annotations_for_episode scans only top-level; POST always "
-            "writes to a subdir — top-level scan returns nothing "
-            "(cross-module gap; document as concern, not fix here)"
+        assert len(parent_result) == 1, (
+            "list_annotations_for_episode 應遞迴掃描子目錄；parent dir 必須能撈回 "
+            "POST /api/annotate 寫入 aim/ 的標註"
         )
+        assert parent_result[0]["image"] == "auto_007_terrain_fp.png"
 
 
 # ── Scenario 2 + 3: snapshot_index.jsonl → history/episode HTTP flow ────────

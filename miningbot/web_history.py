@@ -134,7 +134,7 @@ def list_annotations_for_episode(
     episode_id: str,
     fixtures_dir: str,
 ) -> list[dict]:
-    """掃 fixtures_dir 找該 episode 已標註的素材 .json 黨。
+    """遞迴掃 fixtures_dir 找該 episode 已標註的素材 .json 黨。
 
     命名規則（spec §5）：
     - 自動收集：``auto_<episode_id>_*.json``
@@ -142,6 +142,10 @@ def list_annotations_for_episode(
 
     壞 JSON 略過（玩家可能寫到一半、編輯器存錯）；非 ``.json`` 檔略過。
     沒有 fixtures_dir / 目錄空 → 回空 list。
+
+    P5 final-review：``POST /api/annotate`` 預設寫 ``aim/`` 子目錄、
+    ``_save_auto_fixture`` 寫 ``aim/`` 或 ``reentry/teleport_board/``。
+    故此函式走 ``os.walk`` 遞迴；caller 不必預知子目錄結構即可撈回所有標註。
     """
     if not episode_id or not os.path.isdir(fixtures_dir):
         return []
@@ -150,26 +154,31 @@ def list_annotations_for_episode(
     manual_suffix_prefix = f"_{eid}_"
 
     out: list[dict] = []
-    try:
-        names = sorted(os.listdir(fixtures_dir))
-    except OSError:
-        return []
-    for name in names:
-        if not name.endswith(".json"):
-            continue
-        if not (
-            name.startswith(auto_prefix)
-            or (name.startswith("manual_") and manual_suffix_prefix in name)
-        ):
-            continue
-        full_path = os.path.join(fixtures_dir, name)
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (ValueError, OSError):
-            continue
-        if isinstance(data, dict):
-            # 附上來源檔名方便 UI 顯示；不覆寫素材本身的 image 欄位
-            data.setdefault("_source_file", name)
-            out.append(data)
+    seen_paths: set[str] = set()  # 防同一檔被多個 symlink 路徑重複算
+    for root, _dirs, files in os.walk(fixtures_dir):
+        for name in sorted(files):
+            if not name.endswith(".json"):
+                continue
+            if not (
+                name.startswith(auto_prefix)
+                or (name.startswith("manual_") and manual_suffix_prefix in name)
+            ):
+                continue
+            full_path = os.path.join(root, name)
+            try:
+                real = os.path.realpath(full_path)
+            except OSError:
+                real = full_path
+            if real in seen_paths:
+                continue
+            seen_paths.add(real)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (ValueError, OSError):
+                continue
+            if isinstance(data, dict):
+                # 附上來源檔名方便 UI 顯示；不覆寫素材本身的 image 欄位
+                data.setdefault("_source_file", name)
+                out.append(data)
     return out

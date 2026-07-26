@@ -2381,6 +2381,11 @@ class Bot:
                 port=cfg.web_server_port,
                 config=cfg,  # P3：給 HTTP endpoints 用
                 overrides_path=overrides_path,  # P3：持久化路徑
+                # P5：snapshot_index 與 fixtures 目錄必須顯式轉發——不傳的話
+                # create_app 預設 None，會讓 /api/history、/api/episode、
+                # /api/annotate、/history 四條 route 在 production 全回 503。
+                snapshot_index_path=os.path.join(cfg.log_dir, "snapshot_index.jsonl"),
+                fixtures_dir=_AUTO_FIXTURE_ROOT,
             )
             self._web_thread.start()
             self.log.add_sink(WebEventSink(
