@@ -75,6 +75,20 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
     sweep_checked = "checked" if sweep_pitch else ""
     layer_hint_html = (f'<p class="hint">{layer_hint}</p>' if layer_hint else "")
 
+    # 掃描俯仰勾了不一定會動：`harvester.plan_pitch_layers` 在 step_px==0 或
+    # center_back_px<=0（都＝沒校準過）時回空 list，等於整個功能靜默停用。
+    # 不講的話玩家勾了、以為開了、行為卻沒變——這正是「設定看不懂」的一種。
+    step_px = getattr(config, "sweep_pitch_step_px", 0)
+    center_back_px = getattr(config, "sweep_pitch_center_back_px", 0)
+    if step_px == 0 or center_back_px <= 0:
+        sweep_status = ('<p class="hint warn">⚠ <b>目前就算勾選也不會生效</b>：'
+                        '上下掃描需要先量出「一層要拖幾像素」，而這個值尚未校準'
+                        f'（<code>sweep_pitch_step_px={_esc(step_px)}</code>）。'
+                        '校準前這個開關等於關著。</p>')
+    else:
+        sweep_status = ('<p class="hint ok">✅ 已校準，勾選即生效'
+                        f'（一層 <code>{_esc(step_px)}px</code>）。</p>')
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -99,6 +113,10 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
 .error {{ background: #ffe6e6; }}
 .hint {{ margin: 0.35rem 0 0; font-size: 0.8rem; color: #666; line-height: 1.5; }}
 .hint code {{ background: #eee; padding: 0 0.25rem; border-radius: 3px; }}
+.hint.warn {{ background: #fff6e0; border-left: 3px solid #e0a12c;
+             padding: 0.4rem 0.6rem; color: #6a4c00; }}
+.hint.ok {{ background: #eefaf0; border-left: 3px solid #3ba55d;
+           padding: 0.4rem 0.6rem; color: #1f6b38; }}
 </style>
 </head>
 <body>
@@ -109,22 +127,47 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
   <label for="reentry_mode">回礦模式</label>
   <select id="reentry_mode" name="reentry_mode">
     <option value="off" {"selected" if reentry_mode == "off" else ""}>off（等人工）</option>
-    <option value="remote" {"selected" if reentry_mode == "remote" else ""}>remote（Discord 點傳送板）</option>
+    <option value="remote" {"selected" if reentry_mode == "remote" else ""}>remote（你遠端點傳送板）</option>
     <option value="auto" {"selected" if reentry_mode == "auto" else ""}>auto（全自動）</option>
   </select>
+  <p class="hint"><b>礦坑重置後，怎麼回到礦裡繼續挖。</b>
+    重置會把你丟回地表，要走到「傳送板」點下去才會回礦坑。<br>
+    <code>off</code>＝bot 停在地表等你本人來操作。
+    <code>remote</code>＝bot 拍照給你看，你在這個網頁（或 Discord）點傳送板的位置，
+    bot 替你點下去——<b>目前的預設做法</b>。
+    <code>auto</code>＝bot 自己找傳送板，不問你。</p>
 
   <label for="reentry_target_layer">目標層</label>
   <input type="text" id="reentry_target_layer" name="reentry_target_layer"
          value="{_esc(target_layer)}" placeholder="例：Mantle Layer">
+  <p class="hint"><b>你想回到哪一層礦。</b>
+    傳送板上有很多層可選，這裡填的是你希望 bot 幫你認的那一層名字
+    （Discord 的 <code>層 &lt;名&gt;</code> 指令改的是同一個值）。
+    bot <b>不會驗證</b>這個名字對不對——它只是記帳，用來標記「這次回的是哪層」，
+    事後對帳與素材標註看得懂。</p>
   {layer_hint_html}
 
   <label class="check"><input type="checkbox" id="reentry_yaw_sample_sweep"
                 name="reentry_yaw_sample_sweep" {yaw_checked}>
-    <span>回礦後拍八方位（收語料）</span></label>
+    <span>回礦成功後原地拍八方位（收語料）</span></label>
+  <p class="hint"><b>成功回到礦坑後，原地轉一圈拍 8 張照片存起來。</b>
+    「語料」＝<b>拿來訓練/校正偵測用的實機圖片庫</b>，不是遊戲功能，開了對挖礦本身
+    沒有任何影響，純粹是替之後改程式累積素材。<br>
+    收這批圖要解決的問題：每次重生 bot 的面向都是隨機的，導致它常常斜著挖。
+    要修好得先有「各種面向長什麼樣」的圖片可比對，而八方位相鄰兩張固定差 45°，
+    正好能當自我驗證的資料集。<br>
+    <b>代價</b>：每次回礦成功後多花約 15 秒轉一圈，並多佔一些硬碟空間。
+    不想收就關掉。</p>
 
   <label class="check"><input type="checkbox" id="sweep_pitch_enabled"
                 name="sweep_pitch_enabled" {sweep_checked}>
-    <span>掃描俯仰（失敗路徑掃上下層）</span></label>
+    <span>掃描俯仰（找不到礦時，改抬頭／低頭再找一輪）</span></label>
+  <p class="hint"><b>「俯仰」＝鏡頭上下角度</b>（左右轉叫方位，上下抬叫俯仰）。<br>
+    bot 找礦時會原地轉一圈掃 8 個方向。這個開關管的是<b>那一圈全空之後</b>怎麼辦：
+    關著＝就此放棄這一輪；開著＝把鏡頭往上、往下各調一次再各掃一輪，
+    撈那些在<b>上一層或下一層</b>、平視角度看不到的礦。<br>
+    <b>代價</b>：每次撲空多花時間掃 2 圈，但能少掉一些「明明有礦卻回報全空」。</p>
+  {sweep_status}
 
   <button type="submit">儲存</button>
 </form>

@@ -288,3 +288,66 @@ def test_intervention_has_skip_button():
     assert "'skip'" in html or '"skip"' in html
     # 只對 reentry 顯示（harvest 沒有等價路徑）
     assert "flow !== 'reentry'" in html
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26 使用者回報「設定要加上說明，說明是用於做甚麼的——回礦後八方位是做什麼的、
+# 語料是甚麼、掃描俯仰又是甚麼」。四個欄位先前只有標題，沒有任何解釋。
+# ---------------------------------------------------------------------------
+
+
+class _CalibratedCfg(_Cfg):
+    sweep_pitch_step_px = 120
+    sweep_pitch_center_back_px = 370
+
+
+class _UncalibratedCfg(_Cfg):
+    sweep_pitch_step_px = 0          # 預設值＝從未校準
+    sweep_pitch_center_back_px = 370
+
+
+def test_every_setting_field_has_an_explanation():
+    """四個白名單欄位都要有說明段落，不能只有標題。"""
+    html = render_index_html(_CalibratedCfg())
+    # 每個欄位標題後面都應該跟著至少一段 hint
+    assert html.count('class="hint"') >= 4, "說明段落數量少於欄位數"
+
+
+def test_explains_what_yaw_sample_corpus_is_for():
+    """「語料」是專案內部用語，必須解釋清楚它不是遊戲功能。"""
+    html = render_index_html(_CalibratedCfg())
+    assert "語料" in html
+    assert "45" in html, "八方位相鄰差 45° 是這批圖能自我驗證的理由"
+    for word in ("隨機", "素材"):
+        assert word in html, f"缺少解釋語料用途的關鍵字：{word}"
+
+
+def test_explains_what_sweep_pitch_means():
+    """「俯仰」要說明是鏡頭上下角度，並講清楚它在哪個時機作用。"""
+    html = render_index_html(_CalibratedCfg())
+    assert "俯仰" in html
+    assert "上下" in html
+    for word in ("全空", "放棄"):
+        assert word in html, f"缺少解釋掃描俯仰時機的關鍵字：{word}"
+
+
+def test_explains_reentry_mode_and_target_layer():
+    html = render_index_html(_CalibratedCfg())
+    assert "傳送板" in html, "回礦模式要講清楚回礦是在做什麼"
+    assert "不會驗證" in html, "目標層只是記帳、bot 不驗證，這點必須講明"
+
+
+def test_warns_when_sweep_pitch_checkbox_would_be_a_no_op():
+    """勾了卻不會生效是最糟的沉默失敗——沒校準時必須明說。
+
+    `harvester.plan_pitch_layers` 在 step_px==0 時回空 list，功能整個靜默停用。
+    """
+    html = render_index_html(_UncalibratedCfg())
+    assert "不會生效" in html
+    assert "sweep_pitch_step_px=0" in html
+
+
+def test_no_warning_once_calibrated():
+    html = render_index_html(_CalibratedCfg())
+    assert "不會生效" not in html
+    assert "已校準" in html
