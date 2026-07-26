@@ -35,6 +35,17 @@ _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 
 # 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
 _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
 
+# P5 Task 5：自動收集素材根目錄（spec §5 素材庫結構）。
+# 預設指向 repo tests/fixtures/——測試經 monkeypatch 改寫到 tmp_path。
+# 不寫 assets/（gitignored；CLAUDE.md「素材契約」明示 tests/fixtures/ 才追蹤）。
+_AUTO_FIXTURE_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "tests", "fixtures")
+
+# auto-collected 沒跑偵測，無法量測框大小，用 nominal 值（spec §5 範例 size=50）。
+# tracker area 80~1800 → 邊長 9~42，視覺框邊長 50~207；50 落在合理範圍內。
+_AUTO_FIXTURE_DEFAULT_SIZE = 50
+
 
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
@@ -3131,6 +3142,128 @@ class Bot:
             time.sleep(0.5)
         return None
 
+    def _save_auto_fixture(
+        self,
+        flow: str,
+        episode_id: str,
+        frame,
+        cell_crop,
+        annotation_xy,
+        verify_ok: bool,
+        tier: str | None = None,
+        variant: str | None = None,
+        mineral: str | None = None,
+    ) -> None:
+        """P5 Task 5：玩家 web 介入 verify 結果自動收集素材（spec §5）。
+
+        玩家在網頁介入是「真值材料的副產品」——verify 通過 = 高信心真框（symptom=null，
+        當對照組）；verify 失敗 = 玩家可事後在 §5 標註工具分類（symptom="unknown"）。
+
+        檔案位置（spec §5 素材庫結構）：
+        - harvest:  tests/fixtures/aim/auto_<hid>_<result>.{png,json}（PNG = cell_crop）
+        - reentry:  tests/fixtures/reentry/teleport_board/auto_<ep>_<result>.{png,json}
+                    （PNG = frame 全幀；傳送板定位只需全幀座標，無 cell 概念）
+
+        result = "success" if verify_ok else "fail"；symptom 同步：None / "unknown"。
+
+        CJK path safety（CLAUDE.md memory）：PNG 經 cv2.imencode + numpy.tofile；
+        JSON 經 tempfile + os.replace 原子寫（避免 Discord / web client 讀到半成品）。
+
+        Best-effort：所有 I/O 失敗只記 log warning，不 raise——素材收集是加值路徑，
+        不能炸主流程（spec §0、global constraints）。
+        """
+        import cv2
+        from datetime import datetime
+        from .web_annotation import build_annotation
+
+        try:
+            if flow == "harvest":
+                if cell_crop is None:
+                    self.logger.warning(
+                        "_save_auto_fixture: harvest flow 收到 cell_crop=None，skip"
+                        "（episode=%s）", episode_id)
+                    return
+                subdir = os.path.join(_AUTO_FIXTURE_ROOT, "aim")
+                image_to_save = cell_crop
+            elif flow == "reentry":
+                if frame is None:
+                    self.logger.warning(
+                        "_save_auto_fixture: reentry flow 收到 frame=None，skip"
+                        "（episode=%s）", episode_id)
+                    return
+                subdir = os.path.join(
+                    _AUTO_FIXTURE_ROOT, "reentry", "teleport_board")
+                image_to_save = frame
+            else:
+                self.logger.warning(
+                    "_save_auto_fixture: 未知 flow=%r，skip", flow)
+                return
+
+            os.makedirs(subdir, exist_ok=True)
+            result = "success" if verify_ok else "fail"
+            base_name = f"auto_{episode_id}_{result}"
+            png_path = os.path.join(subdir, base_name + ".png")
+            json_path = os.path.join(subdir, base_name + ".json")
+
+            # PNG via imencode + tofile（CJK path safety）
+            ok, buf = cv2.imencode(".png", image_to_save)
+            if not ok:
+                self.logger.warning(
+                    "_save_auto_fixture: cv2.imencode 失敗（shape=%r），skip",
+                    getattr(image_to_save, "shape", None))
+                return
+            buf.tofile(png_path)
+
+            # JSON via atomic write（tmpfile + os.replace）
+            annotation = {
+                "type": "square",
+                "cx": int(annotation_xy[0]),
+                "cy": int(annotation_xy[1]),
+                "size": _AUTO_FIXTURE_DEFAULT_SIZE,
+            }
+            episode_result = "success" if verify_ok else "fail"
+            timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+            if flow == "harvest":
+                verify_str = "passed" if verify_ok else "failed"
+                source = {
+                    "kind": "auto",
+                    "harvest_id": str(episode_id),
+                    "episode_result": episode_result,
+                    "verify": verify_str,
+                    "timestamp": timestamp,
+                }
+            else:  # reentry：verify 欄位語意 — descended（成功）/ 其他 verdict（失敗）
+                verify_str = "descended" if verify_ok else "failed"
+                source = {
+                    "kind": "auto",
+                    "episode_id": str(episode_id),
+                    "episode_result": episode_result,
+                    "verify": verify_str,
+                    "timestamp": timestamp,
+                }
+            symptom = None if verify_ok else "unknown"
+            ann = build_annotation(
+                image=base_name + ".png",
+                annotation=annotation,
+                tier=tier,
+                variant=variant,
+                mineral=mineral,
+                source=source,
+                symptom=symptom,
+                related_incident=None,
+            )
+            tmp_path = json_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(ann, f, indent=2, ensure_ascii=False, sort_keys=True)
+            os.replace(tmp_path, json_path)
+            self.logger.info(
+                "AUTO FIXTURE[%s] episode=%s result=%s -> %s + %s",
+                flow, episode_id, result, png_path, json_path)
+        except Exception as e:
+            # best-effort：素材收集失敗不炸主流程
+            self.logger.warning(
+                "_save_auto_fixture(%s, %s) 失敗： %s", flow, episode_id, e)
+
     def _execute_remote_fire_from_web(self, ctx, x: int, y: int):
         """從 web 點擊 reply 直接走 fire+verify（跳過 Discord 八方位＋偵測）。
 
@@ -3179,7 +3312,8 @@ class Bot:
             self._resolve_ping_if_any(
                 f"harvest:{hid}", "web", "web fire 失敗：無法聚焦 Roblox")
             return False, "無法聚焦 Roblox"
-        chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
+        pre_fire_frame = capture.grab()
+        chat_base_crop = capture.crop(pre_fire_frame, cfg.chat_region)
         # 用當下姿態記錄觀測（_aim_fire_and_verify 內 _record_target_observation 用）
         tgt_dir = ctx.pose_net_rotations % 8
         tgt_layer = ctx.pose_pitch_layer
@@ -3188,6 +3322,26 @@ class Bot:
         ok, verify_detail = self._aim_fire_and_verify(
             (int(x), int(y)), -1.0, tgt_layer, tgt_dir, ctx, hid, deadline,
             chat_base_crop)
+        # P5 Task 5：自動收集素材（spec §5）——玩家介入 verify 結果 = 真值材料。
+        # cell crop 以玩家 tap 為中心、沿用 coarse_cell 大小（320x270；與
+        # reentry_remote.coarse_cell_region 同格尺寸；existing fixtures 270x320 對齊）。
+        # annotation_xy = tap 在 cell_crop local 座標（crop 經 clamp 後 tap 可能不在正中心）。
+        try:
+            if pre_fire_frame is not None:
+                cell_w = cfg.screen_w // 6
+                cell_h = cfg.screen_h // 4
+                cx0 = max(0, int(x) - cell_w // 2)
+                cy0 = max(0, int(y) - cell_h // 2)
+                cx1 = min(cfg.screen_w, cx0 + cell_w)
+                cy1 = min(cfg.screen_h, cy0 + cell_h)
+                cell_crop = pre_fire_frame[cy0:cy1, cx0:cx1]
+                self._save_auto_fixture(
+                    flow="harvest", episode_id=str(hid),
+                    frame=pre_fire_frame, cell_crop=cell_crop,
+                    annotation_xy=(int(x) - cx0, int(y) - cy0),
+                    verify_ok=bool(ok))
+        except Exception as e:
+            self.logger.warning("[%s] 自動收集素材失敗： %s", hid, e)
         # 玩家 reply 已處理（不管 verify 結果）→ 結案 PING 訊息
         self._resolve_ping_if_any(
             f"harvest:{hid}", "web",
@@ -6086,6 +6240,18 @@ class Bot:
         # region=() 標記 web 點擊沒有 zoom 來源區域（有別於 _rr_click 收 zoom_region）
         reentry_remote.record_click(ctx, pos, layer, (), time.time())
         verdict = self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
+        # P5 Task 5：自動收集素材（spec §5）——玩家介入 verdict = 真值材料。
+        # frame = 點擊瞬間已抓的 cur（全幀）；reentry 無 cell_crop（傳送板定位用全幀座標）。
+        # verify_ok ⇔ verdict=="descended"（H046(c) 狀態錨嚴格判定真下礦）。
+        try:
+            self._save_auto_fixture(
+                flow="reentry", episode_id=str(ctx.episode_id),
+                frame=cur, cell_crop=None,
+                annotation_xy=(int(x), int(y)),
+                verify_ok=(verdict == "descended"))
+        except Exception as e:
+            self.logger.warning(
+                "[RR#%s] 自動收集素材失敗： %s", ctx.episode_id, e)
         # 玩家 reply 已處理（不管 verdict 結果）→ 結案 PING 訊息
         self._resolve_ping_if_any(
             f"reentry:{ctx.episode_id}", "web",

@@ -416,3 +416,396 @@ def test_rr_click_from_web_rejects_when_mine_resetting():
     assert payload["flow"] == "reentry"
     assert payload["verdict"] == "rejected_reset"
     assert "重骰" in payload["summary"] or "跳過" in payload["summary"]
+
+
+# ---------------------------------------------------------------------------
+# P5 Task 5：_save_auto_fixture（玩家 web 介入副產品——自動收集素材）
+# spec §5：verify 通過 = 真框確認（symptom=null 對照組）；verify 失敗 symptom="unknown"
+# PNG 經 cv2.imencode + numpy.tofile（CJK path safety）；JSON 經 tempfile + os.replace 原子寫
+# best-effort：I/O 失敗只 log warning，不 raise
+# ---------------------------------------------------------------------------
+
+
+def _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path):
+    """stub bot 僅含 _save_auto_fixture 依賴；_AUTO_FIXTURE_ROOT 改寫到 tmp_path。"""
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    monkeypatch.setattr(main_mod, "_AUTO_FIXTURE_ROOT", str(tmp_path))
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot.logger = logging.getLogger("test_auto_fixture")
+    bot.log_discord = logging.getLogger("test_auto_fixture")
+    bot._save_auto_fixture = types.MethodType(Bot._save_auto_fixture, bot)
+    return bot
+
+
+def _zeros(h=270, w=320):
+    import numpy as np
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+class TestSaveAutoFixtureHarvest:
+    """harvest flow：cell_crop + (cx, cy) 寫入 tests/fixtures/aim/。"""
+
+    def test_success_writes_png_and_json_with_expected_schema(self, monkeypatch, tmp_path):
+        """verify_ok=True → auto_<id>_success.{png,json}；symptom=null（對照組）。"""
+        import cv2
+        import json
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        cell_crop = _zeros(270, 320)
+
+        bot._save_auto_fixture(
+            flow="harvest", episode_id="007", frame=_zeros(1080, 1920),
+            cell_crop=cell_crop, annotation_xy=(160, 135), verify_ok=True)
+
+        aim_dir = tmp_path / "aim"
+        png_path = aim_dir / "auto_007_success.png"
+        json_path = aim_dir / "auto_007_success.json"
+        assert png_path.exists(), f"PNG 未寫入：{png_path}"
+        assert json_path.exists(), f"JSON 未寫入：{json_path}"
+        # PNG 經 imencode + tofile；可用 cv2.imread 讀回且尺寸正確
+        img = cv2.imread(str(png_path))
+        assert img is not None, "PNG 無法 decode"
+        assert img.shape[:2] == (270, 320), f"PNG shape 不對：{img.shape}"
+        # JSON schema（spec §5）
+        ann = json.loads(json_path.read_text(encoding="utf-8"))
+        assert ann["image"] == "auto_007_success.png"
+        assert ann["annotation"] == {
+            "type": "square", "cx": 160, "cy": 135, "size": 50}
+        assert ann["tier"] is None
+        assert ann["variant"] is None
+        assert ann["mineral"] is None
+        assert ann["source"]["kind"] == "auto"
+        assert ann["source"]["harvest_id"] == "007"
+        assert ann["source"]["episode_result"] == "success"
+        assert ann["source"]["verify"] == "passed"
+        assert "timestamp" in ann["source"]
+        assert ann["symptom"] is None
+        assert ann["related_incident"] is None
+
+    def test_fail_writes_unknown_symptom_and_failed_verify(self, monkeypatch, tmp_path):
+        """verify_ok=False → auto_<id>_fail.{png,json}；symptom=unknown / verify=failed。"""
+        import json
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+
+        bot._save_auto_fixture(
+            flow="harvest", episode_id="042", frame=_zeros(1080, 1920),
+            cell_crop=_zeros(270, 320), annotation_xy=(100, 100),
+            verify_ok=False)
+
+        ann = json.loads(
+            (tmp_path / "aim" / "auto_042_fail.json").read_text(encoding="utf-8"))
+        assert ann["source"]["episode_result"] == "fail"
+        assert ann["source"]["verify"] == "failed"
+        assert ann["symptom"] == "unknown"
+
+    def test_tier_variant_mineral_passed_through(self, monkeypatch, tmp_path):
+        """可選 tier/variant/mineral 進得了 source JSON。"""
+        import json
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+
+        bot._save_auto_fixture(
+            flow="harvest", episode_id="009", frame=_zeros(1080, 1920),
+            cell_crop=_zeros(270, 320), annotation_xy=(100, 100),
+            verify_ok=True, tier="Mythic", variant="Spectral", mineral="Tin")
+
+        ann = json.loads(
+            (tmp_path / "aim" / "auto_009_success.json").read_text(encoding="utf-8"))
+        assert ann["tier"] == "Mythic"
+        assert ann["variant"] == "Spectral"
+        assert ann["mineral"] == "Tin"
+
+    def test_json_atomic_write_no_tmp_residue(self, monkeypatch, tmp_path):
+        """JSON 經 tempfile + os.replace；完成後 .tmp 不該殘留。"""
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        bot._save_auto_fixture(
+            flow="harvest", episode_id="007", frame=_zeros(1080, 1920),
+            cell_crop=_zeros(270, 320), annotation_xy=(160, 135), verify_ok=True)
+        assert not (tmp_path / "aim" / "auto_007_success.json.tmp").exists()
+
+
+class TestSaveAutoFixtureReentry:
+    """reentry flow：frame + tap 座標 寫入 tests/fixtures/reentry/teleport_board/。"""
+
+    def test_descended_writes_success_files(self, monkeypatch, tmp_path):
+        """verify_ok=True（descended）→ auto_<ep>_success.{png,json}，verify=descended。"""
+        import cv2
+        import json
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        frame = _zeros(1080, 1920)
+
+        bot._save_auto_fixture(
+            flow="reentry", episode_id="5", frame=frame, cell_crop=None,
+            annotation_xy=(960, 540), verify_ok=True)
+
+        d = tmp_path / "reentry" / "teleport_board"
+        png_path = d / "auto_5_success.png"
+        json_path = d / "auto_5_success.json"
+        assert png_path.exists()
+        assert json_path.exists()
+        # PNG = frame（全幀），不像 harvest 用 cell_crop
+        img = cv2.imread(str(png_path))
+        assert img is not None
+        assert img.shape[:2] == (1080, 1920)
+        ann = json.loads(json_path.read_text(encoding="utf-8"))
+        assert ann["source"]["kind"] == "auto"
+        # reentry 用 episode_id（不是 harvest_id）
+        assert ann["source"]["episode_id"] == "5"
+        assert ann["source"]["episode_result"] == "success"
+        assert ann["source"]["verify"] == "descended"
+        # annotation.cx/cy = tap 座標（全幀座標）
+        assert ann["annotation"]["cx"] == 960
+        assert ann["annotation"]["cy"] == 540
+        assert ann["symptom"] is None
+
+    def test_non_descended_writes_fail_files(self, monkeypatch, tmp_path):
+        """verify_ok=False（still_surface/no_change/...）→ auto_<ep>_fail.{png,json}。"""
+        import json
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        bot._save_auto_fixture(
+            flow="reentry", episode_id="5", frame=_zeros(1080, 1920),
+            cell_crop=None, annotation_xy=(960, 540), verify_ok=False)
+        d = tmp_path / "reentry" / "teleport_board"
+        ann = json.loads((d / "auto_5_fail.json").read_text(encoding="utf-8"))
+        assert ann["source"]["verify"] == "failed"
+        assert ann["symptom"] == "unknown"
+
+
+class TestSaveAutoFixtureBestEffort:
+    """best-effort：所有失敗路徑只 log warning，不 raise。"""
+
+    def test_imencode_failure_logs_and_does_not_raise(self, monkeypatch, tmp_path, caplog):
+        """cv2.imencode 回 (False, ...) → log warning，不 raise，不寫 JSON。"""
+        import cv2
+        import numpy as np
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        monkeypatch.setattr(cv2, "imencode", lambda *a, **kw: (False, None))
+
+        with caplog.at_level(logging.WARNING, logger="test_auto_fixture"):
+            bot._save_auto_fixture(
+                flow="harvest", episode_id="007", frame=_zeros(1080, 1920),
+                cell_crop=_zeros(270, 320), annotation_xy=(160, 135), verify_ok=True)
+
+        assert not (tmp_path / "aim" / "auto_007_success.json").exists()
+        assert any("imencode" in r.getMessage() for r in caplog.records), (
+            f"應 log imencode 失敗；實際：{[r.getMessage() for r in caplog.records]}")
+
+    def test_harvest_with_none_cell_crop_skips_silently(self, monkeypatch, tmp_path):
+        """cell_crop=None（harvest flow）→ skip，不寫檔，不 raise。"""
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        bot._save_auto_fixture(
+            flow="harvest", episode_id="007", frame=_zeros(1080, 1920),
+            cell_crop=None, annotation_xy=(160, 135), verify_ok=True)
+        # 沒寫任何東西
+        assert not (tmp_path / "aim").exists() or not any(
+            (tmp_path / "aim").iterdir())
+
+    def test_reentry_with_none_frame_skips_silently(self, monkeypatch, tmp_path):
+        """frame=None（reentry flow）→ skip，不寫檔，不 raise。"""
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        bot._save_auto_fixture(
+            flow="reentry", episode_id="5", frame=None, cell_crop=None,
+            annotation_xy=(960, 540), verify_ok=True)
+        assert not (tmp_path / "reentry").exists() or not any(
+            (tmp_path / "reentry").rglob("auto_5_*"))
+
+    def test_unknown_flow_skips_silently(self, monkeypatch, tmp_path):
+        """flow 不在 {harvest, reentry} → skip，不 raise。"""
+        bot = _build_stub_bot_for_auto_fixture(monkeypatch, tmp_path)
+        bot._save_auto_fixture(
+            flow="garbage", episode_id="x", frame=None, cell_crop=None,
+            annotation_xy=(0, 0), verify_ok=True)
+        # 沒任何東西
+        assert not list(tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# 整合：_execute_remote_fire_from_web / _rr_click_from_web 內接線
+# 用 stub + mocked _save_auto_fixture 驗證 caller 確實呼叫 helper（args 符合 API contract）
+# ---------------------------------------------------------------------------
+
+
+class _FakeHarvestCtxWithPose:
+    harvest_id = "007"
+    pose_net_rotations = 0
+    pose_pitch_layer = "mid"
+
+
+def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_success(monkeypatch):
+    """verify 通過後應呼叫 _save_auto_fixture（flow=harvest, verify_ok=True）。"""
+    import numpy as np
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = None
+    bot.logger = logging.getLogger("test_wiring")
+    bot.log_discord = logging.getLogger("test_wiring")
+    bot._ping_messenger = None
+    bot._mine_resetting = False
+    bot._wait_for_d3_cooldown = lambda deadline: (True, "")
+    bot._focus_roblox = lambda: True
+    bot._aim_fire_and_verify = lambda *a, **kw: (True, "confirmed")
+    fake_frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
+    monkeypatch.setattr(main_mod.capture, "crop", lambda f, r: f)
+
+    save_calls = []
+    bot._save_auto_fixture = lambda **kw: save_calls.append(kw)
+
+    bot._execute_remote_fire_from_web = types.MethodType(
+        Bot._execute_remote_fire_from_web, bot)
+    bot._resolve_ping_if_any = types.MethodType(
+        Bot._resolve_ping_if_any, bot)
+
+    ok, _ = bot._execute_remote_fire_from_web(
+        _FakeHarvestCtxWithPose(), x=960, y=540)
+
+    assert ok is True
+    assert len(save_calls) == 1, (
+        f"應呼叫 _save_auto_fixture 一次，實際：{len(save_calls)}")
+    sc = save_calls[0]
+    assert sc["flow"] == "harvest"
+    assert sc["episode_id"] == "007"
+    assert sc["verify_ok"] is True
+    # cell_crop 不為 None（harvest flow 一定要帶 crop）
+    assert sc["cell_crop"] is not None
+    # annotation_xy 是 cell_crop local 座標——tap (960,540) 在 320x270 crop 內
+    assert sc["annotation_xy"] == (160, 135), (
+        f"annotation_xy 應為 (160, 135)，實際：{sc['annotation_xy']}")
+
+
+def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_failure(monkeypatch):
+    """verify 失敗也應呼叫 _save_auto_fixture（verify_ok=False），寫 fail 素材。"""
+    import numpy as np
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = None
+    bot.logger = logging.getLogger("test_wiring")
+    bot.log_discord = logging.getLogger("test_wiring")
+    bot._ping_messenger = None
+    bot._mine_resetting = False
+    bot._wait_for_d3_cooldown = lambda deadline: (True, "")
+    bot._focus_roblox = lambda: True
+    bot._aim_fire_and_verify = lambda *a, **kw: (False, "verify 窗口內聊天未確認")
+    fake_frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
+    monkeypatch.setattr(main_mod.capture, "crop", lambda f, r: f)
+
+    save_calls = []
+    bot._save_auto_fixture = lambda **kw: save_calls.append(kw)
+
+    bot._execute_remote_fire_from_web = types.MethodType(
+        Bot._execute_remote_fire_from_web, bot)
+    bot._resolve_ping_if_any = types.MethodType(
+        Bot._resolve_ping_if_any, bot)
+
+    ok, _ = bot._execute_remote_fire_from_web(
+        _FakeHarvestCtxWithPose(), x=960, y=540)
+
+    assert ok is False
+    assert len(save_calls) == 1
+    assert save_calls[0]["verify_ok"] is False
+
+
+class _FakeReentryCtxClick:
+    episode_id = "5"
+    sticky_layer = "mid"
+    clicks = []
+    net_zoom = 0
+
+
+def test_rr_click_from_web_calls_save_auto_fixture_on_descended(monkeypatch, tmp_path):
+    """verdict=descended 後應呼叫 _save_auto_fixture（flow=reentry, verify_ok=True）。"""
+    import numpy as np
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = None
+    bot.logger = logging.getLogger("test_wiring")
+    bot.log_discord = logging.getLogger("test_wiring")
+    bot._ping_messenger = None
+    bot._mine_resetting = False
+    bot._focus_roblox = lambda: True
+    # _rr_click_and_verify 內部會 cv2.imwrite + capture.grab —— mock 掉
+    bot._rr_click_and_verify = lambda ctx, pos, cur, layer, mpath, zs: "descended"
+    bot._rr_snap_dir = lambda: str(tmp_path)
+    # reentry_remote 兩個 pure helper 直接換成 identity / no-op
+    monkeypatch.setattr(main_mod.reentry_remote, "draw_click_marker",
+                        lambda frame, pos: frame)
+    monkeypatch.setattr(main_mod.reentry_remote, "record_click",
+                        lambda *a, **kw: None)
+    fake_frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
+
+    save_calls = []
+    bot._save_auto_fixture = lambda **kw: save_calls.append(kw)
+
+    bot._rr_click_from_web = types.MethodType(Bot._rr_click_from_web, bot)
+    bot._resolve_ping_if_any = types.MethodType(Bot._resolve_ping_if_any, bot)
+
+    verdict = bot._rr_click_from_web(_FakeReentryCtxClick(), x=100, y=200)
+
+    assert verdict == "descended"
+    assert len(save_calls) == 1, (
+        f"應呼叫 _save_auto_fixture 一次，實際：{len(save_calls)}")
+    sc = save_calls[0]
+    assert sc["flow"] == "reentry"
+    assert sc["episode_id"] == "5"
+    assert sc["verify_ok"] is True
+    assert sc["cell_crop"] is None
+    assert sc["annotation_xy"] == (100, 200)
+
+
+def test_rr_click_from_web_calls_save_auto_fixture_on_non_descended(monkeypatch, tmp_path):
+    """verdict=still_surface 應呼叫 _save_auto_fixture（verify_ok=False）。"""
+    import numpy as np
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = None
+    bot.logger = logging.getLogger("test_wiring")
+    bot.log_discord = logging.getLogger("test_wiring")
+    bot._ping_messenger = None
+    bot._mine_resetting = False
+    bot._focus_roblox = lambda: True
+    bot._rr_click_and_verify = lambda ctx, pos, cur, layer, mpath, zs: "still_surface"
+    bot._rr_snap_dir = lambda: str(tmp_path)
+    monkeypatch.setattr(main_mod.reentry_remote, "draw_click_marker",
+                        lambda frame, pos: frame)
+    monkeypatch.setattr(main_mod.reentry_remote, "record_click",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(main_mod.capture, "grab",
+                        lambda: np.zeros((1080, 1920, 3), np.uint8))
+
+    save_calls = []
+    bot._save_auto_fixture = lambda **kw: save_calls.append(kw)
+
+    bot._rr_click_from_web = types.MethodType(Bot._rr_click_from_web, bot)
+    bot._resolve_ping_if_any = types.MethodType(Bot._resolve_ping_if_any, bot)
+
+    verdict = bot._rr_click_from_web(_FakeReentryCtxClick(), x=100, y=200)
+
+    assert verdict == "still_surface"
+    assert len(save_calls) == 1
+    assert save_calls[0]["verify_ok"] is False
