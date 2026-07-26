@@ -1293,3 +1293,18 @@ def test_reentry_click_with_dir_reaches_pending():
     reply = pending.pop("reentry:26")
     assert reply is not None
     assert reply["dir"] == 4 and reply["x"] == 851 and reply["y"] == 189
+
+
+def test_panel_centers_letterboxed_frame():
+    """2026-07-27 瀏覽器實測：畫面靠左上貼齊，寬螢幕黑邊全擠在右側像沒載完。
+
+    置中必須用 transform（不是 margin/left）——`sendClick` 靠
+    `canvas.getBoundingClientRect()` 換算原生座標，transform 會被 rect 反映，
+    座標自動跟著對；改用 margin 就得在點擊端另外補償。
+    """
+    html = _panel_html()
+    assert "container.clientWidth - dispW" in html
+    assert "container.clientHeight - dispH" in html
+    # 放大到超出容器時不可再偏移（否則拖曳範圍會少一截）
+    assert "Math.max(0, (container.clientWidth - dispW) / 2)" in html
+    assert "canvas.style.transform" in html

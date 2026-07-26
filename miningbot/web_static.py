@@ -1055,9 +1055,19 @@ function fitCanvas() {
 
 function redraw() {
   const totalScale = scale * zoom;
-  canvas.style.width = (CANVAS_NATIVE[0] * totalScale) + 'px';
-  canvas.style.height = (CANVAS_NATIVE[1] * totalScale) + 'px';
-  canvas.style.transform = `translate(${-pan[0] * totalScale}px, ${-pan[1] * totalScale}px)`;
+  const dispW = CANVAS_NATIVE[0] * totalScale;
+  const dispH = CANVAS_NATIVE[1] * totalScale;
+  canvas.style.width = dispW + 'px';
+  canvas.style.height = dispH + 'px';
+  // 置中留白（2026-07-27 瀏覽器實測）：16:9 的畫面塞進非 16:9 的容器一定會留邊，
+  // 舊版靠左上貼齊，寬螢幕上整塊黑邊集中在右側，看起來像圖沒載完。
+  // 只在「比容器小」時置中；放大到超出容器時 offset 為 0，拖曳範圍不受影響。
+  // 用 transform 而非 margin：getBoundingClientRect 會反映 transform，
+  // sendClick 的座標換算因此自動跟著對，不必另外補償。
+  const offX = Math.max(0, (container.clientWidth - dispW) / 2);
+  const offY = Math.max(0, (container.clientHeight - dispH) / 2);
+  canvas.style.transform =
+    `translate(${offX - pan[0] * totalScale}px, ${offY - pan[1] * totalScale}px)`;
 }
 
 function drawFrame(i) {
