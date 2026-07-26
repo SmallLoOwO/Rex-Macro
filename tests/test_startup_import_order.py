@@ -1,15 +1,26 @@
-"""H061 回歸：web 模組必須在模組層 import，不可 deferred 到 thread 啟動之後。
+"""H061 回歸測試集：實機啟動路徑的四道防線。
 
-事故（2026-07-26）：`from .web_server import WebIPCThread` 原本寫在 `Bot.run()` 裡，
-位置在 `Bot.__init__` spawn 的四個 worker（PyAudioWPatch / cv2 snapshot /
-`ocr.rapidocr_available` 內 `from rapidocr import RapidOCR` / `ocr.tesserocr_available`
-內 `import tesserocr`）**之後**。三個執行緒同時 import 不同 C 擴展 → Python import
-lock 死結 → 實機三次啟動全部卡死，連 worker thread 一起靜默。
+事故（2026-07-26）：P1-P5 網頁 UI 整合後三次啟動全部「卡死」——只挖 D1、主迴圈沒進、
+遙控器沒出來、log 停住不動。
 
-修復把 import 移到 `miningbot/main.py` 檔頭，`__main__.py` 的
-`from miningbot.main import main` 期間就跑完（那時只有 Tk splash、零個 bot thread）。
+**真根因不是 hang，是無聲死亡。** `啟動挖礦bot.bat` 走 `pythonw -m miningbot` ＝
+Microsoft Store 版 Python，跟 `uv sync` 灌的 `.venv` 是兩個環境，前者沒有
+fastapi/uvicorn。舊碼在 `Bot.run()` 裡 deferred import → daemon thread 丟
+`ModuleNotFoundError` → `pythonw` 沒有 console，預設的 `threading.excepthook` 把
+traceback 印到不存在的 stderr → 整個失敗蒸發。HUD 主執行緒還活著、
+`init_mining_sequence` 早已按下 W＋左鍵，看起來就像卡住。
 
-這兩個測試鎖住這個不變式——有人把 import 搬回 `run()` 或改回 lazy 就會紅燈。
+⚠ 調查期間曾誤判成「多執行緒 import lock 死結」。之所以能自圓其說，是因為 mini repro
+用 `uv run` 跑（那個環境有 uvicorn）——**整條調查比對了錯的直譯器**。查實機問題第一件事
+是確認 production 跟重現環境是不是同一顆 Python。
+
+本檔守四件事：
+
+1. web 模組在**模組層** import（`__main__.py` splash 期間跑完、零 bot thread）
+2. bot 執行緒 crash **不得無聲**（log fatal + HUD + 彈框）
+3. 缺 fastapi/uvicorn 時**降級**而不是讓整個 module import 炸掉
+4. `uvicorn.Config` 必須 `log_config=None`（pythonw 無 stdout），且 WebIPC 起不來時
+   退回 Discord、**不可停止挖礦**
 """
 import subprocess
 import sys
@@ -163,4 +174,74 @@ def test_web_status_line_reports_each_case():
         line = bot._format_web_status()
         assert "設定" in line
     finally:
+        cfg.web_server_enabled = old_enabled
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26 實機第二輪：web 依賴裝好之後，第一次真的走到 WebIPCThread.start()
+# 就炸了——uvicorn 預設 log_config 的 DefaultFormatter.__init__ 無條件呼叫
+# `sys.stdout.isatty()`，而實機用 `pythonw` 啟動、**沒有 stdout**（sys.stdout is
+# None）→ AttributeError → dictConfig 失敗 → `ValueError: Unable to configure
+# formatter 'default'` 從 uvicorn.Config(...) 拋出，bot 執行緒當場死。
+#
+# ⚠ 這發生在 **Config 建構時**，不是 import 時——所以先前「import 時 dictConfig
+# 0 calls」的檢查看起來乾淨卻毫無保護力。
+# ---------------------------------------------------------------------------
+
+
+def test_uvicorn_config_disables_log_config():
+    """web_server 必須傳 log_config=None，否則 pythonw（無 stdout）下起不來。"""
+    src = (REPO_ROOT / "miningbot" / "web_server.py").read_text(encoding="utf-8")
+    assert "log_config=None" in src, (
+        "uvicorn.Config 必須帶 log_config=None——它預設的 DefaultFormatter 會呼叫 "
+        "sys.stdout.isatty()，pythonw 下 sys.stdout is None 直接炸")
+
+
+def test_web_server_starts_without_stdout(monkeypatch):
+    """行為驗證：把 sys.stdout 換成 None（模擬 pythonw）仍要能 bind。"""
+    from miningbot.web_server import WebIPCThread
+    from miningbot.web_ipc import PendingReplies, FallbackState
+
+    monkeypatch.setattr(sys, "stdout", None)
+    t = WebIPCThread(pending=PendingReplies(), fallback=FallbackState(), port=0)
+    try:
+        t.start()
+        assert t.actual_port > 0, (
+            "sys.stdout=None（pythonw）時 uvicorn 仍必須起得來")
+    finally:
+        t.stop()
+        t.join(timeout=3)
+
+
+def test_web_start_failure_does_not_stop_mining():
+    """WebIPCThread 起不來時：清成 None 退回 Discord fallback，run() 不得往外拋。
+
+    網頁 UI 是加值功能。實機那次是例外一路穿出 run()、bot 執行緒直接死——挖礦
+    整個停擺。這裡驗結構性防護：失敗後三個 web 屬性都是 None（每條 web 路徑都守
+    它們），且錯誤原因留在 _web_start_error 供 Discord 狀態行顯示。
+    """
+    import miningbot.main as main_mod
+    from miningbot.config import DEFAULT as cfg
+    from tests.fake_bot import make_fake_bot
+
+    src = (REPO_ROOT / "miningbot" / "main.py").read_text(encoding="utf-8")
+    assert "_web_start_error" in src, "WebIPC 啟動失敗要留下原因"
+    # run() 裡的 WebIPC 區塊必須包在 try/except 內
+    run_src = src[src.index("        # WebIPC server"):]
+    run_src = run_src[:run_src.index("        self.logger.info(\"初始化完成")]
+    assert "try:" in run_src and "except Exception" in run_src, (
+        "WebIPC 啟動區塊必須包 try/except——web 壞掉不可以讓 bot 停止挖礦")
+
+    # 狀態行要能講出「啟動失敗」
+    bot = make_fake_bot(bind=["_format_web_status"], _web_thread=None,
+                        _web_start_error="uvicorn boom")
+    old = main_mod.WEB_IMPORT_ERROR
+    old_enabled = cfg.web_server_enabled
+    try:
+        main_mod.WEB_IMPORT_ERROR = None
+        cfg.web_server_enabled = True
+        line = bot._format_web_status()
+        assert "啟動失敗" in line and "uvicorn boom" in line and "Discord" in line
+    finally:
+        main_mod.WEB_IMPORT_ERROR = old
         cfg.web_server_enabled = old_enabled

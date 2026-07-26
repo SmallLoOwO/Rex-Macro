@@ -2381,6 +2381,10 @@ class Bot:
         if WEB_IMPORT_ERROR:
             return (f"🌐 網頁 UI：**停用**（缺 fastapi/uvicorn：{WEB_IMPORT_ERROR}）"
                     "——介入流程走 Discord")
+        start_error = getattr(self, "_web_start_error", None)
+        if start_error:
+            return (f"🌐 網頁 UI：**啟動失敗**（{start_error}）"
+                    "——挖礦不受影響，介入流程走 Discord")
         if not cfg.web_server_enabled:
             return "🌐 網頁 UI：停用（設定）——介入流程走 Discord"
         return "🌐 網頁 UI：啟動失敗（見 miningbot.log）——介入流程走 Discord"
@@ -2492,45 +2496,69 @@ class Bot:
         # web_pending 在主迴圈 safe point（_tick 開頭 _consume_web_pending）消費；
         # fire_at / reentry_click 由 P4 各狀態處理器（NEEDS_HUMAN／awaiting_fine／
         # reentry 開場鏈）在它們的 tick 內 self._web_pending.pop(routing_key) 自取。
+        # ⚠ 整段包 try/except（2026-07-26 實機）：網頁 UI 是**加值功能**，它壞掉絕不該
+        # 讓整台 bot 停擺。實機第一次啟用就撞到 uvicorn 在 pythonw 下 dictConfig 失敗
+        # （sys.stdout is None），例外一路穿出 run()、bot 執行緒直接死。那個 bug 本身
+        # 已修（web_server.py log_config=None），但「web 出事就不能挖礦」這個結構性
+        # 風險要一併堵掉——任何失敗都退回 Discord fallback，繼續挖。
+        self._web_pending = None
+        self._web_fallback = None
+        self._web_thread = None
+        self._web_start_error: str | None = None
         if cfg.web_server_enabled:
-            # 這三行只是把名字綁進 local scope——模組本身已在檔頭 import 完（H061），
-            # 此處從 sys.modules 取，不會有任何 import 工作發生。
-            from .web_server import WebIPCThread
-            from .web_ipc import PendingReplies, FallbackState
-            from .web_sink import WebEventSink
-            self._web_pending = PendingReplies()
-            self._web_fallback = FallbackState()
-            self._web_thread = WebIPCThread(
-                pending=self._web_pending,
-                fallback=self._web_fallback,
-                port=cfg.web_server_port,
-                config=cfg,  # P3：給 HTTP endpoints 用
-                overrides_path=overrides_path,  # P3：持久化路徑
-                # P5：snapshot_index 與 fixtures 目錄必須顯式轉發——不傳的話
-                # create_app 預設 None，會讓 /api/history、/api/episode、
-                # /api/annotate、/history 四條 route 在 production 全回 503。
-                snapshot_index_path=os.path.join(cfg.log_dir, "snapshot_index.jsonl"),
-                fixtures_dir=_AUTO_FIXTURE_ROOT,
-            )
-            self._web_thread.start()
-            self.log.add_sink(WebEventSink(
-                broadcast_callback=lambda msg: self._web_thread.app.state.broadcast(msg)
-            ))
-            # actual_port=0 代表 start() 5s 內 uvicorn 沒 bind 到 socket（已在
-            # WebIPCThread.start() 警告並請求 thread 退出）。這裡守第二道防線：
-            # 避免印出 http://127.0.0.1:0 讓操作者誤認啟動成功。
-            if self._web_thread.actual_port > 0:
-                self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
-                                 self._web_thread.actual_port)
-            else:
-                self.logger.warning(
-                    "WebIPC server 啟動失敗／逾期（actual_port=0）"
-                    "——thread 已請求退出，broadcast 將 no-op"
+            try:
+                # 這三行只是把名字綁進 local scope——模組本身已在檔頭 import 完（H061），
+                # 此處從 sys.modules 取，不會有任何 import 工作發生。
+                from .web_server import WebIPCThread
+                from .web_ipc import PendingReplies, FallbackState
+                from .web_sink import WebEventSink
+                self._web_pending = PendingReplies()
+                self._web_fallback = FallbackState()
+                self._web_thread = WebIPCThread(
+                    pending=self._web_pending,
+                    fallback=self._web_fallback,
+                    port=cfg.web_server_port,
+                    config=cfg,  # P3：給 HTTP endpoints 用
+                    overrides_path=overrides_path,  # P3：持久化路徑
+                    # P5：snapshot_index 與 fixtures 目錄必須顯式轉發——不傳的話
+                    # create_app 預設 None，會讓 /api/history、/api/episode、
+                    # /api/annotate、/history 四條 route 在 production 全回 503。
+                    snapshot_index_path=os.path.join(cfg.log_dir,
+                                                     "snapshot_index.jsonl"),
+                    fixtures_dir=_AUTO_FIXTURE_ROOT,
                 )
+                self._web_thread.start()
+                self.log.add_sink(WebEventSink(
+                    broadcast_callback=(
+                        lambda msg: self._web_thread.app.state.broadcast(msg))
+                ))
+                # actual_port=0 代表 start() 5s 內 uvicorn 沒 bind 到 socket（已在
+                # WebIPCThread.start() 警告並請求 thread 退出）。這裡守第二道防線：
+                # 避免印出 http://127.0.0.1:0 讓操作者誤認啟動成功。
+                if self._web_thread.actual_port > 0:
+                    self.logger.info("WebIPC server 啟動：http://127.0.0.1:%d",
+                                     self._web_thread.actual_port)
+                else:
+                    self.logger.warning(
+                        "WebIPC server 啟動失敗／逾期（actual_port=0）"
+                        "——thread 已請求退出，broadcast 將 no-op"
+                    )
+            except Exception as e:
+                self.logger.exception(
+                    "WebIPC server 啟動失敗（%s）——網頁 UI 停用，挖礦繼續，"
+                    "介入流程走 Discord fallback", e)
+                # 三個都清成 None：每條 web 路徑都守它們是不是 None，清掉就自動
+                # 全面退回 Discord。半死不活的 _web_thread 比沒有更危險。
+                try:
+                    if self._web_thread is not None:
+                        self._web_thread.stop()
+                except Exception:
+                    pass
+                self._web_pending = None
+                self._web_fallback = None
+                self._web_thread = None
+                self._web_start_error = str(e)
         else:
-            self._web_pending = None
-            self._web_fallback = None
-            self._web_thread = None
             if WEB_IMPORT_ERROR:
                 # 這是**降級**不是設定：使用者以為網頁開著，實際上跑不起來。
                 # 講清楚缺什麼、缺在哪個直譯器，否則又變成一次無聲失效。

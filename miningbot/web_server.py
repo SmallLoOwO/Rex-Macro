@@ -497,11 +497,24 @@ class WebIPCThread:
         """
         if self._thread is not None:
             return  # 已啟動（冪等）
+        # log_config=None 是**必要**的，不是偏好（2026-07-26 實機）：
+        # uvicorn 預設 log_config 內含 `uvicorn.logging.DefaultFormatter`，它的
+        # __init__ 無條件呼叫 `sys.stdout.isatty()`。實機用 `pythonw -m miningbot`
+        # 啟動，pythonw **沒有 stdout**（`sys.stdout is None`）→ AttributeError →
+        # logging.config.dictConfig 失敗 → `ValueError: Unable to configure
+        # formatter 'default'` 直接從 uvicorn.Config(...) 拋出來，bot 執行緒當場死。
+        # ⚠ 注意這發生在 **Config 建構時**，不是 import 時——所以「import 時
+        # dictConfig 0 calls」的檢查看起來乾淨卻毫無保護力。
+        #
+        # 設 None 之後 uvicorn 完全不碰 logging 設定，它的 logger 直接 propagate 到
+        # root，由 diagnostics.setup_logging 收進 miningbot.log——這本來就是我們要的
+        # （uvicorn 訊息跟 bot 敘事在同一份 log，不要另一套格式）。
         config = uvicorn.Config(
             app=self.app,
             host=self.host,
             port=self.port,
             log_level="warning",  # uvicorn 預設 info 太吵；warning 即可
+            log_config=None,
         )
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(
