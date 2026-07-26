@@ -2343,12 +2343,21 @@ class Bot:
         self._startup_pitch_status = harvester.format_startup_pitch_status(
             cfg.sweep_pitch_center_back_px, homed, self._pitch_offset_px)
         self.logger.info("啟動仰角：%s", self._startup_pitch_status)
+        # DEBUG H061（2026-07-26）：web UI 整合後實機啟動卡在 line 2346~2409 區間；
+        # log 停在「Discord 命令輪詢已啟用」+「快照清理」之後，主流程沒印「初始化完成」
+        # 也沒 WebIPC URL/warning。每步前後時間戳 debug log 抓精確卡點；root cause
+        # 確認後一次性移除整段 [T-DBG] 標記。
+        self.logger.info("[T-DBG] pre-init_mining_sequence")
         miner.init_mining_sequence(rotate=self._rotate_verified)
+        self.logger.info("[T-DBG] post-init_mining_sequence")
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
+        self.logger.info("[T-DBG] post-banner_ocr_loop thread.start")
         threading.Thread(target=self._snapshot_cleanup_once, daemon=True).start()
+        self.logger.info("[T-DBG] post-snapshot_cleanup_once thread.start")
         if cfg.discord_bot_token and cfg.discord_channel_id:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
+        self.logger.info("[T-DBG] pre-web_config_persistence import")
         # P3 玩家設定面板（spec §6）：啟動時讀 config_overrides.json 套用 Config（覆蓋
         # default + .env 之上；玩家在網頁改的值會在這裡讀回）。檔案不存在/損壞時 load_overrides
         # 回 {}（沿用 notify.py「失敗只回報不中斷」慣例），bot 用 default 開機。
@@ -2356,13 +2365,16 @@ class Bot:
         from .web_config_persistence import (
             load_overrides, apply_overrides_to_config, save_overrides,
         )
+        self.logger.info("[T-DBG] post-web_config_persistence import")
         overrides_path = os.path.join(cfg.log_dir, "config_overrides.json")
         self._overrides_path = overrides_path
         initial_overrides = load_overrides(overrides_path)
         applied = apply_overrides_to_config(cfg, initial_overrides)
+        self.logger.info("[T-DBG] post-overrides load/apply (applied=%s)", applied)
         if applied:
             self.logger.info("config_overrides.json 套用 %d 欄: %s",
                              len(applied), applied)
+        self.logger.info("[T-DBG] pre-cfg.web_server_enabled check (enabled=%s)", cfg.web_server_enabled)
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -2370,11 +2382,14 @@ class Bot:
         # fire_at / reentry_click 由 P4 各狀態處理器（NEEDS_HUMAN／awaiting_fine／
         # reentry 開場鏈）在它們的 tick 內 self._web_pending.pop(routing_key) 自取。
         if cfg.web_server_enabled:
+            self.logger.info("[T-DBG] pre-deferred imports (web_server/web_ipc/web_sink)")
             from .web_server import WebIPCThread
             from .web_ipc import PendingReplies, FallbackState
             from .web_sink import WebEventSink
+            self.logger.info("[T-DBG] post-deferred imports")
             self._web_pending = PendingReplies()
             self._web_fallback = FallbackState()
+            self.logger.info("[T-DBG] pre-WebIPCThread constructor (port=%d)", cfg.web_server_port)
             self._web_thread = WebIPCThread(
                 pending=self._web_pending,
                 fallback=self._web_fallback,
@@ -2387,10 +2402,14 @@ class Bot:
                 snapshot_index_path=os.path.join(cfg.log_dir, "snapshot_index.jsonl"),
                 fixtures_dir=_AUTO_FIXTURE_ROOT,
             )
+            self.logger.info("[T-DBG] post-WebIPCThread constructor")
+            self.logger.info("[T-DBG] pre-WebIPCThread.start()")
             self._web_thread.start()
+            self.logger.info("[T-DBG] post-WebIPCThread.start() (actual_port=%d)", self._web_thread.actual_port)
             self.log.add_sink(WebEventSink(
                 broadcast_callback=lambda msg: self._web_thread.app.state.broadcast(msg)
             ))
+            self.logger.info("[T-DBG] post-add_sink (WebEventSink)")
             # actual_port=0 代表 start() 5s 內 uvicorn 沒 bind 到 socket（已在
             # WebIPCThread.start() 警告並請求 thread 退出）。這裡守第二道防線：
             # 避免印出 http://127.0.0.1:0 讓操作者誤認啟動成功。
@@ -2406,7 +2425,10 @@ class Bot:
             self._web_pending = None
             self._web_fallback = None
             self._web_thread = None
+            self.logger.info("[T-DBG] WebIPC 區塊跳過 (cfg.web_server_enabled=False)")
+        self.logger.info("[T-DBG] pre-初始化完成")
         self.logger.info("初始化完成，開始挖礦")
+        self.logger.info("[T-DBG] post-初始化完成")
         # 啟動自檢（preflight）：背景執行緒——它依賴 rapidocr_available()（可能仍在暖機中，
         # 冪等等鎖不搶跑），且 markers/chill_refs/檔案 mtime 這些 I/O 沒必要卡住主迴圈啟動。
         # WARN 診斷寫進 logs/preflight_alerts.md 供後續 agent 巡檢，**不進即時 Discord 通知**
@@ -2414,10 +2436,12 @@ class Bot:
         # 只保留「已啟動＋保留事件」這種掛機者當下需要看的內容。
         # 雷達連續使用的就緒判定靠 OCR 讀效果列徽章；引擎不可用就退回定時後備。
         # 在這裡探測（非每輪）：tesserocr_available 是冪等有鎖的主動探測，同 preflight 慣例。
+        self.logger.info("[T-DBG] pre-tesserocr_available probe")
         try:
             self._radar_ocr_ok = ocr.tesserocr_available(cfg.tesseract_path)
         except Exception:
             self._radar_ocr_ok = False
+        self.logger.info("[T-DBG] post-tesserocr_available probe (ok=%s)", self._radar_ocr_ok)
         if (self._radar_toggle["scan"] or self._radar_toggle["cave"]):
             self.logger.info("D2 雷達連續使用：%s（OCR 就緒判定=%s）",
                              harvester.format_radar_status(
@@ -2439,11 +2463,17 @@ class Bot:
                 self._ensure_remote_control()
                 self._ensure_no_stale_calib()
         threading.Thread(target=_preflight_and_notify, daemon=True).start()
+        self.logger.info("[T-DBG] post-preflight_and_notify thread.start")
         # 啟動耗時不算「無進度」：_last_progress 在 __init__ 設定，啟動 3.5 分鐘曾被算成
         # 「無進度」→ 一進主迴圈就 STUCK 假警報（spec 2026-07-10 第 5 節）。
         self._last_progress = time.time()
+        self.logger.info("[T-DBG] pre-主迴圈進入 (while self._running)")
+        tick_count_dbg = 0
         try:
             while self._running:
+                if tick_count_dbg < 3:
+                    self.logger.info("[T-DBG] 主迴圈 tick #%d 進入", tick_count_dbg)
+                    tick_count_dbg += 1
                 if self._pending_calib_start is not None:
                     self._consume_calib_start()
                 if self.paused:
