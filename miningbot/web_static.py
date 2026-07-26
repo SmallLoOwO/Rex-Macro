@@ -599,6 +599,13 @@ let pan = [0, 0];       // 拖曳 pan（native 座標）
 let currentEvent = null;  // {flow, routing_key, summary}
 let ws = null;
 
+// 狀態列上色：手機在陽光下看小字很吃力，成功/失敗要一眼分得出來。
+const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.style.color = STATUS_COLORS[kind] || STATUS_COLORS.idle;
+}
+
 function fitCanvas() {
   const cw = container.clientWidth;
   const ch = container.clientHeight;
@@ -639,13 +646,23 @@ function connect() {
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_NEEDED') {
       currentEvent = msg.payload;
-      statusEl.textContent = `需要介入：${msg.payload.summary || msg.payload.flow}`;
+      setStatus(`需要介入：${msg.payload.summary || msg.payload.flow}`, 'need');
+    } else if (msg.type === 'event' && msg.payload?.event === 'INTERVENTION_RESULT') {
+      // bot 處理完玩家這一點的結果（spec 驗收 A「verify 結果回傳網頁顯示 ✅ / ❌」）。
+      // verdict 由 main._broadcast_intervention_result 給：
+      //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset
+      //   reentry: descended / still_surface / 放棄 / rejected_reset
+      // 成功就把 currentEvent 清掉——這一輪介入結束，再點也沒有對應的 routing_key。
+      const v = msg.payload.verdict || '';
+      const ok = (v === 'fire_ok' || v === 'descended');
+      setStatus(msg.payload.summary || v, ok ? 'ok' : 'fail');
+      if (ok) currentEvent = null;
     } else if (msg.type === 'ping') {
       // server heartbeat；用 ws.pong 不過 ws API 用不著，這裡 noop
     }
   };
   ws.onclose = () => {
-    statusEl.textContent = 'WebSocket 斷線，5s 後重連…';
+    setStatus('WebSocket 斷線，5s 後重連…', 'fail');
     setTimeout(connect, 5000);
   };
 }
@@ -722,7 +739,7 @@ container.addEventListener('touchend', () => {
 
 function sendClick(clientX, clientY) {
   if (!currentEvent) {
-    statusEl.textContent = '尚無 INTERVENTION_NEEDED 事件，忽略點擊';
+    setStatus('尚無 INTERVENTION_NEEDED 事件，忽略點擊', 'idle');
     return;
   }
   // P5 Task 1：client 端直接算原生座標（避免 server 處理 zoom/pan 座標空間 mismatch）
@@ -744,7 +761,7 @@ function sendClick(clientX, clientY) {
       x: nativeX, y: nativeY,
     },
   }));
-  statusEl.textContent = `已送出點擊 (${nativeX}, ${nativeY}) — ${cmd}`;
+  setStatus(`已送出點擊 (${nativeX}, ${nativeY}) — ${cmd}，等待 bot 回覆…`, 'need');
 }
 
 window.addEventListener('resize', fitCanvas);

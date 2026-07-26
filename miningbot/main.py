@@ -3344,8 +3344,11 @@ class Bot:
         回 (ok, detail)：confirmed=True 的成功路徑已在 _aim_fire_and_verify 內呼叫
         _remote_fire_success（俯仰歸位＋視角回正＋回挖礦）。
 
-        待補（P5／實機驗收）：
-        - 失敗時透過 INTERVENTION_RESULT event 回報 web client（目前 silent return）。
+        2026-07-26 補完：四條出口（礦坑重置中／D3 冷卻未就緒／聚焦失敗／verify 結果）
+        都會推 INTERVENTION_RESULT 回 web client。原本只有第一條有，網頁端點完沒下文
+        ——spec 驗收 A 明列「verify 結果回傳網頁顯示（✅ 或 ❌）」。
+
+        待補（實機驗收）：
         - 確認 _aim_busy／_aim_context 清理由 caller 負責（與 _execute_aim_fine_fire 慣例一致）。
 
         P4 Task 5 接線：玩家 reply 處理完成（不論 verify 是否通過）後呼叫
@@ -3374,10 +3377,16 @@ class Bot:
         ready, detail = self._wait_for_d3_cooldown(deadline)
         if not ready:
             self.log_discord.warning("[%s] web fire: D3 冷卻未就緒： %s", hid, detail)
+            self._broadcast_intervention_result(
+                ctx, verdict="fire_aborted",
+                summary=f"D3 冷卻未就緒（{detail}），請稍後再點一次", flow="harvest")
             self._resolve_ping_if_any(
                 f"harvest:{hid}", "web", f"web fire 失敗：D3 冷卻未就緒 ({detail})")
             return False, detail
         if not self._focus_roblox():
+            self._broadcast_intervention_result(
+                ctx, verdict="fire_aborted",
+                summary="無法聚焦 Roblox，請確認遊戲視窗還開著", flow="harvest")
             self._resolve_ping_if_any(
                 f"harvest:{hid}", "web", "web fire 失敗：無法聚焦 Roblox")
             return False, "無法聚焦 Roblox"
@@ -3411,6 +3420,15 @@ class Bot:
                     verify_ok=bool(ok))
         except Exception as e:
             self.logger.warning("[%s] 自動收集素材失敗： %s", hid, e)
+        # 開火結果回報 web client（spec 驗收 A「verify 結果回傳網頁顯示（✅ 或 ❌）」）。
+        # 原本這條路徑只 _resolve_ping_if_any 編輯 Discord PING，網頁端點完就沒下文——
+        # 玩家在手機上看不出到底打中沒有，只能切回 Discord 看。
+        self._broadcast_intervention_result(
+            ctx,
+            verdict="fire_ok" if ok else "fire_failed",
+            summary=(f"✅ 已採集（點擊 {x},{y}）" if ok
+                     else f"❌ 未確認採集（點擊 {x},{y}）：{verify_detail}"),
+            flow="harvest")
         # 玩家 reply 已處理（不管 verify 結果）→ 結案 PING 訊息
         self._resolve_ping_if_any(
             f"harvest:{hid}", "web",

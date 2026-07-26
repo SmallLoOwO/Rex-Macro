@@ -664,6 +664,10 @@ def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_success(monkeyp
         Bot._execute_remote_fire_from_web, bot)
     bot._resolve_ping_if_any = types.MethodType(
         Bot._resolve_ping_if_any, bot)
+    # 2026-07-26：開火結果現在會推 INTERVENTION_RESULT 回 web client；
+    # 本測試 _web_thread=None → 該方法 no-op，但仍需綁上去才不會 AttributeError。
+    bot._broadcast_intervention_result = types.MethodType(
+        Bot._broadcast_intervention_result, bot)
 
     ok, _ = bot._execute_remote_fire_from_web(
         _FakeHarvestCtxWithPose(), x=960, y=540)
@@ -711,6 +715,10 @@ def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_failure(monkeyp
         Bot._execute_remote_fire_from_web, bot)
     bot._resolve_ping_if_any = types.MethodType(
         Bot._resolve_ping_if_any, bot)
+    # 2026-07-26：開火結果現在會推 INTERVENTION_RESULT 回 web client；
+    # 本測試 _web_thread=None → 該方法 no-op，但仍需綁上去才不會 AttributeError。
+    bot._broadcast_intervention_result = types.MethodType(
+        Bot._broadcast_intervention_result, bot)
 
     ok, _ = bot._execute_remote_fire_from_web(
         _FakeHarvestCtxWithPose(), x=960, y=540)
@@ -809,3 +817,101 @@ def test_rr_click_from_web_calls_save_auto_fixture_on_non_descended(monkeypatch,
     assert verdict == "still_surface"
     assert len(save_calls) == 1
     assert save_calls[0]["verify_ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-26 計畫稽核補洞：harvest 開火結果必須回報 web client
+#
+# spec 驗收 A 明列「verify 結果回傳網頁顯示（✅ 或 ❌）」，但
+# _execute_remote_fire_from_web 原本只有「礦坑重置中」那條 reject 會廣播
+# INTERVENTION_RESULT——D3 冷卻未就緒／聚焦失敗／verify 完成三條都 silent return，
+# 玩家在手機上點完完全沒有下文。（reentry 路徑三條出口本來就都有廣播，兩邊不一致。）
+# ---------------------------------------------------------------------------
+
+
+def _build_fire_stub(monkeypatch, *, verify_ok=True, d3_ready=True, focus_ok=True):
+    import numpy as np
+    import miningbot.main as main_mod
+    from miningbot.main import Bot
+
+    class _StubBot:
+        pass
+
+    bot = _StubBot()
+    bot._web_thread = _FakeWebThread()
+    bot.logger = logging.getLogger("test_fire_result")
+    bot.log_discord = logging.getLogger("test_fire_result")
+    bot._ping_messenger = None
+    bot._mine_resetting = False
+    bot._wait_for_d3_cooldown = lambda deadline: (d3_ready, "" if d3_ready else "冷卻中 4.2s")
+    bot._focus_roblox = lambda: focus_ok
+    bot._aim_fire_and_verify = lambda *a, **kw: (
+        verify_ok, "confirmed" if verify_ok else "無新稀有聊天")
+    fake_frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
+    monkeypatch.setattr(main_mod.capture, "crop", lambda f, r: f)
+    bot._save_auto_fixture = lambda **kw: None
+    bot._execute_remote_fire_from_web = types.MethodType(
+        Bot._execute_remote_fire_from_web, bot)
+    bot._resolve_ping_if_any = types.MethodType(Bot._resolve_ping_if_any, bot)
+    bot._broadcast_intervention_result = types.MethodType(
+        Bot._broadcast_intervention_result, bot)
+    return bot
+
+
+def _results(bot):
+    return [c.payload for c in bot._web_thread.app.state.registry.calls
+            if hasattr(c, "payload")
+            and c.payload.get("event") == "INTERVENTION_RESULT"]
+
+
+def test_fire_broadcasts_result_on_verify_success(monkeypatch):
+    bot = _build_fire_stub(monkeypatch, verify_ok=True)
+    ok, _ = bot._execute_remote_fire_from_web(_FakeHarvestCtxWithPose(), x=960, y=540)
+    assert ok is True
+    res = _results(bot)
+    assert len(res) == 1, f"verify 通過應廣播 1 次結果，實際：{res}"
+    assert res[0]["verdict"] == "fire_ok"
+    assert res[0]["flow"] == "harvest"
+    assert "✅" in res[0]["summary"]
+
+
+def test_fire_broadcasts_result_on_verify_failure(monkeypatch):
+    bot = _build_fire_stub(monkeypatch, verify_ok=False)
+    ok, _ = bot._execute_remote_fire_from_web(_FakeHarvestCtxWithPose(), x=960, y=540)
+    assert ok is False
+    res = _results(bot)
+    assert len(res) == 1, f"verify 失敗應廣播 1 次結果，實際：{res}"
+    assert res[0]["verdict"] == "fire_failed"
+    assert "❌" in res[0]["summary"]
+
+
+def test_fire_broadcasts_result_when_d3_not_ready(monkeypatch):
+    bot = _build_fire_stub(monkeypatch, d3_ready=False)
+    ok, _ = bot._execute_remote_fire_from_web(_FakeHarvestCtxWithPose(), x=960, y=540)
+    assert ok is False
+    res = _results(bot)
+    assert len(res) == 1 and res[0]["verdict"] == "fire_aborted", res
+    assert "冷卻" in res[0]["summary"]
+
+
+def test_fire_broadcasts_result_when_focus_fails(monkeypatch):
+    bot = _build_fire_stub(monkeypatch, focus_ok=False)
+    ok, _ = bot._execute_remote_fire_from_web(_FakeHarvestCtxWithPose(), x=960, y=540)
+    assert ok is False
+    res = _results(bot)
+    assert len(res) == 1 and res[0]["verdict"] == "fire_aborted", res
+    assert "聚焦" in res[0]["summary"]
+
+
+def test_intervention_panel_js_handles_result_event():
+    """網頁前端必須真的接 INTERVENTION_RESULT——bot 廣播了但 JS 沒接等於沒做。
+
+    稽核當下的實況：render_intervention_html 的 ws.onmessage 只認
+    INTERVENTION_NEEDED 與 ping，玩家點完永遠停在「已送出點擊…」。
+    """
+    from miningbot.web_static import render_intervention_html
+    html = render_intervention_html()
+    assert "INTERVENTION_RESULT" in html, "介入面板 JS 沒處理 INTERVENTION_RESULT"
+    assert "fire_ok" in html and "descended" in html, (
+        "成功 verdict 判定沒寫進 JS——無法區分 ✅／❌")
