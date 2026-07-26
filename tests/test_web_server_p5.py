@@ -196,6 +196,75 @@ def test_post_api_annotate_default_category_when_no_image_prefix(history_app):
     assert os.path.exists(written)
 
 
+def test_post_api_annotate_category_traversal_dotdot_rejected(history_app):
+    """payload.category="../evil" → 退回預設 aim/，不可跳出 fixtures_dir。
+
+    回歸：原本 ``norm.split("/")`` 對 POSIX 形式 ``../evil`` 正確判為
+    有 ``..``；確保改用 ``PurePath.parts`` 後行為不變。
+    """
+    client, _, fixtures = history_app
+    payload = _valid_payload()
+    payload["category"] = "../evil"
+    r = client.post("/api/annotate", json=payload)
+    assert r.status_code == 201  # 不報錯；silent fallback 到 aim/
+    safe = os.path.join(fixtures, "aim", "auto_007_terrain_fp.json")
+    assert os.path.exists(safe), f"expected fallback write to {safe}"
+    escaped = os.path.join(fixtures, "..", "evil", "auto_007_terrain_fp.json")
+    assert not os.path.exists(escaped), f"path traversal! {escaped} written"
+
+
+def test_post_api_annotate_category_traversal_backslash_rejected(history_app):
+    """Windows backslash 形式 "..\\\\evil" 必須擋——``split('/')`` bypass 回歸。
+
+    關鍵回歸：``os.path.normpath("../evil")`` 在 Windows 回 ``"..\\\\evil"``；
+    舊版 ``split("/")`` 視為單一 element ``"..\\\\evil"``，``".." not in
+    ["..\\\\evil"]`` 為 True → guard 被繞過。``PurePath.parts`` 同時識別
+    ``\\\\`` 與 ``/`` 才抓得到 ``..``。
+    """
+    client, _, fixtures = history_app
+    payload = _valid_payload()
+    payload["category"] = "..\\evil"
+    r = client.post("/api/annotate", json=payload)
+    assert r.status_code == 201
+    safe = os.path.join(fixtures, "aim", "auto_007_terrain_fp.json")
+    assert os.path.exists(safe), f"expected fallback write to {safe}"
+    escaped = os.path.join(fixtures, "..", "evil", "auto_007_terrain_fp.json")
+    assert not os.path.exists(escaped), f"backslash traversal! {escaped} written"
+
+
+def test_post_api_annotate_category_absolute_path_rejected(history_app):
+    """絕對路徑（POSIX / Windows drive / UNC）→ 退回 aim/，不可寫到外界。
+
+    ``os.path.isabs`` 在 Windows 同時認 ``/etc/passwd``、``C:\\\\Windows``、
+    ``\\\\\\\\server\\\\share``；擋下後 ``os.path.join(fixtures, ..)`` 才不會
+    被絕對元件重置到外界路徑。
+    """
+    client, _, fixtures = history_app
+    malicious_cases = [
+        "/etc/passwd",
+        "C:\\Windows\\System32",
+        "\\\\server\\share",
+    ]
+    for i, malicious in enumerate(malicious_cases):
+        payload = _valid_payload()
+        # 每筆用獨一 image stem 才不會互相覆蓋
+        payload["image"] = f"evil_{i}.png"
+        payload["category"] = malicious
+        r = client.post("/api/annotate", json=payload)
+        assert r.status_code == 201, (
+            f"{malicious!r} should silently fall back to aim/, got {r.status_code}"
+        )
+        safe = os.path.join(fixtures, "aim", f"evil_{i}.json")
+        assert os.path.exists(safe), (
+            f"{malicious!r} did not fall back to aim/ (no file at {safe})"
+        )
+        # category 回應欄位也應該是 aim
+        assert r.json().get("category") == "aim", (
+            f"{malicious!r} response category should be 'aim', "
+            f"got {r.json().get('category')!r}"
+        )
+
+
 # ── GET /history ──────────────────────────────────────────────────────────
 
 

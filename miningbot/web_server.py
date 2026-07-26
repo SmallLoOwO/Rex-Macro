@@ -10,6 +10,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import PurePath
 from typing import Callable
 
 import uvicorn
@@ -338,20 +339,35 @@ def _derive_category(payload: dict) -> str:
     payload 显式帶 ``category`` 時（如 "reentry/teleport_board"）優先採用；
     否則看 image 是否含路徑前綴（如 "reentry/teleport_board/x.png"）；
     都沒有就用 "aim"（spec §5：玩家最常標註 harvest 手動瞄準素材）。
+
+    Security：不容許絕對路徑或任何 ``..`` 元件跳出 ``fixtures_dir``。檢查
+    走 ``_is_safe_category``——跨平台關鍵在 ``PurePath.parts`` 同時識別
+    ``\\`` 與 ``/``，舊版 ``norm.split("/")`` 在 Windows 會把 ``"..\\foo"``
+    當成單一 element 而漏判 ``..``（CVE-style bypass）。
     """
     cat = payload.get("category")
-    if isinstance(cat, str) and cat:
-        # 不容許絕對路徑 / .. 跳出 fixtures_dir
-        norm = os.path.normpath(cat).lstrip(os.sep).lstrip("/")
-        if ".." not in norm.split("/"):
-            return norm
+    if isinstance(cat, str) and cat and _is_safe_category(cat):
+        return os.path.normpath(cat).lstrip(os.sep).lstrip("/")
     image = payload.get("image")
     if isinstance(image, str) and "/" in image:
         head = os.path.dirname(image)
-        norm = os.path.normpath(head).lstrip(os.sep).lstrip("/")
-        if norm and ".." not in norm.split("/"):
-            return norm
+        if head and _is_safe_category(head):
+            return os.path.normpath(head).lstrip(os.sep).lstrip("/")
     return "aim"
+
+
+def _is_safe_category(path: str) -> bool:
+    """原始 category / image-prefix 字串是否安全當 fixtures 子目錄。
+
+    跨平台關鍵：``PurePath.parts`` 同時識別 ``\\`` 與 ``/``，是 ``..`` 偵測
+    最可靠的 API；不能用 ``split("/")``——``os.path.normpath("../foo")``
+    在 Windows 回 ``"..\\foo"``，``split("/")`` 視為單一 element 而漏判。
+    ``os.path.isabs`` 補上 ``C:\\`` / UNC / POSIX 絕對路徑（``/etc/passwd``
+    在 Windows 上也被認定為 abs，避免 ``os.path.join`` 重置回絕對根）。
+    """
+    if not path or os.path.isabs(path):
+        return False
+    return ".." not in PurePath(path).parts
 
 
 def _atomic_write_json(target_path: str, data: dict) -> None:
