@@ -247,6 +247,9 @@ def _poll_bot(monkeypatch, state):
     bot._last_discord_msg_id = "old"
     bot._remote_repin = notify.RepinDebouncer()
     bot._rr_repin = notify.RepinDebouncer()
+    # 狀態 PATCH 降頻器（2026-07-26 狀態欄併入遙控器卡）：這批測試驗的是「該不該
+    # 觸發」而非降頻本身，用 0 間隔＝一律放行，維持原本語意。降頻另有專測。
+    bot._remote_edit_throttle = notify.EditThrottle(min_interval_s=0.0)
     bot.log_discord = _LogRecorder()
     bot._poll_remote_reactions = lambda: None
     bot._poll_rr_reactions = lambda: None

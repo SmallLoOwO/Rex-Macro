@@ -19,9 +19,36 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      can_accept_manual_reentry, can_consume_rotate)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
+# notify 純 stdlib（urllib/json），放模組層同樣是 H061 的一環：原本各處都用
+# `from . import notify` deferred import，其中 Bot.__init__ 那次已排在 OCR worker
+# thread 之後。函式內既有的 local import 保留不動（從 sys.modules 取，無 import 工作）。
+from . import notify
 from . import calibrate_pitch
 from . import input_control as ic
 from .preflight import PreflightFacts, run_checks
+
+# H061（2026-07-26）：web 模組（fastapi/uvicorn/starlette，實機 import 鏈 ~5.7s）**必須**
+# 在模組層 import，不可 deferred 到 Bot.run() 內。
+#
+# 根因：Python 的 import 對每個模組各有一把鎖，多執行緒同時 import 不同的 C 擴展會互卡。
+# Bot.__init__ 在 run() 被呼叫之前就已經 spawn 了四個 worker：_audio_cap.start()
+# （PyAudioWPatch）、_snapshot_worker（cv2）、ocr.rapidocr_available（ocr.py 內
+# `from rapidocr import RapidOCR`）、ocr.tesserocr_available（ocr.py 內 `import tesserocr`）
+# ——後兩者都是在 worker thread 裡跑 deferred import。主執行緒此時再 deferred import
+# fastapi 鏈就成了三方死結：實機三次啟動全部卡死且**連 worker thread 一起靜默**
+# （它們也卡在 import lock），而純 Python worker 的 mini repro 不重現（沒有 import）、
+# standalone 單執行緒 import 也正常——三個現象都只有 import lock 死結解釋得通。
+#
+# 放模組層則整條鏈在 `from miningbot.main import main`（__main__.py）期間就跑完，
+# 那時只有 Tk splash、零個 bot thread，不存在競爭對手。splash 會多顯示數秒，這是
+# 刻意的：__main__.py 的載入視窗本來就是為重型 import 準備的。
+#
+# ⚠ 不要因為「啟動慢」把這段搬回 run() 或改成 lazy import——那會直接重現 H061。
+# 同理，未來新增任何重型第三方 import 都放模組層，不要放進 thread 已啟動之後的路徑。
+if cfg.web_server_enabled:
+    from . import web_server as _web_server_preload   # noqa: F401
+    from . import web_ipc as _web_ipc_preload         # noqa: F401
+    from . import web_sink as _web_sink_preload       # noqa: F401
 
 # 遙控器（持久控制訊息）— 反應按鈕。▶️ 繼續挖礦（等同 Q / !resume），⏸️ 暫停（等同 Ctrl+Q / !pause）。
 # 用 emoji 而非 Discord Components 按鈕：本專案全程 stdlib urllib，無 Websocket/interaction 基礎建設；
@@ -371,36 +398,36 @@ class Bot:
         # 踩 6~11s 冷 init；_get_rapid_engine/_get_tess_api 有鎖冪等，未裝時快速失敗一次）。
         threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
         threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,), daemon=True).start()
-        # P2 Task 7：StatusMessenger（狀態訊息 post-once-then-edit）+ PingResolveMessenger
-        # （NEEDS_HUMAN PING 推播 + 結案編輯同則）初始化——只在 Discord token/channel 已設
-        # 時啟用；失敗只記 log，不影響挖礦（沿用 notify.make_discord_sink 既有慣例）。
+        # P2 Task 7：PingResolveMessenger（NEEDS_HUMAN PING 推播 + 結案編輯同則）初始化
+        # ——只在 Discord token/channel 已設時啟用；失敗只記 log，不影響挖礦（沿用
+        # notify.make_discord_sink 既有慣例）。
         # _pending_ping_mid 給 anchor D（_resolve_ping_if_any）用：routing_key "harvest:007"
         # → PING message_id；玩家 reply 完成時對照同一份 dict 編輯 ✅。
+        #
+        # 2026-07-26：原本這裡還會建一個 StatusMessenger，post 一則**獨立**的純文字狀態
+        # 訊息。那違反 spec §7 A「遙控器卡（合併狀態顯示，1 則常駐）」——遙控器 embed
+        # 本來就有 `**狀態**` 欄，等於同一份狀態在頻道裡有兩則。已移除，狀態顯示併回
+        # 遙控器卡（見 _build_remote_embed）。
         if cfg.discord_bot_token and cfg.discord_channel_id:
             from . import notify as _notify_messenger
             try:
-                self._status_messenger = _notify_messenger.StatusMessenger(
-                    token=cfg.discord_bot_token, channel_id=cfg.discord_channel_id,
-                    edit_min_interval_s=cfg.discord_status_edit_min_interval_s,
-                    send_fn=_notify_messenger.send_message_with_id,
-                    edit_fn=_notify_messenger.edit_message,
-                    log=self.log_discord,
-                )
                 self._ping_messenger = _notify_messenger.PingResolveMessenger(
                     token=cfg.discord_bot_token, channel_id=cfg.discord_channel_id,
                     send_fn=_notify_messenger.send_message_with_id,
                     edit_fn=_notify_messenger.edit_message,
                     log=self.log_discord,
                 )
-                self._status_messenger.ensure_posted(now=time.monotonic())
             except Exception as e:
-                self.logger.error("StatusMessenger/PingResolveMessenger 初始化失敗: %s", e)
-                self._status_messenger = None
+                self.logger.error("PingResolveMessenger 初始化失敗: %s", e)
                 self._ping_messenger = None
         else:
-            self._status_messenger = None
             self._ping_messenger = None
         self._pending_ping_mid: dict[str, str] = {}  # routing_key → PING message_id（anchor D 用）
+        # 遙控器卡狀態刷新降頻（spec §7 A「降頻上限 discord_status_edit_min_interval_s」）：
+        # 狀態轉換觸發 edit，但狀態機快速擺盪（MINING↔HARVESTING）時不逐次 PATCH。
+        # 擋下來的那次不更新 _remote_last_shown，下一輪輪詢（1s）條件仍成立會自動補上。
+        self._remote_edit_throttle = notify.EditThrottle(
+            min_interval_s=cfg.discord_status_edit_min_interval_s)
 
     def _load_panel_templates(self) -> list:
         import glob
@@ -1604,8 +1631,12 @@ class Bot:
         # 狀態 PATCH 不閘——(paused, state) 變化天然只在進/出 REENTRY 各觸發一次，
         # 進場那次會把遙控器換成「回礦中，操作請用回礦卡」指引（_build_remote_embed）。
         # 反應輪詢照跑（▶️/⏸️→跳過 仍要通）；REENTRY 中釘底改由回礦卡接手（見 _repin_tick）。
+        # 2026-07-26 加降頻（spec §7 A 降頻上限 discord_status_edit_min_interval_s）：
+        # 狀態機快速擺盪（MINING↔HARVESTING）時不逐次 PATCH。被擋下的那次不更新
+        # _remote_last_shown，下一輪輪詢（1s）條件仍成立會自動補，狀態不會停在舊值。
         if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
-            self._edit_remote_control()
+            if self._remote_edit_throttle.allow_edit(time.monotonic()):
+                self._edit_remote_control()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
@@ -1706,6 +1737,7 @@ class Bot:
             "title": _REMOTE_TITLE,
             "description": (
                 f"**狀態**：{status_text}\n"
+                f"{self._build_remote_metrics_line()}\n"
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
@@ -1718,6 +1750,29 @@ class Bot:
             "color": 0x57F287 if running else 0xED4245,
             "footer": {"text": "遙控器會維持在頻道最底部"},
         }
+
+    def _build_remote_metrics_line(self) -> str:
+        """遙控器狀態欄第二行：音訊／容量／運行時間（spec §7 A 的「不重要」那類）。
+
+        2026-07-26 合併：這幾項原本在一則獨立的 StatusMessenger 訊息裡。spec §7 A 標題
+        就是「遙控器卡（合併狀態顯示，1 則常駐）」，同一份狀態不該散在兩則訊息。
+
+        ⚠ 這三個值**自己不觸發 edit**——只有 (paused, state) 變動或釘底重貼才會重組
+        embed，順帶把最新值帶上去。否則音訊分數每 tick 都在動，等於每 3s PATCH 一次
+        直到天荒地老（使用者 2026-07-26 明確要求：只有狀態轉換才刷新）。
+
+        本函式由 Discord 輪詢執行緒呼叫，讀的是主迴圈寫的欄位——全部是單一 float/int
+        的讀取（GIL 下為原子），讀到略舊的值只影響顯示，故不加鎖。
+        """
+        try:
+            audio_score = self.listener.latest_score()
+        except Exception:
+            audio_score = 0.0
+        cap = getattr(self, "_capacity_pct", None)
+        cap_s = f"　容量 {cap:.0f}%" if cap is not None else ""
+        uptime_s = int(time.time() - self._started)
+        h, m = uptime_s // 3600, (uptime_s % 3600) // 60
+        return f"音訊 {audio_score:.2f}{cap_s}　運行 {h}h{m:02d}m"
 
     def _post_remote_control(self):
         """貼一則新的遙控器到頻道底，貼 ▶️/⏸️ 反應，記基線。失敗靜默（下輪重試）。
@@ -2277,19 +2332,9 @@ class Bot:
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
-        # H061 修復（2026-07-26）：web UI 模組（web_server 觸發 fastapi/uvicorn/starlette
-        # heavy import 鏈）原本在 line 2373 deferred import——位置在 _hotkey_loop /
-        # _banner_ocr_loop / _discord_poll_loop 等 worker thread 啟動**之後**。實機兩次
-        # 啟動都卡在 deferred import 段（[T-DBG] pre-deferred imports 之後 12 分鐘全
-        # thread 靜默）。worker thread 跟 main thread 爭資源（cv2 OCR / Tk HUD poll /
-        # Discord HTTP）時，deferred import 內某個步驟不再進展——root cause 細節仍待
-        # 釐清，但 worker 啟動**之前**完成 import 可避開這個 race（worker 還沒跑就先載好）。
-        # 此緩解未經實機驗證；cfg.web_server_enabled 預設已改 False，整段預設不執行。
-        if cfg.web_server_enabled:
-            self.logger.info("web UI 啟用：run() 開頭 eager import web 模組（H061 緩解）")
-            from . import web_server as _ws_mod  # noqa: F401  觸發 heavy import 鏈
-            from . import web_ipc as _wi_mod      # noqa: F401
-            from . import web_sink as _wsk_mod    # noqa: F401
+        # H061：web 模組的 import 已在模組層完成（見檔頭），這裡不再有 deferred import。
+        # 舊的「run() 開頭 eager import」緩解（afcab21）其實沒生效——Bot.__init__ 早就
+        # spawn 了 audio/snapshot/rapidocr/tesserocr 四個 worker，run() 開頭已經太晚。
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
                          "啟動檢查期間 Q=跳過檢查直接開挖, log_level=%s)", cfg.log_level)
@@ -2383,6 +2428,8 @@ class Bot:
         # fire_at / reentry_click 由 P4 各狀態處理器（NEEDS_HUMAN／awaiting_fine／
         # reentry 開場鏈）在它們的 tick 內 self._web_pending.pop(routing_key) 自取。
         if cfg.web_server_enabled:
+            # 這三行只是把名字綁進 local scope——模組本身已在檔頭 import 完（H061），
+            # 此處從 sys.modules 取，不會有任何 import 工作發生。
             from .web_server import WebIPCThread
             from .web_ipc import PendingReplies, FallbackState
             from .web_sink import WebEventSink
@@ -2506,10 +2553,14 @@ class Bot:
                 stage_started = time.perf_counter()
                 self._tick(frame)
                 self._latency.observe("tick", time.perf_counter() - stage_started)
-                # P2 Task 7 anchor B/C：每 tick 末更新 StatusMessenger；同時用邊沿檢測
-                # NEEDS_HUMAN 進入（prev != NEEDS_HUMAN && curr == NEEDS_HUMAN）發 PING。
-                # 邊沿檢測可同時涵蓋 decide_transition 路徑與 _tick_mining 內部直接
-                # 寫 self.state = NEEDS_HUMAN 的路徑（兩種入口都會在 _tick 結束後被看到）。
+                # P2 Task 7 anchor C：用邊沿檢測 NEEDS_HUMAN 進入（prev != NEEDS_HUMAN
+                # && curr == NEEDS_HUMAN）發 PING。邊沿檢測可同時涵蓋 decide_transition
+                # 路徑與 _tick_mining 內部直接寫 self.state = NEEDS_HUMAN 的路徑（兩種
+                # 入口都會在 _tick 結束後被看到）。
+                #
+                # 2026-07-26：原本這裡還會每 tick 呼叫 _update_status_messenger() 更新
+                # 一則獨立狀態訊息。狀態顯示已合併回遙控器卡（spec §7 A），改由 Discord
+                # 輪詢執行緒在 (paused, state) 變動時 PATCH，主迴圈不再做 Discord I/O。
                 if (_pre_iter_state is not State.NEEDS_HUMAN
                         and self.state is State.NEEDS_HUMAN):
                     try:
@@ -2519,7 +2570,6 @@ class Bot:
                         )
                     except Exception as e:
                         self.log_discord.warning("_send_needs_human_ping 例外: %s", e)
-                self._update_status_messenger()
                 self._heartbeat()
                 # 防掛機：NEEDS_HUMAN/RESET_WAIT 也是等待狀態，比照暫停保活（否則需人工
                 # 期間閒置過久會被 Roblox 踢出）。恢復挖礦/採集時歸 0，下次等待重新計時。
@@ -3405,33 +3455,9 @@ class Bot:
             self._tick_remote_aim(frame, reply)
         # RESET_WAIT / 其餘 NEEDS_HUMAN: 等待熱鍵，不動作（chill 仍由 observe 監聽）
 
-    # --- P2 Task 7：StatusMessenger / PingResolveMessenger 整合 helper ---
-
-    def _update_status_messenger(self):
-        """每 tick 末呼叫：把目前 state／last_action／音訊／運行時間送 StatusMessenger.update。
-
-        StatusMessenger 內部帶 EditThrottle + should_edit_for_state 雙閘——只有狀態或
-        動作字串變動且過 throttle 才會真的發 edit_message。沒設 Discord token 時 no-op。
-        """
-        if getattr(self, "_status_messenger", None) is None:
-            return
-        # 若啟動時 Discord 暫時下、ensure_posted 失敗留下 message_id=None，每 tick 重試
-        # post（idempotent，已 post 過 no-op）。否則 update() 永遠 no-op、bot 永遠沒狀態卡。
-        if not self._status_messenger.ensure_posted(now=time.monotonic()):
-            return
-        try:
-            audio_score = self.listener.latest_score()
-        except Exception:
-            audio_score = 0.0
-        uptime = int(time.time() - self._started)
-        try:
-            self._status_messenger.update(
-                state=self.state.value, last_action=self.last_action,
-                audio_score=audio_score, capacity_pct=getattr(self, "_capacity_pct", None),
-                uptime_s=uptime, now=time.monotonic(),
-            )
-        except Exception as e:
-            self.log_discord.warning("StatusMessenger.update 例外（停用更新）: %s", e)
+    # --- P2 Task 7：PingResolveMessenger 整合 helper ---
+    # （狀態顯示已於 2026-07-26 合併回遙控器卡，_update_status_messenger 隨之移除；
+    #   見 _build_remote_embed / _build_remote_metrics_line 與 _poll_discord 1b。）
 
     def _send_needs_human_ping(self, harvest_id: str | None, reason: str):
         """NEEDS_HUMAN 進入時呼叫：透過 PingResolveMessenger 推播 <@USER_ID> PING 訊息。

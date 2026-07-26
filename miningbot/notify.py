@@ -768,7 +768,20 @@ def make_discord_sink(token: str, channel_id: str, on_error=None, log=None,
 
 
 class StatusMessenger:
-    """遙控器卡的「狀態顯示」部分用 edit_message 即時更新（取代部分釘底）。
+    """**已停用（2026-07-26）——production 沒有任何呼叫端，勿重新接線。**
+
+    P2 Task 7 用這個類別 post 一則**獨立**的純文字狀態訊息，但 spec §7 A 的標題是
+    「遙控器卡（**合併**狀態顯示，1 則常駐）」——遙控器 embed 本來就有 `**狀態**` 欄，
+    等於同一份狀態在頻道裡有兩則訊息。狀態顯示已併回遙控器卡：組字串看
+    `main.Bot._build_remote_embed` / `_build_remote_metrics_line`，刷新條件與降頻看
+    `main.Bot._poll_discord` 的 1b 區塊（只有 (paused, state) 變動才 PATCH）。
+
+    類別本體與單元測試保留供參考；`EditThrottle`／`should_edit_for_state`／
+    `format_status_text` 這幾個純函式仍有用（前者已被遙控器刷新路徑採用）。
+
+    ---- 以下為原始說明 ----
+
+    遙控器卡的「狀態顯示」部分用 edit_message 即時更新（取代部分釘底）。
 
     生命週期：
     - ensure_posted() 一次：post 初始訊息，拿 message_id
