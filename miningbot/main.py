@@ -2277,6 +2277,19 @@ class Bot:
 
     # ---- 主迴圈 -------------------------------------------------------------
     def run(self):
+        # H061 修復（2026-07-26）：web UI 模組（web_server 觸發 fastapi/uvicorn/starlette
+        # heavy import 鏈）原本在 line 2373 deferred import——位置在 _hotkey_loop /
+        # _banner_ocr_loop / _discord_poll_loop 等 worker thread 啟動**之後**。實機兩次
+        # 啟動都卡在 deferred import 段（[T-DBG] pre-deferred imports 之後 12 分鐘全
+        # thread 靜默）。worker thread 跟 main thread 爭資源（cv2 OCR / Tk HUD poll /
+        # Discord HTTP）時，deferred import 內某個步驟不再進展——root cause 細節仍待
+        # 釐清，但 worker 啟動**之前**完成 import 可避開這個 race（worker 還沒跑就先載好）。
+        if cfg.web_server_enabled:
+            self.logger.info("[T-DBG] pre-eager-import web modules (run() 開頭，worker 啟動前)")
+            from . import web_server as _ws_mod  # noqa: F401  觸發 heavy import 鏈
+            from . import web_ipc as _wi_mod      # noqa: F401
+            from . import web_sink as _wsk_mod    # noqa: F401
+            self.logger.info("[T-DBG] post-eager-import web modules")
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
                          "啟動檢查期間 Q=跳過檢查直接開挖, log_level=%s)", cfg.log_level)
