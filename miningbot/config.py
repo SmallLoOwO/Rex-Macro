@@ -479,7 +479,13 @@ class Config:
                                                  # +4s/+5s/+4s 再留邊際；佔保活週期 0.67%，只影響等待狀態
 
     # 網頁 UI（2026-07-26 spec；P1：IPC 基礎建設）
-    web_server_enabled: bool = True              # 啟用網頁伺服器（綁 127.0.0.1）
+    # H061（2026-07-26）：預設關閉。web_server 觸發的 fastapi/uvicorn/starlette heavy
+    # import 在 worker thread（cv2 OCR／PyAudio／Tk HUD／Discord HTTP）啟動後跑會
+    # process-level 卡死——實機三次啟動全部卡在 Bot.run() 沒進主迴圈，連帶 Discord
+    # 啟動訊息／遙控器／狀態卡全部沒出來。真根因（哪個 C 擴展 init 不釋放 GIL）未
+    # 釐清前預設 False，讓 bot 走回 web UI 之前的啟動路徑。web 子系統程式碼全部保留，
+    # 根因確認後把這格改回 True 即可重新啟用（Bot.run() 開頭已有 eager import 緩解）。
+    web_server_enabled: bool = False             # 啟用網頁伺服器（綁 127.0.0.1）
     web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
     websocket_ping_interval_s: float = 30.0
