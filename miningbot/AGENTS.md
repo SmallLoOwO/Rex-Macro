@@ -47,6 +47,23 @@ change rules; repository-wide behavior belongs in the root contract.
 | `events.py` | structured events and sink fan-out |
 | `preflight.py` | pure startup warning policy |
 
+### Web UI layer (`web_*.py`)
+
+| Module | Responsibility |
+|---|---|
+| `web_protocol.py` | `WebMessage` dataclass, `serialize/parse_message`, `parse_fire_at/reentry_click_payload` (thin validators), `client_to_native_coords` (P1 pure math, kept for reference) |
+| `web_ipc.py` | `routing_key`, `PendingReplies` (first-wins), `FallbackState` (grace period) |
+| `web_server.py` | `create_app` (FastAPI + WS endpoint + HTTP routes), `WebIPCThread` (uvicorn daemon), `ConnectionRegistry` (cross-thread broadcast) |
+| `web_sink.py` | `WebEventSink` (EventLog → WS broadcast); parallel to `notify.make_discord_sink` |
+| `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (4 fields), `is_web_configurable`, `validate_value` |
+| `web_config_persistence.py` | `load/save/apply_overrides_to_config` (atomic JSON write; idempotent on restart) |
+| `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` |
+| `web_annotation.py` | `build_annotation`, `normalize_symptom`, `rarity_choices_from_game_data`, `validate_annotation` |
+| `web_history.py` | `load_episodes`, `load_episode_detail`, `list_annotations_for_episode` (recursive `os.walk`) |
+
+Design spec: `docs/superpowers/specs/2026-07-26-web-ui-design.md`. Commit
+history: `docs/superpowers/plans/2026-07-26-web-ui-p[1-5]-*.md`.
+
 Runnable tools include `main.py`, `__main__.py`, `convert_audio.py`,
 `add_chill_ref.py`, `capture_template.py`, `calibrate*.py`, `fetch_ores.py`, and
 `fetch_trackers.py`.
@@ -67,6 +84,10 @@ Search symbols instead of line numbers:
   `_rr_*`/`_zoom_*`/`_pitch_*` helpers.
 - Sampling/HUD: `_sampler_pitch_prepare`, remote-control 📷 branch in
   `_poll_remote_reactions` (the R-key Tk sampler window is retired).
+- Web UI: `_web_pending`, `_web_fallback`, `_web_thread`, `_consume_web_pending`,
+  `_execute_remote_fire_from_web`, `_rr_click_from_web`, `_reentry_await_player_click`,
+  `_send_web_intervention_event`, `_await_web_pointer_reply`, `_save_auto_fixture`,
+  `_resolve_ping_if_any`, `_send_needs_human_ping`.
 
 ## DEPENDENCY AND THREADING RULES
 
@@ -84,6 +105,10 @@ Search symbols instead of line numbers:
   tested fallback paths remain failure-tolerant.
 - Optional assets must produce explicit preflight/log warnings rather than silent
   behavior changes.
+- `WebIPCThread` runs uvicorn on a daemon thread; broadcast calls go through
+  `asyncio.run_coroutine_threadsafe` and must never block the main loop. The
+  `web_pending` queue is consumed only at safe points in `_tick`, never from
+  inside a state handler.
 
 ## INVARIANTS
 
@@ -100,6 +125,11 @@ Search symbols instead of line numbers:
 9. Remote/automatic re-entry stays bounded and restores camera pitch/zoom on every
    finalize or abort path.
 10. Tk UI text remains BMP-safe.
+11. Web UI surfaces only `WEB_CONFIGURABLE_FIELDS` to players; never expose
+    thresholds, ROI, detection params, or secrets through HTTP routes. Player
+    taps compute native coords client-side; the server is a thin validator.
+    Auto-collected fixtures are best-effort and must not raise into the main
+    loop on write failure.
 
 ## CHANGE CHECKLIST
 
@@ -110,6 +140,10 @@ Search symbols instead of line numbers:
   interruption, and camera restoration.
 - Input macro: compare root `.mcr` recordings and preserve release/settle order.
 - UI text: pass through BMP-safe constraints; no astral emoji in Tk.
+- Web UI: pure-function tests cover wire protocol, race routing, whitelist,
+  persistence, history/annotation loaders, and HTML renderers; integration
+  tests exercise TestClient through `WebIPCThread.app`. Real pinch-zoom + tap
+  behavior is live-game validation, not a unit-test gate.
 
 ## KNOWN HOTSPOTS
 

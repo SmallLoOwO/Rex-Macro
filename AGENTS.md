@@ -47,6 +47,15 @@ miningbot/
   sampler.py                R-key calibration UI and sample writing
   notify.py                 Discord HTTP API and async notifications
   discord_commands.py       pure Discord command parsing
+  web_protocol.py           WebSocket message dataclasses, parsers, coord validation
+  web_ipc.py                race routing key, PendingReplies, FallbackState
+  web_server.py             FastAPI app, WebSocket endpoint, WebIPCThread, HTTP routes
+  web_sink.py               EventLog → WebSocket broadcast sink
+  web_config_whitelist.py   player-editable Config field whitelist (4 fields)
+  web_config_persistence.py config_overrides.json load/save/apply
+  web_static.py             HTML renderers (player settings, intervention, history, annotate)
+  web_annotation.py         annotation schema + symptom/rarity helpers
+  web_history.py            episode/snapshot/annotation three-tier loaders
   diagnostics.py            logging, snapshots, retention
   metrics.py                bounded latency percentiles
   preflight.py              pure startup warning policy
@@ -77,6 +86,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Mine reset | reset/capacity incident evidence | `states.py`, `_banner_ocr_loop`, `_update_reset_complete` |
 | Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*` |
 | Discord controls | command/parser tests | `main._poll_discord`, `notify.py` |
+| Web UI / WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`, `miningbot/AGENTS.md` Web UI layer | `web_*` modules, `main._web_*`, `Bot._execute_remote_fire_from_web`, `Bot._rr_click_from_web` |
 | World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets |
 | R-key calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` |
 | Logs/snapshots | `diagnostics.py`, `docs/incidents.md` | categorized runtime snapshots |
@@ -119,6 +129,16 @@ conventions.
 12. `reentry_mode` is `off`, `remote`, or `auto`; the default comes from `Config`.
     Automatic mode is calibration gated. Every path is bounded, falls back to
     `NEEDS_HUMAN`, and restores pitch/zoom before finalization.
+13. The web UI (`web_*` modules, `Bot._web_*` integration) exposes only the four
+    fields in `WEB_CONFIGURABLE_FIELDS` to players; thresholds, ROI, and detection
+    params are AI-agent-only via direct `config.py` edits. WebSocket IPC uses
+    routing-key first-wins (`flow:episode_id`; second reply for the same key is
+    dropped). Web clients online → bot sends screenshots + waits for tap; offline
+    (after `web_fallback_grace_s`, default 30s) → existing Discord 反應按鈕 flow.
+    Player taps restore to native coords **client-side** (`web_static.sendClick`);
+    the server only thin-validates `x ∈ [0,1920)`, `y ∈ [0,1080)` (`parse_fire_at_payload`).
+    Auto-collected fixtures (`_save_auto_fixture`) are best-effort: write failures
+    log and swallow, never break the main loop.
 
 ## DEVELOPMENT WORKFLOW
 
@@ -168,3 +188,6 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.
+- Web UI pinch-zoom + tap and WebSocket half-open detection need live-game
+  validation before being trusted on long unattended runs; the regression suite
+  covers the wire protocol and pure logic, not real mobile-browser behavior.

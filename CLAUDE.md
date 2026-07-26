@@ -56,6 +56,7 @@ uv run python -m miningbot.calibrate_pitch
 | 世界／礦物 | `game_data.py`、`fetch_ores.py` | active registry、低高階衝突、JSON 同步 |
 | D4 事件 keep/reroll | H049、`miner.plan_d4` | 快取須晚於上次動作、未知雙樣本確認 |
 | 回礦／remote aim | 最新已實作 spec 與純測試 | bounded failure、ledger、pitch/zoom 復原 |
+| 網頁 UI／WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`、`miningbot/AGENTS.md` Web UI 層 | 玩家白名單欄位、race routing key、fallback 切換、座標還原 |
 | UI／取樣 | `docs/manual-sampling.md` | Tk BMP-safe 文字、主執行緒 UI |
 
 ## 相容與 fail-safe 邊界
@@ -104,7 +105,9 @@ uv run python -m miningbot.calibrate_pitch
 - 遊戲機制與取樣：`docs/game-mechanics.md`、`docs/manual-sampling.md`
 - 素材契約：`assets/README.md`
 - 文件狀態與歷史資料說明：`docs/README.md`
+- 網頁 UI 設計：`docs/superpowers/specs/2026-07-26-web-ui-design.md`
+  （注意：`docs/superpowers/**` 多為歷史資料，但這份 web UI spec 對應已落地
+  的程式碼，是現行設計參考；硬規則仍以 `AGENTS.md` 為準）
 
-`docs/HANDOFF*.md`、`docs/superpowers/**` 與
-`docs/opencode-delegation-manual.md` 都是歷史資料，不得用來覆蓋現行程式與
+`docs/HANDOFF*.md`、`docs/opencode-delegation-manual.md` 都是歷史資料，不得用來覆蓋現行程式與
 測試。
