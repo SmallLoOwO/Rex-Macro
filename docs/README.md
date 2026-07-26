@@ -11,7 +11,9 @@ code, tests, and `miningbot/config.py` still outrank every document.
 | `../CLAUDE.md` | thin compatibility entrypoint to `AGENTS.md` |
 | `game-mechanics.md` | game-domain observations that affect automation decisions |
 | `manual-sampling.md` | R-key sampling and re-entry calibration procedure |
+| `web-ui-guide.md` | web intervention/settings/history UI: Tailscale setup, operator walkthrough, troubleshooting, agent notes |
 | `../assets/README.md` | tracked datasets versus machine-local runtime assets |
+| `../tests/fixtures/README.md` | live-capture fixture library index; each subdirectory has its own README with thresholds and two-sided brackets |
 | `incidents.md` | append-only H-series runtime evidence, causes, and regressions |
 | `open-detection-issues.md` | measured-but-unfixed detection/aim gaps (D-series); move an entry into `incidents.md` once it ships |
 
