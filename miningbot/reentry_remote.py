@@ -292,13 +292,70 @@ class RemoteReentryContext:
 
 
 def next_episode_id(last_ledger_line):
-    """ledger 末行 episode+1；無檔/壞行回 1（編號只求人眼可對，不求嚴格連續）。"""
+    """ledger 末行 episode+1；無檔/壞行回 1（編號只求人眼可對，不求嚴格連續）。
+
+    ⚠ 只看末行，故**只在 ledger 每個 episode 都留得下一行時才正確**。實機路徑請改用
+    `next_episode_id_from_ledger`——見該函式說明的 2026-07-26 編號重複事故。
+    保留本函式是為了既有呼叫端與測試。
+    """
     if not last_ledger_line:
         return 1
     try:
         return int(json.loads(last_ledger_line).get("episode", 0)) + 1
     except (ValueError, KeyError, TypeError):
         return 1
+
+
+def next_episode_id_from_ledger(lines):
+    """掃**全部** ledger 行取 max(episode)+1；無檔/全壞行回 1。
+
+    2026-07-26 實機事故：同一天 13:15 與 18:34 兩場回礦都拿到 `#26`，快照因此都叫
+    `reentry_ep26_dir1..8`，網頁歷史把兩場併成一個 episode、時間軸出現整組重複。
+    根因＝`ledger_entry` 只在 episode **有結果時**才寫（confirmed_by_user／skip），
+    而 26 這場兩次都在收尾前就結束（重啟／逾時），末行永遠停在 25 →
+    `next_episode_id` 每次都回 26。
+
+    修法兩層，本函式是第二層：
+    (1) 建 ctx 時先寫一行佔號（main._rr_ensure_ctx），未收尾也推進編號；
+    (2) 取號改掃全檔取最大值——佔號行與結果行同號並存時仍然正確，且對任何
+        「末行不是最大號」的排列（手動編修、亂序 append）都免疫。
+
+    壞行靜默略過：ledger 是 append-only，尾端可能是寫到一半的 partial line
+    （比照 web_history._iter_snapshot_records 的容忍度）。
+    """
+    max_id = 0
+    for line in lines or ():
+        if isinstance(line, bytes):
+            try:
+                line = line.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if not isinstance(line, str) or not line.strip():
+            continue
+        try:
+            episode = json.loads(line).get("episode")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(episode, bool) or not isinstance(episode, int):
+            continue
+        max_id = max(max_id, episode)
+    return max_id + 1
+
+
+def episode_reservation_entry(episode_id, trigger, now):
+    """建 ctx 當下寫進 ledger 的「佔號」行（outcome="started"）。
+
+    只帶足以推進編號與事後對帳的欄位；結果欄位（world/clicks/duration_s）留給
+    真正收尾的 `ledger_entry`。同一個 episode 因此在 ledger 留兩行——`started`
+    一行、結果一行——這是刻意的：沒有結果行才是異常，能一眼看出哪幾場沒收尾
+    （2026-07-26 之前這種場次在 ledger 完全隱形）。
+    """
+    return {
+        "episode": int(episode_id),
+        "t": float(now),
+        "outcome": "started",
+        "trigger": str(trigger),
+    }
 
 
 def plan_open_retry(first_open_ts: float, now: float, wait_s: float,

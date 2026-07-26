@@ -5940,17 +5940,28 @@ class Bot:
             ctx.zoom_region = ()
             ctx.zoom_base = ""
             return
-        last = None
+        lines = []
         try:
             with open(cfg.reentry_remote_ledger, "rb") as f:
                 lines = f.read().splitlines()
-                last = lines[-1].decode("utf-8") if lines else None
         except OSError:
             pass
+        episode_id = reentry_remote.next_episode_id_from_ledger(lines)
         self._rr_ctx = reentry_remote.RemoteReentryContext(
-            episode_id=reentry_remote.next_episode_id(last),
+            episode_id=episode_id,
             created_at=time.time(), sticky_layer=self._rr_sticky_layer,
             trigger=self._rr_trigger)
+        # 立刻佔號（2026-07-26）：舊版只在 _rr_finalize 寫 ledger，於是**沒收尾的
+        # episode 完全不佔號**——13:15 與 18:34 兩場都拿到 #26，快照撞名成
+        # `reentry_ep26_dir1..8` ×2，網頁歷史併成一個 episode、時間軸整組重複。
+        # 佔號行先寫，取號改掃全檔 max（next_episode_id_from_ledger），兩層一起才擋得住。
+        # 寫檔失敗不能擋回礦（ledger 是記帳、不是流程）——只記 log 照跑。
+        try:
+            self._rr_ledger_append(reentry_remote.episode_reservation_entry(
+                episode_id, self._rr_trigger, time.time()))
+        except OSError as e:
+            self.logger.warning("[RR#%s] ledger 佔號寫入失敗（編號可能重複）：%s",
+                                episode_id, e)
         self._rr_pitch_back_px = None        # 新 episode：session 仰角記帳歸零（用 config 標準角）
 
     def _rr_sweep_and_send(self, prefix_msg: str = ""):

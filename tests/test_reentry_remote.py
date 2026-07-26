@@ -132,6 +132,8 @@ def test_remote_aim_grid_rows_backward_compat():
 
 import json
 from miningbot.reentry_remote import (RemoteReentryContext, next_episode_id,
+                                      next_episode_id_from_ledger,
+                                      episode_reservation_entry,
                                       log_command, record_click, ledger_entry, void_entry)
 
 
@@ -145,6 +147,35 @@ class TestContextLedger:
         assert next_episode_id('{"episode": 16, "outcome": "success"}') == 17
         assert next_episode_id('{"type": "void", "episode": 16}') == 17
         assert next_episode_id("not json") == 1
+
+    def test_next_episode_id_from_ledger_scans_all_lines(self):
+        """取號掃全檔取 max——末行不是最大號時（佔號行 + 結果行並存）仍正確。"""
+        lines = ['{"episode": 24, "outcome": "skip"}',
+                 '{"episode": 25, "outcome": "started"}',
+                 '{"episode": 25, "outcome": "skip"}']
+        assert next_episode_id_from_ledger(lines) == 26
+        assert next_episode_id_from_ledger([]) == 1
+        assert next_episode_id_from_ledger(None) == 1
+
+    def test_next_episode_id_from_ledger_tolerates_junk(self):
+        """壞行/partial line/非整數 episode 一律略過，不擋取號（append-only 尾端可能寫到一半）。"""
+        lines = ['{"episode": 3}', "not json", '{"episode": "x"}',
+                 '{"episode": true}', "", '{"no_episode": 1}']
+        assert next_episode_id_from_ledger(lines) == 4
+
+    def test_next_episode_id_from_ledger_accepts_bytes(self):
+        """main 讀檔用 rb + splitlines（bytes）——不必在呼叫端逐行 decode。"""
+        assert next_episode_id_from_ledger([b'{"episode": 9}']) == 10
+
+    def test_reservation_entry_advances_numbering(self):
+        """2026-07-26 事故核心：沒收尾的 episode 也必須佔到號，下一場才不會撞名。
+
+        兩場回礦都在收尾前結束（重啟/逾時）＝ledger 只有佔號行、沒有結果行；
+        第二場取號時必須拿到 27 而不是重複的 26。
+        """
+        started = episode_reservation_entry(26, "reset", now=1000.0)
+        assert started["episode"] == 26 and started["outcome"] == "started"
+        assert next_episode_id_from_ledger([json.dumps(started)]) == 27
 
     def test_log_and_click_accumulate(self):
         ctx = self._ctx()
