@@ -33,18 +33,47 @@ def render_nav(current: str) -> str:
     return '<nav class="nav">%s</nav>' % "".join(parts)
 
 
-def render_index_html(config) -> str:
+def render_index_html(config, layer_info: dict | None = None) -> str:
     """4 個白名單欄位的設定表單 + JS 提交 fetch /api/config。
 
     純函式：吃 Config instance、回 HTML 字串。讀 4 個白名單欄位現值填入 form。
+
+    layer_info（2026-07-26）：``{"effective": str, "world": str|None,
+    "from_world_map": bool}``。給了就用 ``effective`` 當目標層現值，並在欄位下方
+    說明這個值是哪來的。**這是網頁與 Discord `層` 指令同步的關鍵**——執行期真正
+    生效的是每世界黏性層 ``sticky_layers[world]``，``cfg.reentry_target_layer``
+    只是查不到世界時的 fallback。舊版只顯示後者，於是 Discord 已經把
+    Lucernia 記成 Shamrock、設定頁卻還寫 Mantle Layer。
+
+    給 None（沒有 bot 的呼叫端／既有測試）時退回舊行為，只讀 config。
     """
     reentry_mode = getattr(config, "reentry_mode", "remote")
-    target_layer = getattr(config, "reentry_target_layer", "")
+    fallback_layer = getattr(config, "reentry_target_layer", "")
     yaw_sample = getattr(config, "reentry_yaw_sample_sweep", False)
     sweep_pitch = getattr(config, "sweep_pitch_enabled", False)
 
+    target_layer = fallback_layer
+    layer_hint = ""
+    if isinstance(layer_info, dict):
+        effective = layer_info.get("effective")
+        if isinstance(effective, str) and effective:
+            target_layer = effective
+        world = layer_info.get("world")
+        if layer_info.get("from_world_map") and world:
+            layer_hint = (f"目前套用 <b>{_esc(world)}</b> 的記憶值"
+                          f"（與 Discord <code>層</code> 指令同一份）；"
+                          f"未記錄的世界會用預設 <code>{_esc(fallback_layer)}</code>。")
+        elif world:
+            layer_hint = (f"世界 <b>{_esc(world)}</b> 尚未記錄過目標層，"
+                          f"目前用預設值；在這裡儲存等同對該世界下 "
+                          f"Discord <code>層</code> 指令。")
+        else:
+            layer_hint = ("世界尚未偵測到，顯示的是預設值；"
+                          "偵測到之後儲存才會記進該世界。")
+
     yaw_checked = "checked" if yaw_sample else ""
     sweep_checked = "checked" if sweep_pitch else ""
+    layer_hint_html = (f'<p class="hint">{layer_hint}</p>' if layer_hint else "")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant">
@@ -55,11 +84,21 @@ def render_index_html(config) -> str:
 body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }}
 label {{ display: block; margin: 1rem 0 0.3rem; font-weight: bold; }}
 input, select {{ width: 100%; padding: 0.4rem; box-sizing: border-box; }}
+/* checkbox 必須排除在 width:100% 之外（2026-07-26 實機回報）：被撐成整行寬之後，
+   Chrome 把方塊畫在那一行的正中央，而 label 是 display:block，文字被擠到下一行
+   ——視覺上變成「勾選方塊浮在自己的標籤文字上方置中」，看起來就是壞掉的版面。
+   手機上更明顯。改成 inline-flex 讓方塊與文字同一行、點擊區維持整段文字。 */
+label.check {{ display: flex; align-items: center; gap: 0.5rem;
+              font-weight: bold; margin: 1rem 0 0.3rem; }}
+label.check input[type="checkbox"] {{ width: auto; flex: 0 0 auto;
+              margin: 0; padding: 0; transform: scale(1.3); }}
 button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color: white;
          border: none; border-radius: 4px; cursor: pointer; }}
 .status {{ margin-top: 1rem; padding: 0.6rem; background: #e6f4ff; border-radius: 4px;
           display: none; }}
 .error {{ background: #ffe6e6; }}
+.hint {{ margin: 0.35rem 0 0; font-size: 0.8rem; color: #666; line-height: 1.5; }}
+.hint code {{ background: #eee; padding: 0 0.25rem; border-radius: 3px; }}
 </style>
 </head>
 <body>
@@ -77,14 +116,15 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
   <label for="reentry_target_layer">目標層</label>
   <input type="text" id="reentry_target_layer" name="reentry_target_layer"
          value="{_esc(target_layer)}" placeholder="例：Mantle Layer">
+  {layer_hint_html}
 
-  <label><input type="checkbox" id="reentry_yaw_sample_sweep" name="reentry_yaw_sample_sweep"
-                {yaw_checked}>
-    回礦後拍八方位（收語料）</label>
+  <label class="check"><input type="checkbox" id="reentry_yaw_sample_sweep"
+                name="reentry_yaw_sample_sweep" {yaw_checked}>
+    <span>回礦後拍八方位（收語料）</span></label>
 
-  <label><input type="checkbox" id="sweep_pitch_enabled" name="sweep_pitch_enabled"
-                {sweep_checked}>
-    掃描俯仰（失敗路徑掃上下層）</label>
+  <label class="check"><input type="checkbox" id="sweep_pitch_enabled"
+                name="sweep_pitch_enabled" {sweep_checked}>
+    <span>掃描俯仰（失敗路徑掃上下層）</span></label>
 
   <button type="submit">儲存</button>
 </form>
@@ -201,12 +241,14 @@ a {{ color: #0084ff; text-decoration: none; }}
       <option value="reentry">回礦</option>
     </select>
   </label>
+  <!-- 結果篩選停用中：load_episodes 沒有 result 這個欄位（snapshot_index.jsonl
+       只有 label/path/written_at，沒有判定結果），所以每列 data-result 都是空字串。
+       舊版讓它可選，玩家一選「成功」就是 0 / 60 全空——看起來像壞掉而不是沒資料。
+       接上資料來源前先 disabled + 講清楚原因；欄位與 JS 分支都留著，之後只要
+       load_episodes 開始給 result 就把 disabled 拿掉即可。 -->
   <label>結果
-    <select id="filter-result">
-      <option value="all">全部</option>
-      <option value="success">成功</option>
-      <option value="fail">失敗</option>
-      <option value="unknown">未確認</option>
+    <select id="filter-result" disabled title="快照索引尚無判定結果欄位，篩選暫停用">
+      <option value="all">全部（尚無資料來源）</option>
     </select>
   </label>
   <label>日期起
@@ -298,8 +340,16 @@ def render_annotate_html(
         f'<button type="button" data-variant="{_esc(v)}">{_esc(v)}</button>'
         for v in variants
     )
+    # ⚠ src 必須走 `/snapshot?path=`，**不能直接塞 snapshot_path**。
+    # 舊版寫 `src="{snapshot_path}"`，那是 `C:\\Users\\...\\x.png` 這種 Windows 絕對
+    # 路徑，瀏覽器會解析成 `file:///C:/...`——http 頁面載 file:// 一律被擋，
+    # `naturalWidth` 恆為 0。連鎖後果不只是破圖：clientToNatural() 要除以
+    # naturalWidth → NaN → selRect 永遠 null → 按「送出標註」永遠只回
+    # 「請先在快照上拖曳出方形」，整個標註工具（spec §5 C）完全不能用。
+    # `/snapshot` 這條 route 早就存在（episode 頁一直用得好好的），只有這裡沒接上。
     img_block = (
-        f'<img id="snapshot" src="{_esc(snapshot_path)}" alt="snapshot" draggable="false">'
+        f'<img id="snapshot" src="/snapshot?path={_url_q(snapshot_path)}" '
+        f'alt="snapshot" draggable="false">'
         if snapshot_path
         else '<div class="placeholder">本 episode 無快照（請由 /history 選有快照的列）</div>'
     )
@@ -490,8 +540,15 @@ viewer.addEventListener('pointermove', (e) => {{
   const sizeDisp = Math.max(Math.abs(dx), Math.abs(dy)) * 2;
   const rect = img.getBoundingClientRect();
   const scaleDisp = rect.width / img.naturalWidth;
-  const dispX = sx * scaleDisp;
-  const dispY = sy * scaleDisp;
+  // #selection 是相對 #viewer 絕對定位，但圖片本身被 translate(pan) 位移過。
+  // 舊版只算 sx * scaleDisp（圖片內部座標），沒加上圖片在 viewer 內的偏移，
+  // 所以只要平移過畫面，黃框就會整個偏掉 pan 的量。用兩者的 rect 差取偏移，
+  // 對 pan 與 zoom 都成立（不必自己重推 transform）。
+  const vrect = viewer.getBoundingClientRect();
+  const originX = rect.left - vrect.left;
+  const originY = rect.top - vrect.top;
+  const dispX = originX + sx * scaleDisp;
+  const dispY = originY + sy * scaleDisp;
   sel.style.display = 'block';
   sel.style.left = (dispX - sizeDisp / 2) + 'px';
   sel.style.top = (dispY - sizeDisp / 2) + 'px';
@@ -680,7 +737,11 @@ ul.timeline li {{ display: flex; gap: 0.6rem; padding: 0.15rem 0;
 ul.timeline .t {{ color: #888; flex: 0 0 10.5rem; }}
 .thumbs {{ display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.3rem; }}
 .thumbs figure {{ margin: 0; flex: 0 0 auto; text-align: center; }}
-.thumbs img {{ height: 110px; border: 1px solid #ccc; border-radius: 4px;
+/* max-width 是必要的，不是美化：聊天裁圖是 1220×37 這種極端長寬比，只設
+   height:110px 會把縮圖拉成 3629px 寬（2026-07-26 實測），一列要橫捲很久才看得完
+   下一張。夾住寬度並 object-fit: contain 保持比例。 */
+.thumbs img {{ height: 110px; max-width: 320px; object-fit: contain;
+              border: 1px solid #ccc; border-radius: 4px;
               display: block; background: #fafafa; }}
 .thumbs figcaption {{ font-size: 0.7rem; color: #888; margin-top: 0.15rem; }}
 table {{ width: 100%; border-collapse: collapse; }}

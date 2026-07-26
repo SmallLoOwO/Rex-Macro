@@ -105,6 +105,7 @@ def create_app(
     fixtures_dir: str | None = None,
     snapshots_root: str | None = None,
     ping_interval_s: float = 30.0,
+    layer_getter: Callable[[], dict] | None = None,
 ) -> FastAPI:
     """建 FastAPI app。
 
@@ -122,6 +123,20 @@ def create_app(
         HTML 三條 route 回 503；annotate HTML 不靠它（只渲染表單）。
     fixtures_dir：P5 Task 6 標註寫入目標目錄（如 ``tests/fixtures``）。未傳時
         POST /api/annotate 回 503。
+    layer_getter：目標層同步用（2026-07-26）。回一個 dict：
+        ``{"effective": str, "world": str|None, "from_world_map": bool}``。
+        傳入時 ``GET /api/config`` 的 ``reentry_target_layer`` 與 ``GET /`` 的表單
+        現值都改用 ``effective``——也就是 **bot 當下真正會用的層**，而不是
+        ``cfg.reentry_target_layer`` 這個 fallback 預設值。
+
+        為什麼需要它：Discord 的 `層` 指令寫的是**每世界黏性層 map**
+        （``sticky_layers.json``，見 main._rr_execute 的 "layer" 分支），
+        執行期優先序是 ``sticky_layers[world] > cfg.reentry_target_layer``。
+        網頁先前只讀後者，於是 Discord 明明已經把 Lucernia 記成 Shamrock，
+        設定頁還是顯示 "Mantle Layer"——兩邊各講各的（2026-07-26 實機確認）。
+
+        不傳（None）時完全走舊行為：讀寫都只碰 cfg.reentry_target_layer。
+        測試與任何不帶 bot 的呼叫端因此不受影響。
     ping_interval_s：P4 WebSocket heartbeat 間隔（秒）。**P5 Task 2 已退役**——
         text-message "ping" 只能在 TCP 全斷才拋例外，無法偵測手機背景化／
         Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn 預設 20s 協議級
@@ -353,10 +368,33 @@ def create_app(
         else:
             app.state.overrides_path = None
 
+        def _layer_info() -> dict | None:
+            """目標層現況；layer_getter 未接或丟例外 → None（退回舊行為）。
+
+            getter 讀的是 bot 執行緒的狀態，只做純字串讀取（不 mutate），
+            但仍包 try——網頁面板壞掉不該是「設定頁整頁 500」。
+            """
+            if layer_getter is None:
+                return None
+            try:
+                info = layer_getter()
+            except Exception as e:
+                _log.warning("web: layer_getter 失敗（退回 config 值）: %s", e)
+                return None
+            return info if isinstance(info, dict) else None
+
         @app.get("/api/config")
         def get_config():
-            """回白名單 4 欄現值（不洩漏門檻/ROI/機密）。"""
-            return {f: getattr(config, f) for f in WEB_CONFIGURABLE_FIELDS}
+            """回白名單 4 欄現值（不洩漏門檻/ROI/機密）。
+
+            reentry_target_layer 特別處理：接了 layer_getter 就回**執行期有效層**
+            （sticky_layers[world] 優先），否則玩家會看到跟 Discord 不一致的值。
+            """
+            data = {f: getattr(config, f) for f in WEB_CONFIGURABLE_FIELDS}
+            info = _layer_info()
+            if info and isinstance(info.get("effective"), str):
+                data["reentry_target_layer"] = info["effective"]
+            return data
 
         @app.post("/api/config")
         def post_config(payload: dict):
@@ -377,14 +415,30 @@ def create_app(
             # 持久化（若有指定路徑）——不帶 current_overrides，save_overrides 自會重讀檔
             if app.state.overrides_path:
                 save_overrides(app.state.overrides_path, field, value)
-            return {"ok": True, "field": field, "value": value}
+            # 目標層要跟 Discord `層` 指令做同一件事：釘住 session 黏性層 +
+            # 記住「當前世界 → 層」+ 寫穿 sticky_layers.json。那需要 bot 的世界狀態
+            # 與檔案寫入，都屬主迴圈執行緒——這裡只 push，由 _consume_web_pending 執行
+            # （比照 control:config_set 的既有慣例；CLAUDE.md：背景執行緒只發布 pending）。
+            #
+            # 上面的 setattr + save_overrides 保留不動：它更新的是 fallback 預設值，
+            # 對「世界尚未偵測到」與「其他世界」仍然有意義。萬一主迴圈忙碌讓 push 被
+            # 拒（同 key 尚未消費），至少 fallback 已經生效，不會整個沒反應。
+            queued = None
+            if field == "reentry_target_layer" and layer_getter is not None:
+                queued = pending.push("control:set_layer", {"layer": value})
+                if not queued:
+                    _log.warning("web: set_layer 排入失敗（上一則尚未消費）: %r", value)
+            result = {"ok": True, "field": field, "value": value}
+            if queued is not None:
+                result["layer_queued"] = queued
+            return result
 
         @app.get("/")
         def root():
             """玩家設定面板 HTML（Task 3 補完整內容）。"""
             from miningbot.web_static import render_index_html
             return Response(
-                content=render_index_html(config),
+                content=render_index_html(config, layer_info=_layer_info()),
                 media_type="text/html",
             )
 
@@ -519,6 +573,7 @@ class WebIPCThread:
         snapshot_index_path: str | None = None,
         fixtures_dir: str | None = None,
         snapshots_root: str | None = None,
+        layer_getter: Callable[[], dict] | None = None,
     ):
         self.pending = pending
         self.fallback = fallback
@@ -545,6 +600,7 @@ class WebIPCThread:
             fixtures_dir=fixtures_dir,
             snapshots_root=snapshots_root,
             ping_interval_s=ping_interval_s,
+            layer_getter=layer_getter,
         )
 
     def _on_startup(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -571,9 +627,19 @@ class WebIPCThread:
         # ⚠ 注意這發生在 **Config 建構時**，不是 import 時——所以「import 時
         # dictConfig 0 calls」的檢查看起來乾淨卻毫無保護力。
         #
-        # 設 None 之後 uvicorn 完全不碰 logging 設定，它的 logger 直接 propagate 到
-        # root，由 diagnostics.setup_logging 收進 miningbot.log——這本來就是我們要的
-        # （uvicorn 訊息跟 bot 敘事在同一份 log，不要另一套格式）。
+        # 設 None 之後 uvicorn 完全不碰 logging 設定。
+        #
+        # ⚠ 這裡原本寫「它的 logger 直接 propagate 到 root，由 diagnostics.setup_logging
+        # 收進 miningbot.log」——**那是錯的**：setup_logging 只掛 handler 在 `miningbot`
+        # logger，root 從頭到尾沒有任何 handler，pythonw 又沒有 stderr，所以 uvicorn 印的
+        # 東西全部蒸發。2026-07-26 因此漏掉「缺 websockets → /ws 回 404」整整一輪：
+        # uvicorn 其實有印 `No supported WebSocket library detected`，只是沒人接。
+        # 現在由 diagnostics._ADOPTED_LOGGERS 顯式收編 `uvicorn` logger（propagate=False
+        # + 同一份 miningbot.log handler），uvicorn 訊息才真的跟 bot 敘事同檔。
+        #
+        # log_level="warning" 即使在 log_config=None 下也會被套用到
+        # uvicorn.error/access/asgi（見 uvicorn/config.py configure_logging），
+        # 所以收編後不會有每個 HTTP 請求一行的 access log 噪音。
         config = uvicorn.Config(
             app=self.app,
             host=self.host,

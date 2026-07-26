@@ -117,11 +117,28 @@ def test_render_annotate_html_has_related_incident_input():
 
 
 def test_render_annotate_html_shows_snapshot_image_when_path_provided():
-    """snapshot_path 提供 → <img src=...> 出現。"""
+    """snapshot_path 提供 → <img> 走 /snapshot?path= 取圖。"""
     html = render_annotate_html("007", "/snapshots/foo.png",
                                 (["Mythic"], ["原色"]))
     assert "<img" in html
-    assert "/snapshots/foo.png" in html
+    assert "/snapshot?path=" in html
+    assert "%2Fsnapshots%2Ffoo.png" in html   # url-quote 後的原路徑當 query 值
+
+
+def test_render_annotate_html_never_uses_raw_path_as_img_src():
+    """回歸（2026-07-26）：Windows 絕對路徑不得直接當 src。
+
+    舊版 `src="C:\\Users\\...\\x.png"` 會被瀏覽器解析成 `file:///C:/...`，
+    http 頁面載 file:// 一律被擋 → naturalWidth 恆 0 → clientToNatural() 除以 0
+    → selRect 永遠 null → 「送出標註」永遠只回「請先在快照上拖曳出方形」，
+    整個標註工具不能用。這條測試盯的就是「src 不可以是裸路徑」。
+    """
+    raw = r"C:\Users\puppy\AppData\Local\RexMacro\logs\snapshots\review\a.png"
+    html = render_annotate_html("113", raw, (["Mythic"], ["原色"]))
+    assert 'src="/snapshot?path=' in html
+    # 裸路徑（含碟符與反斜線）不得原封不動出現在 src 屬性裡
+    assert f'src="{raw}"' not in html
+    assert "file://" not in html
 
 
 def test_render_annotate_html_handles_missing_snapshot():

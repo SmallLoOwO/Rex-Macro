@@ -17,6 +17,12 @@ dependencies = [
     "rapidocr==3.9.1",
     "scipy==1.14.1",
     "uvicorn>=0.27",
+    # 裸的 uvicorn **不含任何 WebSocket 實作**：`ws_protocol_class` 是 None 時
+    # uvicorn 把 Upgrade 請求當普通 HTTP 處理，FastAPI 沒有 `GET /ws` 路由 → 回 404
+    # （不是 426、也不是升級錯誤）。實測 2026-07-26：介入面板恆「WebSocket 斷線」、
+    # FallbackState.client_count 恆 0 → is_fallback() 恆 True → 介入全部照舊走 Discord，
+    # 網頁 UI 的核心功能等於不存在。必須顯式宣告，不能靠 uvicorn 的 extras 順帶。
+    "websockets>=12",
 ]
 
 [dependency-groups]

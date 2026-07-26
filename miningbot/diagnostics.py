@@ -28,6 +28,22 @@ _SUBLOGGERS = {
     "discord":   "discord.log",     # Discord 通知送出記錄（哪些事件送了、成敗）
 }
 
+# 第三方 logger 收編（2026-07-26）：這些函式庫用自己的 logger tree，訊息會
+# propagate 到 **root**——而本模組只掛 handler 在 `miningbot` logger，全專案沒有
+# `basicConfig`，所以 root 沒有任何 handler；`pythonw` 又沒有 stderr，於是它們印的
+# 東西全部蒸發。
+#
+# 實際代價（2026-07-26 實測）：uvicorn 在缺 WebSocket 實作時會印
+# `No supported WebSocket library detected. Please use "pip install 'uvicorn[standard]'"`，
+# 那正是「介入面板永遠斷線」的答案，卻一個字都沒進 miningbot.log——只能靠瀏覽器
+# 打 /ws 看到 404 才查得出來。跟 H061 的「daemon thread 無聲死亡」同一型：
+# 訊息其實有印，只是沒人接。
+#
+# uvicorn.error/access/asgi 的 level 由 `uvicorn.Config(log_level=...)` 設成 warning
+# （即使 log_config=None 也會套用，見 uvicorn/config.py configure_logging），
+# 所以收編後不會有「每個 HTTP 請求一行」的噪音。
+_ADOPTED_LOGGERS = ("uvicorn", "websockets")
+
 
 def _make_file_handler(log_dir: str, filename: str, fmt: logging.Formatter) -> RotatingFileHandler:
     fh = RotatingFileHandler(os.path.join(log_dir, filename),
@@ -46,10 +62,23 @@ def setup_logging(log_dir: str, level: str) -> logging.Logger:
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    if logger.handlers:                      # root 已設定過就直接回傳（子 logger 同步冪等）
-        return logger
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s",
                             "%Y-%m-%d %H:%M:%S")
+    # 第三方 logger 收編要在主 logger 的冪等 early-return **之前**做：這些函式庫
+    # （uvicorn / websockets）的 logger 是獨立 tree，跟 miningbot logger 有沒有設定過
+    # 無關。放在 early-return 之後的話，只要有人先呼叫過一次 setup_logging，
+    # 收編就永遠不會發生——而那正是「訊息掉進沒有 handler 的 root」的原狀。
+    # 這裡自帶 `if third.handlers: continue` 冪等檢查，重複呼叫不會重複掛。
+    for name in _ADOPTED_LOGGERS:
+        third = logging.getLogger(name)
+        if third.handlers:                   # 已設定過，跳過（冪等）
+            continue
+        third.propagate = False              # 不冒泡到無 handler 的 root
+        third.addHandler(_make_file_handler(log_dir, "miningbot.log", fmt))
+        # level 交給函式庫自己設，這裡不覆寫——uvicorn 已被
+        # uvicorn.Config(log_level="warning") 壓到 warning，不會有每請求一行的噪音。
+    if logger.handlers:                      # root 已設定過就直接回傳（子 logger 同步冪等）
+        return logger
     # 主檔 + stdout（主敘事）；pythonw 無 console（sys.stdout is None）→ 跳過 stdout handler
     logger.addHandler(_make_file_handler(log_dir, "miningbot.log", fmt))
     if sys.stdout is not None:

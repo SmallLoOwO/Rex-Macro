@@ -2552,6 +2552,9 @@ class Bot:
                         fixtures_dir=_AUTO_FIXTURE_ROOT,
                         # 沒有它 /snapshot 回 503 → 標註頁與歷史縮圖全是破圖
                         snapshots_root=os.path.join(cfg.log_dir, "snapshots"),
+                        # 目標層與 Discord `層` 指令同步：設定頁顯示執行期有效層
+                        # （sticky_layers[world] 優先），而不是 cfg 的 fallback 值。
+                        layer_getter=self._effective_layer_info,
                     )
                     self._web_thread.start()
                     if self._web_thread.actual_port > 0:
@@ -3276,6 +3279,17 @@ class Bot:
                 self.logger.info("web: 跳過（排入 reentry pending）")
             else:
                 self.logger.info("web: 跳過被忽略（上一則指令還在執行或非回礦中）")
+        # 網頁設定頁改目標層（2026-07-26）：走跟 Discord `層` 指令同一條路徑
+        # （_apply_layer_change），才會真的寫進每世界黏性層 map。HTTP route 那邊
+        # 只 push 不執行——寫檔與發 Discord 都必須在主迴圈執行緒做。
+        reply = self._web_pending.pop("control:set_layer")
+        if reply is not None:
+            layer = reply.get("layer")
+            if isinstance(layer, str) and layer.strip():
+                self._apply_layer_change(layer.strip(), source="web")
+                self.logger.info("web: 目標層改為 %s（已同步每世界黏性層）", layer.strip())
+            else:
+                self.logger.warning("web: set_layer 值不合法，忽略: %r", layer)
         for cmd in ("pause", "resume", "request_frame"):
             reply = self._web_pending.pop(f"control:{cmd}")
             if reply is not None:
@@ -5526,6 +5540,53 @@ class Bot:
                              world, self._rr_sticky_layer, want)
             self._rr_sticky_layer = want
 
+    def _apply_layer_change(self, layer: str, source: str = "discord"):
+        """套用目標層變更；Discord `層` 指令與網頁設定頁**共用同一條路徑**。
+
+        2026-07-26 抽出來的原因：網頁設定頁先前只改 `cfg.reentry_target_layer`
+        （fallback 預設值），完全沒碰每世界黏性層 map——而執行期優先序是
+        `sticky_layers[world] > cfg.reentry_target_layer`，所以網頁上改的層根本不會
+        生效，兩邊各講各的。要真的同步，網頁就必須做跟 `層` 指令一模一樣的事。
+
+        與舊 `_rr_execute` 版本的唯一差別：**ctx 允許是 None**。`層` 指令一定在回礦
+        episode 內下達（ctx 必有），網頁則可以在任何狀態改層——直接寫 `ctx.sticky_layer`
+        會 AttributeError 打死主迴圈。
+
+        呼叫端必須是主迴圈執行緒（會寫檔 + 發 Discord）；網頁走
+        `control:set_layer` → `_consume_web_pending` 進來。
+        """
+        self._rr_sticky_layer = layer
+        if self._rr_ctx is not None:
+            self._rr_ctx.sticky_layer = layer
+        self._rr_layer_user_pinned = True     # 2026-07-20：釘住，後續世界偵測不再覆寫使用者選擇
+        world = game_data.current_world_name()
+        new_map = reentry_remote.remember_layer(self._rr_sticky_layers, world, layer)
+        via = "（來自網頁）" if source == "web" else ""
+        if new_map is not None:
+            self._rr_sticky_layers = new_map
+            self._write_sticky_layers()
+            self._rr_notify(f"✅ 目標層改為：{layer}（已記住 {world} → {layer}）{via}")
+        else:
+            self._rr_notify(f"✅ 目標層改為：{layer}"
+                            f"（世界尚未偵測到，僅本次有效；偵測到後請再設一次以記住）{via}")
+
+    def _effective_layer_info(self) -> dict:
+        """網頁設定頁用：bot **當下真正會用的**目標層 + 這個值的出處。
+
+        在 WebIPC 執行緒上被呼叫（web_server 的 layer_getter），所以只做純讀取：
+        兩個屬性讀 + 一個 dict.get，都是 CPython 原子操作，不 mutate 任何狀態。
+
+        from_world_map 用「map 裡該世界的值 == 現行值」判定，而不是只看 world 在不在
+        map 裡——這樣使用者剛釘完但世界還沒偵測到時，提示文字不會謊稱是記憶值。
+        """
+        world = game_data.current_world_name()
+        mapping = self._rr_sticky_layers
+        return {
+            "effective": self._rr_sticky_layer,
+            "world": world,
+            "from_world_map": bool(world) and mapping.get(world) == self._rr_sticky_layer,
+        }
+
     def _write_sticky_layers(self):
         """寫穿式落盤黏性層 map（2026-07-20）；照 _rr_ledger_append 的目錄建立慣例。"""
         path = cfg.reentry_remote_sticky_layers_path
@@ -5951,18 +6012,7 @@ class Bot:
         k = reply.kind
         prev_phase = ctx.phase if ctx is not None else None
         if k == "layer":
-            self._rr_sticky_layer = reply.layer
-            ctx.sticky_layer = reply.layer
-            self._rr_layer_user_pinned = True     # 2026-07-20：釘住，後續世界偵測不再覆寫使用者選擇
-            world = game_data.current_world_name()
-            new_map = reentry_remote.remember_layer(self._rr_sticky_layers, world, reply.layer)
-            if new_map is not None:
-                self._rr_sticky_layers = new_map
-                self._write_sticky_layers()
-                self._rr_notify(f"✅ 目標層改為：{reply.layer}（已記住 {world} → {reply.layer}）")
-            else:
-                self._rr_notify(f"✅ 目標層改為：{reply.layer}"
-                                f"（世界尚未偵測到，僅本次有效；偵測到後請再設一次以記住）")
+            self._apply_layer_change(reply.layer, source="discord")
         elif k == "void":
             self._rr_void_last(ctx)
         elif k == "skip":

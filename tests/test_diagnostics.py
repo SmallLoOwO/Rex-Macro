@@ -139,3 +139,52 @@ def test_snapshot_path_sequence_survives_identical_windows_clock_ticks(
     _, first = snapshot_path(str(tmp_path), "079_d3_fire")
     _, second = snapshot_path(str(tmp_path), "079_d3_fire")
     assert first != second
+
+
+# ── 第三方 logger 收編（2026-07-26）─────────────────────────────────────────
+
+def _reset_adopted():
+    """把收編的 logger 還原成乾淨狀態（setup_logging 是冪等的，會跳過已設定者）。"""
+    from miningbot.diagnostics import _ADOPTED_LOGGERS
+    for name in _ADOPTED_LOGGERS:
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+            h.close()
+        lg.propagate = True
+
+
+def test_setup_logging_adopts_uvicorn_logger(tmp_path):
+    """uvicorn 的訊息必須進 miningbot.log。
+
+    這是 2026-07-26「/ws 回 404」查了一整輪才找到根因的原因：uvicorn 其實有印
+    `No supported WebSocket library detected...`，但它走 `uvicorn.error` →
+    propagate 到 **root**，而 setup_logging 只掛 handler 在 `miningbot` logger，
+    全專案沒有 basicConfig → root 沒有任何 handler；pythonw 又沒有 stderr，
+    於是答案整個蒸發。跟 H061「daemon thread 無聲死亡」同型。
+    """
+    _reset_adopted()
+    d = str(tmp_path / "logs_uvicorn")
+    setup_logging(d, "INFO")
+    uv = logging.getLogger("uvicorn")
+    assert uv.handlers, "uvicorn logger 沒被收編——它的訊息會掉進沒有 handler 的 root"
+    assert uv.propagate is False, "收編後不該再冒泡到無 handler 的 root"
+
+    logging.getLogger("uvicorn.error").warning(
+        "No supported WebSocket library detected.")
+    for h in uv.handlers:
+        h.flush()
+    body = (tmp_path / "logs_uvicorn" / "miningbot.log").read_text(encoding="utf-8")
+    assert "No supported WebSocket library detected." in body
+    _reset_adopted()
+
+
+def test_setup_logging_adoption_is_idempotent(tmp_path):
+    """重複呼叫不得重複掛 handler（每行訊息會被寫兩次）。"""
+    _reset_adopted()
+    d = str(tmp_path / "logs_idem")
+    setup_logging(d, "INFO")
+    n = len(logging.getLogger("uvicorn").handlers)
+    setup_logging(d, "INFO")
+    assert len(logging.getLogger("uvicorn").handlers) == n
+    _reset_adopted()
