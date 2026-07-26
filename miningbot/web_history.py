@@ -110,17 +110,106 @@ def _episode_id_and_type(record: dict) -> tuple[str, str] | None:
     return None
 
 
-def _build_episode(episode_id: str, ep_type: str, snapshots: list[dict]) -> dict:
-    """把 group 後的 snapshot list 組成 episode dict。"""
+# ── episode 分場門檻（2026-07-26）────────────────────────────────────────────
+#
+# 同一個編號可能對應**兩場不同的回礦**：ledger 佔號修好之前（見 reentry_remote.
+# next_episode_id_from_ledger 的事故說明），沒收尾的 episode 不佔號，於是 07-26
+# 的 13:15 與 18:34 兩場都叫 `reentry_ep26_*`。編號修好之後新資料不會再撞，但
+# **既有快照索引裡的重複永遠在那裡**——時間軸照樣顯示兩組 dir1~dir8。
+#
+# 所以顯示層也要能分場：同編號的快照按時間排好，相鄰兩張間隔超過門檻就切一場。
+# 門檻取 2 小時是保守值——單一 episode 合法地可以拖很久（reroll 無上限，ledger
+# 實錄有 duration 12 分鐘、H051 有卡死 36 分鐘的紀錄），但沒有一場會在中間**完全
+# 不拍任何快照**達兩小時。寧可把兩場併成一場（回到舊行為）也不要把一場切兩半。
+_EPISODE_GAP_S = 2 * 60 * 60
+
+# 類型 → (顯示前綴, 排序權重)。前綴讓「採集 #26」與「回礦 #26」在列表上一眼分得開，
+# 也讓 episode key 不再互撞（舊版兩者都只用裸編號 "26"，/episode?id=26 會撈到
+# last_ts 較新的那個、另一個永遠打不開）。
+_TYPE_PREFIX: dict[str, str] = {"harvest": "採", "reentry": "回"}
+_TYPE_LABEL: dict[str, str] = {"harvest": "採集", "reentry": "回礦"}
+
+
+def episode_key(ep_type: str, episode_no: str, run_ts: float | None = None,
+                run_index: int = 0) -> str:
+    """episode 的唯一識別（URL 用）。``harvest:114`` / ``reentry:26``。
+
+    同編號被切成多場時，第 2 場起附上該場起始時間戳 ``reentry:26@1784...``——
+    用時間戳而不是流水號，是因為流水號會隨「之後又多出一場」而整批位移，
+    玩家收藏的網址就失效了；時間戳綁定那一場本身，永遠穩定。
+    """
+    base = f"{ep_type}:{episode_no}"
+    if run_index > 0 and run_ts is not None:
+        return f"{base}@{int(run_ts)}"
+    return base
+
+
+def episode_label(ep_type: str, episode_no: str, run_ts: float | None = None,
+                  run_index: int = 0) -> str:
+    """列表/詳細頁顯示用的人話標題：``採#114``、``回#26``。
+
+    同編號多場時附日期時間區分（``回#26（07-26 13:15）``）——玩家看到重複編號
+    不會再以為是同一場的快照重複了。
+    """
+    prefix = _TYPE_PREFIX.get(ep_type, "")
+    base = f"{prefix}#{episode_no}" if prefix else str(episode_no)
+    if run_index > 0 and run_ts is not None:
+        import time as _time
+        stamp = _time.strftime("%m-%d %H:%M", _time.localtime(run_ts))
+        return f"{base}（{stamp}）"
+    return base
+
+
+def type_label(ep_type: str) -> str:
+    """type 代碼 → 中文（表格「類型」欄用）。未知類型原樣回傳。"""
+    return _TYPE_LABEL.get(ep_type, ep_type or "")
+
+
+def split_runs(snapshots: list[dict], gap_s: float = _EPISODE_GAP_S) -> list[list[dict]]:
+    """同編號的快照按時間排序後，依 ``gap_s`` 切成多場；回 [[snap, ...], ...]。
+
+    沒有 written_at 的記錄排在最後、且不參與切分（時間未知 ⇒ 無從判斷屬於哪場，
+    歸進最後一場即可，總比整筆丟掉好）。
+    """
+    timed = [s for s in snapshots if isinstance(s.get("written_at"), (int, float))]
+    untimed = [s for s in snapshots if not isinstance(s.get("written_at"), (int, float))]
+    timed.sort(key=lambda s: s["written_at"])
+    runs: list[list[dict]] = []
+    for snap in timed:
+        if runs and snap["written_at"] - runs[-1][-1]["written_at"] < gap_s:
+            runs[-1].append(snap)
+        else:
+            runs.append([snap])
+    if untimed:
+        if runs:
+            runs[-1].extend(untimed)
+        else:
+            runs.append(untimed)
+    return runs
+
+
+def _build_episode(episode_id: str, ep_type: str, snapshots: list[dict],
+                   run_index: int = 0) -> dict:
+    """把 group 後的 snapshot list 組成 episode dict。
+
+    ``harvest_id`` 保留為**裸編號**（不加前綴）——素材檔名用它比對
+    （``auto_<id>_*.json``，見 list_annotations_for_episode），加了前綴就撈不到了。
+    顯示與路由改用 ``key`` / ``label``。
+    """
     ts_list = [
         s.get("written_at") for s in snapshots
         if isinstance(s.get("written_at"), (int, float))
     ]
+    first_ts = min(ts_list) if ts_list else None
     return {
         "harvest_id": episode_id,  # 沿用 brief 欄位名；reentry episode 也用此欄位
         "type": ep_type,
+        "key": episode_key(ep_type, episode_id, first_ts, run_index),
+        "label": episode_label(ep_type, episode_id, first_ts, run_index),
+        "type_label": type_label(ep_type),
+        "run_index": run_index,
         "snapshots": list(snapshots),
-        "first_ts": min(ts_list) if ts_list else None,
+        "first_ts": first_ts,
         "last_ts": max(ts_list) if ts_list else None,
         "count": len(snapshots),
     }
@@ -148,10 +237,12 @@ def load_episodes(
             continue
         groups.setdefault(key, []).append(record)
 
-    episodes = [
-        _build_episode(ep_id, ep_type, snapshots)
-        for (ep_id, ep_type), snapshots in groups.items()
-    ]
+    episodes = []
+    for (ep_id, ep_type), snapshots in groups.items():
+        # 同編號可能是兩場（2026-07-26 事故的既有資料）→ 依時間間隔切開，
+        # 否則詳細頁的時間軸會把兩場的 dir1~dir8 疊成一份「重複」清單。
+        for run_index, run in enumerate(split_runs(snapshots)):
+            episodes.append(_build_episode(ep_id, ep_type, run, run_index))
     # last_ts 為 None 的排到尾部；其餘按 last_ts desc
     episodes.sort(
         key=lambda e: (e["last_ts"] is None, -(e["last_ts"] or 0.0)),
@@ -162,14 +253,20 @@ def load_episodes(
 def load_episode_detail(episode_id: str, snapshot_index_path: str) -> dict | None:
     """回單一 episode 詳細；找不到回 None。
 
-    episode_id 比對 episode dict 的 ``harvest_id`` 欄位（純字串，例如 harvest
-    的 "007" 或 reentry 的 "5"）。多個 episode 同 id（理論上不該發生：type
-    不同的兩個 episode 也會被視為同一筆）→ 回 last_ts 最新那筆。
+    接受兩種識別（2026-07-26）：
+    - **完整 key**（現行）：``harvest:114`` / ``reentry:26`` / ``reentry:26@1784...``
+      ——精確指到一場，type 不同或分場不同都不會互相蓋掉。
+    - **裸編號**（舊網址／舊書籤）：``26``。同編號可能同時存在採集與回礦、也可能
+      被切成多場，一律回 last_ts 最新那筆（維持舊行為，不讓舊連結變 404）。
+
+    舊版只吃裸編號，且註解寫「多個 episode 同 id 理論上不該發生」——實際上
+    `harvest #26` 與 `reentry #26` 完全可以並存，另一筆從此打不開。
     """
-    matches = [
-        e for e in load_episodes(snapshot_index_path)
-        if e["harvest_id"] == episode_id
-    ]
+    episodes = load_episodes(snapshot_index_path)
+    matches = [e for e in episodes if e["key"] == episode_id]
+    if not matches:
+        # 舊網址相容：裸編號比對 harvest_id
+        matches = [e for e in episodes if e["harvest_id"] == episode_id]
     if not matches:
         return None
     if len(matches) == 1:

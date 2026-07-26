@@ -190,15 +190,18 @@ def render_history_html(episodes: list[dict]) -> str:
     篩選 UI：type（all/harvest/reentry）、result、關鍵字（episode_id）。
     result 欄目前 load_episodes 沒給——保留欄位與篩選 UI，未來擴充時連動。
     """
+    # Episode 欄顯示帶類型前綴的 label（採#114 / 回#26），連結用唯一 key。
+    # 舊版兩欄都用裸編號，於是「採集 #26」與「回礦 #26」在列表上長得一模一樣，
+    # 點進去還會互相蓋掉（/episode?id=26 只回其中一個）。
     rows = "".join(
         f'<tr data-id="{_esc(e.get("harvest_id", ""))}"'
         f' data-type="{_esc(e.get("type", ""))}"'
         f' data-result="{_esc(e.get("result", ""))}"'
         f' data-date="{_date_str(e.get("first_ts"))}">'
         # 連詳細頁而不是直接跳標註：先看「這一集發生什麼」才知道要標哪張
-        f'<td><a href="/episode?id={_esc(e.get("harvest_id", ""))}">'
-        f'{_esc(e.get("harvest_id", ""))}</a></td>'
-        f'<td>{_esc(e.get("type", ""))}</td>'
+        f'<td><a href="/episode?id={_url_q(str(e.get("key") or e.get("harvest_id", "")))}">'
+        f'{_esc(e.get("label") or e.get("harvest_id", ""))}</a></td>'
+        f'<td>{_esc(e.get("type_label") or e.get("type", ""))}</td>'
         f'<td class="result">{_esc(e.get("result") or "—")}</td>'
         f'<td>{_format_ts(e.get("first_ts"))}</td>'
         f'<td>{e.get("count", 0)}</td>'
@@ -673,6 +676,9 @@ def render_episode_html(detail: dict, annotations: list[dict]) -> str:
     """
     ep_id = str(detail.get("harvest_id", ""))
     ep_type = str(detail.get("type", ""))
+    # label 帶類型前綴（採#114 / 回#26）；ep_id 維持裸編號，標註連結要用它比對素材檔名。
+    ep_label = str(detail.get("label") or ep_id)
+    ep_type_label = str(detail.get("type_label") or ep_type)
     snaps = list(detail.get("snapshots", []))
     snaps.sort(key=lambda r: r.get("written_at") or 0)
 
@@ -747,7 +753,7 @@ def render_episode_html(detail: dict, annotations: list[dict]) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>episode {_esc(ep_id)}</title>
+<title>episode {_esc(ep_label)}</title>
 <style>{NAV_CSS}
 body {{ font-family: sans-serif; max-width: 1000px; margin: 0 auto 3rem;
        padding: 0 0.6rem; }}
@@ -792,7 +798,7 @@ a {{ color: #0084ff; text-decoration: none; }}
 </head>
 <body>
 {render_nav("/history")}
-<h1>episode {_esc(ep_id)} <span class="meta">（{_esc(ep_type)}）</span></h1>
+<h1>episode {_esc(ep_label)} <span class="meta">（{_esc(ep_type_label)}）</span></h1>
 <p class="meta">{_format_ts(detail.get("first_ts"))}
   ~ {_format_ts(detail.get("last_ts"))}　快照 {detail.get("count", 0)} 張
   ・<a href="/history">← 回列表</a></p>

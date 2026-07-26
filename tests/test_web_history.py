@@ -8,9 +8,12 @@ harvest 標籤開頭是數字（harvest_id 帶數字），reentry 標籤是 ``re
 import json
 
 from miningbot.web_history import (
+    episode_key,
+    episode_label,
     list_annotations_for_episode,
     load_episode_detail,
     load_episodes,
+    split_runs,
 )
 
 
@@ -240,3 +243,129 @@ class TestListAnnotationsForEpisode:
         result = list_annotations_for_episode("5", str(tmp_path))
         assert len(result) == 1
         assert result[0]["image"] == "r.png"
+
+
+# ── 2026-07-26：episode 類型前綴 + 同編號分場 ────────────────────────────────
+#
+# 事故背景：13:15 與 18:34 兩場回礦都拿到 `#26`（ledger 佔號缺陷，見
+# reentry_remote.next_episode_id_from_ledger），快照都叫 `reentry_ep26_dir1..8`
+# ⇒ 詳細頁時間軸出現整組重複的 dir1~dir8。編號已在 bot 端修好，但**既有索引裡的
+# 重複永遠在**，所以顯示層也要能把兩場切開。
+#
+# 另一個獨立缺陷：`harvest #26` 與 `reentry #26` 舊版共用裸編號當 key，
+# `/episode?id=26` 只回其中一個，另一個永遠打不開。
+
+_HOUR = 3600.0
+
+
+class TestEpisodeKeyAndLabel:
+    def test_key_includes_type(self):
+        assert episode_key("harvest", "114") == "harvest:114"
+        assert episode_key("reentry", "26") == "reentry:26"
+
+    def test_label_has_type_prefix(self):
+        assert episode_label("harvest", "114") == "採#114"
+        assert episode_label("reentry", "26") == "回#26"
+
+    def test_second_run_key_is_distinct_and_timestamp_anchored(self):
+        """第 2 場附時間戳：綁定那一場本身，之後再多出幾場也不會位移。"""
+        first = episode_key("reentry", "26", run_ts=1000.0, run_index=0)
+        second = episode_key("reentry", "26", run_ts=20000.0, run_index=1)
+        assert first == "reentry:26"
+        assert second == "reentry:26@20000"
+        assert first != second
+
+    def test_second_run_label_shows_date(self):
+        label = episode_label("reentry", "26", run_ts=1784000000.0, run_index=1)
+        assert label.startswith("回#26（") and label.endswith("）")
+
+
+class TestSplitRuns:
+    def _snap(self, ts, label="reentry_ep26_dir1"):
+        return {"written_at": ts, "label": label, "path": f"/{ts}.png"}
+
+    def test_single_run_stays_whole(self):
+        snaps = [self._snap(t) for t in (1000.0, 1002.0, 1004.0)]
+        assert len(split_runs(snaps)) == 1
+
+    def test_long_gap_splits(self):
+        """實機值：13:15 與 18:34 相隔 5h19m，遠超 2 小時門檻。"""
+        snaps = [self._snap(t) for t in (1000.0, 1002.0, 1000.0 + 5.3 * _HOUR)]
+        runs = split_runs(snaps)
+        assert len(runs) == 2
+        assert len(runs[0]) == 2 and len(runs[1]) == 1
+
+    def test_long_but_continuous_episode_not_split(self):
+        """單一 episode 合法地可拖很久（reroll 無上限、H051 卡死 36 分）——
+        只要中途仍在拍快照就不該被切開。"""
+        snaps = [self._snap(1000.0 + i * 600.0) for i in range(8)]  # 每 10 分一張，共 70 分
+        assert len(split_runs(snaps)) == 1
+
+    def test_runs_sorted_by_time(self):
+        snaps = [self._snap(t) for t in (5000.0, 1000.0)]
+        runs = split_runs(snaps)
+        assert runs[0][0]["written_at"] == 1000.0
+
+    def test_untimed_snapshots_kept(self):
+        snaps = [self._snap(1000.0), {"label": "x", "path": "/x.png"}]
+        runs = split_runs(snaps)
+        assert sum(len(r) for r in runs) == 2
+
+
+class TestDuplicateEpisodeNumbers:
+    def _dirs(self, base_ts, ep=26):
+        return [
+            {"written_at": base_ts + i, "label": f"reentry_ep{ep}_dir{i + 1}",
+             "path": f"/{base_ts}_{i}.png", "harvest_id": None}
+            for i in range(8)
+        ]
+
+    def test_two_runs_same_number_become_two_episodes(self, tmp_path):
+        """事故本體的顯示修復：兩場不再併成一個 episode。"""
+        idx = tmp_path / "snapshot_index.jsonl"
+        _write_jsonl(str(idx), self._dirs(1000.0) + self._dirs(1000.0 + 5.3 * _HOUR))
+        episodes = load_episodes(str(idx))
+        assert len(episodes) == 2
+        assert all(e["count"] == 8 for e in episodes), "每場各自 8 張，不再重複疊加"
+        assert len({e["key"] for e in episodes}) == 2
+
+    def test_each_run_timeline_has_no_duplicate_labels(self, tmp_path):
+        """使用者看到的症狀：時間軸出現兩組 dir1~dir8。"""
+        idx = tmp_path / "snapshot_index.jsonl"
+        _write_jsonl(str(idx), self._dirs(1000.0) + self._dirs(1000.0 + 5.3 * _HOUR))
+        for ep in load_episodes(str(idx)):
+            labels = [s["label"] for s in ep["snapshots"]]
+            assert len(labels) == len(set(labels))
+
+    def test_harvest_and_reentry_same_number_do_not_collide(self, tmp_path):
+        """採集 #26 與回礦 #26 並存時兩邊都要打得開（舊版只回得到一個）。"""
+        idx = tmp_path / "snapshot_index.jsonl"
+        _write_jsonl(str(idx), [
+            {"written_at": 1000.0, "label": "26_aim_cell", "path": "/h.png",
+             "harvest_id": "26"},
+            {"written_at": 2000.0, "label": "reentry_ep26_dir1", "path": "/r.png",
+             "harvest_id": None},
+        ])
+        harvest = load_episode_detail("harvest:26", str(idx))
+        reentry = load_episode_detail("reentry:26", str(idx))
+        assert harvest is not None and harvest["type"] == "harvest"
+        assert reentry is not None and reentry["type"] == "reentry"
+        assert harvest["label"] == "採#26" and reentry["label"] == "回#26"
+
+    def test_bare_id_still_resolves_for_old_links(self, tmp_path):
+        """舊書籤 /episode?id=26 不該變 404。"""
+        idx = tmp_path / "snapshot_index.jsonl"
+        _write_jsonl(str(idx), [
+            {"written_at": 1000.0, "label": "26_a", "path": "/a.png", "harvest_id": "26"},
+        ])
+        assert load_episode_detail("26", str(idx)) is not None
+
+    def test_harvest_id_field_stays_bare_for_fixture_lookup(self, tmp_path):
+        """素材檔名是 `auto_26_*.json`——harvest_id 欄位不可被加上前綴。"""
+        idx = tmp_path / "snapshot_index.jsonl"
+        _write_jsonl(str(idx), [
+            {"written_at": 1000.0, "label": "reentry_ep26_dir1", "path": "/r.png",
+             "harvest_id": None},
+        ])
+        ep = load_episode_detail("reentry:26", str(idx))
+        assert ep["harvest_id"] == "26"

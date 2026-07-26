@@ -322,8 +322,11 @@ def create_app(
         detail = load_episode_detail(id, snapshot_index_path)
         if detail is None:
             return _err(404, f"episode not found: {id}")
+        # 素材檔名用**裸編號**（`auto_26_*.json`），不是 URL 上的 key（`reentry:26`）
+        # ——這裡必須從 detail 取回裸編號，直接把 id 傳下去會一張標註都撈不到。
         annotations = (
-            list_annotations_for_episode(id, fixtures_dir)
+            list_annotations_for_episode(
+                str(detail.get("harvest_id", "")), fixtures_dir)
             if fixtures_dir else []
         )
         return Response(
