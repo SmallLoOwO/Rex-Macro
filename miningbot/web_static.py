@@ -117,6 +117,12 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
              padding: 0.4rem 0.6rem; color: #6a4c00; }}
 .hint.ok {{ background: #eefaf0; border-left: 3px solid #3ba55d;
            padding: 0.4rem 0.6rem; color: #1f6b38; }}
+h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size: 1.1rem; }}
+.keep-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+             gap: 0.2rem 0.6rem; margin: 0.6rem 0; }}
+.keep-grid label {{ display: flex; align-items: center; gap: 0.35rem;
+                   font-weight: normal; margin: 0; font-size: 0.85rem; }}
+.keep-grid input {{ width: auto; flex: 0 0 auto; margin: 0; }}
 </style>
 </head>
 <body>
@@ -172,7 +178,19 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
   <button type="submit">儲存</button>
 </form>
 
+<h2>D2 連續使用</h2>
+<p class="hint">冷卻好就自動再按，範圍自動採礦／削特殊洞穴方塊；跟 Discord <code>掃描</code>/<code>削洞</code>
+指令共用同一份設定。<br>⚠ 掃描與採集流程搶同一條 D2 冷卻，開著可能讓 chill 採集掃不出追蹤框。</p>
+<label class="check"><input type="checkbox" id="radar-scan"> <span>掃描（Cyberscan，D2 左鍵）</span></label>
+<label class="check"><input type="checkbox" id="radar-cave"> <span>削洞（Cave Skim，D2 Z）</span></label>
+
+<h2>保留清單</h2>
+<p class="hint">勾選的礦物事件不會被自動刷新（跟 Discord <code>keep</code>/<code>unkeep</code> 同一份）。</p>
+<div id="keep-list" class="keep-grid">載入中…</div>
+<button type="button" id="keep-clear-btn" style="background:#6d6d6d;">清空保留清單</button>
+
 <div id="status" class="status"></div>
+<div id="player-status" class="status" style="display:none;"></div>
 
 <script>
 const form = document.getElementById('settings-form');
@@ -210,6 +228,92 @@ form.addEventListener('submit', async (e) => {{
     status.textContent = '儲存失敗：' + err.message;
   }}
 }});
+
+// --- D2 連續使用 + 保留清單（2026-07-28）：非 Config 欄位，走 /api/player + /api/keep + /api/radar ---
+const keepListEl = document.getElementById('keep-list');
+const radarScanEl = document.getElementById('radar-scan');
+const radarCaveEl = document.getElementById('radar-cave');
+const keepClearBtn = document.getElementById('keep-clear-btn');
+const playerStatusEl = document.getElementById('player-status');
+
+function showPlayerStatus(text, isError) {{
+  playerStatusEl.style.display = 'block';
+  playerStatusEl.className = 'status' + (isError ? ' error' : '');
+  playerStatusEl.textContent = text;
+}}
+
+async function postJSON(url, body) {{
+  const r = await fetch(url, {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(body),
+  }});
+  if (!r.ok) {{
+    const err = await r.json().catch(() => ({{}}));
+    throw new Error(err.error || String(r.status));
+  }}
+  return r.json();
+}}
+
+async function loadPlayerState() {{
+  try {{
+    const data = await fetch('/api/player').then(r => r.json());
+    radarScanEl.checked = !!(data.radar && data.radar.scan);
+    radarCaveEl.checked = !!(data.radar && data.radar.cave);
+    const kept = new Set(data.keep_ores || []);
+    const catalog = data.ore_catalog || [];
+    keepListEl.innerHTML = '';
+    if (!catalog.length) {{
+      keepListEl.textContent = '（礦名目錄目前是空的——bot 端資料還沒就緒或載入失敗）';
+      return;
+    }}
+    for (const ore of catalog) {{
+      const label = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = kept.has(ore);
+      box.addEventListener('change', async () => {{
+        try {{
+          await postJSON('/api/keep', {{ action: box.checked ? 'add' : 'remove', ore }});
+          showPlayerStatus((box.checked ? '已保留：' : '已取消保留：') + ore, false);
+        }} catch (err) {{
+          box.checked = !box.checked;   // 失敗復原勾選狀態
+          showPlayerStatus('保留清單更新失敗：' + err.message, true);
+        }}
+      }});
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(ore));
+      keepListEl.appendChild(label);
+    }}
+  }} catch (err) {{
+    keepListEl.textContent = '保留清單載入失敗：' + err.message;
+  }}
+}}
+
+async function toggleRadar(which, checkbox) {{
+  try {{
+    await postJSON('/api/radar', {{ which, value: checkbox.checked }});
+    showPlayerStatus((which === 'scan' ? '掃描' : '削洞') + '：' + (checkbox.checked ? '開' : '關'), false);
+  }} catch (err) {{
+    checkbox.checked = !checkbox.checked;
+    showPlayerStatus('D2 開關更新失敗：' + err.message, true);
+  }}
+}}
+radarScanEl.addEventListener('change', () => toggleRadar('scan', radarScanEl));
+radarCaveEl.addEventListener('change', () => toggleRadar('cave', radarCaveEl));
+
+keepClearBtn.addEventListener('click', async () => {{
+  if (!confirm('確定清空整個保留清單？')) return;
+  try {{
+    await postJSON('/api/keep', {{ action: 'clear' }});
+    showPlayerStatus('保留清單已清空', false);
+    loadPlayerState();
+  }} catch (err) {{
+    showPlayerStatus('清空失敗：' + err.message, true);
+  }}
+}});
+
+loadPlayerState();
 </script>
 </body>
 </html>
@@ -936,6 +1040,14 @@ header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
 #toolbar button.act { background: #4a4a4a; }
 #toolbar button.skip { background: #6d6d6d; }
 #toolbar button.confirm { background: #1f7a3d; }
+/* 遙控器列（2026-07-28）：跟 Discord 遙控器（▶️⏸️⚡📷🏠）同一套動作，任何時候都在，
+   不像下面 #toolbar 那樣只在特定介入流程才出現——玩家隨時可能想暫停/看畫面。 */
+#remote-bar { display: flex; gap: 0.35rem; align-items: center; padding: 0.4rem 0.6rem;
+              background: #1f1f1f; border-bottom: 1px solid #444; overflow-x: auto; }
+#remote-bar button { flex: 0 0 auto; padding: 0.4rem 0.6rem; border: 0; border-radius: 6px;
+                     background: #3a3a3a; color: #eee; font-size: 0.85rem; cursor: pointer; }
+#status-line { padding: 0.3rem 1rem; background: #262626; font-size: 0.78rem;
+              color: #9ad; border-bottom: 1px solid #333; line-height: 1.5; }
 #dir-label { flex: 0 0 auto; font-size: 0.95rem; font-weight: bold;
              min-width: 5.5rem; text-align: center; }
 /* 方位小圓點：一眼看出總共幾張、現在第幾張、哪些已經看過 */
@@ -957,6 +1069,14 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   <strong>MiningBot 介入面板</strong>
   <span id="status">等待 bot 事件…</span>
 </header>
+<div id="remote-bar">
+  <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
+  <button id="rc-pause" type="button" title="暫停（等同 Ctrl+Q）">&#9208;&#65039; 暫停</button>
+  <button id="rc-ability" type="button" title="遊戲內按一次 X">&#9889; 能力</button>
+  <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
+  <button id="rc-reenter" type="button" title="手動觸發回礦">&#127968; 手動回礦</button>
+</div>
+<div id="status-line">連線中…</div>
 <div id="toolbar">
   <button id="prev" type="button" title="上一個方位">&#9664;</button>
   <span id="dir-label">&#8212;</span>
@@ -989,6 +1109,12 @@ const rerollBtn = document.getElementById('reroll');
 const confirmBtn = document.getElementById('confirm');
 const voidBtn = document.getElementById('void');
 const skipBtn = document.getElementById('skip');
+const statusLineEl = document.getElementById('status-line');
+const rcResumeBtn = document.getElementById('rc-resume');
+const rcPauseBtn = document.getElementById('rc-pause');
+const rcAbilityBtn = document.getElementById('rc-ability');
+const rcFrameBtn = document.getElementById('rc-frame');
+const rcReenterBtn = document.getElementById('rc-reenter');
 
 const CANVAS_NATIVE = [1920, 1080];
 let scale = 1;          // fit-to-container 初始 scale
@@ -1003,6 +1129,7 @@ let frames = [];
 let pendingMeta = null;
 let curFrame = 0;
 let seen = new Set();
+let pendingFrameSnapshot = false;  // 📷 即時畫面：下一張 binary 是單張快照，不進 frames[]
 
 const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
 function setStatus(text, kind) {
@@ -1130,6 +1257,19 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (e) => {
     if (e.data instanceof ArrayBuffer) {
+      // 📷 即時畫面優先判斷：跟候選/回礦的圖走不同顯示邏輯，不進 frames[]
+      // （那是「翻頁看方位」用的陣列，即時畫面只有一張、也不該被當成候選點擊）。
+      if (pendingFrameSnapshot) {
+        pendingFrameSnapshot = false;
+        // 清掉 currentEvent：這張圖跟任何介入流程無關，點下去不該誤送 fire_at/
+        // reentry_click——sendClick 本來就會在 currentEvent 為空時擋下並提示。
+        currentEvent = null;
+        frames = [{ img: null, dir: null }];
+        curFrame = 0; seen = new Set();
+        loadImage(e.data, 0);
+        setStatus('📷 即時畫面（僅供查看，不能點擊送出）', 'idle');
+        return;
+      }
       // 有 meta＝八方位其中一張；沒有＝舊的單幀路徑（harvest 開火用）
       if (pendingMeta) {
         const slot = pendingMeta.index;
@@ -1189,7 +1329,27 @@ function connect() {
         currentEvent = null;
         for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
       }
+    } else if (p.event === 'FRAME_SNAPSHOT') {
+      pendingFrameSnapshot = true;   // 下一個 binary frame 是快照，見上面 ArrayBuffer 分支
+    } else if (p.event === 'STATUS') {
+      // 跟 Discord 遙控器 embed 同一份資料來源（main._status_snapshot）——
+      // (paused, state) 一變就會廣播，這裡只是換一種排版顯示。
+      const up = p.uptime_s || 0;
+      const h = Math.floor(up / 3600), m = Math.floor((up % 3600) / 60);
+      const s = p.stats || {}, r = p.radar || {};
+      statusLineEl.textContent =
+        `● ${p.state || '?'}${p.paused ? '（暫停）' : ''}　${p.last_action || ''}　`
+        + `運行 ${h}h${String(m).padStart(2, '0')}m　音訊 ${(p.audio_score || 0).toFixed(2)}　`
+        + `boost ${s.boosts || 0}・刷新 ${s.rerolls || 0}・稀有 ${s.rares || 0}・卡住 ${s.stuck || 0}　`
+        + `掃描${r.scan ? '開' : '關'}／削洞${r.cave ? '開' : '關'}`;
+      rcResumeBtn.disabled = !p.paused && p.state !== 'NEEDS_HUMAN' && p.state !== 'RESET_WAIT';
+      rcPauseBtn.disabled = !!p.paused;
+    } else if (p.event === 'STATUS_NOTE') {
+      setStatus(p.text || '', 'need');
     }
+  };
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'command', payload: { cmd: 'request_status' } }));
   };
   ws.onclose = () => {
     setStatus('WebSocket 斷線，5s 後重連…', 'fail');
@@ -1316,6 +1476,13 @@ skipBtn.addEventListener('click', () => {
   sendControl('skip', '跳過');
   currentEvent = null;
 });
+// 遙控器列（2026-07-28）：跟 Discord ▶️⏸️⚡📷🏠 對應，任何時候都能按，
+// 不像上面那排要等 INTERVENTION_NEEDED 才出現。
+rcResumeBtn.addEventListener('click', () => sendControl('resume', '繼續'));
+rcPauseBtn.addEventListener('click', () => sendControl('pause', '暫停'));
+rcAbilityBtn.addEventListener('click', () => sendControl('ability', '能力'));
+rcFrameBtn.addEventListener('click', () => sendControl('request_frame', '即時畫面'));
+rcReenterBtn.addEventListener('click', () => sendControl('reenter', '手動回礦'));
 // 鍵盤左右鍵切方位（桌機看八張圖時比點按鈕快）
 window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft') showFrame(curFrame - 1);

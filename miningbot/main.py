@@ -1686,6 +1686,12 @@ class Bot:
         if self._remote_message_id and self._remote_last_shown != (self.paused, self.state.value):
             if self._remote_edit_throttle.allow_edit(time.monotonic()):
                 self._edit_remote_control()
+        # 網頁常駐狀態鏡射（2026-07-28）：跟 Discord 遙控器 PATCH 用同一個變化條件，
+        # 但獨立追蹤——不依賴 _remote_message_id（那是 Discord embed 是否已存在，
+        # 跟網頁有沒有人連著無關）、也不跟 Discord API 節流共用（WS 廣播不吃 rate limit）。
+        if getattr(self, "_web_status_last_shown", None) != (self.paused, self.state.value):
+            self._web_status_last_shown = (self.paused, self.state.value)
+            self._broadcast_status()
         # 2. 新訊息命令輪詢
         msgs = notify.fetch_messages(
             cfg.discord_bot_token, cfg.discord_channel_id,
@@ -2611,6 +2617,7 @@ class Bot:
                         # 目標層與 Discord `層` 指令同步：設定頁顯示執行期有效層
                         # （sticky_layers[world] 優先），而不是 cfg 的 fallback 值。
                         layer_getter=self._effective_layer_info,
+                        player_state_getter=self._player_state_snapshot,
                     )
                     self._web_thread.start()
                     if self._web_thread.actual_port > 0:
@@ -3358,12 +3365,87 @@ class Bot:
                 self.logger.info("web: 目標層改為 %s（已同步每世界黏性層）", layer.strip())
             else:
                 self.logger.warning("web: set_layer 值不合法，忽略: %r", layer)
-        for cmd in ("pause", "resume", "request_frame"):
-            reply = self._web_pending.pop(f"control:{cmd}")
-            if reply is not None:
-                # P4 將在這裡分流：pause→self.paused=True、resume→False、
-                # request_frame→broadcast 最新 frame。P1 只記 log 確認框架運作。
-                self.logger.info("web: 收到控制命令 %s（P1 未接業務邏輯）: %r", cmd, reply)
+        # 2026-07-28：遙控器五顆鍵（▶️⏸️⚡📷🏠）網頁對應版——pause/resume/request_frame
+        # 從 P1 就留著沒接（"P1 未接業務邏輯"），玩家在網頁完全無法暫停/繼續/看畫面。
+        # 這裡直接照抄 _poll_remote_reactions 對應分支的邏輯（同樣是背景執行緒觸發，
+        # 只是輪詢執行緒→主迴圈的差別；_pause/_resume 本身就已被 Discord 輪詢執行緒
+        # 直接呼叫，同一顆函式讓網頁呼叫沒有新增風險）。
+        if self._web_pending.pop("control:pause") is not None:
+            self._pause()
+            self.log_discord.info("web ⏸ pause")
+        if self._web_pending.pop("control:resume") is not None:
+            was_blocked = is_blocked_from_mining(self.state, self.paused)
+            self.human_cleared = True
+            self._rr_skip_on_pause_resume("web resume")
+            if self.paused:
+                self._resume()
+            self.log_discord.info("web ▶️ resume（was_blocked=%s）", was_blocked)
+        if self._web_pending.pop("control:ability") is not None:
+            self._pending_ability = True
+            self.log_discord.info("web ⚡ ability（queued state=%s）", self.state.value)
+        if self._web_pending.pop("control:reenter") is not None:
+            ok_re, reason = can_accept_manual_reentry(self.state, self._reentry_active())
+            if not ok_re:
+                self._broadcast_status_note(f"❌ 回礦未接受：{reason}")
+            else:
+                self._manual_reentry = True
+                if self.paused:
+                    self.paused = False
+                    self._antiafk_last = 0.0
+                self._broadcast_status_note("⛏ 手動回礦已排入 → 下個 tick 進 REENTRY")
+            self.log_discord.info("web 🏠 reenter -> accepted=%s state=%s",
+                                  ok_re, self.state.value)
+        if self._web_pending.pop("control:request_frame") is not None:
+            self._broadcast_frame_snapshot()
+            self.log_discord.info("web 📷 request_frame")
+        if self._web_pending.pop("control:request_status") is not None:
+            # 新連線上來看不到歷史——常駐狀態只在 (paused, state) 變化時才廣播，
+            # 剛連上的 client 得自己要一次，不然要等下次狀態變化才看得到東西。
+            self._broadcast_status()
+        # D2 連續使用開關（掃描/削洞，2026-07-28）：跟 Discord `掃描`/`削洞` 指令
+        # 同一份持久化（radar_toggle.json）——照抄該指令的「開啟時清上次觸發時刻」
+        # 邏輯，否則網頁剛開啟要等到舊冷卻時刻才會生效。
+        reply = self._web_pending.pop("control:radar_toggle")
+        if reply is not None:
+            which = reply.get("which")
+            value = reply.get("value")
+            if which in ("scan", "cave") and isinstance(value, bool):
+                self._radar_toggle[which] = value
+                self._save_radar_toggle()
+                if value:
+                    self._radar_last[which] = 0.0
+                self.logger.info("web: %s toggle -> %s", which, value)
+                self._broadcast_status()   # 玩家馬上要看到切換生效
+            else:
+                self.logger.warning("web: radar_toggle 值不合法，忽略: %r", reply)
+        # 保留清單（keep/unkeep/clear，2026-07-28）：同一份 keep_ores.json，
+        # fuzzy_match_ore 沿用 Discord `keep`/`unkeep` 的模糊比對（網頁前端傳的是
+        # checkbox 的完整礦名，理論上都能精準比對，但保留模糊比對容錯字元差異）。
+        reply = self._web_pending.pop("control:keep_add")
+        if reply is not None:
+            ore = game_data.fuzzy_match_ore(str(reply.get("ore", "")))
+            if ore:
+                self._keep_ores.add(ore)
+                self._save_keep_ores()
+                self.logger.info("web: keep 新增 %s -> %s", ore, sorted(self._keep_ores))
+                self._broadcast_status()
+            else:
+                self.logger.warning("web: keep_add 找不到礦物: %r", reply.get("ore"))
+        reply = self._web_pending.pop("control:keep_remove")
+        if reply is not None:
+            ore = game_data.fuzzy_match_ore(str(reply.get("ore", "")))
+            if ore and ore in self._keep_ores:
+                self._keep_ores.discard(ore)
+                self._save_keep_ores()
+                self.logger.info("web: keep 移除 %s -> %s", ore, sorted(self._keep_ores))
+                self._broadcast_status()
+            else:
+                self.logger.warning("web: keep_remove 找不到/未保留: %r", reply.get("ore"))
+        if self._web_pending.pop("control:keep_clear") is not None:
+            self._keep_ores.clear()
+            self._save_keep_ores()
+            self.logger.info("web: keep 清空")
+            self._broadcast_status()
         # P3 玩家設定面板（spec §6）：WebSocket 命令 config_set 走 web_pending 異步處理
         # （HTTP POST /api/config 是同步路徑，由 web_server FastAPI route 直接處理；
         # 兩條路徑都呼叫同一個 setattr + save_overrides——重複是有意的，保持 web_server
@@ -3453,6 +3535,65 @@ class Bot:
                 getattr(frame, "shape", None))
             return None
         return buf.tobytes()
+
+    # --- 2026-07-28：遙控器/狀態網頁鏡射（廣播 helper，全部沒 web thread 就 no-op）---
+
+    def _status_snapshot(self) -> dict:
+        """跟 Discord `status` 指令讀同一批欄位——兩邊顯示的資料來源是同一份，
+        不是各自組字串各自維護，天然不會有「網頁跟 Discord 顯示不一致」的問題。
+        """
+        try:
+            audio_score = self.listener.latest_score()
+        except Exception:
+            audio_score = 0.0
+        return {
+            "state": self.state.value,
+            "paused": self.paused,
+            "last_action": self.last_action,
+            "uptime_s": int(time.time() - self._started),
+            "audio_score": audio_score,
+            "stats": dict(self.stats),
+            "radar": dict(getattr(self, "_radar_toggle", {})),
+            "keep_ores": sorted(getattr(self, "_keep_ores", set())),
+        }
+
+    def _broadcast_status(self) -> None:
+        """推 STATUS 事件給 web client——遙控器 embed 原地 PATCH 的網頁版。"""
+        web_thread = getattr(self, "_web_thread", None)
+        if web_thread is None:
+            return
+        from .web_protocol import WebMessage
+        registry = web_thread.app.state.registry
+        payload = {"event": "STATUS"}
+        payload.update(self._status_snapshot())
+        registry.broadcast(WebMessage(type="event", payload=payload))
+
+    def _broadcast_status_note(self, text: str) -> None:
+        """一次性文字提示（🏠 手動回礦接受/拒絕等）——不是常駐狀態，是單則訊息。"""
+        web_thread = getattr(self, "_web_thread", None)
+        if web_thread is None:
+            return
+        from .web_protocol import WebMessage
+        registry = web_thread.app.state.registry
+        registry.broadcast(WebMessage(
+            type="event", payload={"event": "STATUS_NOTE", "text": text}))
+
+    def _broadcast_frame_snapshot(self) -> None:
+        """📷 遙控器反應的網頁版：抓當下畫面推給 web client，不落地存檔
+        （對比 Discord 📷 用 sampler.save_sample 存編號樣本——那是校準素材用途，
+        這裡純粹「讓玩家看一眼現在畫面」，不需要留檔）。
+        """
+        web_thread = getattr(self, "_web_thread", None)
+        if web_thread is None:
+            return
+        frame = capture.grab()
+        png = self._encode_png(frame)
+        if png is None:
+            return
+        from .web_protocol import WebMessage
+        registry = web_thread.app.state.registry
+        registry.broadcast(WebMessage(type="event", payload={"event": "FRAME_SNAPSHOT"}))
+        registry.broadcast_binary(png)
 
     def _send_web_intervention_frames(self, flow: str, routing_key: str,
                                       frames, ctx_summary: str,
@@ -5931,6 +6072,26 @@ class Bot:
             "effective": self._rr_sticky_layer,
             "world": world,
             "from_world_map": bool(world) and mapping.get(world) == self._rr_sticky_layer,
+        }
+
+    def _player_state_snapshot(self) -> dict:
+        """網頁設定頁用：保留清單 + 雷達開關現值 + 礦名目錄（2026-07-28）。
+
+        在 WebIPC 執行緒上被呼叫（web_server 的 player_state_getter）——比照
+        `_effective_layer_info`，只做純讀取。`_keep_ores`/`_radar_toggle` 是
+        Discord 執行緒也會直接寫的既有欄位（見 `_handle_discord_command`），
+        跨執行緒讀取沒有新增風險，是既有慣例的延伸。
+        """
+        try:
+            catalog = sorted(dict.fromkeys(
+                info["ore"] for info in game_data.rare_ores().values()))
+        except Exception as e:
+            self.logger.warning("web: ore_catalog 撈取失敗（回空清單）: %s", e)
+            catalog = []
+        return {
+            "keep_ores": sorted(self._keep_ores),
+            "radar": dict(self._radar_toggle),
+            "ore_catalog": catalog,
         }
 
     def _write_sticky_layers(self):

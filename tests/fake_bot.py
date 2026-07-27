@@ -106,6 +106,8 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._ping_messenger = None
     bot._pending_ping_mid = {}
     bot._mine_resetting = False
+    bot._rr_ctx = None
+    bot._pending_aim = None
     for name in bind:
         setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     for key, value in attrs.items():

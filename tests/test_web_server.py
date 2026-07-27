@@ -306,12 +306,12 @@ def test_webipc_thread_starts_and_serves_websocket(app_parts, monkeypatch):
 
 
 def test_main_loop_consumes_web_pending_at_safe_point(tmp_path):
-    """bot 主迴圈 safe point 會 pop web_pending 的控制類命令。
+    """bot 主迴圈 safe point 會 pop web_pending 的控制類命令，並真的執行動作。
 
-    2026-07-26 補回（原 P1 skip，理由「fake bot 設計依 main.py 結構」）。
-    控制類（pause / resume / request_frame）目前只記 log 不接業務邏輯——這是**設計**
-    而非未完成：spec §2 的分工表明列「挖礦中遙控器（暫停…）Discord ✅ 主用／網頁
-    不接手」，網頁端也沒有這幾顆按鈕。本測試鎖住的是「pop 得到、且不會漏進佇列」。
+    2026-07-28：pause/resume/request_frame 從 P1 就只記 log 不接業務邏輯的死樁
+    補上——跟 Discord 遙控器 ▶️/⏸️/📷 走同一套 `_pause`/`_resume`/
+    `_broadcast_frame_snapshot`（這裡 stub 掉驗證有被呼叫，內部行為由既有
+    `_pause`/`_resume` 呼叫端信任，不在此重測）。
 
     fire_at / reentry_click 不在這裡消費（各狀態處理器自取），一併驗它們**留著**。
     """
@@ -320,22 +320,237 @@ def test_main_loop_consumes_web_pending_at_safe_point(tmp_path):
 
     pending = PendingReplies()
     pending.push("control:pause", {"cmd": "pause"})
-    pending.push("control:resume", {"cmd": "resume"})
     pending.push("control:request_frame", {"cmd": "request_frame"})
     pending.push("harvest:007", {"x": 1, "y": 2})      # 狀態處理器自取，不該被清掉
 
+    calls = []
     bot = make_fake_bot(
         bind=["_consume_web_pending"],
         _web_pending=pending,
         _overrides_path=str(tmp_path / "config_overrides.json"),
+        _pause=lambda: calls.append("pause"),
+        _resume=lambda: calls.append("resume"),
+        _broadcast_frame_snapshot=lambda: calls.append("request_frame"),
     )
     bot._consume_web_pending()
 
+    assert calls == ["pause", "request_frame"]
     assert pending.pop("control:pause") is None, "pause 應已被主迴圈消費"
-    assert pending.pop("control:resume") is None
     assert pending.pop("control:request_frame") is None
     assert pending.pop("harvest:007") == {"x": 1, "y": 2}, (
         "fire_at reply 必須留給 awaiting_fine 狀態處理器自取，不可在 safe point 清掉")
+
+
+def test_main_loop_consumes_web_resume_when_paused(tmp_path):
+    """resume 只在 self.paused 時才真的呼叫 _resume（比照 Discord `resume` 指令）。"""
+    from miningbot.states import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:resume", {"cmd": "resume"})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        state=State.NEEDS_HUMAN,
+        paused=True,
+        human_cleared=False,
+        _rr_skip_on_pause_resume=lambda source: calls.append(("skip", source)),
+        _resume=lambda: calls.append("resume"),
+    )
+    bot._consume_web_pending()
+
+    assert bot.human_cleared is True
+    assert calls == [("skip", "web resume"), "resume"]
+
+
+def test_main_loop_consumes_web_ability(tmp_path):
+    from miningbot.states import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:ability", {"cmd": "ability"})
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        state=State.MINING,
+        _pending_ability=False,
+    )
+    bot._consume_web_pending()
+
+    assert bot._pending_ability is True
+
+
+def test_main_loop_consumes_web_reenter_accepted(tmp_path):
+    """🏠 手動回礦：接受時排 _manual_reentry，暫停中順便解除。"""
+    from miningbot.states import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:reenter", {"cmd": "reenter"})
+    notes = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        state=State.MINING,
+        paused=True,
+        _manual_reentry=False,
+        _reentry_active=lambda: True,
+        _antiafk_last=123.0,
+        _broadcast_status_note=lambda text: notes.append(text),
+    )
+    bot._consume_web_pending()
+
+    assert bot._manual_reentry is True
+    assert bot.paused is False
+    assert bot._antiafk_last == 0.0
+    assert notes == ["⛏ 手動回礦已排入 → 下個 tick 進 REENTRY"]
+
+
+def test_main_loop_consumes_web_reenter_rejected(tmp_path):
+    """狀態不允許時（例如已在 REENTRY 中）——不排隊，只回一則拒絕說明。"""
+    from miningbot.states import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:reenter", {"cmd": "reenter"})
+    notes = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        state=State.REENTRY,
+        paused=False,
+        _manual_reentry=False,
+        _reentry_active=lambda: True,
+        _broadcast_status_note=lambda text: notes.append(text),
+    )
+    bot._consume_web_pending()
+
+    assert bot._manual_reentry is False
+    assert notes and notes[0].startswith("❌ 回礦未接受：")
+
+
+def test_main_loop_consumes_web_radar_toggle(tmp_path):
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:radar_toggle", {"which": "scan", "value": True})
+    saved = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        _radar_toggle={"scan": False, "cave": False},
+        _radar_last={"scan": 999.0, "cave": 0.0},
+        _save_radar_toggle=lambda: saved.append(dict(bot._radar_toggle)),
+        _broadcast_status=lambda: None,
+    )
+    bot._consume_web_pending()
+
+    assert bot._radar_toggle == {"scan": True, "cave": False}
+    assert bot._radar_last["scan"] == 0.0, "開啟時要清上次觸發時刻，不然要等舊冷卻"
+    assert saved == [{"scan": True, "cave": False}]
+
+
+def test_main_loop_consumes_web_radar_toggle_rejects_bad_payload(tmp_path):
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:radar_toggle", {"which": "bogus", "value": True})
+    saved = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        _radar_toggle={"scan": False, "cave": False},
+        _save_radar_toggle=lambda: saved.append(1),
+    )
+    bot._consume_web_pending()
+
+    assert bot._radar_toggle == {"scan": False, "cave": False}
+    assert saved == []
+
+
+def test_main_loop_consumes_web_keep_add_remove_clear(tmp_path, monkeypatch):
+    import miningbot.main as main_mod
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    monkeypatch.setattr(main_mod.game_data, "fuzzy_match_ore",
+                        lambda q: "Riches" if q.lower() == "riches" else None)
+    pending = PendingReplies()
+    pending.push("control:keep_add", {"ore": "riches"})
+    saved = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        _keep_ores=set(),
+        _save_keep_ores=lambda: saved.append(set(bot._keep_ores)),
+        _broadcast_status=lambda: None,
+    )
+    bot._consume_web_pending()
+    assert bot._keep_ores == {"Riches"}
+    assert saved == [{"Riches"}]
+
+    pending.push("control:keep_remove", {"ore": "riches"})
+    bot._consume_web_pending()
+    assert bot._keep_ores == set()
+
+    bot._keep_ores = {"Riches", "Toppatrick"}
+    pending.push("control:keep_clear", {})
+    bot._consume_web_pending()
+    assert bot._keep_ores == set()
+
+
+def test_main_loop_consumes_web_keep_add_unknown_ore_ignored(tmp_path, monkeypatch):
+    import miningbot.main as main_mod
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    monkeypatch.setattr(main_mod.game_data, "fuzzy_match_ore", lambda q: None)
+    pending = PendingReplies()
+    pending.push("control:keep_add", {"ore": "not_a_real_ore"})
+    saved = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        _keep_ores=set(),
+        _save_keep_ores=lambda: saved.append(1),
+    )
+    bot._consume_web_pending()
+
+    assert bot._keep_ores == set()
+    assert saved == []
+
+
+def test_main_loop_consumes_web_request_status(tmp_path):
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:request_status", {})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _overrides_path=str(tmp_path / "config_overrides.json"),
+        _broadcast_status=lambda: calls.append(1),
+    )
+    bot._consume_web_pending()
+
+    assert calls == [1]
 
 
 def test_consume_web_pending_noop_without_web():
@@ -472,3 +687,121 @@ class TestConnectionRegistryReplay:
                 assert msg["payload"]["routing_key"] == "harvest:115"
         finally:
             loop.call_soon_threadsafe(loop.stop)
+
+
+# --- 2026-07-28：_status_snapshot / _player_state_snapshot / 廣播 helper ---
+
+
+def test_status_snapshot_reads_same_fields_as_discord_status(tmp_path):
+    """跟 Discord `status` 指令讀同一批欄位——這裡鎖住欄位形狀，避免兩邊之後跑偏。"""
+    from miningbot.states import State
+    from tests.fake_bot import make_fake_bot
+
+    bot = make_fake_bot(
+        bind=["_status_snapshot"],
+        state=State.MINING,
+        paused=False,
+        last_action="挖礦中",
+        _started=100.0,
+        stats={"boosts": 3, "rerolls": 1, "rares": 2, "stuck": 0},
+        _radar_toggle={"scan": True, "cave": False},
+        _keep_ores={"Riches", "Toppatrick"},
+        listener=type("L", (), {"latest_score": lambda self: 0.42})(),
+    )
+    import miningbot.main as main_mod
+    now = 160.0
+    orig_time = main_mod.time.time
+    main_mod.time.time = lambda: now
+    try:
+        snap = bot._status_snapshot()
+    finally:
+        main_mod.time.time = orig_time
+
+    assert snap["state"] == "MINING"
+    assert snap["paused"] is False
+    assert snap["uptime_s"] == 60
+    assert snap["audio_score"] == 0.42
+    assert snap["stats"] == {"boosts": 3, "rerolls": 1, "rares": 2, "stuck": 0}
+    assert snap["radar"] == {"scan": True, "cave": False}
+    assert snap["keep_ores"] == ["Riches", "Toppatrick"]
+
+
+def test_status_snapshot_tolerates_audio_score_failure():
+    from tests.fake_bot import make_fake_bot
+
+    class _BoomListener:
+        def latest_score(self):
+            raise RuntimeError("no audio device")
+
+    bot = make_fake_bot(
+        bind=["_status_snapshot"],
+        state=None, paused=False, last_action="", _started=0.0,
+        stats={}, _radar_toggle={}, _keep_ores=set(),
+        listener=_BoomListener(),
+    )
+    bot.state = type("S", (), {"value": "MINING"})()
+
+    snap = bot._status_snapshot()
+
+    assert snap["audio_score"] == 0.0
+
+
+def test_player_state_snapshot_reads_ore_catalog(monkeypatch):
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+
+    monkeypatch.setattr(main_mod.game_data, "rare_ores", lambda: {
+        "a": {"ore": "Riches"}, "b": {"ore": "Toppatrick"}, "c": {"ore": "Riches"},
+    })
+    bot = make_fake_bot(
+        bind=["_player_state_snapshot"],
+        _keep_ores={"Riches"},
+        _radar_toggle={"scan": False, "cave": True},
+    )
+    snap = bot._player_state_snapshot()
+
+    assert snap["keep_ores"] == ["Riches"]
+    assert snap["radar"] == {"scan": False, "cave": True}
+    assert snap["ore_catalog"] == ["Riches", "Toppatrick"], "去重＋保序"
+
+
+def test_broadcast_status_noop_without_web_thread():
+    """沒 web thread（沒人連著）——no-op，不炸。"""
+    from tests.fake_bot import make_fake_bot
+
+    bot = make_fake_bot(bind=["_broadcast_status", "_status_snapshot"])
+    bot._broadcast_status()   # 不丟例外即通過
+
+
+def test_broadcast_status_sends_status_event():
+    from tests.fake_bot import make_fake_bot, FakeWebThread
+
+    bot = make_fake_bot(
+        bind=["_broadcast_status"],
+        _web_thread=FakeWebThread(),
+        _status_snapshot=lambda: {"state": "MINING", "paused": False},
+    )
+    bot._broadcast_status()
+
+    payloads = bot._web_thread.registry.payloads("STATUS")
+    assert len(payloads) == 1
+    assert payloads[0]["state"] == "MINING"
+
+
+def test_broadcast_frame_snapshot_sends_meta_then_binary(monkeypatch):
+    import numpy as np
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot, FakeWebThread
+
+    frame = np.zeros((4, 4, 3), np.uint8)
+    monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
+    bot = make_fake_bot(
+        bind=["_broadcast_frame_snapshot", "_encode_png"],
+        _web_thread=FakeWebThread(),
+        log_discord=__import__("logging").getLogger("test"),
+    )
+    bot._broadcast_frame_snapshot()
+
+    calls = bot._web_thread.registry.calls
+    assert len(calls) == 1
+    assert calls[0].payload == {"event": "FRAME_SNAPSHOT"}

@@ -87,7 +87,13 @@ Search symbols instead of line numbers:
 - Web UI: `_web_pending`, `_web_fallback`, `_web_thread`, `_consume_web_pending`,
   `_execute_remote_fire_from_web`, `_rr_click_from_web`, `_reentry_await_player_click`,
   `_send_web_intervention_event`, `_await_web_pointer_reply`, `_save_auto_fixture`,
-  `_resolve_ping_if_any`, `_send_needs_human_ping`.
+  `_resolve_ping_if_any`, `_send_needs_human_ping`, `_handle_web_aim_click`,
+  `_push_web_aim_candidates`.
+- Web 遙控器鏡射（2026-07-28，跟 Discord ▶️⏸️⚡📷🏠 對應）：`_status_snapshot`,
+  `_player_state_snapshot`, `_broadcast_status`, `_broadcast_status_note`,
+  `_broadcast_frame_snapshot`；`_consume_web_pending` 內對應
+  `control:pause/resume/ability/reenter/request_frame/request_status/
+  radar_toggle/keep_add/keep_remove/keep_clear` 分支。
 
 ## DEPENDENCY AND THREADING RULES
 
