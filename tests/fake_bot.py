@@ -34,6 +34,15 @@ class RecordingRegistry:
     def broadcast(self, msg):
         self.calls.append(msg)
 
+    def broadcast_binary(self, data):
+        pass
+
+    def begin_intervention_replay(self):
+        pass
+
+    def end_intervention_replay(self):
+        pass
+
     def payloads(self, event=None):
         """回收到的 payload dict；給 event 名就只回該事件。"""
         out = [c.payload for c in self.calls if hasattr(c, "payload")]

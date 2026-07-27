@@ -141,11 +141,25 @@ def parse_fire_at_payload(payload: dict) -> dict | None:
     x/y 範圍 [0, 1920) / [0, 1080)。座標空間還原交給 client 端 JS。
 
     接受 harvest_id（harvest flow）或 attempt_id（reentry flow）。
+
+    2026-07-27 多帶兩個**選用**欄位（harvest 採集放棄候選清單用）：
+    - ``dir``（1~8）：玩家點的是候選疊圖裡的第幾張方位，同 reentry_click 慣例。
+    - ``layer``（"mid"/"up"/"down"）：該候選疊圖拍攝時的俯仰層。
+    兩者都缺或不合法就不帶——沿用原本「當下畫面直接開火」行為，向下相容舊 client。
     """
-    return _parse_pointer_payload(
+    parsed = _parse_pointer_payload(
         payload, "fire_at",
         id_keys=("harvest_id", "attempt_id"),
     )
+    if parsed is None:
+        return None
+    d = payload.get("dir")
+    if isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 8:
+        parsed["dir"] = d
+    layer = payload.get("layer")
+    if isinstance(layer, str) and layer in ("mid", "up", "down"):
+        parsed["layer"] = layer
+    return parsed
 
 
 def parse_reentry_click_payload(payload: dict) -> dict | None:

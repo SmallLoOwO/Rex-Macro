@@ -453,6 +453,12 @@ class _FakeRegistry:
     def broadcast_binary(self, data):
         pass
 
+    def begin_intervention_replay(self):
+        pass
+
+    def end_intervention_replay(self):
+        pass
+
 
 class _FakeWebThread:
     """最低限度模擬 WebIPCThread.app.state.registry。"""
@@ -487,6 +493,7 @@ def _build_stub_bot_for_reentry(monkeypatch):
     bot._focus_roblox = lambda: True
     bot._pending_reentry = None
     bot._web_intervention_mid = None
+    bot._web_escalate = {}
     bot._web_url = lambda: "http://test:8765"
     # capture.grab 在主迴圈 thread 上跑，monkeypatch module attr 即可
     monkeypatch.setattr(main_mod.capture, "grab", lambda: object())
@@ -494,6 +501,9 @@ def _build_stub_bot_for_reentry(monkeypatch):
     monkeypatch.setattr(main_mod.notify, "send_message_with_id",
                         lambda *a, **kw: (True, "ok", "notify-mid"))
     monkeypatch.setattr(main_mod.notify, "delete_message",
+                        lambda *a, **kw: (True, "HTTP 204"))
+    # 2026-07-27：🔀 反應（_arm_web_escalate_reaction）也不打真 API
+    monkeypatch.setattr(main_mod.notify, "add_reaction",
                         lambda *a, **kw: (True, "HTTP 204"))
     sent = []
     bot._send_web_intervention_frames = lambda **kw: (sent.append(kw) or True)
@@ -505,7 +515,8 @@ def _build_stub_bot_for_reentry(monkeypatch):
     # 把真實 method 綁到 stub
     for name in ("_reentry_await_player_click", "_broadcast_intervention_result",
                  "_web_client_online", "_notify_web_intervention_pending",
-                 "_resolve_web_intervention_ping"):
+                 "_resolve_web_intervention_ping", "_arm_web_escalate_reaction",
+                 "_poll_web_escalate_reactions"):
         setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     return bot
 
@@ -580,7 +591,12 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
 
 
 def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
-    """P5 Task 2: reply timeout 時 fall through Discord（return False），不廣播放棄。"""
+    """P5 Task 2: reply timeout 時 fall through Discord（return False）。
+
+    2026-07-27 修正：先前這裡「不廣播」——面板連著的人只會看到畫面停在原地，
+    之後才連上的人（使用者的實際用法是「有提醒才連」）靠重播緩衝也只會看到一份
+    早就作廢的等待畫面。現在改成廣播一則 web_timeout 結果，順便清掉重播緩衝。
+    """
     bot = _build_stub_bot_for_reentry(monkeypatch)
     bot._await_web_reentry_action = lambda routing_key, timeout_s: (None, None)
 
@@ -590,7 +606,124 @@ def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
     calls = bot._web_thread.app.state.registry.calls
     results = [c for c in calls
                if hasattr(c, "payload") and c.payload.get("event") == "INTERVENTION_RESULT"]
-    assert len(results) == 0, "timeout 不該廣播 INTERVENTION_RESULT"
+    assert len(results) == 1, "timeout 現在該廣播一則 web_timeout 結果，讓晚到的 client 看得到"
+    assert results[0].payload["verdict"] == "web_timeout"
+
+
+def test_reentry_await_player_click_force_discord_returns_false_with_escalate_verdict(monkeypatch):
+    """2026-07-27：玩家按提醒訊息上的 🔀（不想等 web 了）要立刻退回 Discord。
+
+    跟逾時走同一條 fall-through 路徑（return False），但廣播的 verdict 要
+    區分成 web_escalate（玩家主動選的），不是 web_timeout（真的等到逾時）。
+    """
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("force_discord", None)
+
+    result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
+
+    assert result is False
+    calls = bot._web_thread.app.state.registry.calls
+    results = [c for c in calls
+               if hasattr(c, "payload") and c.payload.get("event") == "INTERVENTION_RESULT"]
+    assert len(results) == 1
+    assert results[0].payload["verdict"] == "web_escalate"
+
+
+def test_notify_web_intervention_pending_arms_escalate_reaction(monkeypatch):
+    """發提醒訊息時要順便貼上 🔀 反應，並記住 routing_key -> mid 基線。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    added_calls = []
+    monkeypatch.setattr(
+        "miningbot.main.notify.add_reaction",
+        lambda token, ch, mid, emoji: (added_calls.append((mid, emoji)), (True, "HTTP 204"))[1])
+
+    bot._notify_web_intervention_pending(_FakeCtx(), frame_count=8)
+
+    assert added_calls == [("notify-mid", "🔀")]
+    assert bot._web_escalate.get("reentry:test_ep") == ("notify-mid", 1)
+
+
+def test_notify_web_intervention_pending_reaction_add_failure_does_not_arm(monkeypatch):
+    """加反應失敗（例如權限問題）只記 log，不該假裝已武裝——不然 poll 永遠查不到東西。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    monkeypatch.setattr(
+        "miningbot.main.notify.add_reaction", lambda *a, **kw: (False, "HTTP 403"))
+
+    bot._notify_web_intervention_pending(_FakeCtx(), frame_count=8)
+
+    assert bot._web_escalate == {}
+
+
+def test_poll_web_escalate_reactions_pushes_force_discord_on_extra_click(monkeypatch):
+    """反應數超過基線（有人多按一次）→ push control:force_discord:<routing_key>。"""
+    from miningbot.main import Bot
+    from miningbot.web_ipc import PendingReplies
+
+    bot = Bot.__new__(Bot)
+    bot.log_discord = logging.getLogger("test_escalate_poll")
+    bot._web_pending = PendingReplies()
+    bot._web_escalate = {"reentry:26": ("mid-1", 1)}
+
+    # `_poll_web_escalate_reactions` 內部是 `from . import notify` 拿真模組，
+    # 所以要 patch 真模組上的函式屬性，換掉整顆 module 物件沒有用。
+    monkeypatch.setattr(
+        "miningbot.notify.get_reactions",
+        lambda token, ch, mid, emoji: [{"id": "bot-self"}, {"id": "player-1"}])
+
+    bot._poll_web_escalate_reactions()
+
+    assert bot._web_escalate == {}, "觸發後要從等待清單移除，不能一直重複觸發"
+    assert bot._web_pending.pop("control:force_discord:reentry:26") is True
+
+
+def test_poll_web_escalate_reactions_no_push_when_count_at_baseline(monkeypatch):
+    """只有機器人自己那下（count==baseline）不該誤觸發——那是按鈕本身，不是玩家點擊。"""
+    from miningbot.main import Bot
+    from miningbot.web_ipc import PendingReplies
+
+    bot = Bot.__new__(Bot)
+    bot.log_discord = logging.getLogger("test_escalate_poll")
+    bot._web_pending = PendingReplies()
+    bot._web_escalate = {"reentry:26": ("mid-1", 1)}
+
+    monkeypatch.setattr(
+        "miningbot.notify.get_reactions", lambda token, ch, mid, emoji: [{"id": "bot-self"}])
+
+    bot._poll_web_escalate_reactions()
+
+    assert bot._web_escalate == {"reentry:26": ("mid-1", 1)}, "沒人多按，武裝狀態要維持"
+    assert bot._web_pending.pop("control:force_discord:reentry:26") is None
+
+
+def test_resolve_web_intervention_ping_clears_escalate_entry(monkeypatch):
+    """介入結束收回提醒訊息時，順便清掉 escalate 追蹤——訊息都要被刪了，
+    再查那則訊息的反應只會白費一次 API。
+    """
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    bot._web_intervention_mid = "notify-mid"
+    bot._web_escalate = {"reentry:test_ep": ("notify-mid", 1)}
+
+    bot._resolve_web_intervention_ping(_FakeCtx())
+
+    assert bot._web_escalate == {}
+    assert bot._web_intervention_mid is None
+
+
+def test_await_web_reentry_action_returns_force_discord_on_control_key():
+    """`_await_web_reentry_action` 要能認得 control:force_discord:<routing_key>。"""
+    from miningbot.main import Bot
+    from miningbot.web_ipc import PendingReplies
+
+    bot = Bot.__new__(Bot)
+    bot._web_pending = PendingReplies()
+    bot._mine_resetting = False
+    bot._RR_WEB_CONTROLS = Bot._RR_WEB_CONTROLS
+    bot._web_pending.push("control:force_discord:reentry:26", True)
+
+    kind, reply = Bot._await_web_reentry_action(
+        bot, routing_key="reentry:26", timeout_s=5.0)
+
+    assert kind == "force_discord" and reply is None
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1426,108 @@ def test_reentry_click_with_dir_reaches_pending():
     reply = pending.pop("reentry:26")
     assert reply is not None
     assert reply["dir"] == 4 and reply["x"] == 851 and reply["y"] == 189
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-27：harvest 採集放棄候選清單也推 web（原本只發 Discord，網頁介入
+# 明明連著也沒收到這批圖，玩家只能切回 Discord 打編號——本檔補這段接線）。
+# ---------------------------------------------------------------------------
+
+
+def test_handle_web_aim_click_matches_nearest_candidate_and_delegates():
+    """點擊座標比對到候選 → 轉成編號文字，走既有 _handle_aim_reply 尾段。
+
+    不重寫對齊/開火邏輯——與 Discord 回編號共用同一條路（_tick_remote_aim 的
+    candidate 分支），這裡只驗證「web 點擊 -> 正確編號」這段轉換。
+    """
+    from miningbot import remote_aim
+    from tests.fake_bot import make_fake_bot
+
+    candidates = [
+        remote_aim.AimCandidate(number=1, layer="mid", dir_idx=2, pos=(500, 400),
+                                score=0.38, reason="", status="colored"),
+        remote_aim.AimCandidate(number=2, layer="mid", dir_idx=2, pos=(900, 300),
+                                score=0.34, reason="", status="colored"),
+    ]
+    ctx = types.SimpleNamespace(harvest_id="115", candidates=candidates,
+                                awaiting_fine=False)
+    seen = []
+    bot = make_fake_bot(
+        bind=["_handle_web_aim_click"],
+        _aim_context=ctx,
+        _handle_aim_reply=lambda text: seen.append(text),
+    )
+    bot._handle_web_aim_click({"x": 510, "y": 410, "dir": 3, "layer": "mid"})
+    assert seen == ["1"]
+
+
+def test_handle_web_aim_click_ignores_without_nearby_candidate():
+    """點太遠（超過 80px 門檻）或缺 dir 都不該誤射——寧可不動。"""
+    from miningbot import remote_aim
+    from tests.fake_bot import make_fake_bot
+
+    candidates = [
+        remote_aim.AimCandidate(number=1, layer="mid", dir_idx=2, pos=(500, 400),
+                                score=0.38, reason="", status="colored"),
+    ]
+    ctx = types.SimpleNamespace(harvest_id="115", candidates=candidates,
+                                awaiting_fine=False)
+    seen = []
+    bot = make_fake_bot(
+        bind=["_handle_web_aim_click"],
+        _aim_context=ctx,
+        _handle_aim_reply=lambda text: seen.append(text),
+    )
+    bot._handle_web_aim_click({"x": 0, "y": 0, "dir": 3, "layer": "mid"})
+    assert seen == []
+    bot._handle_web_aim_click({"x": 500, "y": 400, "layer": "mid"})  # 缺 dir
+    assert seen == []
+
+
+def test_consume_web_pending_routes_harvest_fire_at_to_aim_click():
+    """_consume_web_pending 是 NEEDS_HUMAN 這段的 safe point——沒有專屬 blocking
+    等待器（不像 manual_survey/reentry 自己在函式內等），要靠這裡撿 reply。
+    """
+    from miningbot.main import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("harvest:115", {"x": 500, "y": 400, "dir": 3, "layer": "mid"})
+    ctx = types.SimpleNamespace(harvest_id="115", candidates=[], awaiting_fine=False)
+    routed = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _aim_context=ctx,
+        state=State.NEEDS_HUMAN,
+        _handle_web_aim_click=lambda reply: routed.append(reply),
+    )
+    bot._consume_web_pending()
+    assert routed == [{"x": 500, "y": 400, "dir": 3, "layer": "mid"}]
+    assert pending.pop("harvest:115") is None  # 取過一次就清空
+
+
+def test_consume_web_pending_skips_during_awaiting_fine():
+    """awaiting_fine 期間候選清單已經是舊的（放大手選退路用另一批圖）——不要誤配對。"""
+    from miningbot.main import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("harvest:115", {"x": 500, "y": 400, "dir": 3, "layer": "mid"})
+    ctx = types.SimpleNamespace(harvest_id="115", candidates=[], awaiting_fine=True)
+    routed = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _aim_context=ctx,
+        state=State.NEEDS_HUMAN,
+        _handle_web_aim_click=lambda reply: routed.append(reply),
+    )
+    bot._consume_web_pending()
+    assert routed == []
+    assert pending.pop("harvest:115") is not None  # 沒被撿走，留給下一輪/其他消費者
 
 
 def test_panel_centers_letterboxed_frame():

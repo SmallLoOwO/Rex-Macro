@@ -44,6 +44,14 @@ class ConnectionRegistry:
         self._connections: set[WebSocket] = set()
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # 2026-07-27：使用者的實際用法是「有提醒才連進來」，不會整場開著分頁盯。
+        # 舊設計 broadcast 是純廣播、沒有任何補送——推播那當下如果玩家還沒連上
+        # （正是「被提醒才連」這個用法的常態），訊息就直接消失，連進來只看到空白
+        # idle 畫面（07-27 harvest 115／reentry #26 實錄）。這裡補一個「目前這輪
+        # 介入」的重播緩衝：begin 時清空重錄，介入結束（成功/失敗/逾時退回 Discord）
+        # 呼叫 end 清掉，避免對已結束的介入重播一份過期的「還在等你點」。
+        self._replay: list[tuple[str, bytes]] = []
+        self._recording = False
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """WebIPC thread 啟動後注入 event loop（broadcast 用）。
@@ -61,11 +69,50 @@ class ConnectionRegistry:
         with self._lock:
             self._connections.discard(ws)
 
+    def begin_intervention_replay(self) -> None:
+        """新一輪介入開始：清掉舊緩衝、開始記錄接下來的 broadcast/broadcast_binary。"""
+        with self._lock:
+            self._replay = []
+            self._recording = True
+
+    def end_intervention_replay(self) -> None:
+        """這輪介入結束（成功/失敗/逾時退回 Discord）：停止記錄＋清緩衝。
+
+        沒清的話下一個連進來的 client（哪怕介入早就結束）還是會重播一份
+        「還在等你點」的過期畫面——比空白更誤導。
+        """
+        with self._lock:
+            self._recording = False
+            self._replay = []
+
+    async def replay_to(self, ws: WebSocket) -> None:
+        """新連線一上來就補送目前這輪介入的完整序列（如果有的話）。
+
+        沒有 recording 中的介入就是 no-op——正常 idle 連線不受影響。
+        """
+        with self._lock:
+            items = list(self._replay)
+        for kind, payload in items:
+            try:
+                if kind == "text":
+                    await ws.send_text(payload)
+                else:
+                    await ws.send_bytes(payload)
+            except Exception as e:
+                _log.warning("web: 重播給新連線失敗: %s", e)
+                return
+
+    def _record_replay(self, kind: str, payload) -> None:
+        with self._lock:
+            if self._recording:
+                self._replay.append((kind, payload))
+
     def broadcast(self, msg: WebMessage) -> None:
         """同步呼叫介面（事件 sink 用）；內部丟進 event loop 跑。"""
+        text = serialize_message(msg)
+        self._record_replay("text", text)
         if self._loop is None:
             return  # server 還沒跑起來
-        text = serialize_message(msg)
         asyncio.run_coroutine_threadsafe(self._broadcast_async(text), self._loop)
 
     async def _broadcast_async(self, text: str) -> None:
@@ -80,6 +127,7 @@ class ConnectionRegistry:
 
     def broadcast_binary(self, data: bytes) -> None:
         """截圖 push 用（Task 10 在 main.py 裡接）。"""
+        self._record_replay("binary", data)
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(self._broadcast_binary_async(data), self._loop)
@@ -356,6 +404,9 @@ def create_app(
         await websocket.accept()
         fallback.client_connected()
         registry.add(websocket)
+        # 2026-07-27：使用者是「被提醒才連進來」，不是整場開著分頁——連上那一刻
+        # 補送目前這輪介入（如果有的話），不然剛好連在 push 之後就永遠看不到。
+        await registry.replay_to(websocket)
         # P5 Task 2：app-level text-message heartbeat 已退役——uvicorn 預設 20s
         # 協議級 ping frame 是真正的 keep-alive（半開連線 OS buffer 滿才會丟例外）；
         # text "ping" 只在 TCP 全斷才拋，無法偵測手機背景化／Tailscale relay 半斷。

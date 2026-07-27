@@ -75,6 +75,7 @@ _REMOTE_PAUSE_EMOJI = "⏸️"
 _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
+_WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
 # 遙控器 embed 標題——啟動時靠它掃頻道「認領」跨重啟殘留的遙控器（find_remote_messages），
 # 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
 _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
@@ -290,6 +291,11 @@ class Bot:
         self._reaction_clear_ok = True
         # 網頁介入進行中的 Discord 提醒訊息 id（介入結束就收回，不留殭屍訊息）
         self._web_intervention_mid: str | None = None
+        # 2026-07-27：使用者要求「加反應在等待訊息上，點了直接切 Discord」——
+        # routing_key -> (message_id, baseline_count)，_poll_web_escalate_reactions
+        # 逐一查有沒有人多按一次；按了就排 control:force_discord:<routing_key>，
+        # 等待迴圈立刻放棄 web、退回 Discord（不必等滿整個 budget）。
+        self._web_escalate: dict[str, tuple[str, int]] = {}
         # 釘底防抖（2026-07-19 spec）：看到新訊息只立旗標，頻道安靜滿
         # cfg.discord_repin_quiet_s 才刪舊貼新（_repin_tick）；回礦收尾由 _rr_finalize
         # 主動立遙控器旗標——修「回礦完成後要等使用者發話遙控器才出現」的消費競態。
@@ -1660,6 +1666,8 @@ class Bot:
             self._poll_stuck_reaction()
         if self._remote_message_id:
             self._poll_remote_reactions()
+        if getattr(self, "_web_escalate", None):
+            self._poll_web_escalate_reactions()
         if self._calib_session is not None:
             self._poll_calib_reactions()
         if self._list_message_id:
@@ -3370,10 +3378,47 @@ class Bot:
                         "web config_set 拒絕（白名單或 validate 不過）: %s=%r",
                         field, value)
             reply = self._web_pending.pop("control:config_set")
+        # 2026-07-27：harvest 採集放棄候選清單的 web 點擊——沒有專屬狀態處理器像
+        # manual_survey/reentry 那樣自己 blocking 等，NEEDS_HUMAN 就是一般 tick 在跑，
+        # 所以在這裡（safe point）順手取。awaiting_fine 期間跳過：那段還沒接 web，
+        # ctx.candidates 是舊清單，取了也只會誤配對。
+        ctx = getattr(self, "_aim_context", None)
+        if (ctx is not None and self.state is State.NEEDS_HUMAN
+                and not ctx.awaiting_fine):
+            reply = self._web_pending.pop(f"harvest:{ctx.harvest_id}")
+            if reply is not None:
+                self._handle_web_aim_click(reply)
         # fire_at / reentry_click reply 留著等 P4 各狀態處理器自取（不在此清）
         expired = self._web_pending.pop_any_expired()
         if expired:
             self.logger.info("web: 清掉過期 reply %d 筆", len(expired))
+
+    def _handle_web_aim_click(self, reply: dict) -> None:
+        """網頁點候選疊圖（採集放棄候選清單，2026-07-27）→ 比對最近候選編號 →
+        轉成文字回覆走既有 `_handle_aim_reply` 尾段（與 Discord 回編號同一條路，
+        對齊/開火/驗證/失敗重建候選全部重用，不重寫一份）。
+
+        `reply` 是 `fire_at` payload：x/y 必有；dir（候選圖對應的方位，1-8 制）
+        缺了就無從判斷點的是哪張圖的候選，忽略。找不到門檻內候選也忽略——
+        寧可玩家再點一次，不要誤射（D3 有冷卻代價、還會留一筆錯誤驗證素材）。
+        """
+        ctx = self._aim_context
+        if ctx is None:
+            return
+        dir_field = reply.get("dir")
+        if not isinstance(dir_field, int):
+            self.logger.warning("web AIM 點擊缺 dir，忽略：%r", reply)
+            return
+        x, y = int(reply.get("x", 0)), int(reply.get("y", 0))
+        layer = reply.get("layer") or "mid"
+        number = remote_aim.nearest_candidate_number(
+            ctx.candidates, dir_field - 1, layer, x, y)
+        if number is None:
+            self.log_discord.info(
+                "[%s] web AIM 點擊 (%d,%d) dir=%d layer=%s 附近沒有候選，忽略",
+                ctx.harvest_id, x, y, dir_field, layer)
+            return
+        self._handle_aim_reply(str(number))
 
     # --- P4 Task 3：web_pending reply pop 整合（harvest manual_survey 進入點） ---
 
@@ -3393,10 +3438,12 @@ class Bot:
                                       note: str = "") -> bool:
         """推**多張**幀 + INTERVENTION_NEEDED 給 web client（2026-07-26）。
 
-        `frames`＝``[(dir_idx, png_bytes)]``。每張圖前面先送一則 INTERVENTION_FRAME
-        meta（帶 index／dir），client 據此把緊接著的 binary 放進對應格子——WebSocket
-        同一條連線保證順序，所以「meta 後面那張就是它的圖」成立。
-        全部送完才送 INTERVENTION_NEEDED，client 收到時 8 張都已到齊。
+        `frames`＝``[(dir_idx, png_bytes)]``，或 ``[(dir_idx, layer, png_bytes)]``
+        （2026-07-27 harvest 候選清單多帶俯仰層——玩家點候選圖時 client 要把 layer
+        一併回報，bot 才知道除了轉方位還要不要調俯仰）。每張圖前面先送一則
+        INTERVENTION_FRAME meta（帶 index／dir／layer），client 據此把緊接著的
+        binary 放進對應格子——WebSocket 同一條連線保證順序，所以「meta 後面那張
+        就是它的圖」成立。全部送完才送 INTERVENTION_NEEDED，client 收到時所有張都已到齊。
 
         為什麼要多張：回礦開場站在地表，傳送板九成不在當下視野內。舊版只推一幀，
         玩家看著一張沒有目標的圖無從點起，只能等 120s 逾時（07-26 18:32 實錄）。
@@ -3406,15 +3453,23 @@ class Bot:
         if self._web_thread is None or not frames:
             return False
         registry = self._web_thread.app.state.registry
+        # 2026-07-27：使用者是「有提醒才連進來」——開始記錄這輪序列，晚到的連線
+        # 一上來就能靠 registry.replay_to 補到完整這批圖，而不是看到空白 idle。
+        registry.begin_intervention_replay()
         from .web_protocol import WebMessage
         total = len(frames)
-        for seq, (dir_idx, png) in enumerate(frames):
-            registry.broadcast(WebMessage(
-                type="event",
-                payload={"event": "INTERVENTION_FRAME", "flow": flow,
-                         "routing_key": routing_key, "index": seq,
-                         "total": total, "dir": int(dir_idx) + 1},
-            ))
+        for seq, item in enumerate(frames):
+            if len(item) == 3:
+                dir_idx, layer, png = item
+            else:
+                dir_idx, png = item
+                layer = None
+            meta = {"event": "INTERVENTION_FRAME", "flow": flow,
+                    "routing_key": routing_key, "index": seq,
+                    "total": total, "dir": int(dir_idx) + 1}
+            if layer:
+                meta["layer"] = layer
+            registry.broadcast(WebMessage(type="event", payload=meta))
             registry.broadcast_binary(png)
         registry.broadcast(WebMessage(
             type="event",
@@ -3445,6 +3500,7 @@ class Bot:
                 getattr(frame, "shape", None))
             return
         registry = self._web_thread.app.state.registry
+        registry.begin_intervention_replay()
         registry.broadcast_binary(buf.tobytes())
         from .web_protocol import WebMessage
         registry.broadcast(WebMessage(
@@ -3480,6 +3536,7 @@ class Bot:
         """等玩家在回礦面板上做一件事；回 ``(kind, payload)``。
 
         kind："click"（payload＝reply dict）／"skip"／"reroll"／"sweep"／
+        "force_discord"（玩家按了提醒訊息上的 🔀，不想再等 web）／
         None（逾時，payload 也是 None）。
 
         同時輪詢點擊 reply 與控制鍵，因為主迴圈整個卡在這裡——控制鍵若只靠
@@ -3495,6 +3552,8 @@ class Bot:
             for cmd in self._RR_WEB_CONTROLS:
                 if self._web_pending.pop(f"control:{cmd}") is not None:
                     return cmd, None
+            if self._web_pending.pop(f"control:force_discord:{routing_key}") is not None:
+                return "force_discord", None
             if self._mine_resetting:
                 # 等待期間礦坑又重置：八方位圖已過時，別讓玩家對著舊圖點
                 return None, None
@@ -3811,7 +3870,8 @@ class Bot:
                 f"（attempt {ctx.attempt}）已拍好 {frame_count} 個方位\n"
                 f"{url}\n"
                 f"左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。"
-                f"不理它會在 {int(cfg.web_intervention_budget_s / 60)} 分鐘後改用 Discord 八方位。")
+                f"不理它會在 {int(cfg.web_intervention_budget_s / 60)} 分鐘後改用 Discord 八方位；"
+                f"想現在就用 Discord 就按下面的 {_WEB_ESCALATE_EMOJI}。")
         try:
             ok, _detail, mid = notify.send_message_with_id(
                 cfg.discord_bot_token, cfg.discord_channel_id, text)
@@ -3819,10 +3879,44 @@ class Bot:
             self.log_discord.warning("web 介入提醒發送例外：%s", e)
             return
         self._web_intervention_mid = mid if ok else None
+        if ok and mid:
+            self._arm_web_escalate_reaction(f"reentry:{ctx.episode_id}", mid)
+
+    def _arm_web_escalate_reaction(self, routing_key: str, mid: str) -> None:
+        """在等待網頁介入的提醒訊息上加 🔀，讓玩家不必等滿 budget 就能手動切 Discord。
+
+        2026-07-27 使用者要求：網頁等待期間 Discord 完全插不上手，玩家想現在
+        就用 Discord 也只能乾等逾時。基線用 add_reaction 的結果建立（成功視為
+        1，同遙控器既有慣例），避免額外一次 GET，也避免把機器人自己的反應誤判
+        成玩家點擊。加反應失敗只記 log——這是加值路徑，不能擋主流程。
+        """
+        from . import notify
+        added, detail = notify.add_reaction(
+            cfg.discord_bot_token, cfg.discord_channel_id, mid, _WEB_ESCALATE_EMOJI)
+        if not added:
+            self.log_discord.warning("web escalate 反應加不上去（%s）：%s", routing_key, detail)
+            return
+        if getattr(self, "_web_escalate", None) is None:
+            self._web_escalate = {}
+        self._web_escalate[routing_key] = (mid, 1)
+
+    def _poll_web_escalate_reactions(self) -> None:
+        """輪詢所有等待中的 🔀 反應；有人多按一次就排 force_discord 給等待迴圈撿。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        for routing_key, (mid, baseline) in list(self._web_escalate.items()):
+            reactions = notify.get_reactions(token, ch, mid, _WEB_ESCALATE_EMOJI)
+            if len(reactions) > baseline:
+                del self._web_escalate[routing_key]
+                if self._web_pending is not None:
+                    self._web_pending.push(f"control:force_discord:{routing_key}", True)
+                self.log_discord.info(
+                    "web escalate：%s 按了 %s，改用 Discord", routing_key, _WEB_ESCALATE_EMOJI)
 
     def _resolve_web_intervention_ping(self, ctx) -> None:
         """本輪 web 介入結束（成功／逾時／退回 Discord）→ 收掉那則提醒訊息。"""
         from . import notify
+        getattr(self, "_web_escalate", {}).pop(f"reentry:{ctx.episode_id}", None)
         mid = getattr(self, "_web_intervention_mid", None)
         if not mid:
             return
@@ -4422,6 +4516,7 @@ class Bot:
                 # 組名即 caption——走 format_group_messages 的 fallback。
                 summary = remote_aim.format_candidate_summary(ctx.candidates)
                 groups = remote_aim.build_aim_groups(rendered, summary) + groups
+                self._push_web_aim_candidates(ctx, rendered, summary)
         if groups:
             self._needs_human_extra_meta["image_groups"] = groups
 
@@ -4497,6 +4592,32 @@ class Bot:
             out.append((numbers, shot.dir_idx, shot.layer, path))
         return out
 
+    def _push_web_aim_candidates(self, ctx, rendered, summary: str) -> None:
+        """把 `_render_aim_shots` 疊好的候選圖也推給 web client（2026-07-27）。
+
+        原本這批圖只發 Discord——web 在線也沒接線，玩家連著網頁只能切回 Discord
+        打編號。疊圖本身跟 Discord 那份完全一樣（同一批 `rendered` 檔案），差別只
+        在 dir/layer meta（web 點擊要回報這兩個，bot 才知道除了轉方位還要不要調
+        俯仰——見 `_handle_web_aim_click`）。開火/重試都會呼叫這裡，讓 web 跟
+        Discord 兩邊看到的候選清單隨時同步，不會有一邊還在等已經作廢的舊圖。
+        """
+        if not self._web_client_online():
+            return
+        import cv2
+        web_frames = []
+        for _numbers, dir_idx, layer, path in rendered:
+            img = cv2.imread(path)
+            if img is None:
+                continue
+            png = self._encode_png(img)
+            if png:
+                web_frames.append((dir_idx, layer, png))
+        if web_frames:
+            self._send_web_intervention_frames(
+                flow="harvest", routing_key=f"harvest:{ctx.harvest_id}",
+                frames=web_frames, ctx_summary=summary,
+                note="點候選框位置開火；也可在 Discord 回編號/`跳過`/`手動`")
+
     # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
     def _tick_remote_aim(self, frame, reply):
         """消費一則瞄準回覆（主迴圈執行緒）。skip→回挖礦；manual→重掃＋全方位圖；
@@ -4510,6 +4631,8 @@ class Bot:
         ctx = self._aim_context
         if reply.kind == "skip":
             self.logger.info("AIM skip -> 回挖礦")
+            self._broadcast_intervention_result(
+                ctx, "skip", "▶️ 已跳過，回挖礦", flow="harvest")
             self._aim_context = None
             self.human_cleared = True          # 下 tick decide_transition 回 MINING（同 resume）
             notify.send_message(token, ch, "▶️ 跳過這顆，回挖礦")
@@ -4551,9 +4674,14 @@ class Bot:
         if ok is None:
             return                             # 進入放大手選退路（_enter_aim_fine 已發圖＋設狀態）
         if ok:
+            self._broadcast_intervention_result(
+                ctx, "fire_ok", "✅ 已採集", flow="harvest")
             self._aim_context = None           # 成功收尾（_execute 內已切 MINING）
         else:
             # 失敗：把這次 fired observation 納入下一輪候選，再附當下截圖。
+            self._broadcast_intervention_result(
+                ctx, "fire_failed", f"❌ 未確認命中（{detail}），重新整理候選中…",
+                flow="harvest")
             ctx = remote_aim.build_aim_context(
                 ctx.shots, ctx.pose_net_rotations, ctx.pose_pitch_layer,
                 ctx.harvest_id, now=time.time(),
@@ -4611,6 +4739,9 @@ class Bot:
                 self.log_discord.info(
                     "[%s] MANUAL survey: web reply timeout，fall through Discord 八方位",
                     ctx.harvest_id)
+                self._broadcast_intervention_result(
+                    ctx, "web_timeout", "網頁逾時未回應，已改用 Discord 八方位",
+                    flow="harvest")
             else:
                 self.log_discord.info(
                     "[%s] MANUAL survey: 無法聚焦 Roblox，跳過 web 介入走 Discord",
@@ -6822,11 +6953,21 @@ class Bot:
                            else cfg.web_intervention_retry_budget_s)
                 kind, reply = self._await_web_reentry_action(
                     routing_key=routing_key, timeout_s=timeout)
-                if kind is None:
+                if kind is None or kind == "force_discord":
+                    escalated = kind == "force_discord"
                     self.log_discord.info(
-                        "[RR#%s] 回礦 web 介入：逾時無回應（attempt %d/%d，等了 %.0fs），"
-                        "fall through Discord 八方位",
-                        ctx.episode_id, attempt, max_attempts, timeout)
+                        "[RR#%s] 回礦 web 介入：%s，fall through Discord 八方位",
+                        ctx.episode_id,
+                        "玩家按 🔀 選擇改用 Discord" if escalated else
+                        f"逾時無回應（attempt {attempt}/{max_attempts}，等了 {timeout:.0f}s）")
+                    # 2026-07-27：這裡原本沒有任何 INTERVENTION_RESULT——面板連著的人
+                    # 只會看到畫面停在原地，之後才連進來的人（使用者是「有提醒才連」）
+                    # 靠重播緩衝也會看到一份早就作廢的等待畫面。補一則結果訊息，順便
+                    # 清掉重播緩衝（呼叫內含 end_intervention_replay）。
+                    self._broadcast_intervention_result(
+                        ctx, "web_escalate" if escalated else "web_timeout",
+                        "你選擇改用 Discord，已切換八方位圖" if escalated else
+                        "網頁逾時未回應，已改用 Discord 八方位", flow="reentry")
                     return False
                 if kind in self._RR_WEB_CONTROLS and kind != "sweep":
                     # 重骰／跳過：排進既有 reentry 指令佇列，主迴圈下個 tick 消費
@@ -6929,6 +7070,11 @@ class Bot:
             payload={"event": "INTERVENTION_RESULT", "flow": flow,
                      "verdict": verdict, "summary": summary},
         ))
+        # 2026-07-27：任何結果訊息都代表這輪推播已經作廢——不論是真的結束了
+        # （fire_ok/descended/放棄），還是緊接著要重推新一輪（retry/重骰，caller
+        # 會馬上再呼叫 _send_web_intervention_frames 重新 begin）。清掉重播緩衝，
+        # 之後才連上的 client 不會看到「還在等你點」的過期畫面。
+        registry.end_intervention_replay()
 
     def _rr_yaw_sample(self, ctx):
         """成功收尾後原地拍八方位，收 yaw 分類語料（H059；cfg.reentry_yaw_sample_sweep）。

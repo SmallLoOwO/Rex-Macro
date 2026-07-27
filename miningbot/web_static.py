@@ -1128,7 +1128,7 @@ function connect() {
       // 有 meta＝八方位其中一張；沒有＝舊的單幀路徑（harvest 開火用）
       if (pendingMeta) {
         const slot = pendingMeta.index;
-        frames[slot] = { img: null, dir: pendingMeta.dir };
+        frames[slot] = { img: null, dir: pendingMeta.dir, layer: pendingMeta.layer };
         loadImage(e.data, slot);
         pendingMeta = null;
       } else {
@@ -1144,7 +1144,7 @@ function connect() {
     if (!msg || msg.type !== 'event') return;
     if (p.event === 'INTERVENTION_FRAME') {
       if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; }
-      pendingMeta = { index: p.index, dir: p.dir, total: p.total };
+      pendingMeta = { index: p.index, dir: p.dir, layer: p.layer, total: p.total };
     } else if (p.event === 'INTERVENTION_NEEDED') {
       currentEvent = p;
       const isReentry = p.flow === 'reentry';
@@ -1160,13 +1160,17 @@ function connect() {
       beep();
     } else if (p.event === 'INTERVENTION_RESULT') {
       // verdict 由 main._broadcast_intervention_result 給：
-      //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset
-      //   reentry: descended / still_surface / 放棄 / rejected_reset / 轉向被吃
+      //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset / skip / web_timeout
+      //   reentry: descended / still_surface / 放棄 / rejected_reset / 轉向被吃 /
+      //            web_timeout（逾時退回 Discord）/ web_escalate（玩家按 🔀 主動退回）
       const v = p.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
+      // 逾時／主動切 Discord：這集之後這個頁面就不是主控了，跟 ok 一樣收起面板，
+      // 不然玩家還以為能繼續點這批已經作廢的舊圖。
+      const done = ok || v === 'web_timeout' || v === 'web_escalate';
       setStatus(p.summary || v, ok ? 'ok' : 'fail');
       stopFlashing();
-      if (ok) {
+      if (done) {
         currentEvent = null;
         for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = true;
       }
@@ -1264,8 +1268,13 @@ function sendClick(clientX, clientY) {
   if (flow === 'harvest') ep_id.harvest_id = epId;
   else ep_id.attempt_id = epId;
   const payload = Object.assign({ cmd, flow }, ep_id, { x: nativeX, y: nativeY });
-  // 帶上方位：bot 收到後會先轉過去再點（面板顯示的是掃描當下的畫面）
-  if (flow === 'reentry' && frames[curFrame]) payload.dir = frames[curFrame].dir;
+  // 帶上方位：bot 收到後會先轉過去再點（面板顯示的是掃描/候選拍照當下的畫面）。
+  // harvest 候選清單一張圖可能裝好幾個候選（同方位同層疊在一起），還要帶 layer
+  // 讓 bot 知道除了轉方位還要不要調俯仰——沒帶就退回舊「當下畫面直接開火」行為。
+  if (frames[curFrame]) {
+    if (frames[curFrame].dir != null) payload.dir = frames[curFrame].dir;
+    if (flow === 'harvest' && frames[curFrame].layer) payload.layer = frames[curFrame].layer;
+  }
   ws.send(JSON.stringify({ type: 'command', payload }));
   const dirTxt = payload.dir ? ('方位 ' + payload.dir + ' 的 ') : '';
   setStatus('已送出' + dirTxt + '(' + nativeX + ', ' + nativeY + ')，等待 bot 執行…', 'need');

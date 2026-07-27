@@ -344,3 +344,131 @@ def test_consume_web_pending_noop_without_web():
 
     bot = make_fake_bot(bind=["_consume_web_pending"], _web_pending=None)
     bot._consume_web_pending()   # 不拋例外即通過
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-27：ConnectionRegistry 重播緩衝。
+#
+# 使用者的實際用法是「有提醒才連進來」，不會整場開著分頁盯——舊設計純廣播，
+# 推播那當下如果玩家還沒連上（就是這個用法的常態），訊息直接消失，連進來只看到
+# 空白 idle（07-27 harvest 115／reentry #26 實錄，晚到的分頁什麼都沒收到）。
+# ---------------------------------------------------------------------------
+
+
+class _FakeWs:
+    """假 WebSocket：只記錄收到的 send_text/send_bytes 呼叫，不用真的 asyncio 連線。"""
+
+    def __init__(self):
+        self.received: list = []
+
+    async def send_text(self, text):
+        self.received.append(("text", text))
+
+    async def send_bytes(self, data):
+        self.received.append(("binary", data))
+
+
+class TestConnectionRegistryReplay:
+    def test_broadcast_after_begin_is_recorded(self):
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        registry.begin_intervention_replay()
+        registry.broadcast(WebMessage(type="event", payload={"event": "X"}))
+        registry.broadcast_binary(b"png-bytes")
+        assert len(registry._replay) == 2
+
+    def test_broadcast_before_begin_is_not_recorded(self):
+        """沒開始 recording（idle 狀態）的一般 broadcast 不該被存——不然緩衝會
+        無限累積不相干事件（設定變更、狀態通知等）。"""
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        registry.broadcast(WebMessage(type="event", payload={"event": "X"}))
+        assert registry._replay == []
+
+    def test_replay_to_sends_buffered_sequence_in_order(self):
+        import asyncio
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        registry.begin_intervention_replay()
+        registry.broadcast(WebMessage(
+            type="event", payload={"event": "INTERVENTION_FRAME", "index": 0}))
+        registry.broadcast_binary(b"frame-0-png")
+        registry.broadcast(WebMessage(
+            type="event", payload={"event": "INTERVENTION_NEEDED"}))
+
+        ws = _FakeWs()
+        asyncio.run(registry.replay_to(ws))
+
+        kinds = [k for k, _ in ws.received]
+        assert kinds == ["text", "binary", "text"]
+        assert ws.received[1][1] == b"frame-0-png"
+        assert json.loads(ws.received[2][1])["payload"]["event"] == "INTERVENTION_NEEDED"
+
+    def test_end_intervention_replay_clears_buffer(self):
+        import asyncio
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        registry.begin_intervention_replay()
+        registry.broadcast(WebMessage(type="event", payload={"event": "X"}))
+        registry.end_intervention_replay()
+
+        ws = _FakeWs()
+        asyncio.run(registry.replay_to(ws))
+        assert ws.received == [], "結束的介入不該再重播給晚到的 client"
+
+    def test_begin_again_discards_previous_buffer(self):
+        """新一輪介入（重掃/重試）開始要蓋掉舊緩衝，不是疊加——不然晚到的 client
+        會先收到一批已經作廢的舊圖，再收到新圖，畫面會閃一輪錯的。"""
+        import asyncio
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        registry.begin_intervention_replay()
+        registry.broadcast(WebMessage(type="event", payload={"event": "OLD"}))
+        registry.begin_intervention_replay()
+        registry.broadcast(WebMessage(type="event", payload={"event": "NEW"}))
+
+        ws = _FakeWs()
+        asyncio.run(registry.replay_to(ws))
+        events = [json.loads(t)["payload"]["event"]
+                 for k, t in ws.received if k == "text"]
+        assert events == ["NEW"]
+
+    def test_ws_endpoint_replays_to_late_joiner(self):
+        """端到端：先推播（沒人連著），之後才連上的 client 也要收到完整序列。
+
+        這是 07-27 實機問題的直接回歸測試——「有提醒才連」是使用者的實際用法，
+        連上時機晚於 push 不該等於什麼都看不到。
+        """
+        from miningbot.web_ipc import PendingReplies, FallbackState
+        from miningbot.web_server import create_app
+
+        pending = PendingReplies()
+        fallback = FallbackState()
+        app = create_app(pending, fallback, broadcast_callback=None)
+        registry = app.state.registry
+
+        import asyncio
+        loop = asyncio.new_event_loop()
+        registry.set_loop(loop)
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            # push 發生在任何人連上之前（模擬「觸發時沒人在看」）
+            registry.begin_intervention_replay()
+            registry.broadcast(WebMessage(
+                type="event",
+                payload={"event": "INTERVENTION_NEEDED", "flow": "harvest",
+                         "routing_key": "harvest:115", "summary": "候選清單"}))
+            time.sleep(0.2)   # 讓 broadcast 的 coroutine 真的跑過（沒人收也沒差，只為過帳）
+
+            with TestClient(app).websocket_connect("/ws") as ws:
+                msg = ws.receive_json()
+                assert msg["payload"]["event"] == "INTERVENTION_NEEDED"
+                assert msg["payload"]["routing_key"] == "harvest:115"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)

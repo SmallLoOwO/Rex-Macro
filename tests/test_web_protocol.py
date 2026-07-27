@@ -214,6 +214,37 @@ class TestParseFireAtPayload:
         )
         assert result is None
 
+    def test_dir_and_layer_carried_through(self):
+        # 2026-07-27：harvest 候選清單點擊帶方位＋俯仰層，bot 要先轉/調再開火
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "115",
+                     "x": 500, "y": 400, "dir": 3, "layer": "up"},
+        )
+        assert result["dir"] == 3
+        assert result["layer"] == "up"
+
+    def test_dir_out_of_range_omitted(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "115",
+                     "x": 500, "y": 400, "dir": 9},
+        )
+        assert "dir" not in result
+
+    def test_layer_invalid_value_omitted(self):
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "115",
+                     "x": 500, "y": 400, "layer": "sideways"},
+        )
+        assert "layer" not in result
+
+    def test_missing_dir_and_layer_still_works(self):
+        # 舊 client（manual survey 單幀點擊）沒帶 dir/layer——向下相容
+        result = parse_fire_at_payload(
+            payload={"cmd": "fire_at", "flow": "harvest", "harvest_id": "115",
+                     "x": 500, "y": 400},
+        )
+        assert "dir" not in result and "layer" not in result
+
 
 class TestParseReentryClickPayload:
     """P5 Task 1：reentry_click 同樣只收 attempt_id + x/y（thin validator）。"""

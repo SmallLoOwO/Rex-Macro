@@ -353,6 +353,27 @@ def draw_overlay(frame_bgr, candidates, grid: bool = True):
     return out
 
 
+def nearest_candidate_number(candidates, dir_idx: int, layer: str,
+                             x: int, y: int, max_dist_px: float = 80.0):
+    """web 點擊落在候選疊圖上的哪個候選？回最近且在門檻內的編號；沒有回 None。
+
+    只在同 dir_idx/layer 的候選裡找（web 圖是該方位/層拍的，跨方位比距離沒意義）。
+    候選疊圖用 ±36px 方框標號（draw_overlay），門檻抓寬一點（80px）容忍手機
+    點擊不夠精準；超過門檻寧可不動，不要誤觸旁邊的候選（開火有 D3 冷卻代價）。
+    """
+    best = None
+    best_d2 = max_dist_px * max_dist_px
+    for c in candidates:
+        if c.dir_idx != dir_idx or c.layer != layer:
+            continue
+        cx, cy = c.pos
+        d2 = (cx - x) ** 2 + (cy - y) ** 2
+        if d2 <= best_d2:
+            best_d2 = d2
+            best = c.number
+    return best
+
+
 # ===== B1：回覆解析（無前綴；寧可不射不誤射，解析不出回 None）=====
 @dataclass(frozen=True)
 class AimReply:

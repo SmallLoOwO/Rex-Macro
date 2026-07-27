@@ -248,6 +248,46 @@ def test_main_push_helper_sends_needs_last(server):
     assert dirs == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
+def test_main_push_helper_carries_layer_for_harvest_candidates(server):
+    """2026-07-27：harvest 候選清單推 web 時帶 layer（3-tuple frames）。
+
+    候選疊圖可能來自不同俯仰層（up/mid/down）；玩家點圖時 client 要把 layer
+    一起回報，bot 才知道除了轉方位還要不要調俯仰。舊 2-tuple（reentry 用，
+    無 layer 概念）必須維持不受影響——這裡只驗證 3-tuple 這條新路。
+    """
+    import logging
+    import types as _types
+    from websockets.sync.client import connect
+    from miningbot.main import Bot
+
+    thread, _, fallback = server
+
+    class _Bot:
+        pass
+
+    bot = _Bot()
+    bot._web_thread = thread
+    bot.log_discord = logging.getLogger("test_layer_wire")
+    bot._send_web_intervention_frames = _types.MethodType(
+        Bot._send_web_intervention_frames, bot)
+
+    url = f"ws://127.0.0.1:{thread.actual_port}/ws"
+    with connect(url, open_timeout=5) as ws:
+        deadline = time.monotonic() + 5.0
+        while fallback.client_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        pushed = bot._send_web_intervention_frames(
+            flow="harvest", routing_key="harvest:115",
+            frames=[(0, "mid", b"x0"), (0, "up", b"x1")],
+            ctx_summary="[115] 候選清單", note="")
+        got = _recv_sequence(ws, 5)
+
+    assert pushed is True
+    metas = [p for k, p in got if k == "text" and p["event"] == "INTERVENTION_FRAME"]
+    assert [m["layer"] for m in metas] == ["mid", "up"]
+    assert [m["dir"] for m in metas] == [1, 1]
+
+
 def test_panel_control_buttons_reach_pending_over_real_socket(server):
     """面板三顆按鈕（重掃/重骰/跳過）經真 socket 要能送達 PendingReplies。"""
     from websockets.sync.client import connect
