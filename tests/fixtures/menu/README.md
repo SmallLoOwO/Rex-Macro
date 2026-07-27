@@ -1,6 +1,9 @@
 # `menu/` — Roblox 設定選單 Movement Mode
 
-設定選單的實機截圖，OCR 時帶 `region_offset=(460, 130)`。測試路徑：
+設定選單的實機截圖＝`cfg.menu_panel_region` 那塊裁圖（2026-07-28 於**全螢幕版面**重拍，
+1040×910；原版拍於視窗化最大化、1000×880）。OCR 時偏移用 `cfg.menu_panel_region` 取，
+不寫死座標。全螢幕版面下 Movement Mode **不在 Settings 首屏**，這兩張是照 bot 的路徑
+（Settings 分頁 → 捲 4 次 `menu_scroll_amount`）捲到該列後拍的，列中心 y≈836。測試路徑：
 `ocr.read_text_boxes` → `roblox_menu.find_label_row_y` → `read_row_value`
 → `value_matches_target`。
 

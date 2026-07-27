@@ -63,24 +63,43 @@ class Config:
     screen_w: int = 1920
     screen_h: int = 1080
 
-    # 偵測區域（1920x1080、視窗化最大化實測；切全螢幕需整體上移約 30px 標題列高度）
-    chill_text_region: Region = field(default_factory=lambda: Region(360, 44, 1220, 37))  # 頂部事件列深色橫幅（實測裁緊：置中 960、只留深色框 y43-82；減 ~40% 像素加速 OCR）
+    # 偵測區域基準版面＝**Roblox 全螢幕**（client rect 0,0-1920,1080；2026-07-28 實測校準）。
+    # 之前的基準是「視窗化最大化＋工作列可見」＝client 只有 1920×1001、原點 (0,29)。
+    # 2026-07-28 切全螢幕後由新舊實機幀兩側量測（舊 01:07 rare_found vs 新全螢幕幀），
+    # 位移是**純平移、無縮放**（同一 UI 元素的 run 長度不變）：
+    #   ・頂端錨定 UI（事件橫幅／Capacity-Depth 列／聊天／聊天圖示）整體 **上移 29px**
+    #     （量測：Capacity 白字列 108-125 → 79-96；橫幅深色框 43-82 → 14-53）
+    #   ・底端錨定 UI（快捷欄／效果列／NORMAL 面板／右側按鈕欄／Go to surface）整體 **下移 50px**
+    #     （量測：Go to surface 白字 953-956/971-986 → 1003-1006/1021-1036；右側圖示欄四段全 +50）
+    #   ・水平方向完全不變（螢幕寬度沒變、UI 置中或靠邊）
+    # 換回視窗化就是反向（頂 +29 / 底 -50）。世界場景區（stuck/rotation_verify/reentry_game）
+    # 不需動：視口變高 1001→1080 只是多看到一點場景，這幾區仍落在純場景帶內。
+    chill_text_region: Region = field(default_factory=lambda: Region(360, 15, 1220, 37))  # 頂部事件列深色橫幅（實測裁緊：置中 960、只留深色框；全螢幕 y14-53，視窗化時為 y43-82）
+    # ⚠ 全螢幕特有陷阱（2026-07-28 實測）：游標停在畫面頂端 ~80px 內，Roblox 會顯示
+    #   視窗標題列（"Roblox" ＋ 還原/關閉鈕）蓋住這一區 → 這裡 OCR 出來是字串 'Roblox'，
+    #   chill 與**礦坑重置橫幅**（唯一停機條件）雙雙看不見。游標離開頂端就自動收起，
+    #   但停著就一直蓋著 → input_control.click_at 已收口：點在頂端帶就把游標移回中央
+    #   （見 input_control.TOP_OVERLAY_STRIP_PX）。看到 banner OCR 讀到 'Roblox' 先查游標在哪。
     # 下緣蓋到左上礦物面板（標頭 "NORMAL"，091 另有右側圖層面板）→ 每次聊天 OCR 的最後一行
     # 都是面板文字。**不可用縮短高度解決**（H055 實機量測）：面板是疊在最新聊天行**之上**——
     # 082 裁圖面板上緣 y=227 橫穿最新 has-found 行字身（y=225..234），094 最新（淡出中）聊天行
     # 更落在 "NORMAL" 白字帶（y=240..258）內 → 停在面板上方必切掉真聊天行。
     # 對策在 OCR 側：ocr._strip_ui_residue() 於比對進入點剝掉尾端殘留行。
-    chat_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))   # 左上事件/掉落訊息（估計，見到訊息再微調）
+    # 全螢幕版面下（2026-07-28）NORMAL 面板頂緣落在 y≈388、聊天裁圖下緣 361 → 兩者**不再重疊**，
+    # 但 _strip_ui_residue 保留：換回視窗化或面板加長時重疊會回來，剝除本身對無殘留的裁圖無害。
+    chat_region: Region = field(default_factory=lambda: Region(0, 81, 460, 280))   # 左上事件/掉落訊息（全螢幕 y81；視窗化時為 y110）
     # 採集放棄 NEEDS_HUMAN 附的左側「前/後對比」裁圖：拆成「聊天（寬短）」與「背包（窄高）」兩區，
     # 各自更貼近 Discord 縮圖比例、砍掉右側沒用的粉紅場景（見 2026-07-02 spec 需求 A）。
     # before＝本輪 _pre_scan_ref、after＝放棄當下；左側 UI 是螢幕覆蓋層、不隨鏡頭角度變 → 前後同框
     # 可直接對比「礦是否已被採走」（新 has-found 行 / 背包數量增加＝已採到）。座標實機校準自 logs H010 d3_fire。
-    chat_review_region: Region = field(default_factory=lambda: Region(0, 110, 460, 280))     # 左上 has-found 聊天（= chat_region；最新行在底部，勿縮短高度否則漏掉最新 has-found）
-    backpack_review_region: Region = field(default_factory=lambda: Region(0, 345, 226, 335)) # 左下 NORMAL 背包「上半」：面板依稀有度排序（Exquisite→Mythic→Surreal→Master→Rare），新採到的礦（count=1）浮最上面；h335 涵蓋到 Surreal 帶 1-2 行 Master，Discord 縮圖才夠大（2026-07-03 需求：舊 h670 全清單縮圖看不清、下半 Rare 橙黃區無關採集比對）。y395→345（2026-07-12）：工作列調回顯示後左側面板同底部 UI 整條上移 ~50px（舊裁圖 NORMAL 標題被切掉、新版面兩幀實測標題 y≈345-385）
+    chat_review_region: Region = field(default_factory=lambda: Region(0, 81, 460, 280))     # 左上 has-found 聊天（= chat_region；最新行在底部，勿縮短高度否則漏掉最新 has-found）
+    backpack_review_region: Region = field(default_factory=lambda: Region(0, 395, 226, 335)) # 左下 NORMAL 背包「上半」：面板依稀有度排序（Exquisite→Mythic→Surreal→Master→Rare），新採到的礦（count=1）浮最上面；h335 涵蓋到 Surreal 帶 1-2 行 Master，Discord 縮圖才夠大（2026-07-03 需求：舊 h670 全清單縮圖看不清、下半 Rare 橙黃區無關採集比對）。y395→345（2026-07-12）：工作列調回顯示後左側面板同底部 UI 整條上移 ~50px（舊裁圖 NORMAL 標題被切掉、新版面兩幀實測標題 y≈345-385）。345→395（2026-07-28 切全螢幕）：面板是底端錨定，同底部 UI 整條下移 50px（實測標題 y≈388-425）
     # buff 會疊加 → 瓶子位置會變，但都在這條「效果列」內；在整條裡搜尋瓶子形狀
     # 右緣縮到永久計數圖示左緣(x=1740)、下緣延到 1080（2026-07-08 遊戲更新新增常駐計數圖示，
     # 舊區涵蓋到它 → 舊「瓶子在=生效中」邏輯永遠判生效、永遠不補 D5；見 boost_active.png 說明）
-    boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 935, 590, 145))
+    # 2026-07-28 全螢幕：y935→985（底端錨定 +50）。高度 145→95 是因為舊區的 1030-1080 那段
+    # 本來就是工作列（不是遊戲畫面），全螢幕下效果列徽章實佔 y≈1003-1073，985-1080 完整涵蓋。
+    boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 985, 590, 95))
     boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     boost_check_interval_s: float = 0.2          # boost 高頻偵測「不空轉」：boost 到期→立刻補，越快偵測瓶子消失越好（提早補無意義且浪費換道具時間，見 2026-07-02 spec #4 方案 A）
@@ -88,7 +107,9 @@ class Config:
     # boost 使用次數計數器（2026-07-19）：右下角藥水圖示紅字＝session 內使用次數
     # （重進歸零）；boost FOV 縮小隨它累積（作用中變大/到期變小），是 FOV 漂移的
     # 狀態變數。區域依 07-17~07-19 歷史快照校準（vision.read_boost_use_count）。
-    boost_count_region: Region = field(default_factory=lambda: Region(1720, 940, 90, 90))
+    boost_count_region: Region = field(default_factory=lambda: Region(1720, 990, 90, 90))
+        # 2026-07-28 全螢幕：y940→990（底端錨定 +50）。⚠ 這顆圖示是 session 計數（重進歸零），
+        # 切全螢幕＝重進 → 校準當下畫面上沒有它，位置是照 +50 平移推得、待下次補瓶時實機複驗。
     boost_count_digit_max_mismatch: float = 0.08  # 數字模板像素不一致比例上限（兩側夾：類內 ≤0.026 vs 類間最近 0.177）
     boost_count_ledger: str = "logs/boost_fov/count.jsonl"  # 使用確認/對帳/前後幀對 append-only jsonl（FOV 曲線離線分析）
     boost_fov_pair_every_n: int = 10             # 螢幕計數每前進 N 存一組補瓶前後幀（JPEG 對；0=關）——
@@ -138,7 +159,7 @@ class Config:
     # 程度（vision.slot_selected）。slot_pixel/slot_color 保留給 calibrate 說明字串，偵測已不用。
     slot_pixel: tuple = (1011, 845)              # 已停用（見 d1_slot_region）
     slot_color: int = 0x232323                   # 已停用（原巨集 0x232323 灰＝未拿鎬子）
-    d1_slot_region: Region = field(default_factory=lambda: Region(798, 948, 54, 58))  # slot 1（鎬子）內部；實機 taskbar 可見版面
+    d1_slot_region: Region = field(default_factory=lambda: Region(798, 998, 54, 58))  # slot 1（鎬子）內部；2026-07-28 全螢幕版面（y948→998，底端錨定 +50）
     d1_selected_greenness_min: float = 5.0       # greenness=平均G-平均(R+B)/2 ≥ 此值＝槽位選中(裝備中)；實測 選中≈+9.8~+11.5、未選中≈-1.4~0 → 5.0 兩側夾
 
     # 音訊
@@ -234,7 +255,14 @@ class Config:
     # 這裡放**整條效果列**而非單格：徽章疊加時位置會變（見 vision.find_effect_slots），
     # 由 _confirm_scan 逐格 OCR。右緣停在常駐計數圖示左緣 x=1740，與 boost_indicator_region 同。
     # ⚠ 整條一次 OCR 不可行：psm=6 假設單一均勻文字塊，590px 帶多圖示實測讀成 'oy A\nBa' 亂碼。
-    scan_confirm_region: Region = field(default_factory=lambda: Region(1150, 940, 590, 100))
+    scan_confirm_region: Region = field(default_factory=lambda: Region(1150, 990, 650, 90))
+        # 2026-07-28 全螢幕：y940→990（底端錨定 +50）；高度 100→90 是切掉舊區壓在工作列上的那段。
+        # 右緣 1740→1800（同日實測）：效果列是**右錨定**、格距 64px、最右格右緣 x=1798。
+        # 常駐 boost 次數圖示佔最右格（1740-1798），但它是 session 計數、重進遊戲會消失——
+        # 此時第一個徽章就落在最右格。實測剛切全螢幕（＝剛重進）觸發 D2 掃描，'Local' 徽章
+        # 出現在 1740-1798，舊右緣 1740 完全讀不到 → 掃描確認恆失敗。這一區只做逐格 OCR
+        # 找 'Local'/'Cave Skim' 字樣，收進計數圖示格無害（OCR 讀出來是雜訊字）。
+        # ⚠ boost_indicator_region 右緣**維持 1740**：它是形狀比對，收進計數圖示會恆判「瓶子在」。
     chat_change_mean_diff: float = 2.0           # 聊天裁圖平均像素差超過此值才重跑 OCR（角色靜止時無新訊息＝近乎逐位元相同）
 
     # 驗證式旋轉（2026-07-05 視角回歸 45° 偏移對策）：每次 ,/. 送鍵後以前後幀確認「真的轉了」。
@@ -284,9 +312,10 @@ class Config:
     # 礦坑遠未填滿時就顯示飽和（Mine Capacity 300% 升級下顯示 100% ≠ 重置臨近），
     # 提早停挖容量永遠不再累積＝死鎖（2026-07-12 實錄卡死 1h47m）。故現在只當「加速
     # banner 輪詢＋記一次飽和 INFO」的輔助信號；唯一停機條件是 reset 橫幅。
-    capacity_region: Region = field(default_factory=lambda: Region(715, 92, 200, 45))
-        # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）
-    depth_region: Region = field(default_factory=lambda: Region(890, 92, 210, 45))
+    capacity_region: Region = field(default_factory=lambda: Region(715, 63, 200, 45))
+        # 頂部「Capacity: NNN%」段（2026-07-11 實機 4 張快照實測 4/4）；
+        # 2026-07-28 全螢幕 y92→63（頂端錨定 -29；白字列實測 108-125 → 79-96）
+    depth_region: Region = field(default_factory=lambda: Region(890, 63, 210, 45))
         # 頂部「Depth: Surface / NNNm」段（H046 開場狀態錨；2026-07-17 實機 3 張快照
         # Surface/488m/25790m 實測 3/3，fixtures tests/fixtures/reentry/h046_depth_*.png）
     capacity_reset_threshold: float = 100.0   # ≥此值連續 2 次＝容量飽和：只記一次 INFO＋維持加速輪詢，
@@ -318,7 +347,7 @@ class Config:
 
     # 重置自動回礦（auto re-entry；docs/superpowers/specs/2026-07-08-mine-reentry-design.md）
     reentry_mode: str = "remote"                # "off"=RESET_WAIT 等人工（今日行為）/"remote"=Discord 指位（2026-07-12 spec）/"auto"=全自動（2026-07-08 spec，面板模板校準完成前勿開）
-    reentry_surface_button_xy: tuple = (1855, 965)  # 右下「Go to surface」UI 按鈕中心（2026-07-12 實機 RESET_WAIT 幀量測：按鈕 x1804-1907/y914-1017；taskbar 可見版面，工作列隱藏需重量——同 d1_slot_region 家族）
+    reentry_surface_button_xy: tuple = (1855, 1015)  # 右下「Go to surface」UI 按鈕中心（2026-07-12 視窗化量測 x1804-1907/y914-1017 → 中心 965；2026-07-28 全螢幕 +50＝1015，實機白字列 1003-1036 佐證——同 d1_slot_region 家族）
     reentry_reset_settle_s: float = 5.0         # banner reset 字樣消失後沉澱多久才開始
     reentry_max_attempts: int = 5               # reroll 上限，用盡 → NEEDS_HUMAN
     reentry_attempt_timeout_s: float = 60.0     # 單輪（按回到地表→點擊驗證）時限
@@ -524,14 +553,21 @@ class Config:
     movement_mode_options: tuple = ("Default (Keyboard)", "Keyboard + Mouse", "Click to Move")
     movement_mode_mining: str = "Default (Keyboard)"    # 挖礦用（兩個鍵鼠模式皆可，使用者確認取此值）
     movement_mode_reentry: str = "Click to Move"        # REENTRY 導航用（click-to-move 依賴此模式）
-    menu_panel_region: Region = field(default_factory=lambda: Region(460, 130, 1000, 880))
-        # Esc 選單面板整塊（分頁列 People/Settings/... ＋ 內容列表），OCR 找標籤/值/箭頭都在此裁圖裡做
-        # （2026-07-08 實機驗證：People(576,156) Settings(774,156) Gallery(976,156) 等分頁文字，
-        # Movement Mode 標籤(571,503)／值(1153,503) 皆落在此區內）
-    menu_movement_label_region: Region = field(default_factory=lambda: Region(500, 478, 300, 50))
-    menu_movement_value_region: Region = field(default_factory=lambda: Region(1000, 478, 350, 50))
-    menu_movement_row_y: int = 503       # 固定列快速路徑；辨識不確定時回退全面板 OCR
-    menu_arrow_right_x: int = 1425       # 值列右箭頭 x（y 用該列 label 的 y；2026-07-08 實測 1423~1425）
+    menu_panel_region: Region = field(default_factory=lambda: Region(440, 100, 1040, 910))
+        # Esc 選單面板整塊（分頁列 People/Settings/... ＋ 內容列表），OCR 找標籤/值/箭頭都在此裁圖裡做。
+        # ⚠ 這塊是**置中面板**，不隨頂/底錨定平移：2026-07-28 全螢幕實測面板 x434-1484 / y93-1010
+        # （視窗化時的舊區 460,130,1000,880 會把分頁列文字上緣切掉 → 找不到 Settings 分頁）。
+        # 分頁文字實測中心 People(581,131) Settings(781,131) Gallery(980,131)。
+    menu_movement_label_region: Region = field(default_factory=lambda: Region(500, 811, 300, 50))
+    menu_movement_value_region: Region = field(default_factory=lambda: Region(1000, 811, 350, 50))
+    menu_movement_row_y: int = 836       # 固定列快速路徑；辨識不確定時回退全面板 OCR。
+        # 2026-07-28 全螢幕實測：Settings 分頁開啟後 Movement Mode **不在首屏**（Roblox 已在上面
+        # 插入 Audio／Chat & Language／Graphics 等段），要捲 4 次 menu_scroll_amount 才出現，
+        # 標籤中心 (572,836)／值 'Default (Keyboard)' (1152,837)。快速路徑因此只在「捲屏迴圈停下
+        # 之後」成立（箭頭點擊後的複讀正是這個狀態，省一次全面板 OCR）；首次進來必定 miss →
+        # 回退全面板 OCR + 捲屏，行為安全。
+    menu_arrow_right_x: int = 1425       # 值列右箭頭 x（y 用該列 label 的 y；2026-07-08 實測 1423~1425，
+                                         # 2026-07-28 全螢幕複驗仍是 1425——面板寬度不隨版面變）
     menu_value_column_x_range: tuple = (1000, 1350)   # 值文字欄 x 範圍（中心約 1153，三個值都置中對齊）
     menu_row_y_tolerance_px: int = 18    # 同一列判定的 y 容差（label 與 value 實測同列時 y 差 0~1px）
     menu_scroll_xy: tuple = (960, 500)   # 捲動前滑鼠停駐座標（面板中央）
@@ -548,8 +584,9 @@ class Config:
     menu_budget_s: float = 90.0          # Movement Mode 整鏈時間預算；超過即中止走失敗路徑
         # （實測成功 71~82s、失敗曾燒 170s；2026-07-10 spec 第 4 節）
 
-    chat_icon_xy: tuple = (174, 71)      # 左上聊天圖示（收合時點它展開；2026-07-08 實測座標）
-    chat_icon_state_region: Region = field(default_factory=lambda: Region(154, 51, 40, 40))
+    chat_icon_xy: tuple = (174, 42)      # 左上聊天圖示（收合時點它展開；2026-07-08 實測 (174,71)＝視窗化，
+                                         # 2026-07-28 全螢幕 -29＝(174,42)，泡泡亮部 32-54 實測佐證）
+    chat_icon_state_region: Region = field(default_factory=lambda: Region(154, 22, 40, 40))
         # 左上聊天圖示狀態判定框（H047：開＝實心白泡泡、關＝空心白邊；40x40 含整個圖示；
         # 任何狀態都看得到，不像輸入列 placeholder 會被自動隱藏——取代舊版輸入列 OCR 信號）
     chat_icon_probe: tuple = (6, 21, 18, 28)
@@ -562,7 +599,9 @@ class Config:
 
     player_list_region: Region = field(default_factory=lambda: Region(1490, 110, 425, 150))
         # 右上角玩家列表（Tab toggle）標題列＋第一列。2026-07-09 由實機截圖量測：
-        # client 座標 header y≈118-145；grab 全螢幕比 client area 低 ~29px → 區域開高吸收偏移。
+        # client 座標 header y≈118-145；視窗化時 grab 全螢幕比 client area 低 ~29px → 區域開高吸收偏移。
+        # 2026-07-28 切全螢幕（screen == client）後**不需要改**：header 回到 y118-145、第一列 155-200，
+        # 仍整段落在 110-260 內（已用當下實機幀裁圖複驗）——這格開高原本就是為了吃掉這 29px。
         # fixtures: tests/fixtures/player_list/（open/open2/closed）
     player_list_phrases: tuple = ("players", "blocks mined")
 

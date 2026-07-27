@@ -5,7 +5,9 @@ Windows-only Python 3.11+ 自動化程式。主要流程包含挖礦、D5 boost�
 
 ## 安裝
 
-1. 安裝 Python 3.11+、Tesseract OCR，並保持 Roblox 為工作列可見的 1920×1080 最大化視窗。
+1. 安裝 Python 3.11+、Tesseract OCR，並讓 Roblox 以 **1920×1080 全螢幕** 執行
+   （2026-07-28 起的座標基準；舊版基準是「工作列可見的最大化視窗」，兩者版面差
+   頂部 29px／底部 50px，換回去要重新校準偵測區域）。
 2. 安裝 [uv](https://docs.astral.sh/uv/) 後，在專案根目錄執行：
 
    ```powershell

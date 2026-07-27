@@ -10,6 +10,10 @@ fixture 是 6 個真實遊戲畫面的 `cfg.scan_confirm_region` 裁圖（右下
 
 背景：舊的 scan_confirm_region 是左下估值，離線重放 22 幀 TP=0（讀到左側礦物面板文字）。
 改成整條效果列後，因為徽章疊加會位移，必須逐格 OCR——固定單格與整條一次 OCR 都已實測失敗。
+
+⚠ 這些 fixture 是**視窗化版面**、右緣 1740 的舊窄帶裁圖（2026-07-25 拍）。2026-07-28 切
+全螢幕後 scan_confirm_region 變成 y+50、右緣 1800，但 fixture 測的是 find_effect_slots
+的格定位/OCR 判定邏輯（相對裁圖座標），與版面平移無關，故沿用不重拍。
 """
 import os
 
@@ -89,10 +93,21 @@ def test_stacking_shifts_position_not_identity():
 
 
 def test_permanent_count_icon_not_counted_as_slot():
-    """band 右緣停在 x=1740，常駐計數圖示（永久 UI）不可被當成一格 buff。"""
-    assert cfg.scan_confirm_region.x + cfg.scan_confirm_region.w == 1740
-    for (x, _, w, _) in vision.find_effect_slots(_load("local_only")):
-        assert x + w <= cfg.scan_confirm_region.w
+    """常駐計數圖示（永久 UI）不可被當成一格 buff——守的是**形狀比對**那條路徑。
+
+    boost_indicator_region 右緣必須停在 x=1740（計數圖示格左緣）：那一區是拿瓶子模板做
+    形狀比對，收進計數圖示會恆判「瓶子在」→ 永遠不補 D5（2026-07-08 事故）。
+
+    scan_confirm_region 右緣 2026-07-28 起放寬到 1800：效果列是**右錨定**、格距 64px，
+    最右格（1740-1798）平常被計數圖示佔著，但那是 session 計數、重進遊戲就消失，此時
+    第一個徽章直接落在最右格（切全螢幕後實測 'Local' 出現在 1740-1798，舊右緣讀不到）。
+    這一區只做逐格 OCR 找字樣，收進計數圖示格無害。
+    """
+    assert cfg.boost_indicator_region.x + cfg.boost_indicator_region.w == 1740
+    assert cfg.scan_confirm_region.x + cfg.scan_confirm_region.w == 1800
+    band = _load("local_only")
+    for (x, _, w, _) in vision.find_effect_slots(band):
+        assert x + w <= band.shape[1]
 
 
 # --- 逐格 OCR → scan_succeeded：需要 tesseract 引擎 ---

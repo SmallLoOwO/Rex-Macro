@@ -123,3 +123,36 @@ def test_pitch_reset_saturate_then_back(monkeypatch):
     last_down = max(i for i, t in enumerate(totals) if t > 0)
     first_back = min(i for i, t in enumerate(totals) if t < 0)
     assert last_down < first_back
+
+
+# ===== 全螢幕標題列 hover-reveal（2026-07-28 實機）=====
+# 游標停在畫面頂端 ~80px 內，Roblox 會顯示視窗標題列，蓋掉頂部事件橫幅
+# （chill／礦坑重置 OCR 的唯一來源，實測 chill_text_region 讀到 'Roblox'）。
+# 對策：click_at 點在頂端後把游標移回中央；點在別處不動游標。
+
+
+def _click_recorder(monkeypatch):
+    events = []
+    monkeypatch.setattr(ic.pydirectinput, "moveTo", lambda x, y: events.append(("to", x, y)))
+    monkeypatch.setattr(ic.pydirectinput, "mouseDown", lambda button=None: events.append(("down", button)))
+    monkeypatch.setattr(ic.pydirectinput, "mouseUp", lambda button=None: events.append(("up", button)))
+    monkeypatch.setattr(ic.pydirectinput, "click", lambda button=None: events.append(("click", button)))
+    monkeypatch.setattr(ic.time, "sleep", lambda t: None)
+    monkeypatch.setattr(ic, "_screen_center", lambda: (960, 540))
+    return events
+
+
+def test_click_at_top_strip_parks_cursor_back_at_centre(monkeypatch):
+    events = _click_recorder(monkeypatch)
+    ic.click_at(*(174, 42))                      # cfg.chat_icon_xy 全螢幕位置
+    moves = [e for e in events if e[0] == "to"]
+    assert moves[0] == ("to", 174, 42)           # 先移到目標才點
+    assert moves[-1] == ("to", 960, 540)         # 點完離開頂端帶
+    assert events.index(("to", 960, 540)) > max(
+        i for i, e in enumerate(events) if e[0] in ("click", "up"))
+
+
+def test_click_at_below_top_strip_leaves_cursor_alone(monkeypatch):
+    events = _click_recorder(monkeypatch)
+    ic.click_at(1425, 836)                       # Movement Mode 右箭頭
+    assert [e for e in events if e[0] == "to"] == [("to", 1425, 836)]

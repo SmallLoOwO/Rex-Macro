@@ -76,11 +76,26 @@ def move_to(x: int, y: int):
     pydirectinput.moveTo(x, y)
     time.sleep(0.05)
 
+# Roblox 全螢幕：游標停在畫面**頂端約 80px** 內會叫出可自動隱藏的視窗標題列
+# （"Roblox" ＋ 還原/關閉鈕），那條蓋掉頂部事件橫幅——chill/**礦坑重置**橫幅 OCR 的
+# 唯一來源，chill_text_region 讀到的會是字串 'Roblox'（2026-07-28 全螢幕實測）。
+# 它是 hover-reveal：游標離開頂端就收起，但游標**停在**那裡就一直蓋著。
+# 點在頂端的呼叫端（聊天圖示 y=42、回礦細格最上排、追蹤框在畫面頂端的 D3 開火）
+# 點完不會自己移開游標 → 這裡統一收口：點完就把游標移回畫面中央。
+# 純移動游標不會轉視角（要轉必須按住右鍵，見 aim_move），對任何流程都無副作用。
+TOP_OVERLAY_STRIP_PX = 100      # 實測標題列高 ~80px，留 20px 餘裕
+
+
 def click_at(x: int, y: int, button: str = "left", hold: float = 0.0):
-    """移到絕對座標再點一下。hold>0 時改成按住再放開（D3 採集需要 hold=0.4 才觸發）。"""
+    """移到絕對座標再點一下。hold>0 時改成按住再放開（D3 採集需要 hold=0.4 才觸發）。
+
+    點在畫面頂端時，點完把游標移回中央（見 TOP_OVERLAY_STRIP_PX）。
+    """
     pydirectinput.moveTo(x, y)
     time.sleep(0.05)
     mouse_click(button=button, hold=hold)
+    if y < TOP_OVERLAY_STRIP_PX:
+        move_to(*_screen_center())
 
 def aim_move(dx: int, dy: int):
     """細部瞄準：**按住右鍵**拖曳滑鼠來轉視角（REX 用右鍵按著調整方位），移完放開。

@@ -98,8 +98,14 @@ conventions.
 
 1. Use `SW_MAXIMIZE`, never `SW_RESTORE`; set DPI awareness before the first
    screenshot or GUI operation.
-2. Coordinates are calibrated for a maximized 1920×1080 capture with the Windows
-   taskbar visible. Recalibrate from real frames instead of adjusting by eye.
+2. Coordinates are calibrated for **Roblox in fullscreen** on a 1920×1080 screen
+   (client rect `0,0-1920,1080`, so screen coordinates equal client coordinates;
+   recalibrated 2026-07-28). The previous baseline was a maximized window with the
+   Windows taskbar visible (client `1920×1001` at origin `0,29`). Switching between
+   the two is a pure translation, no scaling: top-anchored UI moves by ∓29px,
+   bottom-anchored UI by ±50px, horizontal unchanged; centred overlays such as the
+   Esc menu re-lay-out and must be re-measured, not translated. Recalibrate from
+   real frames instead of adjusting by eye.
 3. Tool keys toggle equipment. Never press D1 blindly; use `vision.slot_selected`
    over `d1_slot_region`.
 4. Camera yaw uses `,`/`.` through verified rotation. Fine pitch/aim uses right-button

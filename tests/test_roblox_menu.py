@@ -109,7 +109,9 @@ class TestValueMatchesTarget:
             "Mode", "Keyboard + Mouse", self.OTHERS_FOR_DEFAULT, 0.6) is False
 
 
-# ---------- 實機截圖回歸（2026-07-08 Settings 選單截圖，鎖住整條「OCR框→找列→讀值」） ----------
+# ---------- 實機截圖回歸（Settings 選單截圖，鎖住整條「OCR框→找列→讀值」） ----------
+# fixtures 2026-07-28 於**全螢幕版面**重拍（原 2026-07-08 拍於視窗化最大化）：裁圖＝
+# cfg.menu_panel_region 那塊，偏移一律用 cfg 取，不再寫死 (460,130)——版面一改就對不上。
 
 cv2 = pytest.importorskip("cv2")
 import numpy as np  # noqa: E402
@@ -128,12 +130,17 @@ def _load(name):
 rapid_skip = pytest.mark.skipif(not ocr.rapidocr_available(), reason="rapidocr 未安裝")
 
 
+def _panel_offset():
+    from miningbot.config import DEFAULT as cfg
+    return (cfg.menu_panel_region.x, cfg.menu_panel_region.y)
+
+
 @rapid_skip
 @pytest.mark.fixture
 @pytest.mark.ocr
 def test_real_screenshot_default_keyboard_detected():
     img = _load("mm_cycle0.png")
-    recs = ocr.read_text_boxes(img, region_offset=(460, 130))
+    recs = ocr.read_text_boxes(img, region_offset=_panel_offset())
     row_y = roblox_menu.find_label_row_y(recs, "Movement Mode", 0.7)
     assert row_y is not None
     value = roblox_menu.read_row_value(recs, row_y, (1000, 1350), 18)
@@ -146,7 +153,7 @@ def test_real_screenshot_default_keyboard_detected():
 @pytest.mark.ocr
 def test_real_screenshot_keyboard_mouse_detected_and_not_confused_with_default():
     img = _load("mm_cycle1.png")
-    recs = ocr.read_text_boxes(img, region_offset=(460, 130))
+    recs = ocr.read_text_boxes(img, region_offset=_panel_offset())
     row_y = roblox_menu.find_label_row_y(recs, "Movement Mode", 0.7)
     assert row_y is not None
     value = roblox_menu.read_row_value(recs, row_y, (1000, 1350), 18)
