@@ -3335,6 +3335,18 @@ class Bot:
                 self.logger.info("web: 跳過（排入 reentry pending）")
             else:
                 self.logger.info("web: 跳過被忽略（上一則指令還在執行或非回礦中）")
+        # 網頁「好」／「作廢」按鈕（2026-07-28）：awaiting_confirm 階段（Depth 已確認
+        # 下礦但 cfg.reentry_remote_auto_resume=False，安全預設一律等人工放行）原本
+        # 只能回 Discord 打字——玩家人在網頁面板上，這步驟卻要切回 Discord，體驗上
+        # 等於白做。同樣走既有 reentry 指令路徑，跟 `跳過` 那段一樣的接法。
+        for cmd, raw in (("confirm", "好"), ("void", "作廢")):
+            if self._web_pending.pop(f"control:{cmd}") is not None:
+                reply = reentry_remote.parse_reply(raw)
+                if reply is not None and self._pending_reentry is None:
+                    self._queue_reentry_reply(raw, reply, source="web")
+                    self.logger.info("web: %s（排入 reentry pending）", raw)
+                else:
+                    self.logger.info("web: %s 被忽略（上一則指令還在執行或非回礦中）", raw)
         # 網頁設定頁改目標層（2026-07-26）：走跟 Discord `層` 指令同一條路徑
         # （_apply_layer_change），才會真的寫進每世界黏性層 map。HTTP route 那邊
         # 只 push 不執行——寫檔與發 Discord 都必須在主迴圈執行緒做。
@@ -3394,31 +3406,40 @@ class Bot:
             self.logger.info("web: 清掉過期 reply %d 筆", len(expired))
 
     def _handle_web_aim_click(self, reply: dict) -> None:
-        """網頁點候選疊圖（採集放棄候選清單，2026-07-27）→ 比對最近候選編號 →
-        轉成文字回覆走既有 `_handle_aim_reply` 尾段（與 Discord 回編號同一條路，
-        對齊/開火/驗證/失敗重建候選全部重用，不重寫一份）。
+        """網頁點候選疊圖（採集放棄候選清單，2026-07-28）→ 排進 `_pending_aim`，
+        走跟 Discord 回編號完全同一條主迴圈尾段（`_tick_remote_aim` 的
+        `kind == "point"` 分支 → `_execute_remote_fire`）。
 
-        `reply` 是 `fire_at` payload：x/y 必有；dir（候選圖對應的方位，1-8 制）
-        缺了就無從判斷點的是哪張圖的候選，忽略。找不到門檻內候選也忽略——
-        寧可玩家再點一次，不要誤射（D3 有冷卻代價、還會留一筆錯誤驗證素材）。
+        不在這裡直接開火：候選清單疊圖是掃描當下那一幀（`_render_aim_shots`
+        的不變量），玩家可能過了好幾分鐘才點——這期間 D2 掃描效果／D5 boost FOV
+        大機率已過期，盲點舊座標等於朝錯的畫面開槍。`_execute_remote_fire` 才有
+        完整的「D5 守門→重按 D2→在新畫面重找目標」序列，跟 Discord 候選/格子
+        兩條路徑共用，不能繞過。
+
+        `reply` 是 `fire_at` payload：x/y 必有；dir（候選圖對應的方位，1-8 制）／
+        layer（該圖俯仰層）缺了就退回當下姿態。**不比對候選標號**——疊圖上的編號
+        只是 AI 自己猜的弱信號參考，玩家點哪就打哪才是「手動覆蓋自動偵測」該有的
+        行為；早版做「點擊要落在候選 ±80px 內才算數」，玩家點在候選清單裡明明看
+        得到但分數太低沒被 AI 選中的位置就會被忽略，等於白給了一個功能。
+
+        `_aim_busy`／已有 `_pending_aim` 排隊中就丟棄本次（先到先贏，同 Discord
+        поller 慣例）——不要讓 web 點擊覆蓋掉正在跑或排隊中的另一則回覆。
         """
         ctx = self._aim_context
-        if ctx is None:
-            return
-        dir_field = reply.get("dir")
-        if not isinstance(dir_field, int):
-            self.logger.warning("web AIM 點擊缺 dir，忽略：%r", reply)
+        if ctx is None or self._aim_busy or self._pending_aim is not None:
             return
         x, y = int(reply.get("x", 0)), int(reply.get("y", 0))
-        layer = reply.get("layer") or "mid"
-        number = remote_aim.nearest_candidate_number(
-            ctx.candidates, dir_field - 1, layer, x, y)
-        if number is None:
-            self.log_discord.info(
-                "[%s] web AIM 點擊 (%d,%d) dir=%d layer=%s 附近沒有候選，忽略",
-                ctx.harvest_id, x, y, dir_field, layer)
-            return
-        self._handle_aim_reply(str(number))
+        dir_field = reply.get("dir")
+        dir_idx = (int(dir_field) - 1) % 8 if isinstance(dir_field, int) \
+            else ctx.pose_net_rotations % 8
+        layer = reply.get("layer")
+        if not isinstance(layer, str) or not layer:
+            layer = ctx.pose_pitch_layer
+        self._pending_aim = remote_aim.AimReply(
+            "point", dir_idx=dir_idx, layer=layer, pos=(x, y))
+        self.log_discord.info(
+            "[%s] web AIM 點擊 (%d,%d) -> pending（dir=%d layer=%s）",
+            ctx.harvest_id, x, y, dir_idx, layer)
 
     # --- P4 Task 3：web_pending reply pop 整合（harvest manual_survey 進入點） ---
 
@@ -3689,6 +3710,13 @@ class Bot:
         原生 (x, y) → 直接走 _aim_fire_and_verify 開火驗證（沿用 _execute_aim_fine_fire
         的尾段：chat_base_crop + _aim_fire_and_verify），不轉方位、不動俯仰、不偵測。
         玩家看的就是當下畫面、點的就是當下框位置——方位/俯仰/偵測對齊整段省略。
+
+        只給 manual survey 用（單幀、剛重掃過，畫面新鮮，跳偵測安全）：候選清單
+        多圖點擊（2026-07-28）改走 `_handle_web_aim_click` -> `_pending_aim`
+        （kind="point"）-> `_tick_remote_aim` -> `_execute_remote_fire`，因為候選
+        清單可能是好幾分鐘前掃的（玩家還沒看手機），D2 掃描效果/D5 boost FOV
+        早就過期了，這裡的「不偵測」假設不成立——那條路要 D2/D5 都重新檢查、且用
+        `_refind_tracker_near` 重找位置，不能盲點舊座標。
 
         回 (ok, detail)：confirmed=True 的成功路徑已在 _aim_fire_and_verify 內呼叫
         _remote_fire_success（俯仰歸位＋視角回正＋回挖礦）。
@@ -4223,16 +4251,30 @@ class Bot:
         return observation
 
     def _sweep_for_tracker(self, excl, ref):
-        """Scan eight directions while retaining absolute-direction target evidence."""
+        """Scan eight directions while retaining absolute-direction target evidence.
+
+        H118（2026-07-28）：`_harvest_boost_guard` 補 D5 是「FOV 全域收縮/展開」，
+        不只影響當下這一幀——`ref`（背景排除基準）是在補之前的舊 FOV 下拍的，
+        補完之後每個座標都對不上，本輪剩下的方位偵測與掃完後的最終 verify
+        會系統性全部錯位。118 實錄：01:07:45 補 D5、01:07:57 verify
+        lost target、緊接著的重掃（`_reharvest_sweep`，H026 對策不重拍 ref）
+        也全 8 方位落空——因為那次重掃仍沿用同一份已經對不上的舊 ref。
+
+        這裡不敢當場重拍 ref（H026：拍到當下畫面裡的活框會把它排除掉、自我致盲），
+        只記一個旗標讓 `_tick_harvest` 知道「這輪 sweep 失敗前 FOV 確實變過」，
+        RESWEEP 分流時才有根據地選擇性重拍 ref（見 `_reharvest_sweep(refresh_ref=)`）。
+        """
         hid = self.harvest.harvest_id
         num_dirs = 8
         candidates = []
         sweep_frames = []
+        self._sweep_fov_shifted = False
         for local_index in range(num_dirs):
             abs_dir = self.harvest.net_rotations % num_dirs
             frame = capture.grab()
             if self._harvest_boost_guard(frame):
                 frame = capture.grab()
+                self._sweep_fov_shifted = True
             rejects = [] if cfg.remote_aim_enabled else None
             first = self._find_tracker(
                 frame, excl, ref, log=self._tracker_log, with_score=True,
@@ -4598,8 +4640,9 @@ class Bot:
         原本這批圖只發 Discord——web 在線也沒接線，玩家連著網頁只能切回 Discord
         打編號。疊圖本身跟 Discord 那份完全一樣（同一批 `rendered` 檔案），差別只
         在 dir/layer meta（web 點擊要回報這兩個，bot 才知道除了轉方位還要不要調
-        俯仰——見 `_handle_web_aim_click`）。開火/重試都會呼叫這裡，讓 web 跟
-        Discord 兩邊看到的候選清單隨時同步，不會有一邊還在等已經作廢的舊圖。
+        俯仰——見 `_handle_web_aim_click`）。目前只有 giveup 進點呼叫；開火失敗
+        重建候選（`_tick_remote_aim` 的 fire_failed 分支）跟 Discord 一樣不重推
+        整批圖，只送簡短失敗截圖——web 那邊沿用上一批圖的 dir/layer 繼續點即可。
         """
         if not self._web_client_online():
             return
@@ -4662,6 +4705,12 @@ class Bot:
         if reply.kind == "candidate":
             c = ctx.candidates[reply.number - 1]
             tgt_layer, tgt_dir, prior = c.layer, c.dir_idx, c.pos
+        elif reply.kind == "point":
+            # web 候選清單點擊（2026-07-28）：玩家給的是原生像素，不是候選編號／
+            # 格代碼——候選清單疊圖可能是好幾分鐘前掃的（D2/D5 早過期），跟 candidate
+            # 分支一樣交給 _execute_remote_fire 走完整對齊＋重掃＋_refind_tracker_near，
+            # 不能假設這個座標現在還準。
+            tgt_layer, tgt_dir, prior = reply.layer, reply.dir_idx, reply.pos
         else:
             tgt_layer, tgt_dir = reply.layer, reply.dir_idx
             prior = remote_aim.grid_cell_center(reply.cell)
@@ -5280,9 +5329,11 @@ class Bot:
                     extra_mode=self.harvest.extra_targets > 0)
                 if verdict == "RESWEEP":
                     self.harvest.verify_fail_resweeps += 1
+                    fov_shifted = getattr(self, "_sweep_fov_shifted", False)
                     self.logger.info("[%s] sweep 看過穩定框但 verify 失敗（FOV 位移/邊緣裁切）"
-                                     "-> 重掃一次 (%d/1)", hid, self.harvest.verify_fail_resweeps)
-                    self._reharvest_sweep()
+                                     "-> 重掃一次 (%d/1)%s", hid, self.harvest.verify_fail_resweeps,
+                                     "（本輪掃描中補過 D5，重拍 ref）" if fov_shifted else "")
+                    self._reharvest_sweep(refresh_ref=fov_shifted)
                     return
                 if verdict == "EXIT_SUCCESS":
                     # 續採途中 sweep 全空/預算用盡（incident 072）：bonus 框已淡出，
@@ -6772,6 +6823,11 @@ class Bot:
                 f"左圖紅圈＝點擊處、右圖＝落點。沒問題回 `好` 開挖；點錯回 `重骰`；"
                 f"資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
+            self._broadcast_intervention_result(
+                ctx, verdict="awaiting_confirm",
+                summary="❓ 畫面有變化但 Depth 讀不到，無法確認下礦。沒問題按「好」開挖；"
+                        "點錯「重骰」；資料有問題「作廢」",
+                flow="reentry")
             return verdict
         # verdict == "descended"：Depth=NNNm 已直接證明在礦內；礦內亮度檢查退役
         # （夜間暗景會騙亮度——H046(a) 同源誤判；狀態錨嚴格更強）
@@ -6780,6 +6836,9 @@ class Bot:
                 f"✅ 回礦 #{ctx.episode_id} 下礦成功（Depth 已離開 Surface；層：{layer}）。"
                 f"紅圈＝點擊處；自動開挖",
                 image_paths=[mpath, lpath])
+            self._broadcast_intervention_result(
+                ctx, verdict="descended",
+                summary=f"✅ 下礦成功（層：{layer}），自動開挖", flow="reentry")
             self._rr_success(ctx, "success")
         else:
             ctx.phase = "awaiting_confirm"
@@ -6787,6 +6846,11 @@ class Bot:
                 f"❓ 已下礦（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
                 f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
                 image_paths=[mpath, lpath])
+            self._broadcast_intervention_result(
+                ctx, verdict="awaiting_confirm",
+                summary=f"❓ 已下礦（層：{layer}）。沒問題按「好」開挖；點錯「重骰」；"
+                        "資料有問題「作廢」",
+                flow="reentry")
         return verdict
 
     def _rr_click_from_web(self, ctx, x: int, y: int, dir_idx=None):
@@ -7352,8 +7416,17 @@ class Bot:
                  for (x, y, w, h) in vision.find_effect_slots(band)]
         return harvester.scan_succeeded(texts)
 
-    def _reharvest_sweep(self):
-        """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。"""
+    def _reharvest_sweep(self, refresh_ref: bool = False):
+        """重置目標、重新 D2 掃描並回到 sweep 階段（D3 連續未命中或框被搶走時呼叫）。
+
+        `refresh_ref`（H118，2026-07-28）：預設 False＝沿用既有 H026 對策（見下）。
+        只有呼叫端已經確認「上一輪 sweep 中途補過 D5」（`_sweep_fov_shifted`）才傳
+        True——這種情況下 ref 是在補之前的舊 FOV 下拍的，不重拍等於繼續用錯位的
+        排除基準再掃一次，保證再落空（118 實錄：verify 失敗才重掃，重掃仍 8 方位
+        全空，因為 ref 從沒被修正過）。重拍時機比照進場（`_on_enter` HARVESTING）：
+        先等冷卻／守門把 FOV 校正好，在**按下 D2 之前**拍——這一刻畫面上不會有
+        D2 高亮的追蹤框，跟入口邏輯一樣安全，不是隨便挑一幀。
+        """
         self.harvest.d3_attempts = 0
         self._target_marker = None              # 下次 tick 重掃
         # ★ 聊天基準/帳本不作廢（2026-07-04 H032 延伸對策）：若其實已採到才誤判 RESWEEP，
@@ -7366,10 +7439,16 @@ class Bot:
         #   「框出現前」拍的 reference：靜態 UI（熱鍵列/面板）不隨視角/FOV 變、排除效果不減；
         #   世界內容錯位漏放的假陽性交給 colored_frac＋形狀確認擋。
         self._await_scan_ready("resweep")
-        if getattr(self, "_pre_scan_ref", None) is None:
+        if refresh_ref:
+            gf = capture.grab()
+            if self._harvest_boost_guard(gf):
+                gf = capture.grab()             # 剛補 D5、FOV 已展開 → 必須重抓
+            self._pre_scan_ref = gf             # H118：FOV 已變過，捨棄舊 ref 重拍
+        elif getattr(self, "_pre_scan_ref", None) is None:
             self._pre_scan_ref = capture.grab()  # 防禦：理論上進 HARVESTING 必已拍
         self._run_scan()
         self._confirm_scan("resweep")
+        self._sweep_fov_shifted = False          # 這輪已處理，下次 sweep 重新判定
         # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
         self._harvest_start = time.time()
         self.harvest.elapsed_s = 0.0

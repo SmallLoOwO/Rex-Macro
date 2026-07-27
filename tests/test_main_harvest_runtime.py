@@ -1,3 +1,5 @@
+import types
+
 import cv2
 import numpy as np
 
@@ -150,3 +152,101 @@ def test_h054_gate_does_not_veto_ledger_confirmation(monkeypatch):
         None, [H054_BASELINE_HIDDEN], H054_COMMON, (), "094", "poll")
 
     assert confirmed is True
+
+
+# --- H118（2026-07-28）：_harvest_boost_guard 中途補 D5 讓 ref 對不上新 FOV -----
+#
+# 118 實錄：01:07:45 sweep 中途補 D5（FOV 收縮/展開）；01:07:57 轉回去 verify
+# 剛才看過的框卻找不到了；緊接的重掃（_reharvest_sweep，H026 對策不重拍 ref）
+# 沿用同一份已經跟新 FOV 對不上的 ref，結果 8 方位全空。
+
+
+def _harvest_state():
+    return types.SimpleNamespace(harvest_id="118", net_rotations=0, pitch_layer="mid")
+
+
+def test_sweep_for_tracker_flags_fov_shift_when_boost_guard_fires(monkeypatch):
+    bot = Bot.__new__(Bot)
+    bot.harvest = _harvest_state()
+    bot.log_harvest = _LogRecorder()
+    bot._tracker_log = None
+    bot._find_tracker = lambda *a, **kw: None       # 118 第二輪重掃實錄：全 8 方位都沒找到
+    bot._rotate_verified = lambda step: True
+    monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
+    monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
+    monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((4, 4, 3), np.uint8))
+
+    guard_calls = []
+
+    def guard(frame):
+        guard_calls.append(1)
+        return len(guard_calls) == 3            # 第 3 個方位補 D5，其餘不用補
+
+    bot._harvest_boost_guard = guard
+
+    pos, had = bot._sweep_for_tracker([], None)
+
+    assert pos is None and had is False
+    assert bot._sweep_fov_shifted is True, "本輪掃描中補過 D5，旗標該立起來"
+
+
+def test_sweep_for_tracker_no_flag_when_boost_guard_never_fires(monkeypatch):
+    bot = Bot.__new__(Bot)
+    bot.harvest = _harvest_state()
+    bot.log_harvest = _LogRecorder()
+    bot._tracker_log = None
+    bot._find_tracker = lambda *a, **kw: None
+    bot._rotate_verified = lambda step: True
+    bot._harvest_boost_guard = lambda frame: False
+    monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
+    monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
+    monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((4, 4, 3), np.uint8))
+
+    bot._sweep_for_tracker([], None)
+
+    assert bot._sweep_fov_shifted is False, "沒補過 D5，不該誤報 FOV 換過"
+
+
+def test_reharvest_sweep_refresh_ref_recaptures_after_boost_settle(monkeypatch):
+    """refresh_ref=True：捨棄舊 ref，比照進場邏輯——先確認 FOV 展開，按 D2 之前重拍。"""
+    bot = Bot.__new__(Bot)
+    bot.harvest = types.SimpleNamespace(d3_attempts=3)
+    bot._pre_scan_ref = "舊的、FOV 已經對不上的 ref"
+    bot._sweep_fov_shifted = True
+    bot._await_scan_ready = lambda where: True
+    bot._confirm_scan = lambda where: True
+    scan_calls = []
+    bot._run_scan = lambda: scan_calls.append("run_scan")
+    monkeypatch.setattr(main.harvester, "prepare_scan", lambda: None)
+
+    fresh_frame = "新 FOV 底下的乾淨畫面"
+    monkeypatch.setattr(main.capture, "grab", lambda: fresh_frame)
+    bot._harvest_boost_guard = lambda frame: False   # 已經展開，guard 這次不用再補
+
+    bot._reharvest_sweep(refresh_ref=True)
+
+    assert bot._pre_scan_ref == fresh_frame
+    assert bot._sweep_fov_shifted is False
+    assert scan_calls == ["run_scan"]
+
+
+def test_reharvest_sweep_default_keeps_existing_ref(monkeypatch):
+    """refresh_ref=False（預設）——H026 對策不變，既有 ref 原封不動、完全不碰畫面。"""
+    bot = Bot.__new__(Bot)
+    bot.harvest = types.SimpleNamespace(d3_attempts=3)
+    bot._pre_scan_ref = "既有 ref（框可能已在畫面上，不能重拍）"
+    bot._sweep_fov_shifted = True   # 防禦性驗證：即使漏傳也不該殘留舊旗標到下一輪
+    bot._await_scan_ready = lambda where: True
+    bot._confirm_scan = lambda where: True
+    bot._run_scan = lambda: None
+    monkeypatch.setattr(main.harvester, "prepare_scan", lambda: None)
+
+    def _boom():
+        raise AssertionError("refresh_ref=False 不該碰畫面/guard")
+    monkeypatch.setattr(main.capture, "grab", lambda: _boom())
+    bot._harvest_boost_guard = lambda frame: _boom()
+
+    bot._reharvest_sweep()
+
+    assert bot._pre_scan_ref == "既有 ref（框可能已在畫面上，不能重拍）"
+    assert bot._sweep_fov_shifted is False

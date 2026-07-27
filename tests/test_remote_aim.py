@@ -232,41 +232,6 @@ class TestDrawOverlay:
         assert out.sum() > 0                          # 網格線有畫
 
 
-class TestNearestCandidateNumber:
-    def _candidates(self):
-        return [
-            AimCandidate(number=1, layer="mid", dir_idx=0, pos=(500, 400),
-                        score=0.38, reason="", status="colored"),
-            AimCandidate(number=2, layer="mid", dir_idx=0, pos=(900, 300),
-                        score=0.34, reason="", status="colored"),
-            AimCandidate(number=3, layer="up", dir_idx=0, pos=(500, 400),
-                        score=0.30, reason="", status="colored"),
-        ]
-
-    def test_picks_nearest_in_same_dir_and_layer(self):
-        # 點在候選1旁邊（±36px 方框內）——同 dir/layer 裡最近的贏
-        n = remote_aim.nearest_candidate_number(
-            self._candidates(), dir_idx=0, layer="mid", x=510, y=410)
-        assert n == 1
-
-    def test_ignores_other_layer_at_same_pixel(self):
-        # 候選3跟候選1同座標但層不同（up vs mid）——點 mid 圖不該配到 up 候選
-        n = remote_aim.nearest_candidate_number(
-            self._candidates(), dir_idx=0, layer="mid", x=500, y=400)
-        assert n == 1
-
-    def test_ignores_other_dir(self):
-        n = remote_aim.nearest_candidate_number(
-            self._candidates(), dir_idx=5, layer="mid", x=500, y=400)
-        assert n is None
-
-    def test_beyond_threshold_returns_none(self):
-        # 候選2在(900,300)；點在(0,0) 遠超門檻——寧可不動不要誤射
-        n = remote_aim.nearest_candidate_number(
-            self._candidates(), dir_idx=0, layer="mid", x=0, y=0)
-        assert n is None
-
-
 class TestParseReply:
     def test_candidate_number(self):
         r = parse_reply("2", 3)

@@ -935,6 +935,7 @@ header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
 #toolbar button:disabled { opacity: 0.35; cursor: default; }
 #toolbar button.act { background: #4a4a4a; }
 #toolbar button.skip { background: #6d6d6d; }
+#toolbar button.confirm { background: #1f7a3d; }
 #dir-label { flex: 0 0 auto; font-size: 0.95rem; font-weight: bold;
              min-width: 5.5rem; text-align: center; }
 /* 方位小圓點：一眼看出總共幾張、現在第幾張、哪些已經看過 */
@@ -963,6 +964,8 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   <span id="dots"></span>
   <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
   <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
+  <button id="confirm" class="confirm" type="button" title="下礦沒問題，開挖">&#9989; 好</button>
+  <button id="void" class="skip" type="button" title="這筆點擊資料有問題，作廢">&#128465; 作廢</button>
   <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
 </div>
 <div id="note"></div>
@@ -983,6 +986,8 @@ const prevBtn = document.getElementById('prev');
 const nextBtn = document.getElementById('next');
 const sweepBtn = document.getElementById('sweep');
 const rerollBtn = document.getElementById('reroll');
+const confirmBtn = document.getElementById('confirm');
+const voidBtn = document.getElementById('void');
 const skipBtn = document.getElementById('skip');
 
 const CANVAS_NATIVE = [1920, 1080];
@@ -1151,8 +1156,10 @@ function connect() {
       setStatus('需要介入：' + (p.summary || p.flow), 'need');
       noteEl.style.display = p.note ? 'block' : 'none';
       noteEl.textContent = p.note || '';
-      // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑
+      // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑。好/作廢只在
+      // awaiting_confirm 才出現（INTERVENTION_RESULT 那支再開）。
       for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = !isReentry;
+      confirmBtn.hidden = true; voidBtn.hidden = true;
       curFrame = 0;
       renderNav();
       if (frames.length) drawFrame(0);
@@ -1161,18 +1168,26 @@ function connect() {
     } else if (p.event === 'INTERVENTION_RESULT') {
       // verdict 由 main._broadcast_intervention_result 給：
       //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset / skip / web_timeout
-      //   reentry: descended / still_surface / 放棄 / rejected_reset / 轉向被吃 /
-      //            web_timeout（逾時退回 Discord）/ web_escalate（玩家按 🔀 主動退回）
+      //   reentry: descended / awaiting_confirm / still_surface / 放棄 / rejected_reset /
+      //            轉向被吃 / web_timeout（逾時退回 Discord）/ web_escalate（玩家按 🔀 主動退回）
       const v = p.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
+      // awaiting_confirm：Depth 已確認下礦，但 bot 設定要求人工放行才開挖——
+      // 這不是「結束」也不是「失敗」，是換一組按鈕等玩家表態（好/重骰/作廢），
+      // 原本這步只能切回 Discord 打字，玩家人已經在網頁上了不該被踢出去。
+      const awaitingConfirm = v === 'awaiting_confirm';
       // 逾時／主動切 Discord：這集之後這個頁面就不是主控了，跟 ok 一樣收起面板，
       // 不然玩家還以為能繼續點這批已經作廢的舊圖。
       const done = ok || v === 'web_timeout' || v === 'web_escalate';
-      setStatus(p.summary || v, ok ? 'ok' : 'fail');
+      setStatus(p.summary || v, awaitingConfirm ? 'need' : (ok ? 'ok' : 'fail'));
       stopFlashing();
-      if (done) {
+      if (awaitingConfirm) {
+        sweepBtn.hidden = true;
+        rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
+        skipBtn.hidden = false;
+      } else if (done) {
         currentEvent = null;
-        for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = true;
+        for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
       }
     }
   };
@@ -1292,6 +1307,11 @@ prevBtn.addEventListener('click', () => showFrame(curFrame - 1));
 nextBtn.addEventListener('click', () => showFrame(curFrame + 1));
 sweepBtn.addEventListener('click', () => sendControl('sweep', '重掃'));
 rerollBtn.addEventListener('click', () => sendControl('reroll', '重骰'));
+confirmBtn.addEventListener('click', () => {
+  sendControl('confirm', '好');
+  for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
+});
+voidBtn.addEventListener('click', () => sendControl('void', '作廢'));
 skipBtn.addEventListener('click', () => {
   sendControl('skip', '跳過');
   currentEvent = null;
@@ -1302,7 +1322,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight') showFrame(curFrame + 1);
 });
 
-for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = true;
+for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
 window.addEventListener('resize', fitCanvas);
 renderNav();
 fitCanvas();

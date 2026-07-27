@@ -1434,54 +1434,98 @@ def test_reentry_click_with_dir_reaches_pending():
 # ---------------------------------------------------------------------------
 
 
-def test_handle_web_aim_click_matches_nearest_candidate_and_delegates():
-    """點擊座標比對到候選 → 轉成編號文字，走既有 _handle_aim_reply 尾段。
+def test_handle_web_aim_click_queues_point_reply_with_dir_and_layer():
+    """點擊排進 `_pending_aim`（kind="point"）——走跟 Discord 回編號同一條
+    `_tick_remote_aim` 尾段（`_execute_remote_fire` 內建 D2 重掃/D5 守門/
+    `_refind_tracker_near`），不在這裡直接開火、不比對候選標號。
 
-    不重寫對齊/開火邏輯——與 Discord 回編號共用同一條路（_tick_remote_aim 的
-    candidate 分支），這裡只驗證「web 點擊 -> 正確編號」這段轉換。
+    07-27 實機：候選都是弱信號（分數 0.2~0.3x），玩家點的位置離最近候選
+    超過門檻就被舊版忽略；後來改成直接開火但繞過了 D2/D5 檢查，一樣打不到
+    （候選清單可能是好幾分鐘前掃的，效果早過期）。改走 _pending_aim 才是
+    真正跟 Discord 同一條路——兩邊共用 _execute_remote_fire，不重寫一份。
     """
     from miningbot import remote_aim
     from tests.fake_bot import make_fake_bot
 
-    candidates = [
-        remote_aim.AimCandidate(number=1, layer="mid", dir_idx=2, pos=(500, 400),
-                                score=0.38, reason="", status="colored"),
-        remote_aim.AimCandidate(number=2, layer="mid", dir_idx=2, pos=(900, 300),
-                                score=0.34, reason="", status="colored"),
-    ]
-    ctx = types.SimpleNamespace(harvest_id="115", candidates=candidates,
-                                awaiting_fine=False)
-    seen = []
+    ctx = types.SimpleNamespace(harvest_id="115", awaiting_fine=False,
+                                pose_net_rotations=0, pose_pitch_layer="mid")
     bot = make_fake_bot(
         bind=["_handle_web_aim_click"],
         _aim_context=ctx,
-        _handle_aim_reply=lambda text: seen.append(text),
+        _aim_busy=False,
+        _pending_aim=None,
     )
-    bot._handle_web_aim_click({"x": 510, "y": 410, "dir": 3, "layer": "mid"})
-    assert seen == ["1"]
+    bot._handle_web_aim_click({"x": 510, "y": 410, "dir": 3, "layer": "up"})
+    assert bot._pending_aim == remote_aim.AimReply(
+        "point", dir_idx=2, layer="up", pos=(510, 410))
 
 
-def test_handle_web_aim_click_ignores_without_nearby_candidate():
-    """點太遠（超過 80px 門檻）或缺 dir 都不該誤射——寧可不動。"""
+def test_handle_web_aim_click_missing_dir_layer_uses_current_pose():
+    """缺 dir/layer（舊 client／資料不全）退回「當下姿態」，而不是丟棄。"""
     from miningbot import remote_aim
     from tests.fake_bot import make_fake_bot
 
-    candidates = [
-        remote_aim.AimCandidate(number=1, layer="mid", dir_idx=2, pos=(500, 400),
-                                score=0.38, reason="", status="colored"),
-    ]
-    ctx = types.SimpleNamespace(harvest_id="115", candidates=candidates,
-                                awaiting_fine=False)
-    seen = []
+    ctx = types.SimpleNamespace(harvest_id="115", awaiting_fine=False,
+                                pose_net_rotations=5, pose_pitch_layer="down")
     bot = make_fake_bot(
         bind=["_handle_web_aim_click"],
         _aim_context=ctx,
-        _handle_aim_reply=lambda text: seen.append(text),
+        _aim_busy=False,
+        _pending_aim=None,
     )
-    bot._handle_web_aim_click({"x": 0, "y": 0, "dir": 3, "layer": "mid"})
-    assert seen == []
-    bot._handle_web_aim_click({"x": 500, "y": 400, "layer": "mid"})  # 缺 dir
-    assert seen == []
+    bot._handle_web_aim_click({"x": 500, "y": 400})
+    assert bot._pending_aim == remote_aim.AimReply(
+        "point", dir_idx=5, layer="down", pos=(500, 400))
+
+
+def test_handle_web_aim_click_dropped_when_busy_or_already_pending():
+    """先到先贏：正在跑或已排隊的回覆不該被 web 點擊蓋掉。"""
+    from tests.fake_bot import make_fake_bot
+
+    ctx = types.SimpleNamespace(harvest_id="115", awaiting_fine=False,
+                                pose_net_rotations=0, pose_pitch_layer="mid")
+    bot = make_fake_bot(
+        bind=["_handle_web_aim_click"],
+        _aim_context=ctx,
+        _aim_busy=True,
+        _pending_aim=None,
+    )
+    bot._handle_web_aim_click({"x": 500, "y": 400, "dir": 1, "layer": "mid"})
+    assert bot._pending_aim is None
+
+    bot._aim_busy = False
+    bot._pending_aim = "已有一則排隊"
+    bot._handle_web_aim_click({"x": 500, "y": 400, "dir": 1, "layer": "mid"})
+    assert bot._pending_aim == "已有一則排隊"
+
+
+class TestTickRemoteAimPointKind:
+    """`_tick_remote_aim` 的 kind="point" 分支——驗證它走的是跟 candidate 分支
+    一樣的 `_execute_remote_fire`（D2/D5 全套對齊+重掃+重找），而不是自己另開
+    一條淺路徑。"""
+
+    def test_point_reply_calls_execute_remote_fire_with_click_pos_as_prior(self):
+        from miningbot import remote_aim
+        from tests.fake_bot import make_fake_bot
+
+        ctx = types.SimpleNamespace(
+            harvest_id="115", candidates=[], shots=[], pose_net_rotations=0,
+            pose_pitch_layer="mid")
+        calls = []
+        bot = make_fake_bot(
+            bind=["_tick_remote_aim"],
+            _aim_context=ctx,
+            _aim_busy=False,
+            _execute_remote_fire=lambda c, layer, dir_, prior, cell="":
+                (calls.append((layer, dir_, prior, cell)), (True, "confirmed"))[1],
+            _broadcast_intervention_result=lambda *a, **kw: None,
+        )
+        reply = remote_aim.AimReply("point", dir_idx=3, layer="up", pos=(500, 400))
+
+        bot._tick_remote_aim(None, reply)
+
+        assert calls == [("up", 3, (500, 400), "")]
+        assert bot._aim_context is None  # 成功收尾
 
 
 def test_consume_web_pending_routes_harvest_fire_at_to_aim_click():
@@ -1528,6 +1572,158 @@ def test_consume_web_pending_skips_during_awaiting_fine():
     bot._consume_web_pending()
     assert routed == []
     assert pending.pop("harvest:115") is not None  # 沒被撿走，留給下一輪/其他消費者
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-28：回礦 awaiting_confirm 階段（Depth 已確認下礦，但
+# cfg.reentry_remote_auto_resume=False 安全預設要求人工放行）補上網頁「好」／
+# 「作廢」——原本這步只能切回 Discord 打字，玩家已經在網頁面板上卻被踢出去。
+# ---------------------------------------------------------------------------
+
+
+def test_consume_web_pending_routes_confirm_to_reentry_queue():
+    """網頁「好」按鈕——跟 `跳過` 走同一條 reentry 指令路徑（同一個 pending slot）。"""
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:confirm", {"cmd": "confirm"})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _pending_reentry=None,
+        _queue_reentry_reply=lambda raw, reply, source: calls.append((raw, reply.kind, source)),
+    )
+    bot._consume_web_pending()
+    assert calls == [("好", "confirm", "web")]
+
+
+def test_consume_web_pending_routes_void_to_reentry_queue():
+    """網頁「作廢」按鈕——同上，換一個關鍵字。"""
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:void", {"cmd": "void"})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _pending_reentry=None,
+        _queue_reentry_reply=lambda raw, reply, source: calls.append((raw, reply.kind, source)),
+    )
+    bot._consume_web_pending()
+    assert calls == [("作廢", "void", "web")]
+
+
+def test_consume_web_pending_ignores_confirm_when_pending_reentry_busy():
+    """上一則指令還沒被主迴圈消費——不搶隊，等下一輪（同 skip 既有慣例）。"""
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push("control:confirm", {"cmd": "confirm"})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _pending_reentry=("上一則", object()),
+        _queue_reentry_reply=lambda *a, **kw: calls.append(a),
+    )
+    bot._consume_web_pending()
+    assert calls == []
+
+
+class TestRrClickAndVerifyWebBroadcast:
+    """_rr_click_and_verify 是 Discord/web 點擊共用尾段（_rr_click／_rr_click_from_web
+    都會走到）；下礦後续步驟過去只靠 _rr_notify（Discord 純文字），網頁介入面板
+    完全收不到——玩家點了圖之後看得到「下礦成功」卻不知道還要不要按什麼，
+    只能切回 Discord。這裡驗證兩個分支都補上 _broadcast_intervention_result。
+    """
+
+    def _bot(self, monkeypatch):
+        import numpy as np
+        import miningbot.main as main_mod
+        from miningbot.main import Bot
+
+        class _StubBot:
+            pass
+
+        bot = _StubBot()
+        bot._web_thread = None
+        bot.logger = logging.getLogger("test_rr_verify")
+        bot.log_discord = logging.getLogger("test_rr_verify")
+        fake_frame = np.zeros((1080, 1920, 3), np.uint8)
+        monkeypatch.setattr(main_mod.time, "sleep", lambda s: None)
+        monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
+        monkeypatch.setattr(main_mod.ic, "click_at", lambda x, y: None)
+        monkeypatch.setattr(main_mod.vision, "frame_mean_diff", lambda a, b: 0.0)
+        monkeypatch.setattr(main_mod.ocr, "read_depth_is_surface", lambda *a, **kw: False)
+        monkeypatch.setattr(main_mod.ocr, "read_depth_meters", lambda *a, **kw: 7100)
+        monkeypatch.setattr(main_mod.game_data, "current_world_name", lambda: "Lucernia")
+        monkeypatch.setattr(main_mod.game_data, "layer_for_depth", lambda w, d: "Shamrock")
+        monkeypatch.setattr(main_mod.reentry_remote, "record_landing", lambda *a, **kw: None)
+        import cv2
+        monkeypatch.setattr(cv2, "imwrite", lambda *a, **kw: True)
+        bot._rr_notify = lambda *a, **kw: (True, "")
+        bot._rr_snap_dir = lambda: "."
+        bot._rr_click_and_verify = types.MethodType(Bot._rr_click_and_verify, bot)
+        bot._broadcast_intervention_result = types.MethodType(
+            Bot._broadcast_intervention_result, bot)
+        return bot
+
+    def test_descended_with_auto_resume_broadcasts_descended(self, monkeypatch):
+        import miningbot.main as main_mod
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", True)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot(monkeypatch)
+        results = []
+        bot._broadcast_intervention_result = lambda ctx, verdict, summary, flow="reentry": (
+            results.append((verdict, flow)))
+        bot._rr_success = lambda ctx, outcome: None
+        from tests.fake_bot import FakeReentryCtx
+        ctx = FakeReentryCtx(episode_id="27")
+
+        verdict = bot._rr_click_and_verify(ctx, (960, 540), None, "Shamrock", "m.png", "")
+
+        assert verdict == "descended"
+        assert results == [("descended", "reentry")]
+
+    def test_descended_without_auto_resume_broadcasts_awaiting_confirm(self, monkeypatch):
+        import miningbot.main as main_mod
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", False)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot(monkeypatch)
+        results = []
+        bot._broadcast_intervention_result = lambda ctx, verdict, summary, flow="reentry": (
+            results.append((verdict, flow)))
+        from tests.fake_bot import FakeReentryCtx
+        ctx = FakeReentryCtx(episode_id="27")
+
+        verdict = bot._rr_click_and_verify(ctx, (960, 540), None, "Shamrock", "m.png", "")
+
+        assert verdict == "descended"
+        assert results == [("awaiting_confirm", "reentry")]
+        assert ctx.phase == "awaiting_confirm"
+
+    def test_moved_unconfirmed_broadcasts_awaiting_confirm(self, monkeypatch):
+        import miningbot.main as main_mod
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "moved_unconfirmed")
+        bot = self._bot(monkeypatch)
+        results = []
+        bot._broadcast_intervention_result = lambda ctx, verdict, summary, flow="reentry": (
+            results.append((verdict, flow)))
+        from tests.fake_bot import FakeReentryCtx
+        ctx = FakeReentryCtx(episode_id="27")
+
+        verdict = bot._rr_click_and_verify(ctx, (960, 540), None, "Shamrock", "m.png", "")
+
+        assert verdict == "moved_unconfirmed"
+        assert results == [("awaiting_confirm", "reentry")]
 
 
 def test_panel_centers_letterboxed_frame():

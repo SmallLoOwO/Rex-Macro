@@ -117,12 +117,17 @@ def format_ping_content(harvest_id: str | None, reason: str, fallback: bool) -> 
     """NEEDS_HUMAN PING 訊息內容。
 
     用 <@USER_ID> mention 推播；harvest_id 有則前綴 [XXX]；fallback 與否
-    決定後續玩家該去哪處理（Discord 反應按鈕 vs 網頁點選）。
+    決定後續玩家該去哪處理（Discord 文字回覆 vs 網頁點選）。
+
+    2026-07-27：這則本身只是純文字 PING（send_ping 從不掛反應），舊文案寫
+    「用 Discord 反應按鈕處理」是錯的——玩家點開訊息找反應鈕，什麼都沒有。
+    實際要做的是照訊息內容打字回覆（候選編號／`跳過`／`resume` 等，因 reason
+    而異），所以文案改成通用、不點名反應。
     """
     hid = f"[{harvest_id}] " if harvest_id else ""
     ping = f"<@{PING_USER_ID}>"
     if fallback:
-        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（fallback 模式：用 Discord 反應按鈕處理）"
+        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（fallback 模式：請依 Discord 訊息內容文字回覆處理）"
     else:
         body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（在網頁處理：pinch-zoom 點選截圖）"
     return body
