@@ -7935,8 +7935,31 @@ class Bot:
                                     hid, layer.name)
                 continue
             self.harvest.pitch_layer = layer.name
-            self._harvest_start = time.time()   # 每層獨立 sweep_timeout_s 預算（比照 sweep 完成後重置）
             self.logger.info("[%s] 俯仰層切換 -> %s（重新 8 方位掃描）", hid, layer.name)
+            # ★ 層轉換後重按一次 D2（2026-07-28 spec D2）：mid 層按下 D2 到上層開掃約 32s，
+            #   tracker 會因「掃描到期」自行淡出——不重掃，「上層沒撈到」就分不清是那層
+            #   真的沒有還是框早就沒了。序列比照 _reharvest_sweep／_recover_historical_target。
+            # ★ 不重拍 _pre_scan_ref（H026）：重掃時畫面上往往已有活框，重拍會把活框寫進
+            #   排除基準 → 之後每方位都 rej(preexist) 自我致盲。沿用進場時拍的那張——它排除
+            #   的是螢幕空間靜態 UI（熱鍵列/礦物面板），不隨視角或俯仰改變。
+            where = f"pitch-layer-{layer.name}"
+            harvester.prepare_scan()
+            self._await_scan_ready(where)
+            # D2 冷卻 30s 是共享的，這次按下去可能落在冷卻裡＝沒作用。決策是不加等待
+            # （每層再多 30s 太貴），改成把間隔記進 harvest.log，讓「這次重掃有沒有生效」
+            # 變成事後可查的事實；實機顯示常態 < 30s 再回頭加等待。
+            last = (getattr(self, "_radar_last", None) or {}).get("scan", 0.0)
+            # last=0 是「本場還沒掃過」的哨兵，不是 1970 年——直接相減會印出 1.7e9s，
+            # 驗收的「≥30s＝重掃生效」會被這個數字假通過。
+            since = f"{time.time() - last:.1f}s" if last else "未知（本場尚未掃描過）"
+            self.log_harvest.info(
+                "[%s] 俯仰層 %s 重掃 D2：距上次掃描 %s（< 30s 代表可能落在冷卻裡沒作用）",
+                hid, layer.name, since)
+            self._run_scan()
+            self._confirm_scan(where)
+            # 每層獨立 sweep_timeout_s 預算，從重掃**完成之後**才起算——放在重掃之前的話，
+            # execute_scan 內含的 1.8s 等待與可能的冷卻等待會先吃掉這層的預算。
+            self._harvest_start = time.time()
             return True
         return False
 

@@ -134,9 +134,13 @@ Discord `掃描`/`削洞` 共用同一份持久化檔案）而不是 `/api/confi
 保留清單（keep/unkeep/clear）曾短暫上過網頁（同日又撤下）——選定事件後幾乎不再
 變動，長駐一個網頁區塊不划算，改回 Discord 文字指令唯一入口。
 
-⚠ `sweep_pitch_enabled` 勾了不一定會動：`sweep_pitch_step_px==0`（＝從未校準）時
-`harvester.plan_pitch_layers` 回空 list，整個功能靜默停用。設定頁會顯示警示條告訴你
-這件事。
+`sweep_pitch_enabled` 勾了就會動（2026-07-28 起）：`sweep_pitch_step_px` 已填校準值
+（一層約 45°，實際數字與推導寫在 `config.py` 該欄位旁，別在這裡複製），設定頁的狀態條
+顯示「✅ 已校準」並印出現值。代價是每次八方位撲空多花約 90-100 秒多掃上下兩層，
+任一層拖曳被吃重試再 +15 秒。這個值**尚未實機驗證**——若快照顯示上層視野抬得太多/
+太少或方向相反，只改 `sweep_pitch_step_px` 的大小或正負，不動任何程式邏輯；換世界重校同理。
+改回 `0`（或 `sweep_pitch_center_back_px<=0`）時 `harvester.plan_pitch_layers` 回空 list、
+整個功能靜默停用，設定頁退回警示條。
 
 **偵測門檻、ROI、座標一律不開放**——那些要看實機素材兩側夾才能動，屬於 AI agent 的
 CLI 工作（spec §12）。想改的話跟 agent 說，不是在網頁找。
