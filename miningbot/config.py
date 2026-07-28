@@ -345,6 +345,31 @@ class Config:
     # `build_reentry_dataset --eval` 判「命中」的半徑：偵測器最高分預測落在真實
     # 座標這個距離內就算中。傳送板本身有大小，像素級精確沒有意義；要調就在這裡調。
     reentry_dataset_hit_radius_px: int = 80
+    # 傳送板偵測器（`teleport_board.py`）——全部由 2026-07-28 語料實測而來，
+    # 量法與各區域的 HSV 百分位寫在該模組 docstring。語料是單一世界／單一層／
+    # 全夜晚、只有 4 個板子實例，**換場景必須重量**。
+    teleport_board_hue_range: tuple = (126, 148)   # 紫羅蘭外框（板子中位 133）
+    teleport_board_sat_range: tuple = (60, 200)    # 上界擋掉更飽和的夜空/UI（中位 157/121）
+    teleport_board_val_range: tuple = (80, 200)    # 下界擋掉更暗的夜空/UI（中位 48/44；板子 115-127）
+    teleport_board_roi: tuple = (230, 150, 1500, 750)  # 只排掉螢幕空間 UI 邊緣，非板子位置假設
+    teleport_board_close_px: int = 11              # 形態學閉運算核；外框是細長條，不接起來會碎成多塊
+    teleport_board_min_area: int = 2500            # 實測板子 3496~5945；小於此的是雜訊
+    teleport_board_aspect_range: tuple = (1.6, 3.0)    # 實測 1.68~2.21
+    teleport_board_fill_range: tuple = (0.22, 0.60)    # bbox 內遮罩占比，實測 0.27~0.33
+    teleport_board_dark_v: int = 90                # 「內部暗像素」的 V 門檻
+    teleport_board_bright_v: int = 200             # 「內部極亮像素」的 V 門檻
+    teleport_board_min_dark_frac: float = 0.40     # 板子面板是深藍黑，實測 0.56~0.62
+    teleport_board_max_bright_frac: float = 0.20   # 發光 UI 元件實測 0.36~0.50，板子 0.05
+    teleport_board_aspect_center: float = 2.1      # 以下三項是 candidate_score 的實測中心/寬度
+    teleport_board_aspect_tolerance: float = 0.9
+    teleport_board_fill_center: float = 0.32
+    teleport_board_fill_tolerance: float = 0.28
+    teleport_board_dark_ref: float = 0.55
+    # 預測分數低於此就不畫圈（畫一個亂猜的圈比不畫更糟）。2026-07-28 實測：語料裡
+    # 4 個真板子的分數 0.759 / 0.947 / 0.969 / 0.973，**沒有任何非板子候選通過幾何
+    # 閘**，所以這是「最弱一個真命中的下緣」而不是兩側夾出來的分離點。語料長大、
+    # 真的出現非板子高分候選時要重新量。
+    reentry_predict_min_score: float = 0.70
     snapshot_queue_max: int = 16                  # 1080p BGR 約 6MB/張；限制最壞記憶體占用
     snapshot_queue_critical_reserve: int = 4      # 保留給 rare/review/reentry，trace 不得吃滿
     snapshot_shutdown_drain_s: float = 5.0        # Bounded shutdown wait for queued snapshot writes.

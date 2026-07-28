@@ -374,6 +374,7 @@ def eval_row(row: dict, prediction, radius_px) -> dict:
     else:
         verdict = "false_positive" if prediction else "clean"
     return {"image": row.get("image"), "label": row.get("label"),
+            "dir": row.get("dir"),
             "world": row.get("world"), "layer_seen": row.get("layer_seen"),
             "xy": truth, "pred": [px, py] if prediction else None,
             "score": score, "dist": dist, "verdict": verdict}
@@ -427,6 +428,10 @@ def format_eval_report(summary: dict, by_world=None, by_layer=None,
     ]
     if radius_px is not None:
         lines.append(f"命中半徑 {radius_px}px（reentry_dataset_hit_radius_px）")
+    if summary["false_positives"]:
+        lines.append("⚠ false-positive 是上界不是實際誤報：negative 的定義是「玩家沒選"
+                     "這個方位」，板子夠寬，相鄰方位（±45°）常常也照得到。"
+                     "逐張明細有 dir，可自行對照。")
     for label, table in (("world", by_world), ("layer", by_layer)):
         if not table:
             continue
