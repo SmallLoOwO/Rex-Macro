@@ -185,20 +185,25 @@ def chat_icon_probe_mean(icon_bgr, probe) -> float:
     return float(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).mean())
 
 
-def chat_icon_state(icon_bgr, probe, open_min_gray: float, closed_max_gray: float) -> str:
-    """聊天圖示開關判定（H047）。回 'open' | 'closed' | 'unknown'。
+def chat_icon_state(icon_bgr, probe, open_min_gray: float, closed_max_gray: float,
+                    closed_min_gray: float) -> str:
+    """聊天圖示開關判定（H047／H063）。回 'open' | 'closed' | 'unknown'。
 
     icon_bgr：chat_icon_state_region 裁圖（BGR）。probe=(x0,y0,x1,y1) 為 crop 內相對座標，
     取泡泡內部補丁（左下內部，避開中央文字筆劃與右上未讀徽章）灰階平均：
-    >=open_min_gray 判開（實心白泡泡）、<=closed_max_gray 判關（空心、內部暗）、
-    其間 unknown（呼叫端絕不能點擊——誤判開頂多維持現狀，誤判關點下去會把開著的
-    聊天框關掉，才是破壞性動作，方向必須保守）。
-    兩側夾：開 238..255 / 關 81..87（docs/incidents.md H047）。
+    >=open_min_gray 判開（實心白泡泡）、closed_min_gray..closed_max_gray 判關
+    （空心、內部暗），**其餘一律 unknown**（呼叫端絕不能點擊——誤判開頂多維持現狀，
+    誤判關點下去會把開著的聊天框關掉，才是破壞性動作，方向必須保守）。
+    兩側夾：開 238..255 / 關 81..94（docs/incidents.md H047、H063）。
+
+    「關」是**有下界的區間**不是 `<=closed_max_gray`（H063）：實測 41.0 的暗值代表
+    補丁根本沒照到圖示（被暗色浮層／別的視窗蓋住），那不是「關」，照舊判關就會對
+    著看不見的圖示連點 toggle，把開著的聊天框關掉。太暗＝沒讀到＝unknown。
     """
     mean = chat_icon_probe_mean(icon_bgr, probe)
     if mean >= open_min_gray:
         return "open"
-    if mean <= closed_max_gray:
+    if closed_min_gray <= mean <= closed_max_gray:
         return "closed"
     return "unknown"
 

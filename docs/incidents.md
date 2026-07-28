@@ -549,3 +549,19 @@ fixture 位置慣例：
 - **對策**（`miningbot/main.py`）：`_sweep_for_tracker` 迴圈內若 `_harvest_boost_guard` 回 True，記旗標 `self._sweep_fov_shifted = True`（每輪 sweep 開頭重置為 False）；`_tick_harvest` 的 RESWEEP 分流讀這個旗標，決定要不要在 `_reharvest_sweep` 裡重拍 ref。`_reharvest_sweep` 新增 `refresh_ref: bool = False` 參數：True 時比照**進場邏輯**（`_on_enter` HARVESTING）的既有安全時機——先確認 D5/FOV 已展開，在**按下 D2 之前**重拍（此刻理論上不會有 D2 高亮的活框，跟入口拍 ref 同一個安全窗口，不是隨便挑一幀）；False（預設）維持 H026 既有行為完全不變，不碰 ref/畫面。旗標只在「本輪 sweep 內確實補過 D5」時立起，跟「verify 失敗但原因不明」的一般情形區分開——不擴大 H026 的例外範圍。
 - **回歸**：`tests/test_main_harvest_runtime.py` 四例——`_sweep_for_tracker` 補過 D5／沒補過 D5 兩種旗標結果（用 118 第二輪「全 8 方位 no tracker」的真實形狀重現）；`_reharvest_sweep(refresh_ref=True)` 確認重拍發生在 boost guard 之後、`_run_scan`（按 D2）之前，且事後旗標清空；`refresh_ref=False`（預設）確認完全不碰 `capture.grab`／`_harvest_boost_guard`，既有行為零改動。全套 1815+ 通過，ruff clean。
 - **下輪實機驗證預期**：harvest 的 `sweep 看過穩定框但 verify 失敗...-> 重掃一次` 那行，若同輪掃描期間 `actions.log` 出現過 `harvest: boost 消失`，訊息尾端應多印 `（本輪掃描中補過 D5，重拍 ref）`；緊接的重掃**不應**再像 118 那樣 8 方位全空機率偏高（樣本數不足以定門檻，需累積多輪對照）。反指標：若「補過 D5」的重掃仍常態性全空，代表 refresh_ref 重拍的時機本身還是抓到了活框（H026 風險兌現），需要另外找更安全的重拍窗口，而不是回頭放寬偵測門檻。
+
+## H063（2026-07-28 14:09 啟動；使用者回報「每次初始化都會把左上角的聊天框關起來」）：H047 的「關」判定沒有下界——補丁被暗色浮層蓋住讀到 41.0 也算「關」，於是對著看不見的圖示連點 3 次 toggle，把開著的聊天框關掉
+
+- **症狀（使用者回報＋log）**：啟動前聊天框是開的，跑完環境檢查就變關。`miningbot.log` 14:09:23~28：`聊天圖示空心，點擊開啟（probe=41.0）` → `仍空心，第 1 次重試（probe=41.0）` → `第 2 次重試（probe=41.0）` → `聊天框未開啟（state=closed, probe=88.2）`。
+- **一句話根因**：`vision.chat_icon_state` 的關值判定是 `mean <= chat_icon_closed_max_gray(130)`，**沒有下界**；41.0 遠低於實測關值整段（81..94）代表補丁根本沒照到圖示（靜態暗色浮層／別的視窗蓋在左上角），卻仍被判成 `closed` → `plan_chat_open_action` 連發 3 次點擊（`chat_open_max_retries=2`）→ **奇數次 toggle**：開→關→開→關，剛好把使用者開著的聊天框關掉；第 4 次讀（浮層已消失）拿到真圖示 88.2＝空心，正是被自己關掉的結果。
+- **量測（實機，2026-07-28，全螢幕 1920×1080）**：
+  - 座標與素材無誤：`chat_icon_state_region(154,22,40,40)` 的實機裁圖與 `tests/fixtures/chat_icon/*.png` 逐列對齊；游標移到 `chat_icon_xy(174,42)` 跳出 Roblox 的 `Chat` tooltip。
+  - 兩側夾在現行版面仍成立：關 82.9（無 hover）／93.6（游標懸停）、開 237.2~238.5。開關各自穩定，與 Roblox 前景與否無關（前景/非前景各量 4 次皆 238.5）、與 Tab 玩家列表開關無關（8 次皆 238.5）、閒置 5 分鐘不會自己變暗（無 idle fade）。
+  - `41.0` 在整份 log 只出現 3 次＝全部來自這一場、且三讀**分毫不差**（活的遊戲畫面會抖動，靜態浮層才會分毫不差）。歷史 5 場「點了沒反應」的重試共 **0 次**救回（07-25 18:23／07-26 12:23、15:27／07-27 16:38／07-28 14:09），成功的場次一律第一次點擊就從 83 跳到 237。
+- **對策**：
+  - `config.chat_icon_closed_min_gray = 60.0`（新欄位）＋ `vision.chat_icon_state` 多收一個 `closed_min_gray`：關改成**有下界的區間** `60..130`，低於下界一律 `unknown`。`unknown` 在 `plan_chat_open_action` 任何 `clicks_done` 下都不會回 `click`（H047 既有安全方向），所以這一類讀值再也不會點到聊天框。門檻取 41 與實測關值下界 81 的中點（≈61）→ 60。
+  - `config.chat_open_max_retries: 2 → 0`（判關只點一次）。重試的原始動機是「點擊被吃 → 重新聚焦再點」，但實機 0/5 救回，而每一次重試都是一次 toggle；讀值錯時奇數次點擊必定把聊天框關掉。
+  - `main._ensure_chat_open` 的 unknown 重讀 log 從 DEBUG 升 INFO（實機 `log_level=INFO`，落 DEBUG 等於事後查不到 unknown 發生過）。
+- **回歸**：`tests/test_chat_icon.py`——合成灰階 41／0 判 `unknown`（並確認 plan 不回 `click`）、85 仍判 `closed`、fixture 關值必須高於 `chat_icon_closed_min_gray`、config 額度下「判關恰好點一次就 give_up」。
+- **未解（不影響本修復）**：41.0 那層暗色浮層的身分未定案。現場重現時，游標移到畫面頂端 80px（含 `move_to(960,3)` 停 3 秒）**沒有**叫出 `input_control.TOP_OVERLAY_STRIP_PX` 註解裡那條標題列，HUD 在左下（12,905）、splash 置中，都不在左上角；最可能是當下疊了別的視窗。這條事故的對策刻意不依賴查明浮層身分——**讀值不在任何一個實測區間就是沒讀到**，無論遮擋物是什麼。
+- **千萬別做**：不要為了「讓它敢點」而把 `chat_icon_closed_min_gray` 調低或拿掉——那等於回到「夠暗就算關」，H063 會原樣復發。也不要把 `chat_open_max_retries` 加回去當作點擊被吃的解法；真要救被吃的點擊，做法是「點完確認 probe 有變化」再決定下一步，而不是盲目多點幾次 toggle。

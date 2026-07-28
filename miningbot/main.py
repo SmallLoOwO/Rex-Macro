@@ -1544,18 +1544,20 @@ class Bot:
         return cfg.menu_movement_row_y, value_text
 
     def _ensure_chat_open(self):
-        """啟動 UI 前置檢查：聊天圖示狀態判定聊天框開關；關閉就點圖示開啟（H047）。
+        """啟動 UI 前置檢查：聊天圖示狀態判定聊天框開關；關閉就點圖示開啟（H047／H063）。
 
         舊版靠輸入列 placeholder OCR 判斷，但聊天框開著且久無新訊息會被遊戲自動隱藏、
         placeholder 隨之消失 → 假陰性「關閉」→ 對已開啟的聊天框連點 toggle 圖示，反而
         關掉（2026-07-17／07-18 兩場實機事故）。改用左上聊天圖示外觀：開＝實心白泡泡、
-        關＝空心白邊，任何狀態都看得到，不受自動隱藏影響。unknown（灰值落兩側夾中間，
-        例如重置白閃過渡幀）絕不點擊——誤判開頂多維持現狀，誤判關點下去才會把開著的
-        聊天框關掉，比照 `_ensure_player_list_closed` 的 toggle 安全方向。
-        點擊被吃的既有對策＝重新聚焦後重送（_focus_roblox）。點擊/重讀額度用盡仍未
-        判開 → 保留 WARNING + HUD，另存快照（snapshots/trace/，label chat_open_fail）
-        供診斷，照常啟動（不發 Discord：啟動時人在旁邊，比照 preflight 警訊分流慣例，
-        見 CLAUDE.md）。
+        關＝空心白邊，任何狀態都看得到，不受自動隱藏影響。unknown（灰值落兩側夾之外，
+        例如重置白閃過渡幀，或補丁被暗色浮層蓋住的 41.0）絕不點擊——誤判開頂多維持
+        現狀，誤判關點下去才會把開著的聊天框關掉，比照 `_ensure_player_list_closed`
+        的 toggle 安全方向。
+        判關時**只點一次**（H063：`chat_open_max_retries=0`）——實機 5 場重試 0 次救回，
+        而每次重試都是一次 toggle，讀值錯時奇數次點擊剛好把聊天框關掉。點擊/重讀額度
+        用盡仍未判開 → 保留 WARNING + HUD，另存快照（snapshots/trace/，label
+        chat_open_fail）供診斷，照常啟動（不發 Discord：啟動時人在旁邊，比照 preflight
+        警訊分流慣例，見 CLAUDE.md）。
         """
         clicks = 0
         reads = 0
@@ -1566,7 +1568,8 @@ class Bot:
             crop = capture.crop(frame, cfg.chat_icon_state_region)
             state = vision.chat_icon_state(
                 crop, cfg.chat_icon_probe,
-                cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray)
+                cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray,
+                cfg.chat_icon_closed_min_gray)
             probe_mean = vision.chat_icon_probe_mean(crop, cfg.chat_icon_probe)
             action = roblox_menu.plan_chat_open_action(
                 state, clicks, reads,
@@ -1588,8 +1591,11 @@ class Bot:
                 continue
             if action == "reread":
                 reads += 1
-                self.logger.debug(
-                    "UI 前置檢查：聊天圖示判定 unknown，重讀（第 %d 次，probe=%.1f）", reads, probe_mean)
+                # INFO 不是 DEBUG（H063）：unknown 是「補丁沒讀到圖示」的主要失敗型，
+                # 實機 log_level=INFO，落 DEBUG 等於事後查不到它發生過。
+                self.logger.info(
+                    "UI 前置檢查：聊天圖示判定 unknown（未落兩側夾），重讀（第 %d 次，probe=%.1f）",
+                    reads, probe_mean)
                 time.sleep(0.3)
                 continue
             # give_up：點擊或重讀額度用盡，或防禦性未知 state

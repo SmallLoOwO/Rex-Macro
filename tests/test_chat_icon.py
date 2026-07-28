@@ -22,7 +22,7 @@ from miningbot.config import DEFAULT as cfg  # noqa: E402
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "chat_icon")
 ROOT = Path(__file__).resolve().parents[1]
 
-MAX_CLICKS = 3   # 比照 main._ensure_chat_open：chat_open_max_retries(2) + 1
+MAX_CLICKS = cfg.chat_open_max_retries + 1   # 比照 main._ensure_chat_open（H063 後＝1）
 MAX_READS = 3
 
 
@@ -34,6 +34,14 @@ def _load(name):
     return img
 
 
+def _state(icon):
+    """一律走 config 的現行三個門檻，測試不重寫數值（改門檻時測試跟著走）。"""
+    return vision.chat_icon_state(
+        icon, cfg.chat_icon_probe,
+        cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray,
+        cfg.chat_icon_closed_min_gray)
+
+
 # ---- 1. fixture 分類（規格第 3 節表格） ----
 
 @pytest.mark.parametrize("name, expected", [
@@ -43,14 +51,16 @@ def _load(name):
 ])
 def test_chat_icon_state_classifies_fixture(name, expected):
     icon = _load(name)
-    state = vision.chat_icon_state(
-        icon, cfg.chat_icon_probe,
-        cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray)
+    state = _state(icon)
     assert state == expected
 
 
 def test_chat_icon_probe_means_bracket_the_gap():
-    """fixture 完整性 sanity：實測開 239／關 83（規格第 3 節表格），確認兩側夾方向沒反。"""
+    """fixture 完整性 sanity：實測開 239／關 83（規格第 3 節表格），確認兩側夾方向沒反。
+
+    關值同時要**高於** `chat_icon_closed_min_gray`（H063 下界）——真的關著的圖示不能
+    掉進「太暗＝沒讀到」那一格，否則檢查永遠不敢點開。
+    """
     open_mean = vision.chat_icon_probe_mean(
         _load("h047_icon_open_solid.png"), cfg.chat_icon_probe)
     closed_mean = vision.chat_icon_probe_mean(
@@ -58,23 +68,36 @@ def test_chat_icon_probe_means_bracket_the_gap():
     badge_mean = vision.chat_icon_probe_mean(
         _load("h047_icon_closed_hollow_badge11.png"), cfg.chat_icon_probe)
     assert open_mean >= 230
-    assert closed_mean <= 95
-    assert badge_mean <= 95
+    assert cfg.chat_icon_closed_min_gray < closed_mean <= 95
+    assert cfg.chat_icon_closed_min_gray < badge_mean <= 95
 
 
-# ---- 2. 合成邊界（安全方向：白閃判開、黑屏判關、中間 unknown 不可點擊） ----
+# ---- 2. 合成邊界（安全方向：白閃判開、太暗＝沒讀到圖示、只有實測關值區間才判關） ----
 
 @pytest.mark.parametrize("gray_value, expected", [
     (255, "open"),      # 全白畫面（重置白閃）→ 判開＝不點，方向安全
-    (150, "unknown"),   # 兩側夾中間 → 呼叫端不得點擊
-    (0, "closed"),      # 黑屏 → 判關（點擊無 UI 可點、無害，記錄行為即可）
+    (150, "unknown"),   # 關上界與開下界之間 → 呼叫端不得點擊
+    (85, "closed"),     # 實測關值區間（81..94）
+    (41, "unknown"),    # H063 實機值：補丁被暗色浮層蓋住，不是「關」
+    (0, "unknown"),     # 全黑（圖示整個沒照到）→ 同上，絕不點擊
 ])
 def test_chat_icon_state_synthetic_boundaries(gray_value, expected):
     icon = np.full((40, 40, 3), gray_value, dtype=np.uint8)
-    state = vision.chat_icon_state(
-        icon, cfg.chat_icon_probe,
-        cfg.chat_icon_open_min_gray, cfg.chat_icon_closed_max_gray)
-    assert state == expected
+    assert _state(icon) == expected
+
+
+def test_chat_icon_state_dark_patch_is_not_closed_h063():
+    """H063 兩側夾：實機 41.0（三幀分毫不差＝靜態暗色浮層）不得判 'closed'。
+
+    舊碼 `mean <= closed_max_gray(130)` 把它當關 → 對看不見的圖示連點 toggle →
+    奇數次點擊把**開著的**聊天框關掉（2026-07-28 14:09 實機）。太暗＝沒讀到＝unknown，
+    而 unknown 在 plan_chat_open_action 任何情況下都不會回 'click'。
+    """
+    dark = np.full((40, 40, 3), 41, dtype=np.uint8)
+    assert _state(dark) == "unknown"
+    for clicks in (0, 1, MAX_CLICKS):
+        assert roblox_menu.plan_chat_open_action(
+            _state(dark), clicks, 0, MAX_CLICKS, MAX_READS) != "click"
 
 
 # ---- 3. plan_chat_open_action 全分支（規格第 4.3 節六個分支） ----
@@ -95,6 +118,20 @@ def test_plan_closed_state_clicks_within_budget():
 def test_plan_closed_state_budget_exhausted_gives_up():
     assert roblox_menu.plan_chat_open_action(
         "closed", MAX_CLICKS, 0, MAX_CLICKS, MAX_READS) == "give_up"
+
+
+def test_configured_budget_allows_exactly_one_click_h063():
+    """實機額度（config）下，判關最多點一次就 give_up——奇數次 toggle 才是破壞性的。
+
+    每一次點擊都是一次 toggle：讀值若本身是錯的（H063 的 41.0），連點 3 次剛好把
+    開著的聊天框關掉。實機 5 場「點了沒反應」的重試 0 次救回，成功場一律第一次就開。
+    """
+    budget = cfg.chat_open_max_retries + 1
+    assert budget == 1
+    assert roblox_menu.plan_chat_open_action(
+        "closed", 0, 0, budget, MAX_READS) == "click"
+    assert roblox_menu.plan_chat_open_action(
+        "closed", 1, 0, budget, MAX_READS) == "give_up"
 
 
 def test_plan_unknown_state_rereads_within_budget():

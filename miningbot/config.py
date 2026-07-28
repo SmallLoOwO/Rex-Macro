@@ -593,10 +593,19 @@ class Config:
     chat_icon_probe: tuple = (6, 21, 18, 28)
         # 泡泡內部補丁（crop 相對 x0,y0,x1,y1；位於泡泡左下內部，避開中央文字筆劃與右上未讀徽章）
     chat_icon_open_min_gray: float = 180.0    # >= 判開（實心白泡泡）
-        # 實測補丁灰階平均：開 238..255（n=42）、關 81..87（n=19 含未讀徽章「11」樣本）→ 兩側夾
-    chat_icon_closed_max_gray: float = 130.0  # <= 判關（空心、內部暗）；中間 unknown，呼叫端絕不點擊
+        # 實測補丁灰階平均：開 237..255（n=42+）、關 81..94（n=19 含未讀徽章「11」樣本、
+        # 2026-07-28 全螢幕實測 82.9 無 hover／93.6 游標懸停）→ 兩側夾
+    chat_icon_closed_max_gray: float = 130.0  # <= 判關（空心、內部暗）；到 open 之間 unknown
+    chat_icon_closed_min_gray: float = 60.0   # < 此值＝補丁沒照到圖示 → unknown，絕不點擊（H063）
+        # 2026-07-28 14:09 實機讀到 41.0（三幀分毫不差＝靜態暗色浮層蓋住圖示），舊碼
+        # `<=130 就判關` 把它當關 → 連點 3 次 toggle → 把開著的聊天框關掉。
+        # 41.0 與實測關值下界 81 的中點 ≈ 61 → 取 60（兩側夾：41 判 unknown、81 判關）。
     chat_open_settle_s: float = 0.8      # 點聊天圖示後等展開動畫（menu_open_settle_s 0.3 偏緊）
-    chat_open_max_retries: int = 2       # 首次點擊複檢仍關 → 重新聚焦再點的重試次數
+    chat_open_max_retries: int = 0       # 判關時只點一次（H063）
+        # 舊值 2（＝最多點 3 次）。實機 5 場「點了圖示卻沒反應」的重試 **0 次救回**
+        # （2026-07-25 18:23／07-26 12:23、15:27／07-27 16:38／07-28 14:09 皆三讀同值後
+        # give_up），成功的場次一律第一次點擊就開；而每多點一次就多一次 toggle，讀值若
+        # 本身是錯的（見 chat_icon_closed_min_gray），奇數次點擊剛好把聊天框關掉。
 
     player_list_region: Region = field(default_factory=lambda: Region(1490, 110, 425, 150))
         # 右上角玩家列表（Tab toggle）標題列＋第一列。2026-07-09 由實機截圖量測：
