@@ -563,5 +563,6 @@ fixture 位置慣例：
   - `config.chat_open_max_retries: 2 → 0`（判關只點一次）。重試的原始動機是「點擊被吃 → 重新聚焦再點」，但實機 0/5 救回，而每一次重試都是一次 toggle；讀值錯時奇數次點擊必定把聊天框關掉。
   - `main._ensure_chat_open` 的 unknown 重讀 log 從 DEBUG 升 INFO（實機 `log_level=INFO`，落 DEBUG 等於事後查不到 unknown 發生過）。
 - **回歸**：`tests/test_chat_icon.py`——合成灰階 41／0 判 `unknown`（並確認 plan 不回 `click`）、85 仍判 `closed`、fixture 關值必須高於 `chat_icon_closed_min_gray`、config 額度下「判關恰好點一次就 give_up」。
-- **未解（不影響本修復）**：41.0 那層暗色浮層的身分未定案。現場重現時，游標移到畫面頂端 80px（含 `move_to(960,3)` 停 3 秒）**沒有**叫出 `input_control.TOP_OVERLAY_STRIP_PX` 註解裡那條標題列，HUD 在左下（12,905）、splash 置中，都不在左上角；最可能是當下疊了別的視窗。這條事故的對策刻意不依賴查明浮層身分——**讀值不在任何一個實測區間就是沒讀到**，無論遮擋物是什麼。
+- **實機驗收（2026-07-28）**：(1) 走 `.bat`／pythonw production 路徑重啟，聊天框開著 → `聊天框已開啟（圖示實心，probe=238.5）`、零點擊、啟動後仍開；旁觀截圖整段啟動 probe 未偏離 238.5。(2) 雙態腳本用同一條決策路徑（`vision.chat_icon_state` ＋ `roblox_menu.plan_chat_open_action` ＋ 正式額度）各跑一次：**開著＝0 次點擊維持開啟**（237.2 → `done`）、**關著＝恰好 1 次點擊就開起來**（83.3 → `click` → 237.2 → `done`）。
+- **41.0 的遮擋源（使用者裁決，不再追查）**：那是 **Roblox 內建的浮層**，會蓋住畫面上方的物件；使用者平常就會避免讓它出現。**不必再花力氣定位它**——這條事故的對策刻意不依賴查明遮擋物身分：**讀值不落在任何一個實測區間就是沒讀到**，遮擋物是誰都一樣處理（unknown → 重讀 → give_up，絕不點擊）。
 - **千萬別做**：不要為了「讓它敢點」而把 `chat_icon_closed_min_gray` 調低或拿掉——那等於回到「夠暗就算關」，H063 會原樣復發。也不要把 `chat_open_max_retries` 加回去當作點擊被吃的解法；真要救被吃的點擊，做法是「點完確認 probe 有變化」再決定下一步，而不是盲目多點幾次 toggle。
