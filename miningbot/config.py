@@ -537,7 +537,11 @@ class Config:
     # 就這樣白等 120s 逾時（log: `[RR#26] 回礦 web 介入：reply timeout`）。
     # 現在配合 Discord 提醒 + 分頁標題閃爍把首輪拉長到 5 分鐘：逾時代表「人不在」，
     # 不是「人來不及」，退回 Discord 才有意義。retry 輪短一些（人已經在了）。
-    web_intervention_budget_s: float = 300.0
+    # 300→900（2026-07-28）：實測四次網頁介入、三次逾時各白燒 300s，而帶網址的
+    # Discord 提醒確實發出去也自動收回了（log 有 `web 介入提醒收回 … HTTP 204`）
+    # ——所以逾時是「人不在」不是「通知不到」，加通知管道無效，只能拉長預算。
+    # 停更久的實際成本比看起來小：逾時退回 Discord 八方位一樣要等人。
+    web_intervention_budget_s: float = 900.0
     web_intervention_retry_budget_s: float = 120.0
     websocket_ping_interval_s: float = 30.0
     # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，

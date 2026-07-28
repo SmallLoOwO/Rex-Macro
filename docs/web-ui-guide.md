@@ -115,7 +115,7 @@ tailscale serve status
 
 共通：拖曳畫面不會被當成點擊（移動超過 5px 就算拖曳）。
 
-⚠ 等待預算：回礦首輪 `web_intervention_budget_s`（預設 5 分鐘），retry 輪
+⚠ 等待預算：回礦首輪 `web_intervention_budget_s`（預設 15 分鐘），retry 輪
 `web_intervention_retry_budget_s`（2 分鐘）；採集仍用 `remote_aim_budget_s`。
 逾時就退回 Discord——逾時代表「人不在」，不是「人來不及」。
 礦坑如果在你猶豫時開始重置，bot 會拒絕這次點擊並告訴你——那不是 bug，是防止對著
