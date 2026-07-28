@@ -247,8 +247,9 @@ def classify_group(meta: dict) -> tuple:
     if len({c.get("dir") for c in clicks}) > 1:
         return [], "multi_dir_clicks"
     click = clicks[-1]
-    # `pos` 是 2026-07-28 之前 --rescue 倒進來的舊 meta 用的欄位名；新的一律
-    # `actual_xy`（與 `predicted_xy` 成對）。舊檔不重寫，讀的時候相容就好。
+    # `pos` 是 2026-07-28 預測點上線**之前**寫出來的 meta 用的欄位名（那批已經倒
+    # 在語料夾裡，--rescue 是冪等的不會重寫）；之後一律 `actual_xy`，與
+    # `predicted_xy` 成對。舊檔不重寫，讀的時候相容就好。
     actual = click.get("actual_xy") or click.get("pos")
     group = corpus.group_name(meta.get("episode"), meta.get("attempt"))
     rows = []

@@ -6996,6 +6996,9 @@ class Bot:
                              f"ep{ctx.episode_id}_click{len(ctx.clicks)}_full{zs}.png")
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         reentry_remote.record_click(ctx, pos, layer, ctx.zoom_region, time.time())
+        # 預測 vs 真實也要記在 Discord 這條退路上：web 推完逾時退回 Discord 時，
+        # ctx.predictions 明明有值，不記就等於白丟一筆最有價值的比對樣本。
+        reentry_remote.record_prediction(ctx, ctx.predictions.get(ctx.cur_dir % 8))
         self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
 
     def _rr_click_and_verify(self, ctx, pos, cur, layer, mpath, zs):
@@ -7200,9 +7203,7 @@ class Bot:
         reentry_remote.record_click(ctx, pos, layer, (), time.time())
         # 預測 vs 真實（2026-07-28）：玩家點在別的地方＝否定了預測。轉向已完成，
         # 所以 cur_dir%8 就是這張圖在 sweep 裡的編號。
-        reentry_remote.record_prediction(
-            ctx, (getattr(ctx, "predictions", None) or {}).get(
-                getattr(ctx, "cur_dir", 0) % 8))
+        reentry_remote.record_prediction(ctx, ctx.predictions.get(ctx.cur_dir % 8))
         verdict = self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
         # P5 Task 5：自動收集素材（spec §5）——玩家介入 verdict = 真值材料。
         # frame = 點擊瞬間已抓的 cur（全幀）；reentry 無 cell_crop（傳送板定位用全幀座標）。

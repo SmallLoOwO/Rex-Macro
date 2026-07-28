@@ -354,6 +354,8 @@ class Config:
     teleport_board_roi: tuple = (230, 150, 1500, 750)  # 只排掉螢幕空間 UI 邊緣，非板子位置假設
     teleport_board_close_px: int = 11              # 形態學閉運算核；外框是細長條，不接起來會碎成多塊
     teleport_board_min_area: int = 2500            # 實測板子 3496~5945；小於此的是雜訊
+    teleport_board_min_w: int = 40                 # bbox 最小寬高（實測板子 148~201 / 88~94）
+    teleport_board_min_h: int = 20
     teleport_board_aspect_range: tuple = (1.6, 3.0)    # 實測 1.68~2.21
     teleport_board_fill_range: tuple = (0.22, 0.60)    # bbox 內遮罩占比，實測 0.27~0.33
     teleport_board_dark_v: int = 90                # 「內部暗像素」的 V 門檻

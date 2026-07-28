@@ -56,6 +56,9 @@ miningbot/
   audio.py                  chill/reset scoring and loopback capture
   game_data.py              active-world events/ores/classification
   reentry*.py               automatic and remote re-entry decisions
+  teleport_board.py         re-entry teleport board detector (suggest only, never auto-click)
+  corpus.py                 re-entry corpus folder outside snapshot retention
+  build_reentry_dataset.py  offline: ledger rescue, dataset.jsonl, --eval report
   remote_aim.py             Discord-assisted harvest alignment
   roblox_menu.py            menu OCR decisions
   sampler.py                numbered manual-sample writing (R-key Tk UI retired 2026-07-17)
@@ -103,6 +106,8 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*`; every path bounded, ledger written, pitch/zoom restored |
 | Discord controls | command/parser tests | `main._poll_discord`, `notify.py` |
 | Web UI / WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`, `miningbot/AGENTS.md` Web UI layer | `web_*` modules, `main._web_*`, `Bot._execute_remote_fire_from_web`, `Bot._rr_click_from_web` |
+| Re-entry corpus / dataset | `corpus.py`, `build_reentry_dataset.py` | `Bot._rr_save_corpus`, `<log_dir>/corpus/reentry/`, `dataset.jsonl`, `--eval`; MSIX dual-path resolution lives only in `build_reentry_dataset` |
+| Teleport board prediction | `teleport_board.py` docstring (HSV percentile table) | `Bot._predict_teleport_board`, `reentry_predict_min_score`; suggestion only, never auto-click |
 | World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets; active registry, low/high tier conflicts, JSON sync |
 | Manual sampling / calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` (capture via remote-control 📷; the R-key window is gone) |
 | Logs/snapshots | `diagnostics.py`, `docs/incidents.md` | categorized runtime snapshots |
@@ -216,6 +221,8 @@ uv run python -m miningbot.fetch_trackers
 uv run python -m miningbot.capture_template boost
 uv run python -m miningbot.calibrate_surface --import NNN
 uv run python -m miningbot.calibrate_pitch
+uv run python -m miningbot.build_reentry_dataset --rescue
+uv run python -m miningbot.build_reentry_dataset --eval
 ```
 
 Sandboxed `python.exe` may fail with an execution-permission error on this managed

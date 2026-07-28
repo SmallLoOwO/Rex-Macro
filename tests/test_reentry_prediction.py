@@ -168,6 +168,15 @@ def test_record_prediction_writes_none_when_no_prediction():
     assert ctx.clicks[-1]["predicted_xy"] is None
 
 
+def test_discord_click_path_also_records_prediction():
+    """web 逾時退回 Discord 時 ctx.predictions 明明有值，不記就白丟一筆比對樣本。"""
+    import inspect
+
+    from miningbot.main import Bot
+    src = inspect.getsource(Bot._rr_click)
+    assert "record_prediction" in src
+
+
 def test_record_prediction_without_click_returns_false():
     ctx = reentry_remote.RemoteReentryContext(
         episode_id=27, created_at=0.0, sticky_layer="Shamrock")

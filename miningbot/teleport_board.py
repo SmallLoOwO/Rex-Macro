@@ -100,7 +100,9 @@ def detect(frame):
     best = None
     for i in range(1, count):
         x, y, w, hh, area = stats[i]
-        if area < cfg.teleport_board_min_area or w < 40 or hh < 20:
+        if (area < cfg.teleport_board_min_area
+                or w < cfg.teleport_board_min_w
+                or hh < cfg.teleport_board_min_h):
             continue
         aspect = w / float(hh)
         if not (ar_lo <= aspect <= ar_hi):

@@ -57,16 +57,16 @@ change rules; repository-wide behavior belongs in the root contract.
 | `web_sink.py` | `WebEventSink` (EventLog → WS broadcast); parallel to `notify.make_discord_sink` |
 | `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (4 fields), `is_web_configurable`, `validate_value` |
 | `web_config_persistence.py` | `load/save/apply_overrides_to_config` (atomic JSON write; idempotent on restart) |
-| `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` |
-| `web_annotation.py` | `build_annotation`, `normalize_symptom`, `rarity_choices_from_game_data`, `validate_annotation` |
-| `web_history.py` | `load_episodes`, `load_episode_detail`, `list_annotations_for_episode` (recursive `os.walk`) |
+| `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` (single or tier queue), `render_failures_html` / `render_stats_html` (agent-facing: ugly layout, complete data) |
+| `web_annotation.py` | `build_annotation`, `normalize_symptom`, `rarity_choices_from_game_data`, `validate_annotation`, `verdict_agrees` + `NO_LABEL` sentinel |
+| `web_history.py` | `load_episodes`, `load_episode_detail`, `list_annotations_for_episode` (recursive `os.walk`), `annotation_tier` / `build_queue` (tier queue), `aggregate_labels` (`written_at` only, never directory mtime), `verdict_category` |
 
 Design spec: `docs/superpowers/specs/2026-07-26-web-ui-design.md`. Commit
 history: `docs/superpowers/plans/2026-07-26-web-ui-p[1-5]-*.md`.
 
 Runnable tools include `main.py`, `__main__.py`, `convert_audio.py`,
-`add_chill_ref.py`, `capture_template.py`, `calibrate*.py`, `fetch_ores.py`, and
-`fetch_trackers.py`.
+`add_chill_ref.py`, `capture_template.py`, `calibrate*.py`, `fetch_ores.py`,
+`fetch_trackers.py`, and `build_reentry_dataset.py` (offline; never imports `main`).
 
 ## MAIN.PY NAVIGATION
 

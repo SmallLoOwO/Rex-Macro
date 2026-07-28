@@ -91,6 +91,28 @@ def test_failures_attaches_verdict_for_reentry_frames(tmp_path):
     assert item["verdict"]["score"]["score"] > 0
 
 
+def test_failures_never_fabricates_agreement(tmp_path):
+    """這頁沒有玩家標籤可比，agree 必須是 null。
+
+    `None` 在標註 schema 裡是「對照組：玩家確認過的真框」，拿它當「還沒標」會讓
+    唯讀頁憑空回一個「與不存在的標註不一致」給讀 JSON 的 agent（code review 抓到）。
+    """
+    client = _client(tmp_path, [
+        _rec("reentry_ep27_dir3_rejected", _REAL_FRAME, 1.0)])
+    verdict = client.get("/api/failures").json()["items"][0]["verdict"]
+    assert verdict["detector"] == "accepted"
+    assert verdict["agree"] is None and verdict["your_label"] is None
+
+
+def test_annotate_control_sample_still_gets_agreement(tmp_path):
+    """對照組（symptom=None）在標註路徑上仍要算 agree——兩者語意不可混用。"""
+    from miningbot.web_annotation import NO_LABEL
+    assert web_server.annotation_verdict(
+        "reentry", None, _REAL_FRAME, None)["agree"] is True
+    assert web_server.annotation_verdict(
+        "reentry", None, _REAL_FRAME, NO_LABEL)["agree"] is None
+
+
 def test_failures_explains_missing_verdict(tmp_path):
     """沒有判決要說清楚為什麼，不是留空。"""
     client = _client(tmp_path, [

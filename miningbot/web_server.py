@@ -22,7 +22,7 @@ from miningbot.web_protocol import (
     parse_reentry_click_payload, serialize_message,
 )
 from miningbot.web_ipc import PendingReplies, FallbackState
-from miningbot.web_annotation import cell_crop_box
+from miningbot.web_annotation import NO_LABEL, cell_crop_box
 from miningbot.web_history import (
     annotation_queue, index_readable, load_stats, verdict_category,
 )
@@ -376,7 +376,10 @@ def create_app(
             if category is None:
                 note = "全幀不是追蹤框偵測器吃的格式（需 320×270 粗格裁圖）——請走 /annotate"
             else:
-                verdict = annotation_verdict(category, None, row["path"], None)
+                # NO_LABEL 而不是 None：這頁沒有玩家標籤可比，`None` 會被當成
+                # 「對照組」而回一個憑空的 agree 給讀 JSON 的 agent。
+                verdict = annotation_verdict(
+                    category, None, row["path"], NO_LABEL)
                 if verdict is None:
                     note = "偵測不可用（見 log）"
             items.append({**row, "verdict": verdict, "verdict_note": note})
@@ -702,7 +705,7 @@ def annotation_verdict(category: str, crop_png: str | None,
         import numpy as np
 
         from miningbot.config import DEFAULT as _cfg
-        from miningbot.web_annotation import verdict_agrees
+        from miningbot.web_annotation import NO_LABEL, verdict_agrees
 
         def _load(path):
             if not path:
@@ -738,8 +741,10 @@ def annotation_verdict(category: str, crop_png: str | None,
     except Exception as e:
         _log.warning("web: /api/annotate 回判決降級（偵測不可用，存檔不受影響）：%r", e)
         return None
-    return {"detector": detector, "score": score, "your_label": symptom,
-            "agree": verdict_agrees(detector, symptom)}
+    labelled = symptom != NO_LABEL
+    return {"detector": detector, "score": score,
+            "your_label": symptom if labelled else None,
+            "agree": verdict_agrees(detector, symptom) if labelled else None}
 
 
 def _write_cell_crop_png(source_path: str, target_png: str, cx: int, cy: int):

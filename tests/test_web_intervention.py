@@ -1154,6 +1154,8 @@ class _FakeReentryCtxClick:
     sticky_layer = "mid"
     clicks = []
     net_zoom = 0
+    cur_dir = 0
+    predictions = {}          # 2026-07-28：傳送板預測（`RemoteReentryContext` 有這兩欄）
 
 
 def test_rr_click_from_web_calls_save_auto_fixture_on_descended(monkeypatch, tmp_path):

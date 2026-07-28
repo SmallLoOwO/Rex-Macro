@@ -51,8 +51,13 @@ def normalize_symptom(s: str | None) -> str | None:
     return _SYMPTOM_MAP.get(s)
 
 
+# 「這張還沒有玩家標籤」的哨符（失敗佇列那類唯讀頁用）。**不可以用 `None` 代表**
+# ——`None` 在標註 schema 裡是「對照組：玩家確認過的真框」，兩者語意相反；混用會讓
+# 唯讀頁憑空回一個「與不存在的標註不一致」的 agree 給讀 JSON 的 agent。
+NO_LABEL = "__no_label__"
+
 # 玩家標的症狀，換算成「這張圖裡到底有沒有目標」。偵測器 accepted/rejected 只要
-# 跟這個對得上就是一致。`unknown` 無從比較 → None。
+# 跟這個對得上就是一致。`unknown` 與 `NO_LABEL` 無從比較 → None。
 _SYMPTOM_EXPECTS_TARGET: dict[str | None, bool | None] = {
     None: True,                     # 對照組：玩家確認過的真框（symptom 留空）
     "false_negative": True,         # 「有框，你沒抓到」
