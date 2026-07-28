@@ -582,6 +582,21 @@ def new_fuzzy_rare_lines(before: str, after: str, common_names, rare_names) -> l
 # 「上一次讀取」為錨點鏈式對齊（間隔短 → 錨點幾乎不會捲丟），新增行累積進帳本。
 # 領域事實讓 episode 級語意成立：單人作業＋Exotic+ 被動出土 ≤1/1M → episode 內任何
 # 時點出現的新稀有 found 行只可能來自自己的 D3 ＝成功，不論晚到多久、在哪個階段被看到。
+#
+# ── REAPPEAR：聊天整窗重顯示時只認最底行（H064 對策，2026-07-28，harvest 110~119）──
+# 舊規則「上次讀取為空 → 只起鏈、不計新增」在實機是**結構性全滅**而非罕見邊角：
+# HARVESTING 進場就 prepare_scan 停止移動 → 被動採礦停 → 聊天無新訊息 ~15s 整窗淡出
+# → episode 基準（進場凍結的裁圖）必然讀到 0 行 → 之後 H054 基準閘擋掉計數差、
+# last_line/tail/ledger 三個錨點信號各自棄權 → **礦確實採到了也永遠 no-new**
+# → RESWEEP → 重掃全空（礦已被自己採走）→ 誤交人工。110~119 幾乎每輪都走這條。
+# 修正依 Roblox 聊天語意：整窗只在**有新訊息抵達**時重新顯示，而新訊息恆在最底下
+# → 底行＝那則讓聊天重現的新訊息，其上全是重顯示的舊歷史。故只把底行當新增。
+# 兩側夾（5 份實機 trace dump，全部可離線重跑）：
+#   真成功側 111/112/119 底行 = has found Coinstorm / Starstride / Coinstorm ＝稀有 → 救回；
+#   H054 假成功側 094 底行 = has found Syrooze（排除清單內的一般礦）→ 仍拒，假成功不復活；
+#   110 兩次讀取都只有面板殘留（聊天全程沒重現）→ 無證據可用，行為不變（照樣不確認）。
+# 為何底行是舊稀有行的假陽性不成立：淡出前最後一則訊息＝停手前的被動採礦行，
+# 那是一般礦；bot 不按 `/`、不點聊天圖示（H063 後只在啟動時判一次）。
 
 class ChatLedger:
     """HARVESTING episode 的聊天新增行帳本（滾動錨點鏈、逐 pass 自洽）。
@@ -621,8 +636,8 @@ class ChatLedger:
         保守規則（寧漏勿假陽性，漏的交給長程信號兜底）：
         - 錨點對不到（大幅捲動/該 pass 整段讀歪）→ 該 pass 本次不追加、錨點不推進
           （留住上次好的錨點，下次讀取正常時仍可對齊）。
-        - 上次讀取為空（聊天淡出/基準時無字）→ 新訊息會讓「舊行連同新行」重顯示，
-          無從分辨 → 只推進錨點起鏈、不計新增（舊稀有行重顯示不可假陽性）。
+        - 上次讀取為空（聊天淡出/基準時無字）→ 舊行連同新行一起重顯示，中段無從分辨
+          → **只認最底下那一行**（H064，見 REAPPEAR 註解），其餘全部不計。
         - 噪音守門：tail 行 ≈ 上次已有的行（FUZZY_STALE_LINE_RATIO）＝錨點誤差的重讀、
           非新增（一般礦重讀讀歪礦名會翻成稀有＝假陽性）。代價是同名稀有連續兩筆
           帳本不收——該情境 count 差分本來就抓得住（1→2），不漏。
@@ -637,14 +652,16 @@ class ChatLedger:
             if i >= len(self._last):
                 break                          # 防禦：pass 數不該變（引擎切換只在 init 時）
             prev = self._last[i]
-            if not _chat_lines(prev):
-                if _chat_lines(after):
-                    self._last[i] = after      # 起鏈：重顯示的舊行不計，之後的增量才算
-                continue
-            anchored, tail = _align_tail(prev, after)
-            if not anchored:
-                continue
             prev_lines = _chat_lines(prev)
+            if not prev_lines:
+                after_lines = _chat_lines(after)
+                if not after_lines:
+                    continue                   # 還在淡出中，錨點留空等下一次讀取
+                tail = after_lines[-1:]        # H064：重顯示只認最底行（見上方註解）
+            else:
+                anchored, tail = _align_tail(prev, after)
+                if not anchored:
+                    continue
             for line in tail:
                 n = _normalize(line)
                 if any(self._same_entity_line(p, line, found_keywords)

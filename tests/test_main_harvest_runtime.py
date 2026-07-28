@@ -154,6 +154,37 @@ def test_h054_gate_does_not_veto_ledger_confirmation(monkeypatch):
     assert confirmed is True
 
 
+# --- H064（2026-07-28，harvest 110~119）：淡出基準 + 聊天重顯示 → 底行才是本次新增 ---
+# 走完整 _verify_chat_ocr：H054 基準閘照樣把計數差歸零並記 WARNING，但帳本以「重顯示
+# 只認底行」規則入帳 → confirmed 仍為 True（舊行為整輪棄權 → RESWEEP → 誤交人工）。
+from tests.test_ocr import H064_AFTER_119, H064_COMMON
+
+
+def test_h064_faded_baseline_confirms_through_ledger_bottom_line(monkeypatch):
+    bot = _verify_bot(monkeypatch, H064_AFTER_119)
+    bot._chat_ledger = main.ocr.ChatLedger([""])
+    monkeypatch.setattr(Bot, "_maybe_detect_world_from_ore_lines", lambda self, lines: None)
+
+    _, confirmed, _ = bot._verify_chat_ocr(
+        None, [""], H064_COMMON, (), "119", "poll")
+
+    assert confirmed is True
+    assert bot._chat_ledger.rare_lines == ["small_lo has found Coinstorm"]
+    assert any("H054 基準閘" in w for w in bot.log_harvest.warnings)
+
+
+def test_h064_faded_baseline_094_still_rejected_end_to_end(monkeypatch):
+    # 兩側夾：同一條路徑餵 094（底行是一般礦 Syrooze）必須仍判不成功
+    bot = _verify_bot(monkeypatch, H054_AFTER_094)
+    bot._chat_ledger = main.ocr.ChatLedger([H054_BASELINE_HIDDEN])
+    monkeypatch.setattr(Bot, "_maybe_detect_world_from_ore_lines", lambda self, lines: None)
+
+    _, confirmed, special = bot._verify_chat_ocr(
+        None, [H054_BASELINE_HIDDEN], H054_COMMON, (), "094", "poll")
+
+    assert confirmed is False and special is False
+
+
 # --- H118（2026-07-28）：_harvest_boost_guard 中途補 D5 讓 ref 對不上新 FOV -----
 #
 # 118 實錄：01:07:45 sweep 中途補 D5（FOV 收縮/展開）；01:07:57 轉回去 verify

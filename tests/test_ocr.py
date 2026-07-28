@@ -635,13 +635,14 @@ def test_ledger_passes_are_self_consistent():
 
 
 def test_ledger_empty_baseline_does_not_count_redisplayed_lines():
-    # 聊天在基準時淡出（讀到空）→ 之後新訊息會讓「舊行連同新行」一起重顯示，
-    # 無從分辨舊行重顯示 vs 真新增 → 首次非空讀取只起鏈、不計新增（舊稀有行
-    # 重顯示不可假陽性）；起鏈之後的增量照常計
+    # 聊天在基準時淡出（讀到空）→ 新訊息讓「舊行連同新行」一起重顯示。H064 起首次
+    # 非空讀取只認**最底行**（讓聊天重現的那則新訊息），其上全是重顯示的舊歷史：
+    # 這裡底行是一般礦 → 不確認，而中段那條舊稀有行（Saerylium）絕不可被計入。
     led = ChatLedger([""])
     redisplay = "small_lo has found Saerylium\nsmall_lo has found Loveletter"
     assert led.update([redisplay], LG_COMMON, KW) == []
     assert led.confirmed is False
+    assert not any("Saerylium" in l for l in led.new_lines)
     assert led.update([redisplay + "\nsmall_lo has found Essentlum"],
                       LG_COMMON, KW) == ["small_lo has found Essentlum"]
 
@@ -1145,3 +1146,95 @@ def test_h055_does_not_resurrect_h054_false_success_on_094():
                                         H054_COMMON, KW) is False
     assert has_new_rare_found_tail(H054_BASELINE_HIDDEN, H054_AFTER_094,
                                    H054_COMMON, KW) is False
+
+
+# ---- H064（2026-07-28，harvest 110~119；使用者發現「幾乎每輪都要人工」）----
+# 根因：HARVESTING 一進場就 prepare_scan 停止移動 → 被動採礦停 → 聊天無新訊息 ~15s
+# 整窗淡出 → episode 基準（進場凍結的裁圖）恆讀到 0 條 has-found → H054 基準閘擋掉
+# 計數差、last_line/tail/ledger 三個錨點信號各自棄權 → **礦確實採到了也永遠 no-new**
+# → RESWEEP → 重掃全空（礦已被自己採走）→ 誤交人工。不是機率性漏判，是結構性全滅。
+# 對策：ChatLedger 的「上次讀取為空 → 不計新增」改成「只認最底行」——Roblox 聊天整窗
+# 只在有新訊息抵達時重新顯示，新訊息恆在最底下 → 底行＝讓聊天重現的那則新訊息。
+# 原文取自實機 trace dump（110/111/112 在 logs/snapshots/trace/，119 同）。
+H064_COMMON = ("Siogyne", "Riches", "Toppatrick", "Weevil", "Syrooze",
+               "Cleavelite", "Imbollyx", "Clovara")   # 注意：Coinstorm 在此世界是稀有
+
+# harvest 119（20260728_165414_119_chat_ocr_resweep.txt）：基準整窗淡出＝空字串
+H064_AFTER_119 = (
+    "2070:\n"
+    "KIT (@small_lo) has boosted the event's length\n"
+    "30%！\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found an ionized Plentium\n"
+    "KIT (@small_lo) has boosted the event's length\n"
+    "30%!\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has found Cleavelite\n"
+    "KIT (@small_lo) has boosted the event ore's sp\n"
+    "chance by 15%!\n"
+    "small_lo has found Coinstorm"
+)
+
+# harvest 112（20260726_021734_112_chat_ocr_resweep.txt）：底行是 H041 型連字號黏連
+H064_AFTER_112 = (
+    "small_lo has tound Cleavelite\n"
+    "The mine is resetting...\n"
+    "The mine has regenerated!\n"
+    "KIT (@small_lo) has boosted the event ore's sp\n"
+    "chance by 15%!\n"
+    "small_lo has foundan ionized Plentium\n"
+    "KIT (@small_lo) hasrerolled the event to Ornas\n"
+    "small_lo has found Siogyne\n"
+    "small_lo has foundSiogyne\n"
+    "small_lo has found Riches\n"
+    "rsmall-lo-has-found-Starstride\n"
+    "NORMAL"
+)
+
+
+def test_h064_reappeared_chat_confirms_via_bottom_line_119():
+    # 事故本體：119 真的採到 Coinstorm，舊規則整輪棄權 → 誤交人工
+    led = ChatLedger([""])
+    assert led.update([H064_AFTER_119], H064_COMMON, KW) == [
+        "small_lo has found Coinstorm"]
+    assert led.confirmed is True
+
+
+def test_h064_reappeared_chat_confirms_hyphen_welded_bottom_line_112():
+    # 112 底行被 OCR 黏成連字號（H041 型）——剝殼/去黏仍須認得出它是 found 行
+    led = ChatLedger(["NORMAL"])
+    assert led.update([H064_AFTER_112], H064_COMMON, KW) == [
+        "rsmall-lo-has-found-Starstride"]
+
+
+def test_h064_only_the_bottom_line_is_attributed_not_the_redisplayed_history():
+    # 安全方向：重顯示的整段舊歷史不可入帳（119 中段另有 ionized Plentium 等稀有行）
+    led = ChatLedger([""])
+    led.update([H064_AFTER_119], H064_COMMON, KW)
+    assert led.new_lines == ["small_lo has found Coinstorm"]
+
+
+def test_h064_does_not_resurrect_h054_false_success_on_094():
+    # 兩側夾的另一側（最關鍵的一條）：094 假成功的底行是排除清單內的一般礦
+    # （Syrooze）→ 重顯示規則放寬後仍須拒絕，H054 不得復活
+    led = ChatLedger([H054_BASELINE_HIDDEN])
+    assert led.update([H054_AFTER_094], H054_COMMON, KW) == []
+    assert led.confirmed is False
+
+
+def test_h064_still_abstains_while_chat_stays_hidden_110():
+    # 110 實錄：前後兩次讀取都只有面板殘留（聊天全程沒重現）→ 無證據可用，
+    # 行為不變（不確認），且錨點不可被空讀取推進
+    led = ChatLedger(["NORMAL"])
+    assert led.update(["NORMAL"], H064_COMMON, KW) == []
+    assert led.confirmed is False
+    # 之後聊天終於重現時仍走重顯示規則（錨點沒被 "NORMAL" 汙染）
+    assert led.update([H064_AFTER_119], H064_COMMON, KW) == [
+        "small_lo has found Coinstorm"]
+
+
+def test_h064_bottom_line_ores_are_rare_in_every_world():
+    # 釘住 fixture 的前提：Coinstorm/Starstride 不在任何世界的排除清單裡＝真稀有
+    from miningbot import game_data
+    common = {c.lower() for c in game_data.common_ore_names()}
+    assert "coinstorm" not in common and "starstride" not in common

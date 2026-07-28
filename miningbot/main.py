@@ -5691,7 +5691,12 @@ class Bot:
         rare_names = game_data.rare_ore_names()
         # 抽出 D3 後聊天「新增的 has found 行」原文，給 Discord 通知秀實際採到什麼
         # （rare_before/after 只是數字，使用者難判斷是哪顆 礦）。
-        new_lines = ocr.extract_new_found_lines_multi(chat_before, chat_after, cfg.found_keywords)
+        # ★ 基準淡出（H064）時集合差集會把「重顯示的整段舊歷史」全列成本次新增
+        #   → 通知謊報採到五顆。基準沒有 has-found 歷史時不用差集，只信帳本入帳的行。
+        new_lines = (ocr.extract_new_found_lines_multi(chat_before, chat_after,
+                                                      cfg.found_keywords)
+                     if ocr.baseline_saw_found_history(chat_before, cfg.found_keywords)
+                     else [])
         ledger = getattr(self, "_chat_ledger", None)
         if ledger is not None:
             seen_lg = {l.lower() for l in new_lines}
@@ -5719,7 +5724,10 @@ class Bot:
         # fuzzy 命中行（H020：關鍵字被 OCR 讀歪 → 精確抽取抓不到）另列，
         # 標注「≈匹配到的白名單礦名＋相似度」讓人工可核對是不是誤配
         seen = {l.lower() for l in new_lines}
-        for b, a in zip(chat_before, chat_after):
+        fuzzy_pairs = (zip(chat_before, chat_after)
+                       if ocr.baseline_saw_found_history(chat_before, cfg.found_keywords)
+                       else [])           # H064：同上，淡出基準的差集不可信
+        for b, a in fuzzy_pairs:
             for line, ore_name, ratio in ocr.new_fuzzy_rare_lines(b, a, common, rare_names):
                 if line.lower() in seen:
                     continue
