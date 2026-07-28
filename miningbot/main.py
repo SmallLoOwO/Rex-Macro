@@ -35,21 +35,26 @@ from .preflight import PreflightFacts, run_checks
 # H061（2026-07-26）：web 模組（fastapi/uvicorn/starlette，實機 import 鏈 ~5.7s）**必須**
 # 在模組層 import，不可 deferred 到 Bot.run() 內。
 #
-# 根因：Python 的 import 對每個模組各有一把鎖，多執行緒同時 import 不同的 C 擴展會互卡。
-# Bot.__init__ 在 run() 被呼叫之前就已經 spawn 了四個 worker：_audio_cap.start()
-# （PyAudioWPatch）、_snapshot_worker（cv2）、ocr.rapidocr_available（ocr.py 內
-# `from rapidocr import RapidOCR`）、ocr.tesserocr_available（ocr.py 內 `import tesserocr`）
-# ——後兩者都是在 worker thread 裡跑 deferred import。主執行緒此時再 deferred import
-# fastapi 鏈就成了三方死結：實機三次啟動全部卡死且**連 worker thread 一起靜默**
-# （它們也卡在 import lock），而純 Python worker 的 mini repro 不重現（沒有 import）、
-# standalone 單執行緒 import 也正常——三個現象都只有 import lock 死結解釋得通。
+# 真根因（`de1f4c4` 實機定位）：`Bot.run()` 跑在 daemon thread，舊碼在那裡才 deferred import
+# web 模組；實機直譯器（`pythonw -m miningbot` ＝ Microsoft Store 版 Python，跟 `uv sync` 灌的
+# .venv 是兩個環境）當時**沒裝 fastapi/uvicorn** → ModuleNotFoundError 在 worker thread 拋出
+# → pythonw 沒有 console，Python 預設的 threading.excepthook 把 traceback 印到不存在的
+# stderr → **整個失敗蒸發**。實機症狀（只挖 D1、D2/D4/D5 沒了、稀有礦不處理、last_action
+# 停在俯仰歸位、遙控器沒出來、log 不再增長）全是「執行緒早就死了」，不是卡住。
 #
-# 放模組層則整條鏈在 `from miningbot.main import main`（__main__.py）期間就跑完，
-# 那時只有 Tk splash、零個 bot thread，不存在競爭對手。splash 會多顯示數秒，這是
-# 刻意的：__main__.py 的載入視窗本來就是為重型 import 準備的。
+# ⚠ 調查期間曾判定成「多執行緒同時 deferred import C 擴展 → import lock 死結」，**那個結論
+# 是錯的**：mini repro 用 `uv run` 跑（venv 有 uvicorn），整條調查比對了錯的直譯器。查實機
+# 問題第一件事＝確認 production 與重現環境是不是同一顆 Python（`Bot.__init__` 現在會印
+# `interpreter:`）。完整敘事見 `docs/incidents.md` H061。
 #
-# ⚠ 不要因為「啟動慢」把這段搬回 run() 或改成 lazy import——那會直接重現 H061。
-# 同理，未來新增任何重型第三方 import 都放模組層，不要放進 thread 已啟動之後的路徑。
+# 模組層 import 仍是對的做法：整條鏈在 `from miningbot.main import main`（__main__.py）期間
+# 就跑完，那時只有 Tk splash、零個 bot thread。splash 會多顯示數秒，這是刻意的：
+# __main__.py 的載入視窗本來就是為重型 import 準備的。
+#
+# ⚠ 不要因為「啟動慢」把這段搬回 run() 或改成 lazy import——缺件會再度變成 worker thread
+# 內的無聲死亡。同理，未來新增任何重型第三方 import 都放模組層，不要放進 thread 已啟動
+# 之後的路徑。另外兩道防線也別拆：`status_hud._run_bot_guarded`（執行緒 crash 必留 log ＋
+# 彈框）與 `run()` 內 WebIPC 區塊的 try/except（web 壞掉不可停止挖礦）。
 #
 # fastapi/uvicorn 缺件時**降級不中斷**：實機用 `pythonw -m miningbot`（Microsoft Store
 # 版 Python）跑，那個直譯器跟 `uv sync` 灌的 .venv 是兩個環境——H061 的真正起點就是

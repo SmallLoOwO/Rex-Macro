@@ -506,6 +506,16 @@ fixture 位置慣例：
 - **回歸**：`tests/test_reentry_remote.py::test_capacity_blocks_opening_reset_drain`（收尾 28/56/65/76% 阻塞、≤門檻 0/1/邊界放行、manual/None 不擋）＋`test_capacity_blocks_opening_two_sided_clamp`（0/1 放行、56/71/78/100 阻塞 兩側夾）。既有 H053 測試（Config 預設下 1/0 proceed、56/78 capacity）在 5.0 下仍全綠。全套 996 例綠。
 - **下輪實機驗證預期**：重置回礦輪 `miningbot.log` 先出現一連串 `[RR#N] 開場前容量 XX% > 5%（重置收尾中）——不點擊不拖曳，20s 後再探`，其間**不再**夾雜 `[RR#N] 俯仰歸位`／`開場閘未過（capacity` 行（這些只在容量降到 ≤5% 後才出現一次、隨即 sweep）。舊門檻 10 會放行的 8% 讀值仍會等候到 ≤5%。grep：`Select-String '開場前容量' miningbot.log` 的每個 episode，其後第一個 `reentry_epN_dir1`（sweep 拍照）應在讀到容量 ≤5% 之後；`俯仰歸位` 出現次數應遠少於舊版（收尾等候期不再每輪拖曳）。
 
+## H059（2026-07-20 設計、2026-07-21 更正確認；使用者回報「回礦轉到的方位跟圖上的對不起來，而且大約一半場次才發生」）：每一輪 attempt 都按「回到地表」＝遊戲隨機化 yaw，`restore_view` 把偏移正確扣回了一個**隨機基底**
+
+- **症狀**：回礦八方位 sweep 選定方位後，實際轉到的朝向與快照對不上；使用者獨立實測**約一半**場次發生（另一半正常）。
+- **一句話根因**：`_rr_open_episode` 每輪 attempt 都執行 `ic.click_at(*cfg.reentry_surface_button_xy)`＝按「回到地表」換重生點，而遊戲換重生點會**隨機化 yaw**（`docs/superpowers/specs/2026-07-08-mine-reentry-design.md:18` 早有記載「隨機旋轉只亂 yaw」）。於是 sweep 的 `cur_dir=0` 基底＝該輪隨機 yaw、不是挖礦原視角；`b9f7783` 的 `restore_view(ctx.cur_dir)` 把使用者的方位偏移**正確**扣掉了，扣回去的卻是那個隨機基底 → 落在直角或對角各約一半。僅 attempt 1 例外（未經 reroll，基底＝挖礦原視角）。記帳（`cur_dir`／`net_rotations`）無法補救：沒有絕對 yaw 感測器。
+- **⚠ 調查期間的錯誤與撤回**：`06e782a` 曾宣稱「ledger 證明 ep10/ep11 從未 reroll ⇒ 根因失效」並據此否證整份設計文件，**該結論錯誤、已撤回**。錯因是混淆兩種 reroll：ledger `log[].kind == "reroll"` ＝**使用者手動**下的 `重骰`／🎲；`ctx.attempt` ＝**bot 自動**的每一輪嘗試，而每輪都按一次「回到地表」——`config.py:276`（`reentry_max_attempts` 註明「reroll 上限」）、`_rr_ensure_ctx` docstring、`main.py` 每輪的 surface-button 點擊三處明證。ep10/ep11 的 `attempt=4` 正表示重生點已換過 4 次。**教訓：只驗一處就推翻整份設計文件是錯的做法。**
+- **量測**：使用者實測發生率 ~50%，與「轉回隨機基底、直角/對角各半」的預測一致。`config.py:279-281` 的既有兩側夾亦佐證換重生點是既有已知動作（真傳送穩定值 ≥19 vs 地表→地表換重生點最低 26.8）。
+- **對策（現況：緩解，非自動修正）**：(1) Discord `轉` 指令遠端手動轉 45°（`main.py` `_rr_turn` 鏈；輪詢執行緒只寫旗標、送鍵在主迴圈）。(2) `Config.reentry_yaw_sample_sweep`（預設關）成功收尾後原地拍八方位收語料（`main.py::_rr_yaw_sample`，須在回正之後；label 見 `harvester`）。**尚未寫任何自動判向門檻**——語料目前 100% 單層（Lucernia＋Shamrock＋夜晚）且缺「斜挖」負樣本，寫門檻等於不可否證；坑道是 bot 自己挖的，自指、不含世界軸資訊，LIMIT 徽章／層名牌是螢幕空間 UI 不可當世界物件判朝向。
+- **回歸**：`tests/test_reentry_yaw_sample.py`。
+- **結案條件（未達成）**：要有跨世界／跨層／含斜挖負樣本的語料，才談得上自動判向；在那之前 `轉` 指令是唯一正解。相關文件：`docs/superpowers/specs/2026-07-20-reentry-yaw-reroll-random-design.md`、`2026-07-21-reentry-yaw-investigation-findings.md`（更正版）。
+
 ## H060（2026-07-22 01:43／02:55／18:59 三次 REENTRY＋17:48 一次 NEEDS_HUMAN；使用者回報「回礦階段等約 30 分鐘就自己跳出 spawn chill，而且 spawn chill 只有在回礦時才會出現」）：bot 自己的防掛機 Space（原地跳）音效被認成 chill——自製假觸發迴圈
 
 - **症狀（使用者回報＋log）**：REENTRY 等指令期間，約 30 分鐘後憑空跳出「spawn chill！稀有礦在刷新預設方塊」通知。當日 `events.log` 共 4 筆 `SPAWN_CHILL`（audio 0.25／0.38／0.25／0.37），其中 3 筆 REENTRY、1 筆 NEEDS_HUMAN；三次 REENTRY 的通知**全部**發生在 `防掛機：按 Space` 之後 **2 秒**（01:43:29→31、02:55:05→07、18:59:26→28），分數尾巴各維持到按鍵後 +4s／+5s／+4s。04:32 暫停後更露骨：`snapshots/audio/audiochg_*` 自 04:47:22 起連續 7 小時鎖在 **15.00 分整數格**（HH:02:22／17:22／32:22／47:22）、分數穩定 0.37，與 `防掛機：按 Space（暫停中等超過 15 分鐘）` 逐筆對齊。
@@ -516,6 +526,20 @@ fixture 位置慣例：
 - **回歸**：`tests/test_main_antiafk_chill.py` 五例（窗內壓制／窗外照常觸發／從未按過不影響／靜音 log 每次按鍵只一筆／`_antiafk_tick` 錨點是按下當刻）——抽掉 main.py 修改後其中 3 例確實變紅。`tests/test_audio.py` 六例純函式邊界（含預設窗長須涵蓋 +5s 且 <保活週期 1%）。`tests/test_add_chill_ref.py` 兩例守門回歸，fixture `neg_antiafk_jump_s37.wav`（跳躍音現行變體）＋`contaminated_rising_edge_101.wav`（上升緣污染裁片）：確認該裁片會把跳躍音推到 0.375 且必被 `would_false_trigger` 拒收——防止 `--scan` 再把它收回參考集。
 - **下輪實機驗證預期**：`miningbot.log` 中每一行 `防掛機：按 Space` 之後 6 秒內不得再出現 `chill 觸發`；若跳躍音仍達門檻，該處改出現一行 `chill 靜音（音訊 X）：防掛機 Space 後 6s 內，判定為原地跳音效`。`events.log` 的 `SPAWN_CHILL` 應歸零（除非真的是刷新在預設方塊的稀有礦）。反指標：若出現「按 Space 後 6~15 秒」的 chill 觸發，代表窗長不足；若真 chill 漏抓（有聊天新稀有礦卻無 `chill 觸發`），代表 27 參考的正樣本側不夠、需用 104/105/106 實錄補參考而非放寬門檻。
 
+
+## H061（2026-07-26 10:31／10:43／11:19 三次啟動；使用者回報「只挖 D1、遙控器沒出來、log 停住」）：web UI 整合後的啟動「卡死」其實是 **bot 執行緒無聲死亡**——實機直譯器沒裝 uvicorn，pythonw 沒有 stderr，traceback 整個蒸發
+
+- **症狀（使用者回報＋log）**：只挖 D1（`init_mining_sequence` 已按下 W＋左鍵並持續）、D2/D4/D5 常駐效果消失、遇稀有礦不進採集流程、HUD `last_action` 停在「俯仰歸位（挖礦標準角）」、Discord 遙控器從未出現、log 停在 web 模組 import 那行之後不再增長。
+- **一句話根因**：`Bot.run()` 跑在 daemon thread，舊碼在那裡才 deferred import web 模組；實機用 `啟動挖礦bot.bat` → `pythonw -m miningbot` ＝ **Microsoft Store 版 Python**，跟 `uv sync` 灌的 `.venv` 是兩個環境，那顆直譯器有 numpy/cv2/rapidocr/pyaudiowpatch/mss/pydirectinput 卻**沒有 fastapi/uvicorn/starlette** → `ModuleNotFoundError` 在 worker thread 拋出 → pythonw 沒有 console，Python 預設的 `threading.excepthook` 把 traceback 印到不存在的 stderr → **整個失敗蒸發**。上述症狀全是「執行緒早就死了」，不是卡住。
+- **⚠ 調查期間的錯誤與撤回**：先前判定「多執行緒同時 deferred import C 擴展 → import lock 死結」（見 `docs/superpowers/handoffs/2026-07-26-h061-web-ui-startup-hang.md`），**該結論是錯的**。之所以能自圓其說，是因為 mini repro 一律用 `uv run` 跑（venv 有 uvicorn，import 得起來）——**整條調查比對了錯的直譯器**。教訓：查實機問題第一件事＝確認 production 與重現環境是不是同一顆 Python。
+- **量測／驗證**：Store Python 直接 import → `WEB_IMPORT_ERROR` 帶直譯器路徑、`web_server_enabled` 自動 False；`pythonw -m miningbot` 啟動 → log 一路寫到 `bot started`（先前完全沒有這行），再乾淨地在 focus 檢查失敗處退出、process 無殘留。
+- **對策**（三個 commit）：
+  - `de1f4c4`：(1) `status_hud._run_bot_guarded` 包住 bot 執行緒——未捕捉例外寫 log fatal＋traceback、寫進 HUD、crash 時先彈錯誤框再收視窗（**最重要的一項**，有它 H061 是 30 秒定位的問題）。(2) `main.py` 檔頭 web 預載改成吞 `ImportError` 降級（記 `WEB_IMPORT_ERROR` 含直譯器路徑、關掉 `web_server_enabled`），挖礦照跑、介入退回 Discord——直接讓 ImportError 往上拋會變成「連 bot 都開不起來」，比原問題更糟。(3) 降級不靜默：log WARNING 講明缺什麼、缺在哪顆直譯器，Discord 啟動訊息帶一行網頁 UI 狀態。
+  - `a94888e`：web 依賴裝進 Store Python 後第一次真的走到 `WebIPCThread.start()` 就炸——`uvicorn/logging.py` 的 `DefaultFormatter` 無條件呼叫 `sys.stdout.isatty()`，pythonw 下 `sys.stdout is None` → `AttributeError` → `ValueError: Unable to configure formatter`。修法：`uvicorn.Config(log_config=None)`（uvicorn logger 直接 propagate 到 root，由 `diagnostics.setup_logging` 收進 `miningbot.log`）＋ `run()` 的整個 WebIPC 區塊包 try/except（失敗就清空三個 web 屬性、全面退回 Discord；半死不活的 `_web_thread` 比沒有更危險）。⚠ 這發生在 **`uvicorn.Config` 建構時**，不是 import 時——handoff 驗過「import 時 dictConfig 0 calls」，結論正確但毫無保護力，因為呼叫點根本不在 import。
+  - `e36502b`：`Bot.__init__` 緊接 runtime log directory 印一行 `interpreter: <sys.executable>`（H061 的預防針）。
+  - 續集（同批）：裸 `uvicorn` **不含任何 WebSocket 實作** → `GET /ws` 回 404、介入面板恆斷線、fallback 恆 True；`pyproject.toml` 顯式宣告 `websockets>=12`（不可靠 extras 順帶）。`TestClient.websocket_connect` 是 in-process shim，測不出這一類；真 socket 測試在 `tests/test_web_server_real_socket.py`。
+- **回歸**：`tests/test_startup_import_order.py`（模組層 import 順序＋降級路徑）、`tests/test_status_hud.py`（crash 必留 log/彈框）、`tests/test_web_server*.py`（`log_config=None`、`sys.stdout=None` 下 bind、WebIPC 區塊包在 try/except）。
+- **千萬別做**：不要把 web 模組改回 deferred import／lazy import——缺件會再度變成 worker thread 內的無聲死亡。`_run_bot_guarded` 與 `run()` 內 WebIPC 的 try/except 兩道防線也別拆。
 
 ## H062（2026-07-28 01:07~01:08，harvest 118；使用者回報「掃描階段中途 D2 目標框就已經消失了，也沒有補充」）：sweep 中途補 D5 導致 FOV 全域收縮/展開，舊 ref 對不上新畫面，剩餘方位與緊接的重掃全部系統性落空
 

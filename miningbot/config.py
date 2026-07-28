@@ -509,11 +509,12 @@ class Config:
 
     # 網頁 UI（2026-07-26 spec；P1：IPC 基礎建設）
     # H061（2026-07-26）：這格關掉會讓 main.py 檔頭跳過 web 模組的模組層 import。
-    # 真根因是「多執行緒同時 deferred import C 擴展 → import lock 死結」，已由
-    # main.py 檔頭的模組層 import 修掉（詳見該處註解）。若因故要臨時停用網頁 UI，
-    # 改這格即可——每條 web 路徑都守 _web_pending / _web_fallback 是不是 None，
+    # 真根因是「web import 在 daemon thread 內失敗 → pythonw 無 stderr → 無聲死亡」，
+    # 已由 main.py 檔頭的模組層 import ＋ ImportError 降級修掉（詳見該處註解；調查期間
+    # 「import lock 死結」的判定是錯的，見 docs/incidents.md H061）。若因故要臨時停用
+    # 網頁 UI，改這格即可——每條 web 路徑都守 _web_pending / _web_fallback 是不是 None，
     # 會自動退回既有 Discord fallback（PING、八方位圖、文字命令、遙控器）。
-    web_server_enabled: bool = True              # 啟用網頁伺服器（綁 127.0.0.1）
+    web_server_enabled: bool = True              # 啟用網頁伺服器（綁定位址見 web_server_host）
     web_server_port: int = 8765                  # 網頁 port（Tailscale Serve 出 HTTPS）
     # 綁定位址＝這台機器的 Tailscale IP（2026-07-26 使用者指定）。手機在同一個
     # tailnet 直接開 http://100.110.130.17:8765 就進得去，不必再跑 `tailscale serve`。

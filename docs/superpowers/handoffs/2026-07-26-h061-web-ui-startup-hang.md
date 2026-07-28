@@ -1,7 +1,11 @@
 # H061 Web UI 啟動 hang — handoff 給下個 session
 
-> **此檔不是歷史資料**（CLAUDE.md 提到的 `docs/HANDOFF*.md` 歷史檔是別的東西）。
-> 這份是 2026-07-26 H061 進行中的交接文件，下個 session 從這裡接手。
+> ⚠ **已結案，本檔為歷史資料，且其根因判定是錯的。**
+> 這份寫於調查途中，全篇建立在「多執行緒 deferred import C 擴展 → import lock 死結」
+> 之上——**那個結論已被推翻**（`de1f4c4`）。真根因是「web import 在 daemon thread 內
+> 失敗、pythonw 沒有 stderr → traceback 蒸發 → 執行緒無聲死亡」，因為實機 Store 版
+> Python 沒裝 uvicorn，而所有 mini repro 都用 `uv run`（venv 有）＝比對了錯的直譯器。
+> **正確版本見 `docs/incidents.md` H061。** 本檔只保留當時的證據鏈與排除清單。
 
 ## 一句話現況
 
