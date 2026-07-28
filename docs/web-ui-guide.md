@@ -126,6 +126,17 @@ tailscale serve status
 礦坑如果在你猶豫時開始重置，bot 會拒絕這次點擊並告訴你——那不是 bug，是防止對著
 過期畫面開一發 D3。
 
+### 標註佇列（`/annotate?queue=tier0`，2026-07-28）
+
+導覽列的 `🏷️ 標註佇列` 直接把**所有還沒標過的 tier0 快照**（掃描全空／框被拒／
+瞄準失敗）排成一串，一張接一張走：
+
+- 底部顯示「第 N / 共幾張」，`j`／`k` 上下張、`1`-`4` 選症狀、`Enter` 送出並跳下一張。
+  游標在礦物／事故欄裡時這些鍵不會被攔，照常打字。
+- 送出後**當場看到現行偵測器怎麼判**：「現行判：拒絕（border_frac 0.19）／
+  你標：漏判 → ❌ 不一致」。不一致＝這張圖真的還在暴露 bug；一致＝偵測器已經修好了。
+- 標過的不會再出現在佇列裡（比對 `tests/fixtures/` 底下的同名 `.json`）。
+
 ### 玩家設定：4 個 Config 欄位 + D2 開關
 
 `reentry_mode`（off／remote／auto）、`reentry_target_layer`、`reentry_yaw_sample_sweep`、

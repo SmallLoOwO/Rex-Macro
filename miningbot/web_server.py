@@ -395,18 +395,31 @@ def create_app(
         )
 
     @app.get("/annotate")
-    def get_annotate(episode: str | None = None, snapshot: str | None = None):
+    def get_annotate(episode: str | None = None, snapshot: str | None = None,
+                     queue: str | None = None):
         """標註工具 HTML（Task 7 補完整 UI；Task 6 先 routing 通）。
 
         不需 snapshot_index_path——只渲染表單。rarity_choices 從 game_data 撈。
+
+        `?queue=tier0`（2026-07-28）：把所有 tier0 快照排成一串，一張接一張走。
+        沒有這個佇列就永遠停在 2 張——tier 排序早就寫好了，缺的只是連續動線。
+        索引沒配置就退回單張模式（不是錯誤，只是沒得排）。
         """
         from miningbot.web_static import render_annotate_html
         rarity_choices = _rarity_choices_from_game_data()
+        rows = None                    # None＝沒進佇列模式（有別於「佇列是空的」）
+        if queue and snapshot_index_path:
+            from miningbot.web_history import annotation_queue
+            tier = 0
+            if queue.startswith("tier") and queue[4:].isdigit():
+                tier = int(queue[4:])
+            rows = annotation_queue(snapshot_index_path, fixtures_dir, tier)
         return Response(
             content=render_annotate_html(
                 episode_id=episode or "",
                 snapshot_path=snapshot or "",
                 rarity_choices=rarity_choices,
+                queue=rows,
             ),
             media_type="text/html",
         )

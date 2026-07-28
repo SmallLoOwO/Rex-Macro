@@ -1,5 +1,7 @@
 """網頁前端 HTML render（設定 / 介入 / 歷史 / episode 詳細 / 標註）。"""
 
+import json
+
 
 # --- 全站導覽（2026-07-26 補）------------------------------------------------
 #
@@ -12,6 +14,9 @@ _NAV_ITEMS = (
     ("/", "⚙️ 設定"),
     ("/intervention", "🎯 介入"),
     ("/history", "📜 歷史"),
+    # 2026-07-28：批次標註要找得到才會有人用（三個月只標了 2 張，一半原因是
+    # 得先從歷史頁一張一張點進來）。直接給待標註佇列的入口。
+    ("/annotate?queue=tier0", "🏷️ 標註佇列"),
 )
 
 NAV_CSS = """
@@ -28,7 +33,8 @@ def render_nav(current: str) -> str:
     """回導覽列 HTML。current 是當前路徑（例如 "/history"）。"""
     parts = []
     for href, label in _NAV_ITEMS:
-        cls = ' class="current"' if href == current else ""
+        # 比路徑不比 query string：`/annotate?queue=tier0` 在 `/annotate` 也算當前頁
+        cls = ' class="current"' if href.split("?", 1)[0] == current else ""
         parts.append(f'<a href="{href}"{cls}>{label}</a>')
     return '<nav class="nav">%s</nav>' % "".join(parts)
 
@@ -422,6 +428,7 @@ def render_annotate_html(
     episode_id: str,
     snapshot_path: str | None,
     rarity_choices: tuple[list[str], list[str]],
+    queue: list[dict] | None = None,
 ) -> str:
     """P5 Task 7：標註工具 HTML（spec §5 C 區）。
 
@@ -433,8 +440,16 @@ def render_annotate_html(
     撈出來的；tiers 動態生成、variants 固定 ``["原色", "Spectral", "Ionized"]``。
 
     snapshot_path=None/"" 時不渲染 ``<img>``（viewer 顯示佔位文字）；其他 UI 不變。
+
+    ``queue``（2026-07-28）＝``web_history.annotation_queue`` 回的 tier 佇列；
+    非空時進「佇列模式」：底部顯示第幾 / 共幾張，`j`/`k` 上下張、數字鍵選症狀、
+    `Enter` 送出並自動跳下一張。沒有這條連續動線，標註就永遠停在 2 張。
     """
     tiers, variants = rarity_choices
+    queue_mode = queue is not None       # []＝有進佇列模式但沒東西可標，要講清楚
+    queue = list(queue or [])
+    if queue and not snapshot_path:
+        snapshot_path = queue[0].get("path") or ""
     tier_btns = "".join(
         f'<button type="button" data-tier="{_esc(t)}">{_esc(t)}</button>'
         for t in tiers
@@ -466,6 +481,21 @@ def render_annotate_html(
     # （spec §5「每張 2 檔」）。server 端會走跟 /snapshot 同一份路徑守門，
     # 所以這裡送完整路徑是安全的——它本來就是 server 自己寫進 snapshot_index 的值。
     img_source_js = _js_str(snapshot_path or "")
+    # 佇列只送前端需要的三欄（path/label/stem），written_at 之類不必上前端。
+    queue_js = json.dumps(
+        [{"path": r.get("path", ""), "label": r.get("label", "")} for r in queue],
+        ensure_ascii=False)
+    if queue:
+        queue_bar = ('<div id="queue-bar">佇列模式：<span id="queue-pos"></span>'
+                     '　<code>j</code>/<code>k</code> 上下張・'
+                     '<code>1</code>-<code>4</code> 選症狀・'
+                     '<code>Enter</code> 送出並跳下一張</div>')
+    elif queue_mode:
+        queue_bar = ('<div id="queue-bar" class="empty">佇列是空的——目前沒有'
+                     '待標註的 tier0 快照（掃描全空／框被拒／瞄準失敗），'
+                     '或全都標過了</div>')
+    else:
+        queue_bar = ""
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -507,6 +537,10 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 .hint {{ font-size: 0.75rem; color: #888; margin-top: 0.4rem; line-height: 1.4; }}
 #status {{ padding: 0.4rem 1rem; background: #333; font-size: 0.8rem;
            min-height: 1.4rem; color: #ddd; }}
+#queue-bar {{ padding: 0.35rem 1rem; background: #1f3b2a; font-size: 0.8rem;
+             color: #bfe6cd; border-bottom: 1px solid #2c5240; }}
+#queue-bar.empty {{ background: #3a3a3a; color: #aaa; }}
+#queue-bar code {{ background: #14261c; padding: 0 0.25rem; border-radius: 3px; }}
 </style>
 </head>
 <body>
@@ -514,6 +548,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 <header>
   <strong>MiningBot 標註工具</strong>　episode: <code>{_esc(episode_id)}</code>
 </header>
+{queue_bar}
 <div id="main">
   <div id="viewer">
     {img_block}
@@ -563,6 +598,33 @@ let selRect = null;       // {{ x, y, size }} in natural img coords
 let activeTier = null;
 let activeVariant = null;
 let activeSymptom = 'unknown';
+
+// ── 佇列模式（2026-07-28）──────────────────────────────────────────────
+// 一次把 tier0 快照排成一串連續走完。沒有這條動線就永遠停在 2 張。
+const queue = {queue_js};
+let qIndex = 0;
+let imageName = {img_basename_js};
+let sourcePath = {img_source_js};
+const queuePosEl = document.getElementById('queue-pos');
+
+function renderQueuePos() {{
+  if (!queuePosEl || !queue.length) return;
+  queuePosEl.textContent = `第 ${{qIndex + 1}} / ${{queue.length}} 張　`
+    + (queue[qIndex].label || '');
+}}
+
+function showQueueItem(i) {{
+  if (!queue.length || !img) return;
+  qIndex = (i + queue.length) % queue.length;
+  const item = queue[qIndex];
+  sourcePath = item.path;
+  imageName = item.path.split('/').pop().split('\\\\').pop();
+  img.src = '/snapshot?path=' + encodeURIComponent(item.path);
+  selRect = null; sel.style.display = 'none';
+  zoom = 1.0; pan = [0, 0]; applyTransform();
+  renderQueuePos();
+}}
+renderQueuePos();
 
 function applyTransform() {{
   if (!img) return;
@@ -686,12 +748,29 @@ viewer.addEventListener('pointercancel', () => {{
   pointerStart = null; dragging = false;
 }});
 
-// Esc 清除方形
+// Esc 清除方形；佇列模式另有 j/k/數字/Enter
+// ⚠ 游標在文字欄裡時全部不攔——礦物/事故欄要打得出 j、k 跟數字。
+function typingInField(e) {{
+  const t = e.target;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+                 || t.isContentEditable);
+}}
 document.addEventListener('keydown', (e) => {{
+  if (typingInField(e)) return;
   if (e.key === 'Escape') {{
     sel.style.display = 'none';
     selRect = null;
     statusEl.textContent = '已清除方形';
+    return;
+  }}
+  if (!queue.length) return;
+  if (e.key === 'j') {{ showQueueItem(qIndex + 1); e.preventDefault(); }}
+  else if (e.key === 'k') {{ showQueueItem(qIndex - 1); e.preventDefault(); }}
+  else if (e.key === 'Enter') {{ submitAnnotation(); e.preventDefault(); }}
+  else if (e.key >= '1' && e.key <= '4') {{
+    const btns = document.querySelectorAll('#symptoms button');
+    const b = btns[Number(e.key) - 1];
+    if (b) {{ b.click(); e.preventDefault(); }}
   }}
 }});
 
@@ -714,7 +793,9 @@ bindSingleSelect('variants', (b) => {{
 bindSingleSelect('symptoms', (b) => {{ activeSymptom = b.dataset.symptom; }});
 
 // ── 送出：POST /api/annotate（validate_annotation schema） ──────────
-document.getElementById('submit').addEventListener('click', async () => {{
+document.getElementById('submit').addEventListener('click', submitAnnotation);
+
+async function submitAnnotation() {{
   if (!selRect) {{
     statusEl.textContent = '請先在快照上拖曳出方形';
     return;
@@ -723,8 +804,8 @@ document.getElementById('submit').addEventListener('click', async () => {{
   const incident = document.getElementById('related-incident').value.trim();
   const category = document.getElementById('category').value.trim();
   const payload = {{
-    image: {img_basename_js},
-    source_path: {img_source_js},
+    image: imageName,
+    source_path: sourcePath,
     annotation: {{
       type: 'square',
       cx: Math.round(selRect.x),
@@ -752,10 +833,19 @@ document.getElementById('submit').addEventListener('click', async () => {{
     }}
     const data = await r.json().catch(() => ({{}}));
     statusEl.textContent = `已送出 ✓ ${{data.category || ''}}　` + verdictText(data.verdict);
+    if (queue.length) {{
+      // 標過的就從佇列拿掉——不然下一輪又從第一張重來
+      queue.splice(qIndex, 1);
+      if (!queue.length) {{
+        if (queuePosEl) queuePosEl.textContent = '佇列已清空 ✓';
+        return;
+      }}
+      showQueueItem(qIndex);
+    }}
   }} catch (err) {{
     statusEl.textContent = '送出失敗：' + err.message;
   }}
-}});
+}}
 
 // 即時回判決：標完當下就知道這張圖是不是真的暴露 bug，還是偵測器其實已經修好了。
 // 沒有 verdict（偵測模組不可用）就只顯示存檔結果，不假裝有判決。

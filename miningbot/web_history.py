@@ -70,6 +70,57 @@ def annotation_tier(label: str) -> int:
     return _DEFAULT_TIER
 
 
+def snapshot_stem(path: str) -> str:
+    """快照路徑 → 標註素材的檔名主幹（`/annotate` 用 basename 當 `image` 欄位）。"""
+    return os.path.splitext(os.path.basename(str(path or "")))[0]
+
+
+def annotated_stems(fixtures_dir: str | None) -> set:
+    """已經標過的素材主幹集合。佇列靠它去重——不然每次進去都從第一張重來。"""
+    stems: set[str] = set()
+    if not fixtures_dir or not os.path.isdir(fixtures_dir):
+        return stems
+    for _root, _dirs, files in os.walk(fixtures_dir):
+        for name in files:
+            if name.endswith(".json"):
+                stems.add(os.path.splitext(name)[0])
+    return stems
+
+
+def build_queue(records, annotated=(), tier: int = 0) -> list:
+    """快照記錄 → 指定 tier 的標註佇列（純函式）。
+
+    排序：`written_at` 由新到舊——最近的失敗最可能還沒被修掉，先標它的資訊量最高。
+    `written_at` 缺值排到最後（`snapshot_index` 是 append-only，理論上都有）。
+    去重用 `annotated`（已標過的檔名主幹集合）。
+    """
+    done = set(annotated or ())
+    out = []
+    for record in records or ():
+        path = record.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        label = str(record.get("label") or "")
+        if annotation_tier(label) != tier:
+            continue
+        stem = snapshot_stem(path)
+        if stem in done:
+            continue
+        done.add(stem)                     # 同一張圖在索引裡出現兩次也只排一次
+        out.append({"path": path, "label": label, "stem": stem,
+                    "written_at": record.get("written_at"),
+                    "tier": tier})
+    out.sort(key=lambda r: (r["written_at"] is None, -(r["written_at"] or 0.0)))
+    return out
+
+
+def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
+                     tier: int = 0) -> list:
+    """`build_queue` 的 I/O 版：讀索引 + 掃 fixtures 去重。"""
+    return build_queue(_iter_snapshot_records(snapshot_index_path),
+                       annotated_stems(fixtures_dir), tier)
+
+
 def _iter_snapshot_records(path: str) -> Iterator[dict]:
     """逐行讀 snapshot_index.jsonl；壞行（含寫到一半的 partial line）靜默略過。
 
