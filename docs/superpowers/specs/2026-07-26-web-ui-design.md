@@ -1,10 +1,29 @@
 # 2026-07-26 網頁 UI：人工介入操作 + 被動素材收集 + Discord 精簡通知
 
 > **版本沿革**
-> - **v1（本版）**：初次設計。把 Discord 連鎖放大／八方位那條間接表達鏈，塌縮成網頁
+> - **v1**：初次設計。把 Discord 連鎖放大／八方位那條間接表達鏈，塌縮成網頁
 >   pinch-zoom + tap 一次到位；玩家介入時自動收集素材供 AI agent 離線分析；Discord
 >   退回精簡通知角色（遙控器保留、狀態用 edit_message、需介入才 PING）。
 > - 設計 session：本檔由 brainstorming 流程產出，逐段與使用者確認後落地。實作前必讀。
+> - **v2（2026-07-27／28，實機與瀏覽器實測後的演進）**：P1-P5 落地後改了四處設計，
+>   **以下述為準，v1 對應段落已就地標註**。硬規則版本見 `AGENTS.md` 規則 13／14。
+>   1. **回礦介入改「先掃八方位再問網頁」**（`3d3cc41`）：傳送板幾乎不在開場視野內，
+>      v1 的「推當下一幀請玩家點」讓玩家無從點起。現在 `_rr_sweep_capture` 跑**一次**、
+>      同時餵網頁（推 8 張）與 Discord（發圖），web `reentry_click` 帶 `dir`(1-8) 先轉向
+>      再點、轉向被吃就放棄不盲點；面板加 ⟳ 重掃／🎲 重骰／⏭️ 跳過三鍵（在等待迴圈內
+>      取用，不是 `_consume_web_pending`——主迴圈那時被擋在等待裡）；獨立預算
+>      `web_intervention_budget_s`(300s)／`web_intervention_retry_budget_s`(120s)，
+>      用盡回 False 退 Discord。
+>   2. **harvest 改推「採集候選清單」且點哪打哪**（`20479c8`／`baf74cb`）：不是只在
+>      `awaiting_fine` 才介入；候選圖點下去＝走 `_execute_remote_fire` 全套（含 D2/D5
+>      重掃檢查，H062），不是盲打粗格心。`awaiting_fine`／`放大`／`退` 放大退路維持
+>      Discord-only（必要性下降，見 `docs/web-ui-guide.md`「已知未做」）。另加晚到
+>      重播緩衝與 🔀 立即切 Discord。
+>   3. **遙控器鏡射上網頁**（`20c5a93`／`d5fac93`）：▶️⏸️⚡📷🏠 五鍵＋常駐狀態＋保留
+>      清單＋D2 開關都在 `/intervention` 與 `/`，與 Discord 雙向同步；§7 A 的「合併狀態
+>      顯示」在網頁側＝頁頂常駐控制列，任何時候可按，不必等介入事件。
+>   4. **依賴**：`uvicorn` 必須配 `websockets`（裸 uvicorn 無 WebSocket 實作 → `GET /ws`
+>      回 404、fallback 恆 True），且要裝在**實際啟動 bot 的直譯器**上。見 `incidents.md` H061。
 
 ## 0. 委派注意（實作者必讀）
 
@@ -119,7 +138,10 @@ bot 走既有 verify / 漂移守門 / plan_click_verdict
 
 ### 兩條流程
 
-**harvest 101 awaiting_fine**：
+⚠ **以下兩條流程是 v1 版本，實作已演進**（見開頭 v2 第 1、2 點）：harvest 改成推
+候選清單、點哪打哪；回礦改成先掃八方位再問網頁。保留原文供對照設計意圖。
+
+**harvest 101 awaiting_fine**（v1）：
 1. bot 進 NEEDS_HUMAN（manual_survey 觸發）
 2. WebSocket push：事件 + 全畫面截圖 +「harvest 101 手動瞄準」context
 3. 網頁面板跳出 toast + 自動展開截圖
@@ -127,7 +149,7 @@ bot 走既有 verify / 漂移守門 / plan_click_verdict
 5. 座標送 bot → **跳過偵測**（玩家已給精確座標），直接走既有「漂移守門 → fire (x,y) → verify」尾段
 6. verify 結果 → 事件流回網頁（綠色 ✅ 或 紅色重試）
 
-**回礦傳送板定位**：
+**回礦傳送板定位**（v1；現況見 v2 第 1 點）：
 1. bot 開場鏈跑完，準備點傳送板
 2. WebSocket push：事件 + 全畫面截圖 +「回礦：點傳送板」context
 3. 玩家 pinch-zoom 找到傳送板 → tap 板中心

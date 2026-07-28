@@ -10,7 +10,7 @@ code, tests, and `miningbot/config.py` still outrank every document.
 | `../AGENTS.md` | repository-wide operating contract and hard runtime rules |
 | `../CLAUDE.md` | thin compatibility entrypoint to `AGENTS.md` |
 | `game-mechanics.md` | game-domain observations that affect automation decisions |
-| `manual-sampling.md` | R-key sampling and re-entry calibration procedure |
+| `manual-sampling.md` | manual sampling and re-entry calibration procedure (the R-key window was retired 2026-07-17; capture via the remote-control 📷) |
 | `web-ui-guide.md` | web intervention/settings/history UI: Tailscale setup, operator walkthrough, troubleshooting, agent notes |
 | `../assets/README.md` | tracked datasets versus machine-local runtime assets |
 | `../tests/fixtures/README.md` | live-capture fixture library index; each subdirectory has its own README with thresholds and two-sided brackets |
@@ -26,7 +26,11 @@ not current behavior specifications and must not override code or tests:
 - `HANDOFF_false_positives.md`
 - `opencode-delegation-manual.md`
 - `superpowers/plans/**`
-- `superpowers/specs/**`
+- `superpowers/specs/**`（唯一例外：`superpowers/specs/2026-07-26-web-ui-design.md`
+  對應已落地的網頁 UI 程式碼，是現行設計參考；仍以 `AGENTS.md` 與程式為準）
+- `superpowers/handoffs/**` — 進行中的交接文件，**結案後即為歷史**。
+  `2026-07-26-h061-web-ui-startup-hang.md` 的根因判定（import lock 死結）**已被推翻**，
+  正確版本見 `incidents.md` H061。
 
 A completed checkbox is evidence that work was planned, not proof that it shipped.
 Use the implementing diff and regression tests when reconstructing history.

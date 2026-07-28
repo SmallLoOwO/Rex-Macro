@@ -34,6 +34,9 @@ desktop.ini
 .omo/
 .opencode/
 .codegraph/
+# OMC runtime state（.omc/skills/** 是刻意的可提交例外）
+.omc/*
+!.omc/skills/
 
 # 工作暫存（079 修復期間的比對副本/patch）
 .tmp079/

@@ -1,6 +1,6 @@
 # `reentry/` — 回礦流程
 
-三組互不相干的素材，共用這個目錄。
+四組互不相干的素材，共用這個目錄（第四組在 `teleport_board/` 子目錄）。
 
 ## 一、H044 傳送驗證兩側夾
 
@@ -42,6 +42,23 @@ Depth 從 Surface 翻成 NNNm ＝**真的下礦了**，這是開場閘的狀態�
 
 sweep 轉滿一圈會有 ~6° 殘差，快照與現場之間沒有守門就會對著過期畫面點下去。
 兩側夾：漂移 29.66／21.6 vs 未漂移 ≤3.14 → 門檻 `zoom_drifted = 12.0`。
+
+## 四、`teleport_board/` 玩家點擊語料（網頁介入自動收集，2026-07-28 起）
+
+玩家在 `/intervention` 點傳送板後，`main.Bot._save_auto_fixture` 把**該幀全畫面**與
+點擊座標寫進這個子目錄，兩檔一組：
+
+```
+teleport_board/auto_<episode_id>_success.png / .json    verify＝descended（點對了）
+teleport_board/auto_<episode_id>_fail.png    / .json    verify 未通過（點歪／被吃）
+```
+
+`.json` 的 `annotation.cx/cy` 是玩家點的位置（原生 1920×1080 座標）、`source.verify`
+記回礦驗證結果。schema 與 `aim/` 共用 `miningbot.web_annotation.build_annotation`，
+玩家可在 `/annotate` 補標；`category` 欄要寫全 `reentry/teleport_board`。
+
+用途是「傳送板長什麼樣、玩家點哪裡會成功」的正樣本累積——**目前只有 success 側**，
+還不足以定任何門檻，先當語料存著（負樣本＝點歪那側要靠實機累積）。
 
 ## 相關事故
 

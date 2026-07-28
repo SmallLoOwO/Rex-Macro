@@ -10,7 +10,7 @@
 
 - **這個目錄有 git 追蹤，`assets/` 沒有。** 測試要用的素材一律放這裡；放 `assets/`
   會被 gitignore 吃掉，別台機器 clone 下來測試就變成 skip。
-- **不得為了讓單一 fixture 過就放寬門檻**，也不得刪事故回歸素材（H001~H061）。
+- **不得為了讓單一 fixture 過就放寬門檻**，也不得刪事故回歸素材（H 系列全部）。
   真陽性與負樣本要**兩側夾**：只驗真陽性的門檻等於沒有門檻。
 - 檔名帶 `hNNN_` 前綴＝對應 `docs/incidents.md` 的事故編號，該檔就是那次事故的證據。
   沒有前綴的多半是常態語料或對照組。
@@ -34,6 +34,7 @@
 | [`pitch/`](pitch/README.md) | 俯仰動作「真的動了」vs「被吃」兩側夾（H048/H052） | `test_pitch_fixtures.py` |
 | [`player_list/`](player_list/README.md) | 右上角玩家列表開／關 | `test_player_list_fixtures.py` |
 | [`reentry/`](reentry/README.md) | 回礦：Depth 錨、開場凍結、放大圖漂移（H044/H046/H050） | `test_reentry_fixtures.py`、`test_depth_fixtures.py` |
+| [`reentry/teleport_board/`](reentry/README.md) | 網頁介入自動收集：玩家點傳送板的全畫面＋座標（兩檔一組） | `test_web_p5_integration.py`、`test_web_intervention.py` |
 | [`slot/`](slot/README.md) | 快捷列裝備／未裝備色差 | `test_slot_fixtures.py` |
 | [`tracker/`](tracker/README.md) | 追蹤框偵測的同色黏連救援（H057） | `test_vision.py` |
 

@@ -107,7 +107,10 @@ uv run python -m miningbot.calibrate_pitch
 - 文件狀態與歷史資料說明：`docs/README.md`
 - 網頁 UI 設計：`docs/superpowers/specs/2026-07-26-web-ui-design.md`
   （注意：`docs/superpowers/**` 多為歷史資料，但這份 web UI spec 對應已落地
-  的程式碼，是現行設計參考；硬規則仍以 `AGENTS.md` 為準）
+  的程式碼，是現行設計參考；**先讀開頭「版本沿革」v2**——回礦改先掃八方位、
+  harvest 改推候選清單點哪打哪、遙控器鏡射上網頁都在那裡，v1 內文已就地標註。
+  硬規則仍以 `AGENTS.md` 規則 13／14 為準）
+- 網頁 UI 操作／排錯：`docs/web-ui-guide.md`
 
 `docs/HANDOFF*.md`、`docs/opencode-delegation-manual.md` 都是歷史資料，不得用來覆蓋現行程式與
 測試。
