@@ -34,13 +34,29 @@ Windows-only Python 3.11+ 自動化程式。主要流程包含挖礦、D5 boost�
 - **Ctrl+Q**：只暫停並放開按鍵。
 - **Q**：暫停／恢復；在啟動檢查期間代表跳過目前檢查。
 - **F12**：結束程式。
-- **R**：開啟手動校準取樣器。
+
+（R 取樣視窗已於 2026-07-17 退役：截圖走遙控器 📷、俯仰走回礦 `仰角` 指令。）
 
 ## Discord 與回礦
 
 支援 `pause`、`resume`、`status`、`shot`、`ability`、`list`、`keep`、`unkeep`、`clear`、
 `回礦`／`reenter` 等命令。`reentry_mode` 可設為 `off`、`remote`、`auto`；預設為 `remote`，
 `auto` 必須先完成本機 surface template 校準。
+
+## 網頁 UI
+
+bot 內建網頁介面（`web_server_enabled`，預設開；綁 `web_server_host`＝這台機器的
+Tailscale IP，Tailscale 沒起來時自動退回 `127.0.0.1`）。四個頁面：`/intervention`
+（即時介入：遙控器五鍵＋常駐狀態＋pinch-zoom 點畫面直接開火／點傳送板）、`/`
+（玩家設定：白名單 4 個 Config 欄位＋保留清單＋D2 開關）、`/history`、`/annotate`。
+
+網頁沒人連著（或斷線超過 `web_fallback_grace_s`）就自動退回既有的 Discord 反應按鈕流程，
+兩邊**先到先贏**。操作說明、Tailscale 設定與排錯見 [`docs/web-ui-guide.md`](docs/web-ui-guide.md)。
+
+⚠ 網頁 UI 需要 `fastapi`／`uvicorn`／`websockets` 裝在**實際啟動 bot 的那顆直譯器**上
+（`啟動挖礦bot.bat` 走 `pythonw` ＝ Store 版 Python，跟 `.venv` 是兩個環境）。缺件時
+bot 照常挖礦、只關掉網頁 UI 並在 `miningbot.log` 與 Discord 啟動訊息說明——見
+`docs/incidents.md` H061。
 
 ## 記錄、效能與除錯
 

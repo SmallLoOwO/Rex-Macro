@@ -44,7 +44,7 @@ miningbot/
   reentry*.py               automatic and remote re-entry decisions
   remote_aim.py             Discord-assisted harvest alignment
   roblox_menu.py            menu OCR decisions
-  sampler.py                R-key calibration UI and sample writing
+  sampler.py                numbered manual-sample writing (R-key Tk UI retired 2026-07-17)
   notify.py                 Discord HTTP API and async notifications
   discord_commands.py       pure Discord command parsing
   web_protocol.py           WebSocket message dataclasses, parsers, coord validation
@@ -88,7 +88,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Discord controls | command/parser tests | `main._poll_discord`, `notify.py` |
 | Web UI / WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`, `miningbot/AGENTS.md` Web UI layer | `web_*` modules, `main._web_*`, `Bot._execute_remote_fire_from_web`, `Bot._rr_click_from_web` |
 | World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets |
-| R-key calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` |
+| Manual sampling / calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` (capture via remote-control 📷; the R-key window is gone) |
 | Logs/snapshots | `diagnostics.py`, `docs/incidents.md` | categorized runtime snapshots |
 
 Read `miningbot/AGENTS.md` for package-local rules and `tests/AGENTS.md` for test
@@ -130,8 +130,10 @@ conventions.
 10. Tk text must not contain astral emoji (`> U+FFFF`) on this Tcl/Tk 8.6 machine;
     pass UI text through `_bmp_safe` and use BMP symbols.
 11. Global hotkeys use `GetAsyncKeyState`: Ctrl+Q pause-only, Q
-    pause/resume/clear/skip startup, F12 quit, R sampler. Do not use `keyboard` and
-    never send Esc during manual driving.
+    pause/resume/clear/skip startup, F12 quit. The R sampler window was retired on
+    2026-07-17 (screenshots via the remote-control 📷, pitch via the re-entry `仰角`
+    command); do not reintroduce a hotkey for it. Do not use `keyboard` and never send
+    Esc during manual driving.
 12. `reentry_mode` is `off`, `remote`, or `auto`; the default comes from `Config`.
     Automatic mode is calibration gated. Every path is bounded, falls back to
     `NEEDS_HUMAN`, and restores pitch/zoom before finalization.

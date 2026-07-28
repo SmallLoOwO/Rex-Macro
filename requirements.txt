@@ -19,3 +19,10 @@ onnxruntime==1.27.0
 pydirectinput==1.0.4
 python-dotenv==1.2.2
 imageio-ffmpeg==0.5.1
+# 網頁 UI（介入面板／設定／歷史）。缺這三個 bot 仍可跑，只是網頁 UI 自動停用、
+# 介入全部退回 Discord（見 docs/incidents.md H061）。
+# ⚠ websockets 必須顯式裝：裸 uvicorn 不含任何 WebSocket 實作 → `GET /ws` 回 404、
+# 介入面板恆斷線（2026-07-26 實測）。
+fastapi>=0.110
+uvicorn>=0.27
+websockets>=12
