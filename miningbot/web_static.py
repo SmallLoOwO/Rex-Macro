@@ -1035,6 +1035,7 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   <span id="dir-label">&#8212;</span>
   <button id="next" type="button" title="下一個方位">&#9654;</button>
   <span id="dots"></span>
+  <button id="adopt" class="confirm" type="button" hidden title="直接送出 bot 猜的位置">&#127919; 採用建議</button>
   <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
   <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
   <button id="confirm" class="confirm" type="button" title="下礦沒問題，開挖">&#9989; 好</button>
@@ -1042,7 +1043,7 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
 </div>
 <div id="note"></div>
-<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置</div>
+<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</div>
 <div id="container">
   <canvas id="canvas"></canvas>
 </div>
@@ -1057,6 +1058,7 @@ const dirLabel = document.getElementById('dir-label');
 const dotsEl = document.getElementById('dots');
 const prevBtn = document.getElementById('prev');
 const nextBtn = document.getElementById('next');
+const adoptBtn = document.getElementById('adopt');
 const sweepBtn = document.getElementById('sweep');
 const rerollBtn = document.getElementById('reroll');
 const confirmBtn = document.getElementById('confirm');
@@ -1155,15 +1157,45 @@ function redraw() {
     `translate(${offX - pan[0] * totalScale}px, ${offY - pan[1] * totalScale}px)`;
 }
 
+// bot 猜的傳送板位置：圈畫在 canvas 上，**不動 PNG**——推給網頁的那份跟原始
+// 快照是同一批位元組，語料不可被疊圖污染。沒有預測就什麼都不畫。
+function drawPrediction(p) {
+  if (!p) return;
+  ctx.save();
+  ctx.strokeStyle = '#57f287';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 46, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();          // 中心十字，圈太大時仍看得出確切座標
+  ctx.moveTo(p.x - 12, p.y); ctx.lineTo(p.x + 12, p.y);
+  ctx.moveTo(p.x, p.y - 12); ctx.lineTo(p.x, p.y + 12);
+  ctx.stroke();
+  const label = 'bot 猜這裡 ' + (p.score != null ? p.score.toFixed(2) : '');
+  ctx.font = 'bold 26px sans-serif';
+  const w = ctx.measureText(label).width;
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(p.x - w / 2 - 8, p.y - 92, w + 16, 36);
+  ctx.fillStyle = '#57f287';
+  ctx.fillText(label, p.x - w / 2, p.y - 66);
+  ctx.restore();
+}
+
 function drawFrame(i) {
   const f = frames[i];
   if (!f || !f.img) return;
   canvas.width = CANVAS_NATIVE[0];
   canvas.height = CANVAS_NATIVE[1];
   ctx.drawImage(f.img, 0, 0, CANVAS_NATIVE[0], CANVAS_NATIVE[1]);
+  drawPrediction(f.predict);
   seen.add(i);
   renderNav();
   redraw();
+}
+
+function currentPrediction() {
+  const f = frames[curFrame];
+  return (f && f.predict) || null;
 }
 
 function renderNav() {
@@ -1171,6 +1203,9 @@ function renderNav() {
   const multi = n > 1;
   prevBtn.disabled = !multi;
   nextBtn.disabled = !multi;
+  // 沒有預測（偵測回空／分數低於門檻）時面板與舊行為逐項一致：不畫圈、不加鍵。
+  adoptBtn.hidden = !(currentEvent && currentEvent.flow === 'reentry'
+                      && currentPrediction());
   dirLabel.textContent = n
     ? ('方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1)) + '/' + n)
     : '\\u2014';
@@ -1226,7 +1261,8 @@ function connect() {
       // 有 meta＝八方位其中一張；沒有＝舊的單幀路徑（harvest 開火用）
       if (pendingMeta) {
         const slot = pendingMeta.index;
-        frames[slot] = { img: null, dir: pendingMeta.dir, layer: pendingMeta.layer };
+        frames[slot] = { img: null, dir: pendingMeta.dir, layer: pendingMeta.layer,
+                         predict: pendingMeta.predict };
         loadImage(e.data, slot);
         pendingMeta = null;
       } else {
@@ -1242,7 +1278,8 @@ function connect() {
     if (!msg || msg.type !== 'event') return;
     if (p.event === 'INTERVENTION_FRAME') {
       if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; }
-      pendingMeta = { index: p.index, dir: p.dir, layer: p.layer, total: p.total };
+      pendingMeta = { index: p.index, dir: p.dir, layer: p.layer, total: p.total,
+                      predict: p.predict };
     } else if (p.event === 'INTERVENTION_NEEDED') {
       currentEvent = p;
       const isReentry = p.flow === 'reentry';
@@ -1254,7 +1291,7 @@ function connect() {
       for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = !isReentry;
       confirmBtn.hidden = true; voidBtn.hidden = true;
       curFrame = 0;
-      renderNav();
+      renderNav();       // 採用建議鍵由 renderNav 依「這張有沒有預測」決定顯不顯示
       if (frames.length) drawFrame(0);
       startFlashing(p.summary || '需要介入');
       beep();
@@ -1275,12 +1312,13 @@ function connect() {
       setStatus(p.summary || v, awaitingConfirm ? 'need' : (ok ? 'ok' : 'fail'));
       stopFlashing();
       if (awaitingConfirm) {
-        sweepBtn.hidden = true;
+        adoptBtn.hidden = true; sweepBtn.hidden = true;
         rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
         skipBtn.hidden = false;
       } else if (done) {
         currentEvent = null;
-        for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
+        for (const b of [adoptBtn, sweepBtn, rerollBtn, confirmBtn, voidBtn,
+                         skipBtn]) b.hidden = true;
       }
     } else if (p.event === 'FRAME_SNAPSHOT') {
       pendingFrameSnapshot = true;   // 下一個 binary frame 是快照，見上面 ArrayBuffer 分支
@@ -1387,6 +1425,15 @@ function sendClick(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const nativeX = Math.round((clientX - rect.left) * (canvas.width / rect.width));
   const nativeY = Math.round((clientY - rect.top) * (canvas.height / rect.height));
+  sendClickNative(nativeX, nativeY);
+}
+
+// 「採用建議」與手動點擊共用這一段：送出的座標一定等於圈心，也不會長出第二套換算。
+function sendClickNative(nativeX, nativeY) {
+  if (!currentEvent) {
+    setStatus('尚無 INTERVENTION_NEEDED 事件，忽略點擊', 'idle');
+    return;
+  }
   const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
   const ep_id = {};
   // routing_key = "harvest:007" 或 "reentry:26"
@@ -1418,6 +1465,10 @@ function sendControl(cmd, label) {
 
 prevBtn.addEventListener('click', () => showFrame(curFrame - 1));
 nextBtn.addEventListener('click', () => showFrame(curFrame + 1));
+adoptBtn.addEventListener('click', () => {
+  const p = currentPrediction();
+  if (p) sendClickNative(p.x, p.y);
+});
 sweepBtn.addEventListener('click', () => sendControl('sweep', '重掃'));
 rerollBtn.addEventListener('click', () => sendControl('reroll', '重骰'));
 confirmBtn.addEventListener('click', () => {

@@ -162,6 +162,26 @@ def parse_fire_at_payload(payload: dict) -> dict | None:
     return parsed
 
 
+def normalize_intervention_item(item) -> tuple:
+    """介入幀的三種寫法統一成 ``(dir_idx, layer, png, predict)``（純函式）。
+
+    歷史上長出三種：``(dir_idx, png)``（回礦八方位）、``(dir_idx, layer, png)``
+    （2026-07-27 harvest 候選清單多帶俯仰層）、以及 2026-07-28 起回礦改用的 dict
+    ``{"dir", "png", "predict"}``——傳送板預測要跟著那一張走，再往 tuple 尾巴加
+    一個位置就沒人分得清 3-tuple 到底是哪一種了。
+
+    `predict`＝``(x, y, score)`` 或 `None`。
+    """
+    if isinstance(item, dict):
+        return (item.get("dir"), item.get("layer"), item.get("png"),
+                item.get("predict"))
+    if len(item) == 3:
+        dir_idx, layer, png = item
+        return (dir_idx, layer, png, None)
+    dir_idx, png = item
+    return (dir_idx, None, png, None)
+
+
 def parse_reentry_click_payload(payload: dict) -> dict | None:
     """解析 reentry_click 命令；不合法回 None。只接受 attempt_id。
 

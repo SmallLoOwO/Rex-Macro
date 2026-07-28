@@ -20,7 +20,7 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      can_accept_manual_reentry, can_consume_rotate)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
-from . import corpus
+from . import corpus, teleport_board
 # notify 純 stdlib（urllib/json），放模組層同樣是 H061 的一環：原本各處都用
 # `from . import notify` deferred import，其中 Bot.__init__ 那次已排在 OCR worker
 # thread 之後。函式內既有的 local import 保留不動（從 sys.modules 取，無 import 工作）。
@@ -3640,19 +3640,20 @@ class Bot:
         # 2026-07-27：使用者是「有提醒才連進來」——開始記錄這輪序列，晚到的連線
         # 一上來就能靠 registry.replay_to 補到完整這批圖，而不是看到空白 idle。
         registry.begin_intervention_replay()
-        from .web_protocol import WebMessage
+        from .web_protocol import WebMessage, normalize_intervention_item
         total = len(frames)
         for seq, item in enumerate(frames):
-            if len(item) == 3:
-                dir_idx, layer, png = item
-            else:
-                dir_idx, png = item
-                layer = None
+            dir_idx, layer, png, predict = normalize_intervention_item(item)
             meta = {"event": "INTERVENTION_FRAME", "flow": flow,
                     "routing_key": routing_key, "index": seq,
                     "total": total, "dir": int(dir_idx) + 1}
             if layer:
                 meta["layer"] = layer
+            if predict:
+                # 傳送板預測（2026-07-28）：圈由 client 畫在 canvas 上，**不動 PNG**
+                # ——推給網頁的那份跟原始快照是同一批位元組，語料不可污染。
+                meta["predict"] = {"x": int(predict[0]), "y": int(predict[1]),
+                                   "score": round(float(predict[2]), 3)}
             registry.broadcast(WebMessage(type="event", payload=meta))
             registry.broadcast_binary(png)
         registry.broadcast(WebMessage(
@@ -6594,8 +6595,9 @@ class Bot:
             self.logger.warning("[RR#%s] sweep 前對齊 dir0 未完成（cur_dir=%d）——方位標籤可能偏",
                                 ctx.episode_id, ctx.cur_dir)
         ctx.shots = []
+        ctx.predictions = {}                      # {dir_idx: (x, y, score)}（本輪 sweep）
         pairs = []                                # [(dir_idx, grid_path)]
-        web_pngs = []                             # [(dir_idx, png_bytes)]
+        web_pngs = []                             # [{"dir","png","predict"}]
         zs = f"_z{ctx.net_zoom:+d}" if ctx.net_zoom else ""
         rot_missed = 0
         for i in range(8):
@@ -6608,7 +6610,10 @@ class Bot:
             if encode_for_web:
                 png = self._encode_png(f)
                 if png is not None:
-                    web_pngs.append((i, png))
+                    predict = self._predict_teleport_board(ctx, i, f)
+                    if predict:
+                        ctx.predictions[i] = predict
+                    web_pngs.append({"dir": i, "png": png, "predict": predict})
             grid_img = f.copy()
             remote_aim.draw_grid(grid_img, 6, 4)
             gpath = self._rr_sync_write(grid_img,
@@ -6623,6 +6628,29 @@ class Bot:
             self.logger.warning("[RR#%s] 八方位拍照有 %d 次旋轉重試用盡未生效——方位標籤已錯位",
                                 ctx.episode_id, rot_missed)
         return pairs, rot_missed, web_pngs
+
+    def _predict_teleport_board(self, ctx, dir_idx: int, frame):
+        """對這一張跑傳送板偵測；分數過門檻才回 ``(x, y, score)``，否則 `None`。
+
+        只做建議，不自動點（使用者明確不要 `reentry_mode=auto`；H043 虛空墜落是
+        那條路的代價）。價值不在省掉那一下點擊，在於**把標註成本降到零**——玩家
+        為了回礦本來就要點，順手就產生一筆「預測 vs 真實」的比對。
+
+        分數低於 `reentry_predict_min_score` 就不給：畫一個亂猜的圈比不畫更糟。
+        偵測炸掉也只記一行 log 回 `None`，面板退回「沒有預測」的既有行為——
+        不可因為預測掛掉就讓介入面板變難用。
+        """
+        try:
+            got = teleport_board.detect(frame)
+        except Exception as e:
+            self.logger.warning("[RR#%s] 傳送板偵測失敗（dir%d），這張不給預測：%s",
+                                ctx.episode_id, dir_idx + 1, e)
+            return None
+        if not got or got[2] < cfg.reentry_predict_min_score:
+            return None
+        self.logger.info("[RR#%s] 傳送板預測 dir%d (%d,%d) score=%.3f",
+                         ctx.episode_id, dir_idx + 1, got[0], got[1], got[2])
+        return got
 
     def _rr_sweep_send_discord(self, pairs, rot_missed: int, prefix_msg: str = ""):
         """把 `_rr_sweep_capture` 拍好的八方位網格圖分兩則發到 Discord。"""
@@ -7170,6 +7198,11 @@ class Bot:
         cv2.imwrite(fpath, cur)                  # 點擊瞬間全幀（ground truth 樣本）
         # region=() 標記 web 點擊沒有 zoom 來源區域（有別於 _rr_click 收 zoom_region）
         reentry_remote.record_click(ctx, pos, layer, (), time.time())
+        # 預測 vs 真實（2026-07-28）：玩家點在別的地方＝否定了預測。轉向已完成，
+        # 所以 cur_dir%8 就是這張圖在 sweep 裡的編號。
+        reentry_remote.record_prediction(
+            ctx, (getattr(ctx, "predictions", None) or {}).get(
+                getattr(ctx, "cur_dir", 0) % 8))
         verdict = self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
         # P5 Task 5：自動收集素材（spec §5）——玩家介入 verdict = 真值材料。
         # frame = 點擊瞬間已抓的 cur（全幀）；reentry 無 cell_crop（傳送板定位用全幀座標）。

@@ -287,6 +287,7 @@ class RemoteReentryContext:
     shots: list = field(default_factory=list)    # [(dir_idx, snapshot_path)]
     log: list = field(default_factory=list)      # 指令流水
     clicks: list = field(default_factory=list)   # 點擊記錄（ground truth 本體）
+    predictions: dict = field(default_factory=dict)  # {dir_idx: (x, y, score)}；每次 sweep 重算
     net_zoom: int = 0            # 淨 zoom 步數（+＝遠）；重骰不清（鏡頭距離跨重生點持續）
     trigger: str = "reset"       # 本 episode 觸發來源：reset（礦坑重置）/ manual（回礦 指令、🏠）
 
@@ -495,6 +496,22 @@ def record_click(ctx, pos, layer, region, now):
                        "dir": ctx.cur_dir, "region": tuple(region),
                        "zoom": ctx.net_zoom, "invalid": False,
                        "attempt": ctx.attempt})
+
+
+def record_prediction(ctx, predicted) -> bool:
+    """把偵測器當時的猜測補寫進最後一筆點擊；沒有點擊可補時回 False。
+
+    玩家點在別的地方＝否定了預測，這一筆帶著「模型當時怎麼想」進語料，迴圈自己
+    就會長大：每確認一次就多一筆 (預測, 真實) 比對，標註成本是零。
+    沒有預測就寫 None——照實記錄，不補值。
+    """
+    if not ctx.clicks:
+        return False
+    ctx.clicks[-1]["predicted_xy"] = (
+        [int(predicted[0]), int(predicted[1])] if predicted else None)
+    ctx.clicks[-1]["predicted_score"] = (
+        round(float(predicted[2]), 3) if predicted else None)
+    return True
 
 
 def record_landing(ctx, depth_m, layer_seen) -> bool:

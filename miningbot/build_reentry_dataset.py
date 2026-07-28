@@ -247,6 +247,9 @@ def classify_group(meta: dict) -> tuple:
     if len({c.get("dir") for c in clicks}) > 1:
         return [], "multi_dir_clicks"
     click = clicks[-1]
+    # `pos` 是 2026-07-28 之前 --rescue 倒進來的舊 meta 用的欄位名；新的一律
+    # `actual_xy`（與 `predicted_xy` 成對）。舊檔不重寫，讀的時候相容就好。
+    actual = click.get("actual_xy") or click.get("pos")
     group = corpus.group_name(meta.get("episode"), meta.get("attempt"))
     rows = []
     for shot in meta.get("shots") or ():
@@ -258,7 +261,7 @@ def classify_group(meta: dict) -> tuple:
             "layer_seen": click.get("layer_seen"),
             "depth_m": click.get("depth_m"),
             "label": "positive" if positive else "negative",
-            "xy": list(click.get("pos")) if positive and click.get("pos") else None,
+            "xy": list(actual) if positive and actual else None,
             "episode": meta.get("episode"),
             "attempt": meta.get("attempt"),
             "outcome": outcome,

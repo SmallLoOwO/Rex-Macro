@@ -50,11 +50,16 @@ def normalize_click(click: dict) -> dict:
     `layer_seen` 是 (世界, Depth) 反推的實測值；**不退回玩家宣告的 `layer` 字串**
     ——實測 20 筆點擊有 5 筆宣告成 "Mantle Layer" 但落地畫面實為 Shamrock。
     缺值照實寫 `None`，不補值：寫 None 才看得出當時量不到。
+
+    `predicted_xy` 是偵測器當時的猜測（2026-07-28 起），與 `actual_xy` 成對——
+    玩家點在別的地方就是否定了預測，這一筆本身就是下一輪調參的樣本。
     """
     pos = click.get("pos") or ()
     return {
         "dir": (int(click.get("dir", 0)) % 8) + 1,
-        "pos": [int(pos[0]), int(pos[1])] if len(pos) >= 2 else None,
+        "actual_xy": [int(pos[0]), int(pos[1])] if len(pos) >= 2 else None,
+        "predicted_xy": click.get("predicted_xy"),
+        "predicted_score": click.get("predicted_score"),
         "layer_seen": click.get("layer_seen"),
         "depth_m": click.get("depth_m"),
         "invalid": bool(click.get("invalid", False)),

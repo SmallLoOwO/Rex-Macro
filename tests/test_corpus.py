@@ -31,9 +31,11 @@ def test_normalize_click_translates_dir_and_keeps_measured_layer():
     """`layer_seen`（(世界,Depth) 反推）保留；玩家宣告的 `layer` 不進 meta。"""
     got = corpus.normalize_click({
         "pos": (1604, 450), "dir": 1, "layer": "Mantle Layer",
-        "layer_seen": "Shamrock", "depth_m": 7100, "invalid": False})
-    assert got == {"dir": 2, "pos": [1604, 450], "layer_seen": "Shamrock",
-                   "depth_m": 7100, "invalid": False}
+        "layer_seen": "Shamrock", "depth_m": 7100, "invalid": False,
+        "predicted_xy": [1607, 413], "predicted_score": 0.973})
+    assert got == {"dir": 2, "actual_xy": [1604, 450],
+                   "predicted_xy": [1607, 413], "predicted_score": 0.973,
+                   "layer_seen": "Shamrock", "depth_m": 7100, "invalid": False}
     assert "layer" not in got
 
 
@@ -143,7 +145,8 @@ def test_write_group_copies_all_shots_and_writes_meta(tmp_path):
     meta = json.loads(
         open(os.path.join(group_dir, corpus.META_NAME), encoding="utf-8").read())
     assert [s["file"] for s in meta["shots"]] == [f"dir{i}.png" for i in range(1, 9)]
-    assert meta["clicks"] == [{"dir": 2, "pos": [1604, 450],
+    assert meta["clicks"] == [{"dir": 2, "actual_xy": [1604, 450],
+                               "predicted_xy": None, "predicted_score": None,
                                "layer_seen": "Shamrock", "depth_m": 7100,
                                "invalid": False}]
 
