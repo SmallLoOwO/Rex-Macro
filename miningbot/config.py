@@ -342,6 +342,9 @@ class Config:
     # snapshots/ 才不會被上面那條 retention 從最舊刪掉（2026-07-28 實測 200 張只剩
     # 58 張、可用配對只剩 1 正 7 負）。獨立上限、到頂時優先刪無 click 的組。
     corpus_max_total_mb: int = 4096
+    # `build_reentry_dataset --eval` 判「命中」的半徑：偵測器最高分預測落在真實
+    # 座標這個距離內就算中。傳送板本身有大小，像素級精確沒有意義；要調就在這裡調。
+    reentry_dataset_hit_radius_px: int = 80
     snapshot_queue_max: int = 16                  # 1080p BGR 約 6MB/張；限制最壞記憶體占用
     snapshot_queue_critical_reserve: int = 4      # 保留給 rare/review/reentry，trace 不得吃滿
     snapshot_shutdown_drain_s: float = 5.0        # Bounded shutdown wait for queued snapshot writes.

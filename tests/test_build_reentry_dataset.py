@@ -340,5 +340,142 @@ def test_main_builds_dataset_by_default(tmp_path, capsys):
     assert "正樣本" in capsys.readouterr().out
 
 
+# ---- --eval 成績單（純函式；數字本身不當斷言，語料會長大）------------------
+
+def _pos(xy=(100, 100), image="g/dir1.png", world="Lucernia", layer="Shamrock"):
+    return {"image": image, "label": "positive", "xy": list(xy),
+            "world": world, "layer_seen": layer}
+
+
+def _neg(image="g/dir2.png", world="Lucernia", layer="Shamrock"):
+    return {"image": image, "label": "negative", "xy": None,
+            "world": world, "layer_seen": layer}
+
+
+def test_eval_row_counts_prediction_inside_radius_as_hit():
+    got = brd.eval_row(_pos(), (130, 100, 0.7), radius_px=80)
+    assert got["verdict"] == "hit" and got["dist"] == pytest.approx(30.0)
+
+
+def test_eval_row_distance_exactly_equal_to_radius_is_a_hit():
+    """邊界：剛好等於半徑算命中（傳送板有大小，像素級精確沒有意義）。"""
+    assert brd.eval_row(_pos(), (180, 100, 0.7), radius_px=80)["verdict"] == "hit"
+
+
+def test_eval_row_distance_beyond_radius_is_a_miss():
+    assert brd.eval_row(_pos(), (181, 100, 0.7), radius_px=80)["verdict"] == "miss"
+
+
+def test_eval_row_no_prediction_on_positive_is_a_miss():
+    got = brd.eval_row(_pos(), None, radius_px=80)
+    assert got["verdict"] == "miss" and got["dist"] is None
+
+
+def test_eval_row_any_prediction_on_negative_is_false_positive():
+    assert brd.eval_row(_neg(), (5, 5, 0.9), radius_px=80)["verdict"] == "false_positive"
+
+
+def test_eval_row_no_prediction_on_negative_is_clean():
+    assert brd.eval_row(_neg(), None, radius_px=80)["verdict"] == "clean"
+
+
+def test_summarize_eval_with_zero_hits_does_not_divide_by_zero():
+    """零命中端：報告合法印 0%（本票驗收時偵測器是空的，這是那條路的驗證）。"""
+    results = [brd.eval_row(_pos(), None, 80), brd.eval_row(_neg(), None, 80)]
+    s = brd.summarize_eval(results)
+    assert (s["hits"], s["misses"], s["hit_rate"]) == (0, 1, 0.0)
+    assert s["median_error_px"] is None
+    assert "0.0%" in brd.format_eval_report(s)
+
+
+def test_summarize_eval_with_all_hits_does_not_divide_by_zero():
+    results = [brd.eval_row(_pos(), (100, 100, 1.0), 80),
+               brd.eval_row(_neg(), None, 80)]
+    s = brd.summarize_eval(results)
+    assert (s["hits"], s["hit_rate"], s["false_positives"]) == (1, 1.0, 0)
+    assert s["median_error_px"] == pytest.approx(0.0)
+
+
+def test_summarize_eval_with_no_positives_reports_none_rate():
+    """退化輸入：正樣本 0 筆。"""
+    s = brd.summarize_eval([brd.eval_row(_neg(), None, 80)])
+    assert s["positives"] == 0 and s["hit_rate"] is None
+    assert "—" in brd.format_eval_report(s)
+
+
+def test_summarize_eval_with_no_negatives_does_not_raise():
+    s = brd.summarize_eval([brd.eval_row(_pos(), (100, 100, 1.0), 80)])
+    assert s["negatives"] == 0 and s["false_positives"] == 0
+
+
+def test_summarize_eval_on_empty_input_is_all_zero():
+    s = brd.summarize_eval([])
+    assert (s["positives"], s["negatives"]) == (0, 0)
+    assert brd.format_eval_report(s)          # 印得出來，不拋例外
+
+
+def test_summarize_eval_median_uses_hits_only():
+    results = [brd.eval_row(_pos(), (110, 100, 1.0), 80),
+               brd.eval_row(_pos(), (140, 100, 1.0), 80),
+               brd.eval_row(_pos(), (999, 999, 1.0), 80)]     # miss 不算進中位數
+    assert brd.summarize_eval(results)["median_error_px"] == pytest.approx(25.0)
+
+
+def test_group_eval_splits_by_world():
+    results = [brd.eval_row(_pos(world="Lucernia"), (100, 100, 1.0), 80),
+               brd.eval_row(_pos(world="Zephyr"), None, 80)]
+    table = brd.group_eval(results, "world")
+    assert table["Lucernia"]["hits"] == 1 and table["Zephyr"]["hits"] == 0
+
+
+def test_hit_radius_comes_from_config_and_changes_the_verdict():
+    from miningbot.config import Config
+    assert Config().reentry_dataset_hit_radius_px == 80
+    far = (100 + 120, 100, 0.5)
+    assert brd.eval_row(_pos(), far, radius_px=80)["verdict"] == "miss"
+    assert brd.eval_row(_pos(), far, radius_px=150)["verdict"] == "hit"
+
+
+def test_run_eval_skips_unreadable_images(tmp_path):
+    rows = [_pos(image="g/dir1.png"), _neg(image="g/dir2.png")]
+    results = brd.run_eval(str(tmp_path), rows, 80,
+                           detect=lambda _f: None,
+                           load=lambda p: None if p.endswith("dir1.png") else object())
+    assert [r["image"] for r in results] == ["g/dir2.png"]
+
+
+def test_run_eval_survives_detector_exception(tmp_path, capsys):
+    def _boom(_frame):
+        raise ValueError("bad frame")
+
+    results = brd.run_eval(str(tmp_path), [_pos()], 80,
+                           detect=_boom, load=lambda _p: object())
+    assert results[0]["verdict"] == "miss"
+    assert "偵測失敗" in capsys.readouterr().out
+
+
+def test_default_detector_returns_nothing_without_raising():
+    """v0 入口形狀：吃一張圖回 (x, y, score) 或空。"""
+    from miningbot import teleport_board
+    import numpy as np
+    assert teleport_board.detect(np.zeros((16, 16, 3), dtype=np.uint8)) is None
+
+
+def test_write_eval_detail_records_prediction_truth_distance_verdict(tmp_path):
+    results = [brd.eval_row(_pos(), (130, 100, 0.7), 80)]
+    path = brd.write_eval_detail(str(tmp_path), results, now=0)
+    assert os.path.basename(path).startswith(brd.EVAL_PREFIX)
+    row = json.loads(open(path, encoding="utf-8").readline())
+    assert row["pred"] == [130, 100] and row["xy"] == [100, 100]
+    assert row["dist"] == pytest.approx(30.0) and row["verdict"] == "hit"
+
+
+def test_main_eval_prints_report_with_empty_detector(tmp_path, capsys):
+    root = _fake_corpus(tmp_path, _meta())
+    assert brd.main(["--corpus", root, "--eval"]) == 0
+    out = capsys.readouterr().out
+    assert "positives" in out and "逐張明細" in out
+
+
 if __name__ == "__main__":       # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

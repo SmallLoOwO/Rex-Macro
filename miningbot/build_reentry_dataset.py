@@ -349,12 +349,150 @@ def format_dataset_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+# ---- 評估報告 --------------------------------------------------------------
+
+EVAL_PREFIX = "eval_"
+
+
+def eval_row(row: dict, prediction, radius_px) -> dict:
+    """一張圖的判定（純函式）。`prediction`＝``(x, y, score)`` 或 `None`。
+
+    - 正樣本：預測落在真實座標 `radius_px` **內**（含等於）＝`hit`，否則 `miss`
+      （沒有預測也是 miss——漏掉就是漏掉）。
+    - 負樣本：有任何預測就是 `false_positive`，沒有才 `clean`。分數門檻是偵測器
+      自己的事，它回 `None` 就代表它自己也不信。
+    """
+    px = py = score = None
+    if prediction:
+        px, py, score = prediction
+    truth = row.get("xy")
+    dist = None
+    if truth and prediction:
+        dist = ((px - truth[0]) ** 2 + (py - truth[1]) ** 2) ** 0.5
+    if row.get("label") == "positive":
+        verdict = "hit" if dist is not None and dist <= radius_px else "miss"
+    else:
+        verdict = "false_positive" if prediction else "clean"
+    return {"image": row.get("image"), "label": row.get("label"),
+            "world": row.get("world"), "layer_seen": row.get("layer_seen"),
+            "xy": truth, "pred": [px, py] if prediction else None,
+            "score": score, "dist": dist, "verdict": verdict}
+
+
+def summarize_eval(results) -> dict:
+    """逐張判定 → 成績單（純函式）。空輸入、零命中、全命中都不除以零。"""
+    results = list(results or ())
+    hits = [r for r in results if r["verdict"] == "hit"]
+    positives = hits + [r for r in results if r["verdict"] == "miss"]
+    negatives = [r for r in results if r["verdict"] in ("clean", "false_positive")]
+    false_positives = [r for r in negatives if r["verdict"] == "false_positive"]
+    dists = sorted(r["dist"] for r in hits if r["dist"] is not None)
+    median = None
+    if dists:
+        mid = len(dists) // 2
+        median = (dists[mid] if len(dists) % 2
+                  else (dists[mid - 1] + dists[mid]) / 2.0)
+    return {
+        "positives": len(positives), "hits": len(hits),
+        "misses": len(positives) - len(hits),
+        "hit_rate": (len(hits) / len(positives)) if positives else None,
+        "negatives": len(negatives), "clean": len(negatives) - len(false_positives),
+        "false_positives": len(false_positives),
+        "median_error_px": median,
+    }
+
+
+def group_eval(results, key: str) -> dict:
+    """按 `world`／`layer_seen` 分組的成績單（純函式）。"""
+    buckets = {}
+    for r in results or ():
+        buckets.setdefault(r.get(key), []).append(r)
+    return {k: summarize_eval(v) for k, v in sorted(
+        buckets.items(), key=lambda kv: str(kv[0]))}
+
+
+def _pct(rate) -> str:
+    return "—" if rate is None else f"{rate * 100:.1f}%"
+
+
+def format_eval_report(summary: dict, by_world=None, by_layer=None,
+                       radius_px=None) -> str:
+    lines = [
+        f"positives {summary['positives']:<4} hit {summary['hits']} "
+        f"({_pct(summary['hit_rate'])})   miss {summary['misses']}",
+        f"negatives {summary['negatives']:<4} clean {summary['clean']}        "
+        f"false-positive {summary['false_positives']}",
+        "中位誤差 " + ("—（無命中）" if summary["median_error_px"] is None
+                       else f"{summary['median_error_px']:.0f}px（命中者）"),
+    ]
+    if radius_px is not None:
+        lines.append(f"命中半徑 {radius_px}px（reentry_dataset_hit_radius_px）")
+    for label, table in (("world", by_world), ("layer", by_layer)):
+        if not table:
+            continue
+        lines.append(f"按 {label} 分組")
+        for key, s in table.items():
+            lines.append(
+                f"  {str(key):<14}正 {s['positives']:<3} 中 {s['hits']:<3}"
+                f"({_pct(s['hit_rate']):>6})   負 {s['negatives']:<3}"
+                f" 誤報 {s['false_positives']}")
+    return "\n".join(lines)
+
+
+def load_image(path: str):
+    """CJK 路徑安全的讀圖（`cv2.imread` 在中文路徑下靜默回 None）。"""
+    import cv2
+    import numpy as np
+    try:
+        buf = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    if buf.size == 0:
+        return None
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+
+
+def run_eval(root: str, rows, radius_px, *, detect=None, load=load_image) -> list:
+    """把偵測器跑過整份資料集，回逐張判定。讀不到的圖略過（不計入分母）。"""
+    if detect is None:
+        from .teleport_board import detect as detect
+    results = []
+    for row in rows:
+        frame = load(os.path.join(root, *row["image"].split("/")))
+        if frame is None:
+            continue
+        try:
+            prediction = detect(frame)
+        except Exception as e:                    # 偵測器炸掉不該讓整份評估中止
+            print(f"⚠ 偵測失敗 {row['image']}：{e}")
+            prediction = None
+        results.append(eval_row(row, prediction, radius_px))
+    return results
+
+
+def write_eval_detail(root: str, results, now=None) -> str:
+    """逐張明細（含預測、真值、距離、判定）——成績單只給趨勢，追查要看這份。"""
+    import time as _time
+    stamp = _time.strftime("%Y%m%d_%H%M%S", _time.localtime(now or _time.time()))
+    path = os.path.join(root, f"{EVAL_PREFIX}{stamp}.jsonl")
+    os.makedirs(root, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in results:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return path
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m miningbot.build_reentry_dataset",
         description="回礦傳送板語料工具（預設：語料夾 → dataset.jsonl）")
     parser.add_argument("--rescue", action="store_true",
                         help="把舊 ledger 裡還讀得到的快照倒進語料夾（冪等）")
+    parser.add_argument("--eval", action="store_true",
+                        help="把現行偵測器跑過整份資料集，印成績單 + 落逐張明細")
+    parser.add_argument("--hit-radius", type=int,
+                        default=cfg.reentry_dataset_hit_radius_px,
+                        help="判「命中」的半徑 px（預設取 Config）")
     parser.add_argument("--ledger", default=None,
                         help="ledger.jsonl 路徑（預設取 Config，MSIX 重導後那份優先）")
     parser.add_argument("--corpus", default=None,
@@ -373,6 +511,15 @@ def main(argv=None) -> int:
     rows, report = build_dataset(root)
     print(f"輸出      {write_dataset(root, rows)}")
     print(format_dataset_report(report))
+    if not args.eval:
+        return 0
+    print()
+    results = run_eval(root, rows, args.hit_radius)
+    print(format_eval_report(summarize_eval(results),
+                             group_eval(results, "world"),
+                             group_eval(results, "layer_seen"),
+                             radius_px=args.hit_radius))
+    print(f"逐張明細 → {write_eval_detail(root, results)}")
     return 0
 
 
