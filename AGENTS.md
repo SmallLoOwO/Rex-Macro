@@ -1,8 +1,22 @@
-# PROJECT KNOWLEDGE BASE
+# AGENTS.md — PROJECT KNOWLEDGE BASE
 
 This is the repository-wide operating contract. Keep it current and focused on
 decisions that are unsafe to rediscover. Volatile inventories such as test totals,
 file lengths, and ore counts belong in command output, not guidance.
+
+## HOW TO USE THIS FILE
+
+- **Applies to every coding agent and human working in this repo** — Claude Code,
+  Codex, Cursor, aider, or a person with an editor. Nothing here is tool-specific.
+- **Nearest file wins.** `miningbot/AGENTS.md` and `tests/AGENTS.md` add local rules
+  for their directories; this root file covers everything else.
+- `CLAUDE.md` is a thin Claude Code entrypoint that imports this file. Runtime truth
+  lives here and in the code — never add a second copy that can drift.
+- A direct instruction from the user in the current session overrides this file. If
+  it also contradicts a NON-NEGOTIABLE RUNTIME RULE below, say so before acting.
+- Write code and comments to match the surrounding file. Commit messages and
+  user-facing prose are in Chinese; identifiers, log keys, and error strings stay
+  verbatim.
 
 ## OVERVIEW
 
@@ -80,14 +94,16 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Top-level state | `states.py`, `tests/test_states.py` | every direct `self.state =` site |
 | Coordinates/modes/hotkeys | `config.py` | config and incident regressions |
 | Rare-ore harvest | rules below, latest matching H incident | `harvester.py`, `_sweep_for_tracker`, `_tick_harvest`, `_harvest_success` |
-| Tracker detection | H039/H040/H057, `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near` |
+| D3 / scan sequences | `harvester.py`, the original root `.mcr` recordings | equipment toggles, settle calls, fixed key and hold timing |
+| D4 keep/reroll | H049, `miner.plan_d4` | cache must be newer than the last action; unknown text needs two-sample confirmation |
+| Tracker detection | H039/H040/H057, `tests/test_vision.py` | `vision.find_tracker`, `find_tracker_near`; bracket true positives against equipment/UI negatives; H057 blob rescue and re-anchor |
 | Chat verification | H014/H020/H032/H041/H054/H055 | `ocr.ChatLedger`, `read_text_multi`, `_verify_chat_ocr`, `ocr.baseline_saw_found_history`, `ocr._strip_ui_residue` |
 | Chill/reset audio | `audio.py`, `tests/test_audio.py` | `main._on_audio_*` |
 | Mine reset | reset/capacity incident evidence | `states.py`, `_banner_ocr_loop`, `_update_reset_complete` |
-| Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*` |
+| Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*`; every path bounded, ledger written, pitch/zoom restored |
 | Discord controls | command/parser tests | `main._poll_discord`, `notify.py` |
 | Web UI / WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`, `miningbot/AGENTS.md` Web UI layer | `web_*` modules, `main._web_*`, `Bot._execute_remote_fire_from_web`, `Bot._rr_click_from_web` |
-| World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets |
+| World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets; active registry, low/high tier conflicts, JSON sync |
 | Manual sampling / calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` (capture via remote-control 📷; the R-key window is gone) |
 | Logs/snapshots | `diagnostics.py`, `docs/incidents.md` | categorized runtime snapshots |
 
@@ -173,11 +189,21 @@ conventions.
   message describing the change (cite the H incident id when applicable).
 - Do not push, switch branches, delete runtime evidence, or mutate
   Roblox/Discord unless the user explicitly requests it.
-- The primary agent owns integration, diff review, and verification.
+- The primary agent owns integration, diff review, and verification. Delegate to a
+  subagent only when the work splits cleanly and cannot collide on shared files —
+  `main.py` and `config.py` are touched by almost every task, so parallel work there
+  is a merge fight, not a speedup. This holds for whichever agent tool you are
+  (there is no mandated delegation flow any more; the retired opencode manual in
+  `docs/` is historical).
+- Another session may be editing the same files. Re-check `git status --short` before
+  staging; if the diff contains hunks you did not write, stage only your own
+  (`git diff -U3 -- <file>` → filter hunks → `git apply --cached`) instead of
+  committing someone else's unfinished work.
 
 ## COMMANDS
 
 ```powershell
+uv sync --locked
 uv run pytest --collect-only -q
 uv run pytest -q
 uv run ruff check . --no-cache
@@ -194,6 +220,26 @@ uv run python -m miningbot.calibrate_pitch
 
 Sandboxed `python.exe` may fail with an execution-permission error on this managed
 Windows workspace. Re-run through the approved `uv` path before diagnosing code.
+
+## LIVE-RUN TROUBLESHOOTING
+
+- Resolve the log root from `Config.log_dir`; do not assume the repo `logs/`.
+- ⚠ `pythonw -m miningbot` (the `.bat` launcher) runs the Microsoft Store / MSIX
+  Python, so writes to `%LOCALAPPDATA%\RexMacro\logs` are virtualized to
+  `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\Local\RexMacro\logs`.
+  The path printed inside the log will not exist as written; live evidence is in the
+  LocalCache copy. A `uv run` start is unaffected. That interpreter is also a
+  different environment from `.venv` — H061 was exactly this (see `docs/incidents.md`).
+- ⚠ The LocalCache copy's **directory metadata goes stale**: `Get-ChildItem` can show
+  an mtime/size hours behind the real content. Always judge "how far did the last run
+  get" from `Get-Content -Tail` timestamps, never from directory times, and never
+  conclude "nothing after T" from a narrow time-window grep.
+- Read `miningbot.log` first, then `actions.log`, `harvest.log`, `discord.log`, and
+  the categorized snapshots. Harvest evidence is filed under the **numeric**
+  `harvest_id` (`118`), which is a different namespace from the `Hxxx` incident ids.
+- Adjust a threshold or coordinate only from real frames/crops plus the matching H
+  incident. Never loosen a conservative verdict or delete an incident regression to
+  make one failing fixture pass.
 
 ## CURRENT RISK AREAS
 
