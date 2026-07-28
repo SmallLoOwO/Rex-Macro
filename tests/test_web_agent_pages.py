@@ -26,6 +26,33 @@ def _client(tmp_path, records=None, index_name="snapshot_index.jsonl",
     elif records is not None:
         index.write_text("\n".join(json.dumps(r) for r in records) + "\n",
                          encoding="utf-8")
+    # annotation_queue 過濾掉檔案不存在的列（retention 死連結），
+    # 測試必須造真的 PNG 讓 isfile 通過——_REAL_FRAME 是 tracked fixture 已存在。
+    if records:
+        for r in records:
+            p = r.get("path")
+            if p and os.path.exists(p):
+                continue
+            if p:
+                d = os.path.dirname(p)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(b"x")
+    if raw:
+        # raw 裡的第一行是好記錄，造出它指向的檔
+        import json as _json
+        try:
+            first = _json.loads(raw.split("\n")[0])
+            p = first.get("path")
+            if p and not os.path.exists(p):
+                d = os.path.dirname(p)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(b"x")
+        except (ValueError, KeyError):
+            pass
     fixtures = tmp_path / "fx"
     fixtures.mkdir(exist_ok=True)
     app = web_server.create_app(

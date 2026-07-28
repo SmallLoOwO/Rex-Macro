@@ -573,7 +573,8 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
       <button type="button" data-symptom="false_negative">1　這裡有礦框，bot 沒抓到（漏判）</button>
       <button type="button" data-symptom="false_positive">2　bot 抓了，可是那裡什麼都沒有（誤判）</button>
       <button type="button" data-symptom="should_reject_failed">3　那裡有東西，但不是礦框（地形／裝備／UI）</button>
-      <button type="button" data-symptom="unknown" class="active">4　不確定</button>
+      <button type="button" data-symptom="no_target">4　這張真的什麼都沒有（確認空幀）</button>
+      <button type="button" data-symptom="unknown" class="active">5　不確定</button>
     </div>
 
     <button type="button" class="submit" id="submit">送出標註</button>
@@ -765,7 +766,7 @@ document.addEventListener('keydown', (e) => {{
   if (e.key === 'j') {{ showQueueItem(qIndex + 1); e.preventDefault(); }}
   else if (e.key === 'k') {{ showQueueItem(qIndex - 1); e.preventDefault(); }}
   else if (e.key === 'Enter') {{ submitAnnotation(); e.preventDefault(); }}
-  else if (e.key >= '1' && e.key <= '4') {{
+  else if (e.key >= '1' && e.key <= '5') {{
     const btns = document.querySelectorAll('#symptoms button');
     const b = btns[Number(e.key) - 1];
     if (b) {{ b.click(); e.preventDefault(); }}
@@ -801,30 +802,30 @@ function categoryFor(name) {{
 }}
 
 async function submitAnnotation() {{
-  if (!selRect) {{
-    statusEl.textContent = '請先在快照上拖曳出方形';
+  // no_target：玩家確認「這張沒東西」，不需要畫框。
+  if (activeSymptom !== 'no_target' && !selRect) {{
+    statusEl.textContent = '請先在快照上拖曳出方形（或選「這張真的什麼都沒有」）';
     return;
   }}
   const payload = {{
     image: imageName,
     source_path: sourcePath,
-    annotation: {{
-      type: 'square',
-      cx: Math.round(selRect.x),
-      cy: Math.round(selRect.y),
-      size: selRect.size,
-    }},
     tier: activeTier,
     variant: activeVariant,
-    // 礦物／相關事故欄位已移除（2026-07-29）：玩家標的當下不會知道礦名，
-    // 更不會知道對應哪個 H 事故——那是事後查 docs/incidents.md 的事。
-    // schema 兩欄都是可選，留 null 即可，素材格式不變。
     mineral: null,
     source: {{ kind: 'manual' }},
     symptom: activeSymptom,
     related_incident: null,
   }};
-  payload.category = categoryFor(imageName);
+  if (activeSymptom !== 'no_target') {{
+    payload.annotation = {{
+      type: 'square',
+      cx: Math.round(selRect.x),
+      cy: Math.round(selRect.y),
+      size: selRect.size,
+    }};
+    payload.category = categoryFor(imageName);
+  }}
   statusEl.textContent = '送出中…';
   try {{
     const r = await fetch('/api/annotate', {{

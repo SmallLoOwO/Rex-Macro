@@ -180,3 +180,81 @@ def test_annotate_page_renders_verdict_text():
 
 if __name__ == "__main__":       # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- no_target：人確認過的真陰性（2026-07-29）------------------------------
+
+def test_validate_accepts_no_target_without_annotation():
+    """no_target 不需要方框——玩家確認「整張沒東西」，不該逼他畫假框。"""
+    from miningbot.web_annotation import validate_annotation
+    payload = {
+        "image": "shot.png", "source": {"kind": "manual"},
+        "symptom": "no_target",
+    }
+    assert validate_annotation(payload)
+
+
+def test_validate_rejects_fn_without_annotation():
+    """FN 仍必須畫框——不是全面放寬，只有 no_target 免。"""
+    from miningbot.web_annotation import validate_annotation
+    payload = {
+        "image": "shot.png", "source": {"kind": "manual"},
+        "symptom": "false_negative",
+    }
+    assert not validate_annotation(payload)
+
+
+def test_verdict_agrees_no_target_with_rejected_detector():
+    """偵測器拒絕 + 玩家說沒東西 → 一致（偵測器在這張答對了）。"""
+    from miningbot.web_annotation import verdict_agrees
+    assert verdict_agrees("rejected", "no_target") is True
+
+
+def test_verdict_disagrees_no_target_with_accepted_detector():
+    """偵測器接受 + 玩家說沒東西 → 不一致（偵測器抓到假的）。"""
+    from miningbot.web_annotation import verdict_agrees
+    assert verdict_agrees("accepted", "no_target") is False
+
+
+def test_post_annotate_no_target_saves_full_frame(tmp_path):
+    """no_target POST → 全幀存 corpus/negatives/，不裁 crop、不寫 fixtures。"""
+    import cv2
+    import numpy as np
+    import os
+    from miningbot.web_ipc import FallbackState, PendingReplies
+    from miningbot.web_server import create_app
+    from fastapi.testclient import TestClient
+
+    shots = tmp_path / "snapshots"
+    shots.mkdir()
+    src = shots / "empty_scene.png"
+    # 造一張真的 4x4 PNG——cv2.imdecode 要能讀
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", frame)
+    assert ok
+    encoded.tofile(str(src))
+
+    neg = tmp_path / "corpus" / "negatives"
+    fx = tmp_path / "fixtures"
+    fx.mkdir()
+    index = tmp_path / "snapshot_index.jsonl"
+    index.write_text("{}", encoding="utf-8")
+
+    app = create_app(
+        PendingReplies(), FallbackState(), broadcast_callback=None,
+        fixtures_dir=str(fx), snapshots_root=str(shots),
+        snapshot_index_path=str(index), negatives_dir=str(neg))
+    client = TestClient(app)
+
+    r = client.post("/api/annotate", json={
+        "image": "empty_scene.png",
+        "source_path": str(src),
+        "source": {"kind": "manual"},
+        "symptom": "no_target",
+    })
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["category"] == "negatives"
+    assert data["png"] and os.path.isfile(data["png"])
+    assert os.path.isfile(os.path.join(str(neg), "empty_scene.json"))
+    assert not any(fx.iterdir())

@@ -76,27 +76,48 @@ def snapshot_stem(path: str) -> str:
     return os.path.splitext(os.path.basename(str(path or "")))[0]
 
 
-def annotated_stems(fixtures_dir: str | None) -> set:
-    """已經標過的素材主幹集合。佇列靠它去重——不然每次進去都從第一張重來。"""
+def annotated_stems(*dirs: str | None) -> set:
+    """已經標過的素材主幹集合。佇列靠它去重——不然每次進去都從第一張重來。
+
+    吃多個目錄（2026-07-29）：真陰性標註不寫 `tests/fixtures/` 而寫
+    `corpus/negatives/`（全幀 1-3MB 不進 git，見 `corpus.negatives_root`），
+    只掃 fixtures 的話那些圖每次都會再排進佇列。
+    """
     stems: set[str] = set()
-    if not fixtures_dir or not os.path.isdir(fixtures_dir):
-        return stems
-    for _root, _dirs, files in os.walk(fixtures_dir):
-        for name in files:
-            if name.endswith(".json"):
-                stems.add(os.path.splitext(name)[0])
+    for d in dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        for _root, _dirs, files in os.walk(d):
+            for name in files:
+                if name.endswith(".json"):
+                    stems.add(os.path.splitext(name)[0])
     return stems
 
 
-def build_queue(records, annotated=(), tier: int = 0) -> list:
+# `_render_aim_shots` 把疊了粗格線與 DIR 標頭的複本另存成 `<原檔>_aim.png` 並
+# 各自寫進索引，於是**同一幀在佇列裡出現兩次**。實測 tier0 活語料 161 張裡有
+# 53 張是這種複本，53 張的乾淨原幀全部也在佇列裡——玩家翻到的「廢圖」有三分之一
+# 就是這個。疊圖本身不能當偵測語料（畫上去的線會進裁圖），但**只有在乾淨原幀
+# 還在時才丟得起**，所以下面是條件式去重而不是無腦過濾。
+_AIM_OVERLAY_SUFFIX = "_aim.png"
+
+
+def build_queue(records, annotated=(), tier: int = 0, exists=None) -> list:
     """快照記錄 → 指定 tier 的標註佇列（純函式）。
 
     排序：`written_at` 由新到舊——最近的失敗最可能還沒被修掉，先標它的資訊量最高。
     `written_at` 缺值排到最後（`snapshot_index` 是 append-only，理論上都有）。
     去重用 `annotated`（已標過的檔名主幹集合）。
+
+    `exists`：可選的「這個路徑還在不在」判斷（I/O 注入，純函式本體不碰檔案系統）。
+    傳了就過濾掉檔案已被 retention 刪掉的列——索引是 append-only，帳永遠在，圖卻
+    早就被 `snapshot_max_total_mb` 從最舊刪掉了。實測 500 列裡 339 列是死連結，
+    玩家一路翻過去全是破圖。不傳＝維持舊行為（測試與純資料呼叫端不受影響）。
+
+    疊圖去重：`<原檔>_aim.png` 在乾淨原幀也留在佇列裡時丟掉（見上方註解）。
     """
     done = set(annotated or ())
-    out = []
+    rows = []
     for record in records or ():
         path = record.get("path")
         if not isinstance(path, str) or not path:
@@ -104,22 +125,31 @@ def build_queue(records, annotated=(), tier: int = 0) -> list:
         label = str(record.get("label") or "")
         if annotation_tier(label) != tier:
             continue
+        if exists is not None and not exists(path):
+            continue
         stem = snapshot_stem(path)
         if stem in done:
             continue
         done.add(stem)                     # 同一張圖在索引裡出現兩次也只排一次
-        out.append({"path": path, "label": label, "stem": stem,
-                    "written_at": record.get("written_at"),
-                    "tier": tier})
+        rows.append({"path": path, "label": label, "stem": stem,
+                     "written_at": record.get("written_at"),
+                     "tier": tier})
+    survivors = {r["path"] for r in rows}
+    out = [
+        r for r in rows
+        if not (r["path"].endswith(_AIM_OVERLAY_SUFFIX)
+                and r["path"][:-len(_AIM_OVERLAY_SUFFIX)] + ".png" in survivors)
+    ]
     out.sort(key=lambda r: (r["written_at"] is None, -(r["written_at"] or 0.0)))
     return out
 
 
 def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
-                     tier: int = 0) -> list:
-    """`build_queue` 的 I/O 版：讀索引 + 掃 fixtures 去重。"""
+                     tier: int = 0, negatives_dir: str | None = None) -> list:
+    """`build_queue` 的 I/O 版：讀索引 + 掃已標註目錄去重 + 濾掉檔案已不在的列。"""
     return build_queue(_iter_snapshot_records(snapshot_index_path),
-                       annotated_stems(fixtures_dir), tier)
+                       annotated_stems(fixtures_dir, negatives_dir), tier,
+                       exists=os.path.isfile)
 
 
 def label_kind(label: str) -> str:

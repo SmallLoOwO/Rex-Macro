@@ -34,6 +34,19 @@ def corpus_root(log_dir: str) -> str:
     return os.path.join(log_dir, CORPUS_DIRNAME, "reentry")
 
 
+def negatives_root(log_dir: str) -> str:
+    """人工確認過的**真陰性**全幀語料夾（2026-07-29）。
+
+    玩家在標註頁按「這張真的沒東西」時，那張全幀就是一筆人確認過的負樣本——
+    偵測調參最缺的正是這個（`build_reentry_dataset` 實測可用負樣本只有 7 張，
+    而地形假陽性的 `border_frac` 0.45~0.89 比真框 0.35 還高，沒有負樣本就沒得夾）。
+
+    放這裡而不是 `tests/fixtures/`：全幀 1-3MB，標 50 張就是 100MB 進 git。
+    與 `corpus_root` 同一個 `corpus/` 父層，同樣掃不到 retention。
+    """
+    return os.path.join(log_dir, CORPUS_DIRNAME, "negatives")
+
+
 def group_name(episode, attempt) -> str:
     """一組＝一輪 sweep 的八張圖（`ctx.shots` 每次 sweep 清空，reroll 也算新一輪）。"""
     return f"ep{int(episode)}_attempt{int(attempt)}"

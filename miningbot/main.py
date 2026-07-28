@@ -2009,10 +2009,12 @@ class Bot:
             self.log_discord.info("stale calib card mid=%s deleted -> %s", mid, detail)
 
     def _reset_reaction_button(self, mid, emoji: str, seen: dict) -> bool:
-        """按鈕按完歸零：清掉該表情的所有反應 → 機器人重貼一次 → 基線回 1。
+        """按鈕按完歸零：移除點擊者的反應（機器人自己那顆保留原位）→ 基線回 1。
 
-        2026-07-26 使用者要求「善用刪除反應的功能，這樣就不用一直將訊息與反應全部
-        刪除」。做完之後訊息原地不動、同一顆按鈕可以立刻再按。
+        2026-07-28 使用者指出舊版「清光整組再重貼」會讓機器人自己的反應跳到表情列
+        最後（Discord 依首次貼上時間排序）；改成只清點擊者那一下，機器人反應從沒
+        被動過，順序不受影響——這也是多數 reaction-role bot 的做法。做完之後訊息
+        原地不動、同一顆按鈕可以立刻再按。
 
         回 True＝已歸零；False＝這個頻道做不到（呼叫端該降級）。
         `_reaction_clear_ok` 記住永久性失敗（403/50003/50013），之後不再白試——
@@ -2022,7 +2024,7 @@ class Bot:
         if not mid or not self._reaction_clear_ok:
             return False
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
-        ok, detail = notify.clear_reaction(token, ch, mid, emoji)
+        ok, detail = notify.remove_user_reactions(token, ch, mid, emoji)
         if not ok:
             if notify.reaction_clear_unsupported(detail):
                 self._reaction_clear_ok = False
@@ -2032,11 +2034,7 @@ class Bot:
             else:
                 self.log_discord.info("反應清除失敗（暫時性，下次再試）：%s", detail)
             return False
-        # 機器人重貼自己那一顆，按鈕才不會消失；基線隨之回到 1
-        added, add_detail = notify.add_reaction(token, ch, mid, emoji)
-        seen[emoji] = 1 if added else 0
-        if not added:
-            self.log_discord.info("反應清除後重貼 %s 失敗：%s", emoji, add_detail)
+        seen[emoji] = 1        # 機器人自己那顆從未被動過，基線回到 1
         return True
 
     def _poll_remote_reactions(self):
@@ -2661,6 +2659,9 @@ class Bot:
                         fixtures_dir=_AUTO_FIXTURE_ROOT,
                         # 沒有它 /snapshot 回 503 → 標註頁與歷史縮圖全是破圖
                         snapshots_root=os.path.join(cfg.log_dir, "snapshots"),
+                        # 人確認過的真陰性全幀 → corpus/negatives/
+                        # （retention-immune，與 reentry 語料同父層；不進 git）
+                        negatives_dir=corpus.negatives_root(cfg.log_dir),
                         # 目標層與 Discord `層` 指令同步：設定頁顯示執行期有效層
                         # （sticky_layers[world] 優先），而不是 cfg 的 fallback 值。
                         layer_getter=self._effective_layer_info,

@@ -23,6 +23,12 @@ _SYMPTOM_MAP: dict[str | None, str | None] = {
     "false_positive": "false_positive",
     "該拒沒拒": "should_reject_failed",
     "should_reject_failed": "should_reject_failed",
+    # 2026-07-29：人確認過的**真陰性**——「這張圖裡真的什麼都沒有」。
+    # 先前 schema 逼玩家畫方框才送得出去，於是空幀（tier0 活語料 96/161 是
+    # `sweep_empty`）只能跳過，而跳過不留紀錄：事後分不出「看過、確認空」與
+    # 「沒人看過」。負樣本正是調參最缺的（可用負樣本實測只有 7 張）。
+    "沒東西": "no_target",
+    "no_target": "no_target",
     "不確定": "unknown",
     "unknown": "unknown",
     "": None,
@@ -38,7 +44,8 @@ _VARIANTS: list[str] = ["原色", "Spectral", "Ionized"]
 
 # validate_annotation 接受的症狀值（None 或標準 enum）
 _SYMPTOM_VALUES: frozenset[str | None] = frozenset(
-    {"false_negative", "false_positive", "should_reject_failed", "unknown", None}
+    {"false_negative", "false_positive", "should_reject_failed",
+     "no_target", "unknown", None}
 )
 
 
@@ -63,6 +70,7 @@ _SYMPTOM_EXPECTS_TARGET: dict[str | None, bool | None] = {
     "false_negative": True,         # 「有框，你沒抓到」
     "false_positive": False,        # 「沒框，你卻抓了」
     "should_reject_failed": False,  # 「該拒沒拒」
+    "no_target": False,             # 「這張真的沒東西」（人確認過的真陰性）
     "unknown": None,
 }
 
@@ -178,8 +186,11 @@ def build_annotation(
 def validate_annotation(ann: Any) -> bool:
     """驗證 annotation dict schema（required keys + 型別）。
 
-    必須有：``image`` (str) / ``annotation`` (dict, type="square" + cx/cy/size:int)
-    / ``source`` (dict, kind ∈ {"auto","manual"})。
+    必須有：``image`` (str) / ``source`` (dict, kind ∈ {"auto","manual"})。
+
+    ``annotation`` (dict, type="square" + cx/cy/size:int)：除 ``no_target`` 之外
+    必須帶。``no_target`` 標的是「整張圖裡什麼都沒有」，玩家不該被逼畫一個假框
+    才送得出去；這時 ``annotation`` 允許缺，存檔走 corpus/negatives 而非 fixtures。
 
     選填：``tier`` / ``variant`` / ``mineral`` / ``symptom`` / ``related_incident``
     存在時非 None 必須是 str；``symptom`` 非 None 必須是 _SYMPTOM_VALUES 之一。
@@ -190,18 +201,6 @@ def validate_annotation(ann: Any) -> bool:
     # required: image
     if not isinstance(ann.get("image"), str):
         return False
-
-    # required: annotation square schema
-    a = ann.get("annotation")
-    if not isinstance(a, dict):
-        return False
-    if a.get("type") != "square":
-        return False
-    for k in ("cx", "cy", "size"):
-        v = a.get(k)
-        # bool 是 int 子類別但語意不該被當座標；明確排除
-        if isinstance(v, bool) or not isinstance(v, int):
-            return False
 
     # required: source.kind
     src = ann.get("source")
@@ -219,5 +218,18 @@ def validate_annotation(ann: Any) -> bool:
     # symptom: None 或標準 enum
     if ann.get("symptom") not in _SYMPTOM_VALUES:
         return False
+
+    # annotation: no_target 允許缺；其餘必須是 square schema
+    if ann.get("symptom") == "no_target":
+        return True
+    a = ann.get("annotation")
+    if not isinstance(a, dict):
+        return False
+    if a.get("type") != "square":
+        return False
+    for k in ("cx", "cy", "size"):
+        v = a.get(k)
+        if isinstance(v, bool) or not isinstance(v, int):
+            return False
 
     return True

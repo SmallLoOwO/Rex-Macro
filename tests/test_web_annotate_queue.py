@@ -80,6 +80,10 @@ def test_annotated_stems_on_missing_dir_is_empty():
 
 def test_annotation_queue_reads_index_and_fixtures(tmp_path):
     index = tmp_path / "snapshot_index.jsonl"
+    # annotation_queue 過濾掉檔案不存在的列（retention 刪掉的死連結），
+    # 測試必須造真的 PNG——即使是 1 byte 也行，只驗 isfile。
+    (tmp_path / "todo.png").write_bytes(b"x")
+    (tmp_path / "done.png").write_bytes(b"x")
     index.write_text("\n".join(json.dumps(r) for r in [
         _rec("113_sweep_empty", str(tmp_path / "todo.png"), 2.0),
         _rec("114_aim_fail", str(tmp_path / "done.png"), 1.0),
@@ -93,7 +97,8 @@ def test_annotation_queue_reads_index_and_fixtures(tmp_path):
 
 def test_annotation_queue_tolerates_broken_index_lines(tmp_path):
     index = tmp_path / "snapshot_index.jsonl"
-    index.write_text(json.dumps(_rec("a_sweep_empty", "a/x.png", 1.0))
+    (tmp_path / "x.png").write_bytes(b"x")
+    index.write_text(json.dumps(_rec("a_sweep_empty", str(tmp_path / "x.png"), 1.0))
                      + '\n{"label": "part', encoding="utf-8")
     assert len(web_history.annotation_queue(str(index), None)) == 1
 
@@ -151,6 +156,15 @@ def _client(tmp_path, records):
     index = tmp_path / "snapshot_index.jsonl"
     index.write_text("\n".join(json.dumps(r) for r in records) + "\n",
                      encoding="utf-8")
+    # 造真實 PNG 讓 annotation_queue 的 isfile 過濾不把它們全刪
+    for r in records:
+        p = r.get("path")
+        if p:
+            d = os.path.dirname(p)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b"x")
     fixtures = tmp_path / "fx"
     fixtures.mkdir()
     app = web_server.create_app(
@@ -185,3 +199,43 @@ def test_annotate_queue_uses_existing_tier_logic():
 
 if __name__ == "__main__":       # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- 死連結過濾 + 疊圖去重（2026-07-29）------------------------------------
+
+def test_build_queue_filters_dead_links():
+    """retention 刪掉的快照不該排在佇列裡（實測 500 列 339 張是死連結）。"""
+    got = web_history.build_queue(
+        [_rec("a_sweep_empty", "exists.png", 1.0),
+         _rec("b_sweep_empty", "gone.png", 2.0)],
+        exists=lambda p: p == "exists.png")
+    assert [r["stem"] for r in got] == ["exists"]
+
+
+def test_build_queue_overlay_deduped_when_clean_exists():
+    """`_aim.png` 疊圖在乾淨原幀也在佇列時丟掉（同一幀的第二次複本）。"""
+    got = web_history.build_queue(
+        [_rec("a_sweep_empty", "shot.png", 1.0),
+         _rec("a_sweep_empty", "shot_aim.png", 2.0)],
+        exists=lambda p: True)
+    assert [r["stem"] for r in got] == ["shot"]
+
+
+def test_build_queue_overlay_kept_when_clean_gone():
+    """乾淨原幀被 retention 刪掉時，疊圖留下（比沒有好）。"""
+    got = web_history.build_queue(
+        [_rec("a_sweep_empty", "shot_aim.png", 1.0)],
+        exists=lambda p: True)
+    assert [r["stem"] for r in got] == ["shot_aim"]
+
+
+def test_annotation_queue_negatives_dir_dedup(tmp_path):
+    """no_target 標註寫 corpus/negatives/，佇列要去重那邊（不只掃 fixtures）。"""
+    fx = tmp_path / "fx"
+    fx.mkdir()
+    (fx / "done.json").write_text("{}", encoding="utf-8")
+    neg = tmp_path / "neg"
+    neg.mkdir()
+    (neg / "neg_done.json").write_text("{}", encoding="utf-8")
+    stems = web_history.annotated_stems(str(fx), str(neg))
+    assert "done" in stems and "neg_done" in stems

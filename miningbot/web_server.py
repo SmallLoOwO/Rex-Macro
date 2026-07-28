@@ -156,6 +156,7 @@ def create_app(
     snapshot_index_path: str | None = None,
     fixtures_dir: str | None = None,
     snapshots_root: str | None = None,
+    negatives_dir: str | None = None,
     ping_interval_s: float = 30.0,
     layer_getter: Callable[[], dict] | None = None,
     player_state_getter: Callable[[], dict] | None = None,
@@ -241,6 +242,7 @@ def create_app(
     app.state.snapshot_index_path = snapshot_index_path
     app.state.fixtures_dir = fixtures_dir
     app.state.snapshots_root = snapshots_root
+    app.state.negatives_dir = negatives_dir
 
     @app.get("/snapshot")
     def get_snapshot(path: str):
@@ -287,35 +289,71 @@ def create_app(
 
     @app.post("/api/annotate")
     def post_api_annotate(payload: dict):
-        """驗證 annotation → 寫 tests/fixtures/<category>/<stem>.{png,json} 兩檔一組。
+        """驗證 annotation → 寫素材（crop+json 或全幀+json）。
 
-        回 201 成功；400 schema 不通過；503 未配置 fixtures_dir。
+        回 201 成功；400 schema 不通過；503 未配置目標目錄。
+
+        **一般症狀**（FN/FP/該拒沒拒/對照組）→ `tests/fixtures/<category>/`，
+        crop PNG + json，與 `/snapshot` 同一份路徑守門。
+        PNG 先寫再寫 json，絕不留孤兒 json（先前正是這狀態：3 png 0 json）。
+
+        **no_target**（人確認過的真陰性，2026-07-29）→ `<log_dir>/corpus/negatives/`，
+        **全幀** PNG + json（偵測器吃的原圖格式，保留週邊脈絡）。全幀 1-3MB 不進 git
+        （fixtures 全進版控），走 corpus/ 與 reentry 語料同一個 retention-immune 父層。
+        `negatives_dir` 沒配置就退回只寫 json 並記 warning。
+
         category 推導順序：payload.category > image 路徑前綴 > 預設 "aim"。
-
-        **PNG 是必要的，不是加值**（spec §5「每張 2 檔」）：素材的用途就是拿去
-        加強目標框偵測，只有 json 沒有裁圖等於什麼都沒收到。先前這條路徑只寫
-        json，產出的是指向 `tests/fixtures/` 內不存在檔名的孤兒——實測 `aim/`
-        底下 3 個 png、0 個 json，兩邊從來對不起來。
-
-        `source_path`（前端送）＝該張快照的原始全幀路徑，用來裁 crop。走跟
-        `/snapshot` 同一份路徑守門。沒帶 source_path 的舊 client 維持只寫 json
-        （向下相容），但會記 warning。
-
-        寫入順序是 **PNG 先、JSON 後**：PNG 失敗就直接回錯，絕不留下沒有配對
-        圖的孤兒 json——那正是這次要修掉的狀態。
         """
-        if fixtures_dir is None:
-            return _err(503, "history not configured")
         from miningbot.web_annotation import validate_annotation
         if not validate_annotation(payload):
             return _err(400, "invalid annotation payload")
-        category = _derive_category(payload)
         image_field = payload["image"]
         stem = os.path.splitext(os.path.basename(image_field))[0]
-        target_dir = os.path.join(fixtures_dir, *category.split("/"))
-        record = {k: v for k, v in payload.items() if k != "source_path"}
-        png_path = None
         source_path = payload.get("source_path")
+        record = {k: v for k, v in payload.items() if k != "source_path"}
+
+        # ── no_target：存全幀到 corpus/negatives/ ────────────────────────
+        if record.get("symptom") == "no_target":
+            target_dir = negatives_dir
+            if not target_dir:
+                _log.warning(
+                    "web: no_target 但 negatives_dir 未配置，只寫 json（%s）", stem)
+            else:
+                png_path = os.path.join(target_dir, stem + ".png")
+                if not (isinstance(source_path, str) and source_path
+                        and _copy_full_frame(source_path, png_path, snapshots_root)):
+                    _log.warning(
+                        "web: no_target 全幀複製失敗（%s），只寫 json", stem)
+                    png_path = None
+            try:
+                if target_dir:
+                    os.makedirs(target_dir, exist_ok=True)
+                target_path = os.path.join(target_dir or "", stem + ".json")
+                _atomic_write_json(target_path, record)
+            except OSError as e:
+                _log.warning("web: /api/annotate 寫入失敗 (%s): %s", target_path, e)
+                return _err(500, f"write failed: {e}")
+            # reentry 幀可以跑 teleport_board 判決（吃全幀）；追蹤框那條路
+            # 需要粗格裁圖但 no_target 沒畫框 → annotation_verdict 回 None。
+            import re as _re
+            verdict_cat = ("reentry" if _re.search(r"reentry_ep\d+", image_field)
+                           else None)
+            verdict = annotation_verdict(
+                verdict_cat, None,
+                source_path if isinstance(source_path, str) else None,
+                "no_target")
+            content = {"ok": True, "path": target_path,
+                       "category": "negatives", "png": png_path}
+            if verdict is not None:
+                content["verdict"] = verdict
+            return JSONResponse(status_code=201, content=content)
+
+        # ── 一般症狀：crop PNG + json 到 fixtures/<category>/ ─────────────
+        if fixtures_dir is None:
+            return _err(503, "history not configured")
+        category = _derive_category(payload)
+        target_dir = os.path.join(fixtures_dir, *category.split("/"))
+        png_path = None
         try:
             os.makedirs(target_dir, exist_ok=True)
         except OSError as e:
@@ -333,7 +371,6 @@ def create_app(
             if not ok:
                 _log.warning("web: /api/annotate 裁圖失敗 (%s): %s", png_path, detail)
                 return _err(500, f"crop failed: {detail}")
-            # 座標改成裁圖內座標——json 描述的是它旁邊那張 png，不是原始全幀
             record["annotation"] = {**ann, "cx": local_cx, "cy": local_cy}
         else:
             _log.warning(
@@ -346,7 +383,6 @@ def create_app(
         except OSError as e:
             _log.warning("web: /api/annotate 寫入失敗 (%s): %s", target_path, e)
             return _err(500, f"write failed: {e}")
-        # 存好了才回判決：偵測掛掉不可影響存檔（annotation_verdict 自己 fail-open）。
         verdict = annotation_verdict(
             category, png_path,
             source_path if isinstance(source_path, str) else None,
@@ -489,7 +525,8 @@ def create_app(
             tier = 0
             if queue.startswith("tier") and queue[4:].isdigit():
                 tier = int(queue[4:])
-            rows = annotation_queue(snapshot_index_path, fixtures_dir, tier)
+            rows = annotation_queue(snapshot_index_path, fixtures_dir, tier,
+                                    negatives_dir=negatives_dir)
         return Response(
             content=render_annotate_html(
                 episode_id=episode or "",
@@ -712,7 +749,13 @@ def annotation_verdict(category: str, crop_png: str | None,
                 return None
             return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-        if category.split("/", 1)[0] == "reentry":
+        # no_target：玩家確認「這張沒東西」。reentry 全幀可以跑 teleport_board；
+        # 追蹤框那條路吃粗格裁圖但 no_target 沒有 cx/cy（沒畫框），無從裁——
+        # 回 None（偵測不可用），存檔照樣成功。
+        cat = category or ""
+        if not cat:
+            return None
+        if cat.split("/", 1)[0] == "reentry":
             from miningbot import teleport_board
             frame = _load(source_frame)
             if frame is None:
@@ -745,6 +788,34 @@ def annotation_verdict(category: str, crop_png: str | None,
     return {"detector": detector, "score": score,
             "your_label": symptom if labelled else None,
             "agree": verdict_agrees(detector, symptom) if labelled else None}
+
+
+def _copy_full_frame(source_path: str, target_png: str, snapshots_root) -> bool:
+    """把原始全幀快照**原樣**複製到 corpus/negatives/（no_target 用）。
+
+    走跟 `_safe_snapshot_target` 同一份路徑守門——外部送進來的路徑不得越界。
+    用 `np.fromfile` + `imencode` + `tofile` 而不是 `shutil.copy`：同一份 code
+    在中文路徑下 `cv2.imwrite` 會靜默失敗（見 `tests/fixtures/README.md`），
+    保持一致的 CJK-safe I/O 比省一次 decode/encode 更重要。
+    """
+    target, reason = _safe_snapshot_target(source_path, snapshots_root)
+    if target is None:
+        return False
+    try:
+        import cv2
+        import numpy as np
+        buf = np.fromfile(target, dtype=np.uint8)
+        frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if frame is None:
+            return False
+        ok, encoded = cv2.imencode(".png", frame)
+        if not ok:
+            return False
+        os.makedirs(os.path.dirname(target_png), exist_ok=True)
+        encoded.tofile(target_png)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def _write_cell_crop_png(source_path: str, target_png: str, cx: int, cy: int):
@@ -918,6 +989,7 @@ class WebIPCThread:
         snapshot_index_path: str | None = None,
         fixtures_dir: str | None = None,
         snapshots_root: str | None = None,
+        negatives_dir: str | None = None,
         layer_getter: Callable[[], dict] | None = None,
         player_state_getter: Callable[[], dict] | None = None,
     ):
@@ -945,6 +1017,7 @@ class WebIPCThread:
             snapshot_index_path=snapshot_index_path,
             fixtures_dir=fixtures_dir,
             snapshots_root=snapshots_root,
+            negatives_dir=negatives_dir,
             ping_interval_s=ping_interval_s,
             layer_getter=layer_getter,
             player_state_getter=player_state_getter,
