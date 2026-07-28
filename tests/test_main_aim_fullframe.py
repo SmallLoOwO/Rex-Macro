@@ -51,6 +51,7 @@ def _aim_bot(monkeypatch, *, roi_hit=None, fullframe_hit=None):
     bot._shape_templates = {}
     bot._wait_for_d3_cooldown = lambda deadline: (True, "")
     bot._focus_roblox = lambda: True
+    bot._reveal_chat = lambda: True         # H064：純 I/O（移游標＋抓幀），這裡不驗
     bot._rotate_verified = lambda direction: True
     bot._pitch_drag_verified = lambda label, action: True
     bot._harvest_boost_guard = lambda f: False

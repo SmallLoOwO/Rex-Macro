@@ -185,6 +185,16 @@ def chat_icon_probe_mean(icon_bgr, probe) -> float:
     return float(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).mean())
 
 
+def bright_pixel_count(image_bgr, min_value: int = 90) -> int:
+    """任一色通道 > min_value 的像素數（H064：聊天是否真的顯示出來了）。
+
+    不用 OCR 判「聊天有沒有顯示」：OCR 一次 3-pass ~10s，而這裡只需要「亮/暗」這種
+    粗判。聊天文字是亮色字疊在暗色半透明底上，礦坑背景則是暗綠（實測兩側夾：
+    淡出 0~304 vs 顯示 13503~13614，見 config.chat_reveal_min_bright_px）。
+    """
+    return int((image_bgr.max(axis=2) > min_value).sum())
+
+
 def chat_icon_state(icon_bgr, probe, open_min_gray: float, closed_max_gray: float,
                     closed_min_gray: float) -> str:
     """聊天圖示開關判定（H047／H063）。回 'open' | 'closed' | 'unknown'。

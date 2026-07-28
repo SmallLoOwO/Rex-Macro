@@ -165,6 +165,31 @@ def test_plan_unknown_state_never_returns_click_regardless_of_clicks_done():
 
 # ---- 4. 舊信號退役：chat_input_region/chat_input_phrases 全 repo（miningbot/、tests/）無殘留引用 ----
 
+def test_bright_pixel_count_brackets_faded_vs_visible_chat():
+    """H064 兩側夾（實機 chat_region 亮像素）：淡出 0~304 vs 顯示 13503~13614。
+
+    喚醒生效與否用亮/暗粗判即可，不必付一次 3-pass OCR（~10s）。暗綠礦坑背景不能
+    被算進去，聊天亮字才算。
+    """
+    dark = np.zeros((280, 460, 3), dtype=np.uint8)
+    dark[:, :, 1] = 60                                   # 暗綠牆
+    assert vision.bright_pixel_count(dark) == 0
+    assert vision.bright_pixel_count(dark) < cfg.chat_reveal_min_bright_px
+
+    lit = dark.copy()
+    lit[100:120, 20:400] = (240, 240, 240)               # 一行亮色聊天文字
+    assert vision.bright_pixel_count(lit) == 20 * 380
+    assert vision.bright_pixel_count(lit) >= cfg.chat_reveal_min_bright_px
+
+
+def test_chat_reveal_xy_is_inside_chat_region_and_not_the_toggle_icon():
+    """喚醒點必須落在聊天內容區內，且不可是聊天圖示（那是 toggle，H063）。"""
+    r = cfg.chat_region
+    x, y = cfg.chat_reveal_xy
+    assert r.x <= x < r.x + r.w and r.y <= y < r.y + r.h
+    assert cfg.chat_reveal_xy != cfg.chat_icon_xy
+
+
 _RETIRED_PATTERN = re.compile(r"chat_input_(?:region|phrases)")
 
 

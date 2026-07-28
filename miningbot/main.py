@@ -1605,6 +1605,41 @@ class Bot:
             self._snapshot(frame, "chat_open_fail")   # label 無 reentry/sweep/d3/chill 關鍵字 → snapshots/trace/
             return
 
+    def _reveal_chat(self) -> bool:
+        """拍聊天基準前把淡出的聊天叫回來：游標掃過聊天內容區一下（H064）。
+
+        為什麼需要：Roblox 聊天久無新訊息會整窗淡出，而 HARVESTING 一進場就
+        `prepare_scan()` 停止移動＝被動採礦停止 → 基準必然拍在淡出後、讀到 0 條
+        has-found → 計數差被 H054 基準閘擋、last_line/tail/ChatLedger 因基準真空各自
+        棄權 → 採到也永遠 no-new → RESWEEP → 重掃全空 → 誤交人工（110~119 幾乎每輪）。
+        把聊天叫回來就是把這條路徑從證據面移掉，四個信號恢復正常。
+
+        **只移游標、絕不點擊**（實機量測，2026-07-28）：
+        - hover 聊天圖示 `chat_icon_xy` **沒用**，只冒出 "Chat" tooltip（亮像素 304）；
+          而且那是 toggle，點下去有 H063 的翻面風險。
+        - hover `chat_reveal_xy`（聊天內容區）→ 整段聊天出現（13614），游標移開後
+          ≥25s 不再淡出，0.25s 停留即足夠。
+        - 聊天隱藏時該座標下面是 3D 場景，點下去＝打到遊戲世界，所以用 `ic.move_to`。
+
+        回傳「這次喚醒後聊天是否真的顯示」。失敗不擋流程（維持舊行為，只是基準照樣
+        空白）——最可能的原因是 Roblox 不在前景（合成 hover 會被整個丟掉），記 WARNING
+        供事後 grep，不在這裡搶焦點（採集進場鏈另有聚焦時機，這裡搶會多付 ~1.3s）。
+        """
+        ic.move_to(*cfg.chat_reveal_xy)
+        time.sleep(cfg.chat_reveal_hover_s)
+        ic.move_to(*ic._screen_center())        # 移開：別擋畫面，也別影響後續點擊
+        time.sleep(cfg.chat_reveal_settle_s)
+        bright = vision.bright_pixel_count(
+            capture.crop(capture.grab(), cfg.chat_region))
+        ok = bright >= cfg.chat_reveal_min_bright_px
+        if not ok:
+            self.log_harvest.warning(
+                "聊天喚醒無效（亮像素 %d < %d）：基準可能仍是空的，"
+                "確認 Roblox 是否在前景", bright, cfg.chat_reveal_min_bright_px)
+        else:
+            self.log_harvest.info("聊天已喚醒（亮像素 %d）", bright)
+        return ok
+
     def _ensure_player_list_closed(self):
         """啟動 UI 前置檢查：右上角玩家列表（Tab toggle）開著就按 Tab 關閉，避免遮擋右側點擊。
 
@@ -3173,6 +3208,10 @@ class Bot:
             # 等 D2 冷卻放在拍 ref 之前：等待期間場景會變（其他玩家/光照），
             # 先拍 ref 再等 ~30s 會讓排除基準過期、反而製造假陽性。
             self._await_scan_ready("enter")
+            # ★ 聊天喚醒必須在這裡、不能更早（H064）：`_await_scan_ready` 可能等 D2
+            #   冷卻等上數十秒，先喚醒等於白喚醒（聊天早就又淡回去）。喚醒後聊天也
+            #   一併進 `_pre_scan_ref`＝之後每方位它都被判 preexist，不會變成假框。
+            self._reveal_chat()
             gf = capture.grab()
             if self._harvest_boost_guard(gf):
                 gf = capture.grab()             # 剛補 D5、FOV 已展開 → 必須重抓
@@ -3890,6 +3929,7 @@ class Bot:
             self._resolve_ping_if_any(
                 f"harvest:{hid}", "web", "web fire 失敗：無法聚焦 Roblox")
             return False, "無法聚焦 Roblox"
+        self._reveal_chat()                     # H064：基準前把淡出的聊天叫回來
         pre_fire_frame = capture.grab()
         chat_base_crop = capture.crop(pre_fire_frame, cfg.chat_region)
         # 用當下姿態記錄觀測（_aim_fire_and_verify 內 _record_target_observation 用）
@@ -5042,6 +5082,7 @@ class Bot:
         # 2. 重新 D2 掃描（框早已到期；新 episode 語意，重拍 ref 正確——非 H026 情境）
         _cr = cfg.chat_region
         _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]   # 同 _tick_harvest 聊天排除組法
+        self._reveal_chat()                     # H064：基準前把淡出的聊天叫回來
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)   # 開火前基準（截圖先、OCR 後）
         harvester.prepare_scan()
         self._await_scan_ready("remote-aim")            # 等冷卻要在拍 ref 之前
@@ -5301,6 +5342,7 @@ class Bot:
         if not ready:
             notify.send_message(token, ch, f"❌ {detail}")
             return
+        self._reveal_chat()                     # H064：基準前把淡出的聊天叫回來
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)
         ok, detail = self._aim_fire_and_verify(
             (int(pos[0]), int(pos[1])), -1.0, ctx.fine_tgt_layer, ctx.fine_tgt_dir,

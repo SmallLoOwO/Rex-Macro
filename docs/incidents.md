@@ -586,4 +586,24 @@ fixture 位置慣例：
 - **連帶修正**：`main._harvest_success` 的 Discord 通知行來源。基準為空時集合差集（`extract_new_found_lines_multi` / `new_fuzzy_rare_lines`）會把重顯示的整段舊歷史全列成「本次新增」→ 謊報一次採到五顆。基準沒有 has-found 歷史時改成只信帳本入帳的行。
 - **回歸**：`tests/test_ocr.py` H064 區塊 6 例（119 底行確認、112 連字號黏連底行、只認底行不認中段舊稀有行、094 假成功仍拒、110 全程隱藏仍棄權且錨點不被面板汙染、Coinstorm/Starstride 在任何世界都是稀有的 fixture 前提釘樁）＋`tests/test_main_harvest_runtime.py` H064 區塊 2 例（走完整 `_verify_chat_ocr`：119 經帳本 confirmed 且基準閘 WARNING 照記、094 端到端仍不成功）。既有 H014/H020/H032/H041/H054/H055 測試全綠（1852 passed）。
 - **下輪實機驗證預期**：`harvest.log` 出現 `H054 基準閘` WARNING 的那一輪，若聊天重現且底行是稀有礦，應接著看到 `帳本入帳新稀有行: [...]` 與 `-> SUCCESS`（或 `窗口到期最終確認救回`），不再出現「rare [0]->[2] no-new → RESWEEP → 全方位掃描未找到追蹤框」。反指標：`帳本入帳新稀有行` 的礦名若不是這一發打的那顆＝底行歸因假設有誤，須立即回查。
-- **未解／不擋結案（110 型）**：整個 verify 窗口聊天都沒重現（110 前後兩次讀取都只有 `NORMAL`）→ 證據面全空，本次對策救不到，仍會誤交人工。可能的解法是「開火前先讓聊天重新顯示」（游標移到 `chat_region` 內 hover，不點擊——`chat_icon_xy` 是 toggle 絕不可在採集期間點），但 hover 能否喚醒聊天需要實機驗證，本輪不做。
+### H064（b）根因側對策：拍基準前 hover 喚醒聊天（`Bot._reveal_chat`，同日補上）
+
+上面（a）是在證據面補救——聊天沒重現（110 型）仍然無解。使用者指出「聊天太久沒新訊息會自動隱藏，游標移到左上角遊戲會主動把聊天叫回來」，於是直接把根因移掉：**拍聊天基準前先把聊天叫回來**，四個信號全部恢復正常，(a) 退居後備。
+
+- **量測（2026-07-28 18:2x，全螢幕、Roblox 前景；`chat_region` 亮像素 >90 計數）**：
+
+  | 游標位置 | 亮像素 | 結果 |
+  |---|---|---|
+  | 原位（畫面中央偏右） | 0 | 聊天淡出 |
+  | `chat_icon_xy` (174,42) | **304** | **只冒出 `Chat` tooltip，聊天沒出來** |
+  | `chat_reveal_xy` (230,250) | **13614** | 整段聊天出現 |
+  | 移回中央 (960,540) | 13503 | **離開後仍留著** |
+
+  hover 僅 **0.25s** 即生效（0.5s 後量到滿值），離開後 **≥25s 不再淡出**（t=0/0.5/1/2/5/10/15/20/25s 連續採樣皆 13503+）。
+- **⚠ 第一次量測全 0 是假陰性**：那時 Roblox 不在前景（跑腳本的 shell 搶走焦點），**合成 hover 在非前景時被整個丟掉**。補 `SetForegroundWindow` 後才重現。任何「送輸入卻沒反應」的實驗，第一件事是確認 Roblox 是不是前景。
+- **對策**：`main.Bot._reveal_chat()` — `ic.move_to(chat_reveal_xy)` → 停 `chat_reveal_hover_s` → `ic.move_to(螢幕中心)` → 停 `chat_reveal_settle_s` → 用 `vision.bright_pixel_count` 確認有沒有喚醒成功（失敗記 WARNING，不擋流程）。呼叫點＝四個聊天基準取得處：`_on_enter(HARVESTING)`（**必須在 `_await_scan_ready` 之後**，那裡可能等 D2 冷卻數十秒，先喚醒等於白喚醒）、`_execute_remote_fire_from_web`、`_execute_remote_aim`、`_execute_aim_fine_fire`。
+- **只移游標、絕不點擊**：聊天隱藏時 `chat_reveal_xy` 底下是 3D 場景，點下去＝打到遊戲世界；`chat_icon_xy` 更是 toggle（H063 的翻面風險）。回歸測試把「一次都不准點」釘成斷言。
+- **喚醒後的聊天會一起進 `_pre_scan_ref`**：這是刻意的——之後每方位偵測都把它判 `preexist`，聊天文字不會變成假框。
+- **回歸**：`tests/test_chat_icon.py`（`bright_pixel_count` 兩側夾對 `chat_reveal_min_bright_px`、喚醒點必須在 `chat_region` 內且不等於 `chat_icon_xy`）＋`tests/test_main_harvest_runtime.py` H064 區塊（hover 座標順序正確且 `click_at`/`mouse_click` 零呼叫、喚醒失敗記 WARNING 且仍不點擊）。
+- **實機驗收（2026-07-28，同一場 harvest 119 現場）**：等聊天淡出（亮像素 0）→ 基準 OCR `baseline_saw_found_history=False`、0 行 → 跑真的 `Bot._reveal_chat()` → log `聊天已喚醒（亮像素 13614）` → 基準 OCR `baseline_saw_found_history=True`、12 行含 5 條 has-found（含底行 `small_lo has found Coinstorm`）。
+- **殘留**：`_reveal_chat` 失敗（最可能＝Roblox 不在前景）時退回 (a) 的重顯示底行規則，不比修復前差。

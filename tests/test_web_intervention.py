@@ -1071,6 +1071,7 @@ def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_success(monkeyp
     bot._mine_resetting = False
     bot._wait_for_d3_cooldown = lambda deadline: (True, "")
     bot._focus_roblox = lambda: True
+    bot._reveal_chat = lambda: True          # H064：純 I/O，這裡不驗
     bot._aim_fire_and_verify = lambda *a, **kw: (True, "confirmed")
     fake_frame = np.zeros((1080, 1920, 3), np.uint8)
     monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
@@ -1122,6 +1123,7 @@ def test_execute_remote_fire_from_web_calls_save_auto_fixture_on_failure(monkeyp
     bot._mine_resetting = False
     bot._wait_for_d3_cooldown = lambda deadline: (True, "")
     bot._focus_roblox = lambda: True
+    bot._reveal_chat = lambda: True          # H064：純 I/O，這裡不驗
     bot._aim_fire_and_verify = lambda *a, **kw: (False, "verify 窗口內聊天未確認")
     fake_frame = np.zeros((1080, 1920, 3), np.uint8)
     monkeypatch.setattr(main_mod.capture, "grab", lambda: fake_frame)
@@ -1264,6 +1266,7 @@ def _build_fire_stub(monkeypatch, *, verify_ok=True, d3_ready=True, focus_ok=Tru
     bot._mine_resetting = False
     bot._wait_for_d3_cooldown = lambda deadline: (d3_ready, "" if d3_ready else "冷卻中 4.2s")
     bot._focus_roblox = lambda: focus_ok
+    bot._reveal_chat = lambda: True          # H064：純 I/O，這裡不驗
     bot._aim_fire_and_verify = lambda *a, **kw: (
         verify_ok, "confirmed" if verify_ok else "無新稀有聊天")
     fake_frame = np.zeros((1080, 1920, 3), np.uint8)

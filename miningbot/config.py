@@ -607,6 +607,23 @@ class Config:
         # give_up），成功的場次一律第一次點擊就開；而每多點一次就多一次 toggle，讀值若
         # 本身是錯的（見 chat_icon_closed_min_gray），奇數次點擊剛好把聊天框關掉。
 
+    # ── 聊天喚醒（H064，2026-07-28 實機量測）──────────────────────────────────
+    # Roblox 聊天無新訊息會整窗淡出；HARVESTING 一進場就停止採礦 → 聊天基準必然拍在
+    # 淡出後、讀到 0 條 has-found → 四個確認信號全滅（採到也判 no-new）。對策是拍基準
+    # 前把游標掃過聊天內容區一下把它叫回來。**只移游標、絕不點擊**：聊天隱藏時該座標
+    # 下面是 3D 場景，點下去是打到遊戲世界。
+    # 實測（2026-07-28 18:2x，全螢幕、Roblox 前景）chat_region 亮像素（>90）：
+    #   原位 0 → hover 聊天圖示 (174,42) **304＝只冒出 "Chat" tooltip、聊天沒出來**
+    #   → hover 聊天區 (230,250) **13614＝整段聊天出現** → 游標移回中央仍 13503。
+    #   hover 僅 0.25s 即生效（0.5s 後量到 13614），離開後 **≥25s 不再淡出**。
+    # ⚠ 前提是 Roblox 在前景：合成 hover 在非前景時整個被丟掉（第一次量測全 0 就是這樣）。
+    chat_reveal_xy: tuple = (230, 250)   # chat_region 內中段（x0..460 / y81..361 的中間偏上）
+    chat_reveal_hover_s: float = 0.3     # 停留時間（實測 0.25 已足，取 0.3 留餘裕）
+    chat_reveal_settle_s: float = 0.5    # 移開後等淡入完成再拍（實測 0.5s 已達滿值）
+    chat_reveal_min_bright_px: int = 2000
+        # 喚醒後 chat_region 亮像素下限，只用來判「這次喚醒有沒有生效」並記 log
+        # （失敗不擋流程，維持舊行為）。兩側夾：淡出 0/304 vs 顯示 13503~13614 → 取 2000。
+
     player_list_region: Region = field(default_factory=lambda: Region(1490, 110, 425, 150))
         # 右上角玩家列表（Tab toggle）標題列＋第一列。2026-07-09 由實機截圖量測：
         # client 座標 header y≈118-145；視窗化時 grab 全螢幕比 client area 低 ~29px → 區域開高吸收偏移。

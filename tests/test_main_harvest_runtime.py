@@ -185,6 +185,50 @@ def test_h064_faded_baseline_094_still_rejected_end_to_end(monkeypatch):
     assert confirmed is False and special is False
 
 
+# --- H064：_reveal_chat 拍基準前用 hover 把淡出的聊天叫回來 ---------------------
+# 實機量測（2026-07-28 全螢幕、Roblox 前景）：hover 聊天圖示只冒出 "Chat" tooltip
+# （chat_region 亮像素 304），hover 聊天內容區才會整段顯示（13614），游標移開後
+# ≥25s 不再淡出。聊天隱藏時該座標下面是 3D 場景 → **絕不可點擊**。
+def _reveal_bot(monkeypatch, bright_px):
+    bot = Bot.__new__(Bot)
+    bot.log_harvest = _WarnRecorder()
+    moves, clicks = [], []
+    crop = np.zeros((10, 10, 3), dtype=np.uint8)
+    crop.reshape(-1, 3)[:bright_px] = (255, 255, 255)   # 亮像素數＝bright_px
+
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    monkeypatch.setattr(main.ic, "move_to", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(main.ic, "_screen_center", lambda: (960, 540))
+    monkeypatch.setattr(main.ic, "click_at",
+                        lambda *a, **k: clicks.append(a))
+    monkeypatch.setattr(main.ic, "mouse_click",
+                        lambda *a, **k: clicks.append(a))
+    monkeypatch.setattr(main.capture, "grab", lambda: None)
+    monkeypatch.setattr(main.capture, "crop", lambda frame, region: crop)
+    return bot, moves, clicks
+
+
+def test_h064_reveal_chat_hovers_the_chat_area_and_never_clicks(monkeypatch):
+    bot, moves, clicks = _reveal_bot(monkeypatch, bright_px=50)
+    monkeypatch.setattr(main.cfg, "chat_reveal_min_bright_px", 20)
+
+    assert bot._reveal_chat() is True
+    # 先停在聊天內容區、再移開（不可停在那裡擋畫面/影響後續點擊）
+    assert moves == [tuple(main.cfg.chat_reveal_xy), (960, 540)]
+    assert clicks == []                      # ★ 安全釘樁：一次都不准點
+    assert moves[0] != tuple(main.cfg.chat_icon_xy)   # 圖示是 toggle，不是喚醒點
+
+
+def test_h064_reveal_chat_warns_when_chat_stays_hidden(monkeypatch):
+    # 最可能的失敗型＝Roblox 不在前景，合成 hover 整個被丟掉 → 亮像素仍在淡出側
+    bot, moves, clicks = _reveal_bot(monkeypatch, bright_px=3)
+    monkeypatch.setattr(main.cfg, "chat_reveal_min_bright_px", 20)
+
+    assert bot._reveal_chat() is False
+    assert any("聊天喚醒無效" in w for w in bot.log_harvest.warnings)
+    assert clicks == []                      # 失敗也不准改成點擊救援
+
+
 # --- H118（2026-07-28）：_harvest_boost_guard 中途補 D5 讓 ref 對不上新 FOV -----
 #
 # 118 實錄：01:07:45 sweep 中途補 D5（FOV 收縮/展開）；01:07:57 轉回去 verify

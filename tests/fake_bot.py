@@ -108,6 +108,8 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._mine_resetting = False
     bot._rr_ctx = None
     bot._pending_aim = None
+    # 聊天喚醒（H064）＝純 I/O（移游標＋抓幀），不是這裡要驗的接線 → 預設 no-op
+    bot._reveal_chat = lambda: True
     for name in bind:
         setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     for key, value in attrs.items():

@@ -23,6 +23,7 @@ class _LogRecorder:
 def _bare_bot():
     bot = Bot.__new__(Bot)
     bot.logger = _LogRecorder()
+    bot._reveal_chat = lambda: True        # H064：純 I/O（移游標＋抓幀），這裡不驗
     return bot
 
 
