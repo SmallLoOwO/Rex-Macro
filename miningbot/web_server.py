@@ -24,7 +24,7 @@ from miningbot.web_protocol import (
 from miningbot.web_ipc import PendingReplies, FallbackState
 from miningbot.web_annotation import cell_crop_box
 from miningbot.web_history import (
-    annotation_queue, index_readable, verdict_category,
+    annotation_queue, index_readable, load_stats, verdict_category,
 )
 
 
@@ -403,6 +403,29 @@ def create_app(
         from miningbot.web_static import render_failures_html
         return Response(content=render_failures_html(data),
                         media_type="text/html")
+
+    def _stats_data():
+        """`load_stats` + 503 守門；回 None 代表索引讀不到。"""
+        if not snapshot_index_path or not index_readable(snapshot_index_path):
+            return None
+        return load_stats(snapshot_index_path)
+
+    @app.get("/api/stats")
+    def get_api_stats():
+        """agent 用 `curl` 抓的 JSON 版（與 `/stats` 同一份資料）。"""
+        data = _stats_data()
+        if data is None:
+            return _err(503, "snapshot index not available")
+        return data
+
+    @app.get("/stats")
+    def get_stats():
+        """「什麼最常爆」統計（spec D4b）——先知道哪條最痛，才知道該修哪條。"""
+        data = _stats_data()
+        if data is None:
+            return _err(503, "snapshot index not available")
+        from miningbot.web_static import render_stats_html
+        return Response(content=render_stats_html(data), media_type="text/html")
 
     @app.get("/history")
     def get_history():

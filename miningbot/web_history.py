@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any, Iterator
 
 # reentry_ep<N>_…；diagnostics 寫 label 時用 ctx.episode_id（int）。
@@ -119,6 +120,68 @@ def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
     """`build_queue` 的 I/O 版：讀索引 + 掃 fixtures 去重。"""
     return build_queue(_iter_snapshot_records(snapshot_index_path),
                        annotated_stems(fixtures_dir), tier)
+
+
+def label_kind(label: str) -> str:
+    """快照 label → 可聚合的「種類」（純函式）。
+
+    label 帶著會變的編號（`113_sweep_empty`、`reentry_ep27_dir3`、`_z+2` 縮放後綴），
+    照原樣聚合會得到幾百個只出現一次的鍵，看不出「什麼最常爆」。這裡把數字全部
+    拿掉：`113_sweep_empty` → `sweep_empty`、`reentry_ep27_dir3` → `reentry_ep_dir`。
+    """
+    text = re.sub(r"\d+", "", str(label or ""))
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "(unlabelled)"
+
+
+def _local_date(ts) -> str | None:
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(float(ts)))
+    except (TypeError, ValueError):
+        return None
+
+
+def aggregate_labels(records, now=None) -> dict:
+    """按 label 種類聚合今日／本週次數（純函式，時間由 `now` 注入）。
+
+    時間分組一律取記錄裡的 `written_at`，**絕不看目錄 mtime**：MSIX LocalCache 的
+    目錄 metadata 會過期數小時，曾因此漏掉一整段回礦場次
+    （AGENTS.md LIVE-RUN TROUBLESHOOTING）。
+
+    「今日」＝與 `now` 同一個本地日期；「本週」＝含今日在內往回數 7 個本地日期
+    （滾動視窗，不是週一起算的行事曆週）。`written_at` 缺值或壞值只計入 total。
+    """
+    now = time.time() if now is None else float(now)
+    today = _local_date(now)
+    week = {_local_date(now - i * 86400.0) for i in range(7)}
+    week.discard(None)
+    buckets: dict[str, dict] = {}
+    for record in records or ():
+        kind = label_kind(record.get("label"))
+        row = buckets.setdefault(kind, {"kind": kind, "today": 0, "week": 0,
+                                        "total": 0})
+        row["total"] += 1
+        day = _local_date(record.get("written_at"))
+        if day is None:
+            continue
+        if day in week:
+            row["week"] += 1
+        if day == today:
+            row["today"] += 1
+    rows = sorted(buckets.values(),
+                  key=lambda r: (-r["week"], -r["total"], r["kind"]))
+    return {
+        "today": today,
+        "labels": rows,
+        "total_today": sum(r["today"] for r in rows),
+        "total_week": sum(r["week"] for r in rows),
+        "total": sum(r["total"] for r in rows),
+    }
+
+
+def load_stats(snapshot_index_path: str, now=None) -> dict:
+    """`aggregate_labels` 的 I/O 版。"""
+    return aggregate_labels(_iter_snapshot_records(snapshot_index_path), now)
 
 
 def index_readable(path: str | None) -> bool:

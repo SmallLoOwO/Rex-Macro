@@ -140,5 +140,111 @@ def test_failures_reuses_the_annotate_verdict_function():
     assert "annotation_verdict(" in src
 
 
+# ---- 統計聚合（純函式）-----------------------------------------------------
+
+_DAY = 86400.0
+
+
+def test_label_kind_strips_variable_numbers():
+    """不收斂就會得到幾百個只出現一次的鍵，看不出什麼最常爆。"""
+    assert web_history.label_kind("113_sweep_empty") == "sweep_empty"
+    assert web_history.label_kind("reentry_ep27_dir3") == "reentry_ep_dir"
+    assert web_history.label_kind("") == "(unlabelled)"
+
+
+def test_aggregate_counts_today_and_week():
+    now = 1785000000.0
+    got = web_history.aggregate_labels([
+        _rec("113_sweep_empty", "a", now),
+        _rec("114_sweep_empty", "b", now - 2 * _DAY),
+        _rec("115_sweep_empty", "c", now - 30 * _DAY),
+    ], now=now)
+    row = got["labels"][0]
+    assert (row["kind"], row["today"], row["week"], row["total"]) == (
+        "sweep_empty", 1, 2, 3)
+
+
+def test_aggregate_crosses_day_boundary_by_local_date():
+    """跨日邊界：同一天內的都算今日，前一天的只算本週。"""
+    now = 1785000000.0
+    yesterday = now - _DAY
+    got = web_history.aggregate_labels([
+        _rec("a_needs_human", "a", now),
+        _rec("b_needs_human", "b", yesterday),
+    ], now=now)
+    assert got["total_today"] == 1 and got["total_week"] == 2
+
+
+def test_aggregate_on_empty_input():
+    got = web_history.aggregate_labels([], now=1785000000.0)
+    assert got["labels"] == [] and got["total"] == 0
+    assert "0" in render_stats(got)
+
+
+def test_aggregate_single_label_only():
+    got = web_history.aggregate_labels(
+        [_rec("113_sweep_empty", "a", 1785000000.0)], now=1785000000.0)
+    assert len(got["labels"]) == 1
+
+
+def test_aggregate_counts_records_without_timestamp_in_total_only():
+    now = 1785000000.0
+    got = web_history.aggregate_labels(
+        [_rec("113_sweep_empty", "a", None)], now=now)
+    row = got["labels"][0]
+    assert (row["today"], row["week"], row["total"]) == (0, 0, 1)
+
+
+def test_aggregate_sorts_most_frequent_first():
+    now = 1785000000.0
+    got = web_history.aggregate_labels(
+        [_rec("a_needs_human", "a", now)]
+        + [_rec(f"{i}_sweep_empty", "b", now) for i in range(3)], now=now)
+    assert got["labels"][0]["kind"] == "sweep_empty"
+
+
+def render_stats(data):
+    from miningbot.web_static import render_stats_html
+    return render_stats_html(data)
+
+
+# ---- /stats + /api/stats ---------------------------------------------------
+
+def test_stats_html_and_json_agree(tmp_path):
+    import time as _t
+    now = _t.time()
+    client = _client(tmp_path, [
+        _rec("113_sweep_empty", str(tmp_path / "a.png"), now),
+        _rec("114_needs_human", str(tmp_path / "b.png"), now),
+    ])
+    data = client.get("/api/stats").json()
+    html = client.get("/stats").text
+    assert data["total_today"] == 2
+    for row in data["labels"]:
+        assert row["kind"] in html
+
+
+def test_stats_returns_503_when_index_missing(tmp_path):
+    client = _client(tmp_path)
+    assert client.get("/api/stats").status_code == 503
+    assert client.get("/stats").status_code == 503
+
+
+def test_stats_skips_broken_index_lines(tmp_path):
+    good = json.dumps(_rec("113_sweep_empty", "a", 1785000000.0))
+    client = _client(tmp_path, raw=good + '\n{"label": "oops')
+    assert client.get("/api/stats").json()["total"] == 1
+    assert client.get("/stats").status_code == 200
+
+
+def test_stats_never_reads_directory_mtime():
+    """MSIX LocalCache 的目錄 metadata 會過期數小時，曾因此漏掉整段回礦場次。"""
+    import inspect
+    src = inspect.getsource(web_history.aggregate_labels)
+    src += inspect.getsource(web_history.load_stats)
+    for banned in ("getmtime", "st_mtime", "scandir", "listdir"):
+        assert banned not in src
+
+
 if __name__ == "__main__":       # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -137,6 +137,19 @@ tailscale serve status
   你標：漏判 → ❌ 不一致」。不一致＝這張圖真的還在暴露 bug；一致＝偵測器已經修好了。
 - 標過的不會再出現在佇列裡（比對 `tests/fixtures/` 底下的同名 `.json`）。
 
+### agent 面板（`/failures`、`/stats`，2026-07-28）
+
+這兩頁的讀者是 AI agent，不是玩家——**排版醜，資料全**。都有對應的 JSON 端點
+（`/api/failures`、`/api/stats`），agent 用 `curl` 抓不必解析 HTML。
+
+- `/failures`：tier0 快照集中一頁 + 現行偵測器判定與分數。追蹤框那條路的全幀
+  快照不給判決（那支偵測器吃的是粗格裁圖），該列會寫明原因並附標註連結。
+  `?limit=` 預設 50。
+- `/stats`：快照標籤按種類聚合的今日／本週次數——先知道哪條最痛，才知道該修哪條。
+  時間取索引裡的 `written_at`，不看目錄 mtime。
+
+兩頁在索引檔不存在／讀不到時回 **503**（「還沒有資料」不是「伺服器壞了」）。
+
 ### 玩家設定：4 個 Config 欄位 + D2 開關
 
 `reentry_mode`（off／remote／auto）、`reentry_target_layer`、`reentry_yaw_sample_sweep`、

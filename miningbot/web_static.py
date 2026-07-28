@@ -20,6 +20,7 @@ _NAV_ITEMS = (
     # 這兩頁的讀者是 AI agent 不是玩家（使用者原話：「這些資料對我來說沒有意義，
     # 對 AI agent 比較有價值，讓他去處理微調的問題」）。排版可以醜，資料要全。
     ("/failures", "🤖 失敗佇列"),
+    ("/stats", "📊 統計"),
 )
 
 NAV_CSS = """
@@ -1123,6 +1124,35 @@ JSON：<a href="/api/failures">/api/failures</a></div>
 <table>
 <tr><th>時間</th><th>label</th><th>現行判</th><th>分數</th><th>連結</th><th>path</th></tr>
 {"".join(rows)}
+</table>
+</body>
+</html>
+"""
+
+
+def render_stats_html(data: dict) -> str:
+    """「什麼最常爆」統計（spec D4b）。讀者一樣是 agent：排版可以醜，資料要全。"""
+    rows = "".join(
+        "<tr>"
+        f'<td>{_esc(r["kind"])}</td>'
+        f'<td>{r["today"]}</td><td>{r["week"]}</td><td>{r["total"]}</td>'
+        "</tr>"
+        for r in data.get("labels", []))
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><title>MiningBot 統計</title>
+<style>{NAV_CSS}{_AGENT_PAGE_CSS}</style></head>
+<body>
+{render_nav("/stats")}
+<h1>什麼最常爆（快照標籤聚合，按本週次數排序）</h1>
+<div class="meta">今日 {_esc(data.get('today') or '—')}：
+{data.get('total_today', 0)} 筆／本週（含今日往回 7 天）{data.get('total_week', 0)} 筆／
+全部 {data.get('total', 0)} 筆。時間取自索引的 <code>written_at</code>，
+不看目錄 mtime（LocalCache 的目錄時間會過期數小時）。
+JSON：<a href="/api/stats">/api/stats</a></div>
+<table>
+<tr><th>種類</th><th>今日</th><th>本週</th><th>全部</th></tr>
+{rows}
 </table>
 </body>
 </html>
