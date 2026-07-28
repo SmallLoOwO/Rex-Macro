@@ -203,9 +203,141 @@ def test_format_rescue_report_mentions_every_count(tmp_path):
         assert label in text
 
 
-def test_main_without_mode_prints_help(capsys):
-    assert brd.main([]) == 2
-    assert "--rescue" in capsys.readouterr().out
+# ---- 資料集分類（純函式）---------------------------------------------------
+
+def _meta(outcome="confirmed_by_user", clicks=None, shots=None,
+          episode=27, attempt=2):
+    return {
+        "episode": episode, "attempt": attempt, "world": "Lucernia",
+        "sticky_layer": "Shamrock", "outcome": outcome, "t": 1.0,
+        "shots": shots if shots is not None else [
+            {"dir": i, "file": f"dir{i}.png"} for i in range(1, 9)],
+        "clicks": clicks if clicks is not None else [
+            {"dir": 2, "pos": [1604, 450], "layer_seen": "Shamrock",
+             "depth_m": 7100, "invalid": False}],
+    }
+
+
+def test_classify_group_marks_clicked_dir_positive_and_rest_negative():
+    """玩家看過全部八張才選那一張——另外七個方位是天然負樣本。"""
+    rows, reason = brd.classify_group(_meta())
+    assert reason is None
+    positives = [r for r in rows if r["label"] == "positive"]
+    assert len(positives) == 1 and len(rows) == 8
+    assert positives[0] == {
+        "image": "ep27_attempt2/dir2.png", "dir": 2, "world": "Lucernia",
+        "layer_seen": "Shamrock", "depth_m": 7100, "label": "positive",
+        "xy": [1604, 450], "episode": 27, "attempt": 2,
+        "outcome": "confirmed_by_user"}
+    assert all(r["xy"] is None for r in rows if r["label"] == "negative")
+
+
+def test_classify_group_accepts_descended_outcome():
+    assert brd.classify_group(_meta(outcome="descended"))[1] is None
+
+
+def test_classify_group_excludes_skip_outcome():
+    """排除規則 1：outcome=skip／started／缺值，沒有玩家判斷可依。"""
+    assert brd.classify_group(_meta(outcome="skip"))[1] == "outcome_not_confirmed"
+    assert brd.classify_group(_meta(outcome="started"))[1] == "outcome_not_confirmed"
+    assert brd.classify_group(_meta(outcome=None))[1] == "outcome_not_confirmed"
+
+
+def test_classify_group_excludes_invalid_click():
+    """排除規則 2：玩家自己標作廢的那一筆。"""
+    rows, reason = brd.classify_group(_meta(clicks=[
+        {"dir": 2, "pos": [1, 2], "invalid": True}]))
+    assert (rows, reason) == ([], "invalid_click")
+
+
+def test_classify_group_excludes_clicks_on_different_dirs():
+    """排除規則 3：多次 click 落在不同 dir＝前幾次點錯，語意不明確。"""
+    rows, reason = brd.classify_group(_meta(clicks=[
+        {"dir": 2, "pos": [1, 2], "invalid": False},
+        {"dir": 5, "pos": [3, 4], "invalid": False}]))
+    assert (rows, reason) == ([], "multi_dir_clicks")
+
+
+def test_classify_group_keeps_repeated_clicks_on_same_dir():
+    """實測 19 筆有 click 的 row 裡，多次點擊都落在同一 dir（成功前的重試）。"""
+    rows, reason = brd.classify_group(_meta(clicks=[
+        {"dir": 2, "pos": [1, 2], "invalid": False},
+        {"dir": 2, "pos": [3, 4], "invalid": False}]))
+    assert reason is None
+    assert [r["xy"] for r in rows if r["label"] == "positive"] == [[3, 4]]
+
+
+def test_classify_group_without_clicks_is_excluded():
+    assert brd.classify_group(_meta(clicks=[]))[1] == "no_click"
+
+
+def test_classify_group_survives_missing_positive_image():
+    """實機 ep20 只剩 2 張圖、click 的那張已消失——剩下的仍是有效負樣本。"""
+    rows, reason = brd.classify_group(_meta(shots=[
+        {"dir": 7, "file": "dir7.png"}, {"dir": 8, "file": "dir8.png"}]))
+    assert reason is None
+    assert [r["label"] for r in rows] == ["negative", "negative"]
+
+
+# ---- 資料集落檔 ------------------------------------------------------------
+
+def _fake_corpus(tmp_path, *metas):
+    root = tmp_path / "corpus"
+    for meta in metas:
+        group = root / corpus.group_name(meta["episode"], meta["attempt"])
+        group.mkdir(parents=True, exist_ok=True)
+        for shot in meta["shots"]:
+            (group / shot["file"]).write_bytes(b"png")
+        (group / corpus.META_NAME).write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return str(root)
+
+
+def test_build_dataset_counts_positives_negatives_and_exclusions(tmp_path):
+    root = _fake_corpus(tmp_path, _meta(), _meta(outcome="skip", episode=21,
+                                                 attempt=2, clicks=[]))
+    rows, report = brd.build_dataset(root)
+    assert (report["positives"], report["negatives"]) == (1, 7)
+    assert report["groups"] == 2 and report["groups_used"] == 1
+    assert report["excluded"] == {"outcome_not_confirmed": 1}
+    assert len(rows) == 8
+
+
+def test_build_dataset_excludes_unreadable_image(tmp_path):
+    """排除規則 4：圖檔讀不到（meta 有紀錄但檔案被刪了）。"""
+    root = _fake_corpus(tmp_path, _meta())
+    os.remove(os.path.join(root, "ep27_attempt2", "dir2.png"))
+    _rows, report = brd.build_dataset(root)
+    assert report["excluded"] == {"image_missing": 1}
+    assert (report["positives"], report["negatives"]) == (0, 7)
+
+
+def test_build_dataset_on_empty_corpus_does_not_raise(tmp_path):
+    rows, report = brd.build_dataset(str(tmp_path / "nope"))
+    assert rows == [] and report["groups"] == 0
+    assert "語料夾是空的" in brd.format_dataset_report(report)
+
+
+def test_write_dataset_round_trips(tmp_path):
+    root = _fake_corpus(tmp_path, _meta())
+    rows, _report = brd.build_dataset(root)
+    path = brd.write_dataset(root, rows)
+    assert brd.read_dataset(path) == rows
+
+
+def test_dataset_report_prints_known_biases(tmp_path):
+    """報告要印出偏誤，不要讓 agent 自己踩（單一世界／隨機 yaw／螢幕空間 UI／layer）。"""
+    text = brd.format_dataset_report(brd.build_dataset(
+        _fake_corpus(tmp_path, _meta()))[1])
+    assert "Lucernia" in text and "隨機化 yaw" in text
+    assert "螢幕空間 UI" in text and "layer_seen 缺值標 null" in text
+
+
+def test_main_builds_dataset_by_default(tmp_path, capsys):
+    root = _fake_corpus(tmp_path, _meta())
+    assert brd.main(["--corpus", root]) == 0
+    assert os.path.exists(os.path.join(root, brd.DATASET_NAME))
+    assert "正樣本" in capsys.readouterr().out
 
 
 if __name__ == "__main__":       # pragma: no cover

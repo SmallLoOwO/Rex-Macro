@@ -1,7 +1,10 @@
-"""回礦傳送板語料工具：舊 ledger 殘骸搶救（`--rescue`）。
+"""回礦傳送板語料工具：語料夾 → `dataset.jsonl`，外加舊 ledger 殘骸搶救（`--rescue`）。
 
-離線 script，`uv run python -m miningbot.build_reentry_dataset --rescue`。
-bot 沒在跑也要能用，所以不掛網頁、不 import `main`。
+離線 script，`uv run python -m miningbot.build_reentry_dataset`。bot 沒在跑也要能用，
+所以不掛網頁、不 import `main`；agent 直接 `uv run` 就拿得到資料集。
+
+**資料來源只有語料夾**：`--rescue` 已把舊 ledger 的可讀殘骸倒進去，再讀一次 ledger
+是同一批資料走兩條路徑，路徑重導邏輯留在這裡一處就好。
 
 **為什麼要搶救**：`corpus.py` 的止血只對「之後」的回礦有效；2026-04~07 三個月的
 語料只剩 ledger 帳目與磁碟上零星幾張圖。倒進語料夾之後這批就不會再少，而且後面
@@ -205,10 +208,151 @@ def format_rescue_report(report: dict) -> str:
     ])
 
 
+# ---- 資料集 ----------------------------------------------------------------
+
+DATASET_NAME = "dataset.jsonl"
+# 「玩家點下去而且真的下到礦」才算 ground truth。其餘 outcome（skip／started／缺值）
+# 沒有玩家判斷可依——`skip` 不等於「八張裡都沒有傳送板」，也可能是他懶得找。
+POSITIVE_OUTCOMES = ("confirmed_by_user", "descended")
+
+KNOWN_BIASES = (
+    "100% Lucernia、幾乎 100% Shamrock、100% 夜晚（Lucernia 設定上恆夜）。"
+    "單一世界單一層讓「名牌＝當前層」這類假說不可否證。",
+    "每輪 attempt 都會「回到地表」換重生點＝隨機化 yaw，所以 dir=1 不是固定方向，"
+    "只有 attempt 1 例外（見 2026-07-21-reentry-yaw-investigation-findings.md）。",
+    "LIMIT 徽章／層名牌是螢幕空間 UI，不是世界物件，不可拿來判朝向。",
+    "layer_seen 缺值標 null，不要退回玩家宣告的 layer（實測 20 筆錯 5 筆）。",
+)
+
+
+def classify_group(meta: dict) -> tuple:
+    """一組 `meta.json` → ``(rows, skip_reason)``（純函式，不碰檔案系統）。
+
+    正負樣本定義**寫死在這裡不給參數**——定義漂移比資料少更危險。
+
+    - `positive`：該組有 click、`invalid=False`、outcome 在 `POSITIVE_OUTCOMES`，
+      且 click 的 dir 對上這張圖。
+    - `negative`：同一組裡其他七個方位。理由：玩家看過全部八張才選那一張。
+    - 整組排除：outcome 不對／沒有 click／click 被標作廢／多次 click 落在不同 dir
+      （表示前幾次點錯，語意不明確）。
+    """
+    outcome = meta.get("outcome")
+    if outcome not in POSITIVE_OUTCOMES:
+        return [], "outcome_not_confirmed"
+    clicks = meta.get("clicks") or []
+    if not clicks:
+        return [], "no_click"
+    if any(c.get("invalid") for c in clicks):
+        return [], "invalid_click"
+    if len({c.get("dir") for c in clicks}) > 1:
+        return [], "multi_dir_clicks"
+    click = clicks[-1]
+    group = corpus.group_name(meta.get("episode"), meta.get("attempt"))
+    rows = []
+    for shot in meta.get("shots") or ():
+        positive = shot.get("dir") == click.get("dir")
+        rows.append({
+            "image": f"{group}/{shot.get('file')}",
+            "dir": shot.get("dir"),
+            "world": meta.get("world"),
+            "layer_seen": click.get("layer_seen"),
+            "depth_m": click.get("depth_m"),
+            "label": "positive" if positive else "negative",
+            "xy": list(click.get("pos")) if positive and click.get("pos") else None,
+            "episode": meta.get("episode"),
+            "attempt": meta.get("attempt"),
+            "outcome": outcome,
+        })
+    return rows, None
+
+
+def load_group_metas(root: str) -> list:
+    """掃語料夾回 `[meta dict]`；讀不到／壞掉的組略過（append-only 慣例的延伸）。"""
+    metas = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return metas
+    for name in names:
+        path = os.path.join(root, name, corpus.META_NAME)
+        try:
+            with open(path, encoding="utf-8") as f:
+                metas.append(json.load(f))
+        except (OSError, ValueError):
+            continue
+    return metas
+
+
+def build_dataset(root: str, *, exists=os.path.exists) -> tuple:
+    """語料夾 → ``(rows, report)``。空語料夾回空 list，不炸。"""
+    report = {"groups": 0, "groups_used": 0, "positives": 0, "negatives": 0,
+              "excluded": {}}
+    rows_all = []
+    for meta in load_group_metas(root):
+        report["groups"] += 1
+        rows, reason = classify_group(meta)
+        if reason:
+            report["excluded"][reason] = report["excluded"].get(reason, 0) + 1
+            continue
+        report["groups_used"] += 1
+        for row in rows:
+            if not exists(os.path.join(root, *row["image"].split("/"))):
+                report["excluded"]["image_missing"] = (
+                    report["excluded"].get("image_missing", 0) + 1)
+                continue
+            report["positives" if row["label"] == "positive" else "negatives"] += 1
+            rows_all.append(row)
+    return rows_all, report
+
+
+def write_dataset(root: str, rows) -> str:
+    path = os.path.join(root, DATASET_NAME)
+    os.makedirs(root, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
+def read_dataset(path: str) -> list:
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        rows.append(json.loads(line))
+                    except ValueError:
+                        continue
+    except OSError:
+        pass
+    return rows
+
+
+def format_dataset_report(report: dict) -> str:
+    lines = [
+        f"語料組            {report['groups']}（採用 {report['groups_used']}）",
+        f"正樣本            {report['positives']}",
+        f"負樣本            {report['negatives']}",
+    ]
+    if report["excluded"]:
+        lines.append("排除明細")
+        for reason, count in sorted(report["excluded"].items()):
+            lines.append(f"  {reason:<22}{count}")
+    if not report["positives"] and not report["negatives"]:
+        lines.append("（語料夾是空的或全被排除——先跑 --rescue，或等下一輪回礦）")
+    lines.append("")
+    lines.append("⚠ 已知資料偏誤（調偵測器前先讀）")
+    lines += [f"  - {b}" for b in KNOWN_BIASES]
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m miningbot.build_reentry_dataset",
-        description="回礦傳送板語料工具")
+        description="回礦傳送板語料工具（預設：語料夾 → dataset.jsonl）")
     parser.add_argument("--rescue", action="store_true",
                         help="把舊 ledger 裡還讀得到的快照倒進語料夾（冪等）")
     parser.add_argument("--ledger", default=None,
@@ -217,16 +361,18 @@ def main(argv=None) -> int:
                         help="語料夾根目錄（預設 <log_dir>/corpus/reentry）")
     args = parser.parse_args(argv)
     root = args.corpus or default_corpus_root()
-    # Config 的 ledger 是相對 `logs/…`（`main._apply_startup_overrides` 才會錨到
-    # log_dir）；離線 script 不 import main，所以在這裡自己錨一次再走 MSIX 重導。
-    ledger = args.ledger or prefer_redirected(
-        resolve_runtime_log_path(cfg.reentry_remote_ledger, cfg.log_dir))
-    if not args.rescue:
-        parser.print_help()
-        return 2
-    print(f"ledger  {ledger}")
     print(f"語料夾  {root}")
-    print(format_rescue_report(rescue(ledger, root)))
+    if args.rescue:
+        # Config 的 ledger 是相對 `logs/…`（`main._apply_startup_overrides` 才會錨到
+        # log_dir）；離線 script 不 import main，所以在這裡自己錨一次再走 MSIX 重導。
+        ledger = args.ledger or prefer_redirected(
+            resolve_runtime_log_path(cfg.reentry_remote_ledger, cfg.log_dir))
+        print(f"ledger  {ledger}")
+        print(format_rescue_report(rescue(ledger, root)))
+        return 0
+    rows, report = build_dataset(root)
+    print(f"輸出      {write_dataset(root, rows)}")
+    print(format_dataset_report(report))
     return 0
 
 
