@@ -118,11 +118,6 @@ button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color
 .hint.ok {{ background: #eefaf0; border-left: 3px solid #3ba55d;
            padding: 0.4rem 0.6rem; color: #1f6b38; }}
 h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size: 1.1rem; }}
-.keep-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
-             gap: 0.2rem 0.6rem; margin: 0.6rem 0; }}
-.keep-grid label {{ display: flex; align-items: center; gap: 0.35rem;
-                   font-weight: normal; margin: 0; font-size: 0.85rem; }}
-.keep-grid input {{ width: auto; flex: 0 0 auto; margin: 0; }}
 </style>
 </head>
 <body>
@@ -184,11 +179,6 @@ h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size
 <label class="check"><input type="checkbox" id="radar-scan"> <span>掃描（Cyberscan，D2 左鍵）</span></label>
 <label class="check"><input type="checkbox" id="radar-cave"> <span>削洞（Cave Skim，D2 Z）</span></label>
 
-<h2>保留清單</h2>
-<p class="hint">勾選的礦物事件不會被自動刷新（跟 Discord <code>keep</code>/<code>unkeep</code> 同一份）。</p>
-<div id="keep-list" class="keep-grid">載入中…</div>
-<button type="button" id="keep-clear-btn" style="background:#6d6d6d;">清空保留清單</button>
-
 <div id="status" class="status"></div>
 <div id="player-status" class="status" style="display:none;"></div>
 
@@ -229,11 +219,9 @@ form.addEventListener('submit', async (e) => {{
   }}
 }});
 
-// --- D2 連續使用 + 保留清單（2026-07-28）：非 Config 欄位，走 /api/player + /api/keep + /api/radar ---
-const keepListEl = document.getElementById('keep-list');
+// --- D2 連續使用（2026-07-28）：非 Config 欄位，走 /api/player + /api/radar ---
 const radarScanEl = document.getElementById('radar-scan');
 const radarCaveEl = document.getElementById('radar-cave');
-const keepClearBtn = document.getElementById('keep-clear-btn');
 const playerStatusEl = document.getElementById('player-status');
 
 function showPlayerStatus(text, isError) {{
@@ -260,33 +248,8 @@ async function loadPlayerState() {{
     const data = await fetch('/api/player').then(r => r.json());
     radarScanEl.checked = !!(data.radar && data.radar.scan);
     radarCaveEl.checked = !!(data.radar && data.radar.cave);
-    const kept = new Set(data.keep_ores || []);
-    const catalog = data.ore_catalog || [];
-    keepListEl.innerHTML = '';
-    if (!catalog.length) {{
-      keepListEl.textContent = '（礦名目錄目前是空的——bot 端資料還沒就緒或載入失敗）';
-      return;
-    }}
-    for (const ore of catalog) {{
-      const label = document.createElement('label');
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = kept.has(ore);
-      box.addEventListener('change', async () => {{
-        try {{
-          await postJSON('/api/keep', {{ action: box.checked ? 'add' : 'remove', ore }});
-          showPlayerStatus((box.checked ? '已保留：' : '已取消保留：') + ore, false);
-        }} catch (err) {{
-          box.checked = !box.checked;   // 失敗復原勾選狀態
-          showPlayerStatus('保留清單更新失敗：' + err.message, true);
-        }}
-      }});
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(ore));
-      keepListEl.appendChild(label);
-    }}
   }} catch (err) {{
-    keepListEl.textContent = '保留清單載入失敗：' + err.message;
+    showPlayerStatus('玩家狀態載入失敗：' + err.message, true);
   }}
 }}
 
@@ -301,17 +264,6 @@ async function toggleRadar(which, checkbox) {{
 }}
 radarScanEl.addEventListener('change', () => toggleRadar('scan', radarScanEl));
 radarCaveEl.addEventListener('change', () => toggleRadar('cave', radarCaveEl));
-
-keepClearBtn.addEventListener('click', async () => {{
-  if (!confirm('確定清空整個保留清單？')) return;
-  try {{
-    await postJSON('/api/keep', {{ action: 'clear' }});
-    showPlayerStatus('保留清單已清空', false);
-    loadPlayerState();
-  }} catch (err) {{
-    showPlayerStatus('清空失敗：' + err.message, true);
-  }}
-}});
 
 loadPlayerState();
 </script>

@@ -3429,34 +3429,6 @@ class Bot:
                 self._broadcast_status()   # 玩家馬上要看到切換生效
             else:
                 self.logger.warning("web: radar_toggle 值不合法，忽略: %r", reply)
-        # 保留清單（keep/unkeep/clear，2026-07-28）：同一份 keep_ores.json，
-        # fuzzy_match_ore 沿用 Discord `keep`/`unkeep` 的模糊比對（網頁前端傳的是
-        # checkbox 的完整礦名，理論上都能精準比對，但保留模糊比對容錯字元差異）。
-        reply = self._web_pending.pop("control:keep_add")
-        if reply is not None:
-            ore = game_data.fuzzy_match_ore(str(reply.get("ore", "")))
-            if ore:
-                self._keep_ores.add(ore)
-                self._save_keep_ores()
-                self.logger.info("web: keep 新增 %s -> %s", ore, sorted(self._keep_ores))
-                self._broadcast_status()
-            else:
-                self.logger.warning("web: keep_add 找不到礦物: %r", reply.get("ore"))
-        reply = self._web_pending.pop("control:keep_remove")
-        if reply is not None:
-            ore = game_data.fuzzy_match_ore(str(reply.get("ore", "")))
-            if ore and ore in self._keep_ores:
-                self._keep_ores.discard(ore)
-                self._save_keep_ores()
-                self.logger.info("web: keep 移除 %s -> %s", ore, sorted(self._keep_ores))
-                self._broadcast_status()
-            else:
-                self.logger.warning("web: keep_remove 找不到/未保留: %r", reply.get("ore"))
-        if self._web_pending.pop("control:keep_clear") is not None:
-            self._keep_ores.clear()
-            self._save_keep_ores()
-            self.logger.info("web: keep 清空")
-            self._broadcast_status()
         # P3 玩家設定面板（spec §6）：WebSocket 命令 config_set 走 web_pending 異步處理
         # （HTTP POST /api/config 是同步路徑，由 web_server FastAPI route 直接處理；
         # 兩條路徑都呼叫同一個 setattr + save_overrides——重複是有意的，保持 web_server
@@ -3565,7 +3537,6 @@ class Bot:
             "audio_score": audio_score,
             "stats": dict(self.stats),
             "radar": dict(getattr(self, "_radar_toggle", {})),
-            "keep_ores": sorted(getattr(self, "_keep_ores", set())),
         }
 
     def _broadcast_status(self) -> None:
@@ -6086,24 +6057,15 @@ class Bot:
         }
 
     def _player_state_snapshot(self) -> dict:
-        """網頁設定頁用：保留清單 + 雷達開關現值 + 礦名目錄（2026-07-28）。
+        """網頁設定頁用：雷達開關現值（2026-07-28；保留清單已從網頁移除，
+        Discord `keep`/`unkeep`/`clear` 仍是唯一入口，用量太低不值得放網頁）。
 
         在 WebIPC 執行緒上被呼叫（web_server 的 player_state_getter）——比照
-        `_effective_layer_info`，只做純讀取。`_keep_ores`/`_radar_toggle` 是
-        Discord 執行緒也會直接寫的既有欄位（見 `_handle_discord_command`），
-        跨執行緒讀取沒有新增風險，是既有慣例的延伸。
+        `_effective_layer_info`，只做純讀取。`_radar_toggle` 是 Discord 執行緒
+        也會直接寫的既有欄位（見 `_handle_discord_command`），跨執行緒讀取沒有
+        新增風險，是既有慣例的延伸。
         """
-        try:
-            catalog = sorted(dict.fromkeys(
-                info["ore"] for info in game_data.rare_ores().values()))
-        except Exception as e:
-            self.logger.warning("web: ore_catalog 撈取失敗（回空清單）: %s", e)
-            catalog = []
-        return {
-            "keep_ores": sorted(self._keep_ores),
-            "radar": dict(self._radar_toggle),
-            "ore_catalog": catalog,
-        }
+        return {"radar": dict(self._radar_toggle)}
 
     def _write_sticky_layers(self):
         """寫穿式落盤黏性層 map（2026-07-20）；照 _rr_ledger_append 的目錄建立慣例。"""

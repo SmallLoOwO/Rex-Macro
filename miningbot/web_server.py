@@ -193,11 +193,11 @@ def create_app(
         ping frame（真正的 keep-alive）。參數保留以免破壞既有呼叫端，但 ws_endpoint
         不再讀它（silent ignored）。詳見 Config.websocket_ping_interval_s 註解。
 
-    player_state_getter：保留清單/雷達開關同步用（2026-07-28）。回一個 dict：
-        ``{"keep_ores": [...], "radar": {"scan": bool, "cave": bool}}``——
-        這兩個是 Bot 執行期的可變狀態（不是 Config 欄位），沒有 getter 就沒有
+    player_state_getter：雷達開關同步用（2026-07-28；保留清單已從網頁移除）。
+        回一個 dict：``{"radar": {"scan": bool, "cave": bool}}``——雷達開關是
+        Bot 執行期的可變狀態（不是 Config 欄位），沒有 getter 就沒有
         「網頁載入時要顯示什麼現值」的資料來源。掛 `GET /api/player`；不傳則
-        該 route 回空殼（keep_ores=[]、radar={}），不 500。
+        該 route 回空殼（radar={}），不 500。
 
     lifespan 注入（uvicorn 0.51+）：原本 brief 的 `config.lifespan = patched` 行不通
     （uvicorn 0.51 的 config.lifespan 是字串 "auto"，不是 callable）；改用 FastAPI
@@ -523,47 +523,24 @@ def create_app(
 
         @app.get("/api/player")
         def get_player_state():
-            """保留清單 + 雷達開關現值（2026-07-28）：不是 Config 欄位，另開一條
+            """雷達開關現值（2026-07-28）：不是 Config 欄位，另開一條
             route——`player_state_getter` 沒接就回空殼，設定頁不因此整頁掛掉。
             """
             if player_state_getter is None:
-                return {"keep_ores": [], "radar": {}, "ore_catalog": []}
+                return {"radar": {}}
             try:
                 state = player_state_getter()
             except Exception as e:
                 _log.warning("web: player_state_getter 失敗（回空殼）: %s", e)
-                return {"keep_ores": [], "radar": {}, "ore_catalog": []}
+                return {"radar": {}}
             if not isinstance(state, dict):
-                return {"keep_ores": [], "radar": {}, "ore_catalog": []}
-            return {
-                "keep_ores": state.get("keep_ores", []),
-                "radar": state.get("radar", {}),
-                "ore_catalog": state.get("ore_catalog", []),
-            }
-
-        @app.post("/api/keep")
-        def post_keep(payload: dict):
-            """保留清單改動（2026-07-28）：跟 Discord `keep`/`unkeep`/`clear` 同一份
-            keep_ores.json——這裡只驗 payload 形狀、push 進 pending，實際的模糊比對
-            與存檔在主迴圈執行緒做（`_consume_web_pending`，跟 `keep_ores` 不是
-            Config 欄位、沒有 setattr 這條路可走）。
-            """
-            action = payload.get("action")
-            if action not in ("add", "remove", "clear"):
-                return _err(400, f"invalid action: {action!r}")
-            if action == "clear":
-                pending.push("control:keep_clear", {})
-                return {"ok": True, "action": "clear"}
-            ore = payload.get("ore")
-            if not isinstance(ore, str) or not ore.strip():
-                return _err(400, "missing ore")
-            pending.push(f"control:keep_{action}", {"ore": ore.strip()})
-            return {"ok": True, "action": action, "ore": ore.strip()}
+                return {"radar": {}}
+            return {"radar": state.get("radar", {})}
 
         @app.post("/api/radar")
         def post_radar(payload: dict):
-            """D2 連續使用開關（掃描/削洞，2026-07-28）：同 keep_ores，非 Config
-            欄位、走 pending 異步路徑。
+            """D2 連續使用開關（掃描/削洞，2026-07-28）：非 Config 欄位、走
+            pending 異步路徑。
             """
             which = payload.get("which")
             value = payload.get("value")

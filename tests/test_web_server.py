@@ -481,60 +481,6 @@ def test_main_loop_consumes_web_radar_toggle_rejects_bad_payload(tmp_path):
     assert saved == []
 
 
-def test_main_loop_consumes_web_keep_add_remove_clear(tmp_path, monkeypatch):
-    import miningbot.main as main_mod
-    from miningbot.web_ipc import PendingReplies
-    from tests.fake_bot import make_fake_bot
-
-    monkeypatch.setattr(main_mod.game_data, "fuzzy_match_ore",
-                        lambda q: "Riches" if q.lower() == "riches" else None)
-    pending = PendingReplies()
-    pending.push("control:keep_add", {"ore": "riches"})
-    saved = []
-    bot = make_fake_bot(
-        bind=["_consume_web_pending"],
-        _web_pending=pending,
-        _overrides_path=str(tmp_path / "config_overrides.json"),
-        _keep_ores=set(),
-        _save_keep_ores=lambda: saved.append(set(bot._keep_ores)),
-        _broadcast_status=lambda: None,
-    )
-    bot._consume_web_pending()
-    assert bot._keep_ores == {"Riches"}
-    assert saved == [{"Riches"}]
-
-    pending.push("control:keep_remove", {"ore": "riches"})
-    bot._consume_web_pending()
-    assert bot._keep_ores == set()
-
-    bot._keep_ores = {"Riches", "Toppatrick"}
-    pending.push("control:keep_clear", {})
-    bot._consume_web_pending()
-    assert bot._keep_ores == set()
-
-
-def test_main_loop_consumes_web_keep_add_unknown_ore_ignored(tmp_path, monkeypatch):
-    import miningbot.main as main_mod
-    from miningbot.web_ipc import PendingReplies
-    from tests.fake_bot import make_fake_bot
-
-    monkeypatch.setattr(main_mod.game_data, "fuzzy_match_ore", lambda q: None)
-    pending = PendingReplies()
-    pending.push("control:keep_add", {"ore": "not_a_real_ore"})
-    saved = []
-    bot = make_fake_bot(
-        bind=["_consume_web_pending"],
-        _web_pending=pending,
-        _overrides_path=str(tmp_path / "config_overrides.json"),
-        _keep_ores=set(),
-        _save_keep_ores=lambda: saved.append(1),
-    )
-    bot._consume_web_pending()
-
-    assert bot._keep_ores == set()
-    assert saved == []
-
-
 def test_main_loop_consumes_web_request_status(tmp_path):
     from miningbot.web_ipc import PendingReplies
     from tests.fake_bot import make_fake_bot
@@ -705,7 +651,6 @@ def test_status_snapshot_reads_same_fields_as_discord_status(tmp_path):
         _started=100.0,
         stats={"boosts": 3, "rerolls": 1, "rares": 2, "stuck": 0},
         _radar_toggle={"scan": True, "cave": False},
-        _keep_ores={"Riches", "Toppatrick"},
         listener=type("L", (), {"latest_score": lambda self: 0.42})(),
     )
     import miningbot.main as main_mod
@@ -723,7 +668,6 @@ def test_status_snapshot_reads_same_fields_as_discord_status(tmp_path):
     assert snap["audio_score"] == 0.42
     assert snap["stats"] == {"boosts": 3, "rerolls": 1, "rares": 2, "stuck": 0}
     assert snap["radar"] == {"scan": True, "cave": False}
-    assert snap["keep_ores"] == ["Riches", "Toppatrick"]
 
 
 def test_status_snapshot_tolerates_audio_score_failure():
@@ -736,7 +680,7 @@ def test_status_snapshot_tolerates_audio_score_failure():
     bot = make_fake_bot(
         bind=["_status_snapshot"],
         state=None, paused=False, last_action="", _started=0.0,
-        stats={}, _radar_toggle={}, _keep_ores=set(),
+        stats={}, _radar_toggle={},
         listener=_BoomListener(),
     )
     bot.state = type("S", (), {"value": "MINING"})()
@@ -746,23 +690,16 @@ def test_status_snapshot_tolerates_audio_score_failure():
     assert snap["audio_score"] == 0.0
 
 
-def test_player_state_snapshot_reads_ore_catalog(monkeypatch):
-    import miningbot.main as main_mod
+def test_player_state_snapshot_reads_radar(monkeypatch):
     from tests.fake_bot import make_fake_bot
 
-    monkeypatch.setattr(main_mod.game_data, "rare_ores", lambda: {
-        "a": {"ore": "Riches"}, "b": {"ore": "Toppatrick"}, "c": {"ore": "Riches"},
-    })
     bot = make_fake_bot(
         bind=["_player_state_snapshot"],
-        _keep_ores={"Riches"},
         _radar_toggle={"scan": False, "cave": True},
     )
     snap = bot._player_state_snapshot()
 
-    assert snap["keep_ores"] == ["Riches"]
     assert snap["radar"] == {"scan": False, "cave": True}
-    assert snap["ore_catalog"] == ["Riches", "Toppatrick"], "去重＋保序"
 
 
 def test_broadcast_status_noop_without_web_thread():

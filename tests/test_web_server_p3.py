@@ -235,20 +235,16 @@ def test_main_consume_web_pending_rejects_invalid_value(tmp_path, monkeypatch):
     assert not overrides_path.exists()
 
 
-# --- 2026-07-28：/api/player + /api/keep + /api/radar（保留清單/D2 開關網頁化）---
+# --- 2026-07-28：/api/player + /api/radar（D2 開關網頁化；保留清單已從網頁移除）---
 
 
-def _app_with_player_state(keep_ores=None, radar=None, ore_catalog=None, getter=True):
+def _app_with_player_state(radar=None, getter=True):
     cfg = Config()
     pending = PendingReplies()
     fallback = FallbackState()
 
     def player_state_getter():
-        return {
-            "keep_ores": keep_ores or [],
-            "radar": radar or {},
-            "ore_catalog": ore_catalog or [],
-        }
+        return {"radar": radar or {}}
 
     app = create_app(
         pending=pending, fallback=fallback, broadcast_callback=None,
@@ -259,24 +255,17 @@ def _app_with_player_state(keep_ores=None, radar=None, ore_catalog=None, getter=
 
 
 def test_get_api_player_returns_state():
-    client, _ = _app_with_player_state(
-        keep_ores=["Riches"], radar={"scan": True, "cave": False},
-        ore_catalog=["Riches", "Toppatrick"])
+    client, _ = _app_with_player_state(radar={"scan": True, "cave": False})
     r = client.get("/api/player")
     assert r.status_code == 200
-    data = r.json()
-    assert data == {
-        "keep_ores": ["Riches"],
-        "radar": {"scan": True, "cave": False},
-        "ore_catalog": ["Riches", "Toppatrick"],
-    }
+    assert r.json() == {"radar": {"scan": True, "cave": False}}
 
 
 def test_get_api_player_without_getter_returns_empty_shell():
     client, _ = _app_with_player_state(getter=False)
     r = client.get("/api/player")
     assert r.status_code == 200
-    assert r.json() == {"keep_ores": [], "radar": {}, "ore_catalog": []}
+    assert r.json() == {"radar": {}}
 
 
 def test_get_api_player_getter_exception_returns_empty_shell():
@@ -293,44 +282,7 @@ def test_get_api_player_getter_exception_returns_empty_shell():
     )
     r = TestClient(app).get("/api/player")
     assert r.status_code == 200
-    assert r.json() == {"keep_ores": [], "radar": {}, "ore_catalog": []}
-
-
-def test_post_api_keep_add_pushes_pending():
-    client, pending = _app_with_player_state()
-    r = client.post("/api/keep", json={"action": "add", "ore": "Riches"})
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "action": "add", "ore": "Riches"}
-    assert pending.pop("control:keep_add") == {"ore": "Riches"}
-
-
-def test_post_api_keep_remove_pushes_pending():
-    client, pending = _app_with_player_state()
-    r = client.post("/api/keep", json={"action": "remove", "ore": "Riches"})
-    assert r.status_code == 200
-    assert pending.pop("control:keep_remove") == {"ore": "Riches"}
-
-
-def test_post_api_keep_clear_pushes_pending_without_ore():
-    client, pending = _app_with_player_state()
-    r = client.post("/api/keep", json={"action": "clear"})
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "action": "clear"}
-    assert pending.pop("control:keep_clear") == {}
-
-
-def test_post_api_keep_rejects_bad_action():
-    client, pending = _app_with_player_state()
-    r = client.post("/api/keep", json={"action": "bogus"})
-    assert r.status_code == 400
-    assert pending.pop("control:keep_bogus") is None
-
-
-def test_post_api_keep_add_missing_ore_rejected():
-    client, pending = _app_with_player_state()
-    r = client.post("/api/keep", json={"action": "add"})
-    assert r.status_code == 400
-    assert pending.pop("control:keep_add") is None
+    assert r.json() == {"radar": {}}
 
 
 def test_post_api_radar_pushes_pending():
