@@ -607,3 +607,24 @@ fixture 位置慣例：
 - **回歸**：`tests/test_chat_icon.py`（`bright_pixel_count` 兩側夾對 `chat_reveal_min_bright_px`、喚醒點必須在 `chat_region` 內且不等於 `chat_icon_xy`）＋`tests/test_main_harvest_runtime.py` H064 區塊（hover 座標順序正確且 `click_at`/`mouse_click` 零呼叫、喚醒失敗記 WARNING 且仍不點擊）。
 - **實機驗收（2026-07-28，同一場 harvest 119 現場）**：等聊天淡出（亮像素 0）→ 基準 OCR `baseline_saw_found_history=False`、0 行 → 跑真的 `Bot._reveal_chat()` → log `聊天已喚醒（亮像素 13614）` → 基準 OCR `baseline_saw_found_history=True`、12 行含 5 條 has-found（含底行 `small_lo has found Coinstorm`）。
 - **殘留**：`_reveal_chat` 失敗（最可能＝Roblox 不在前景）時退回 (a) 的重顯示底行規則，不比修復前差。
+
+
+## H065（2026-07-29，harvest 121；使用者回報「掃描俯仰時右下角 D2 效果消失、沒補上，某角度有礦卻沒目標框」）：D2 是 toggle，`execute_scan` 盲按 "2" 把已裝備的掃描器卸下 → 整層沒掃描
+
+- **症狀（使用者回報＋log）**：俯仰層掃描時，121 的 up 層八方位全空，使用者肉眼看到右下角掃描指示器滅了、沒補上。log 的「俯仰層 up 重掃 D2：距上次掃描 54.9s」看似正常（>30s 冷卻＝沒被擋），但 up 層就是沒框——這行只證明**按鍵發出去了**，證明不了掃描真的觸發。
+- **一句話根因**：`harvester.execute_scan` 每次盲按 `key_press("2")`，而 slot 2 是 toggle（rule 3、`fixtures/slot/README` 早已警告）；掃描器已裝備時再按 "2" ＝**卸裝**，接著的左鍵點空氣＝沒掃描。正常流程裡 D3 開火走 `2→3`（rule 5）會把 slot 換成 3，下一次掃描的 "2" 是「裝上」，陷阱被蓋住；**俯仰層把它掀出來**：mid 全空→沒開 D3→層轉換又是 `execute_scan`→第二次 "2" 卸裝→up 整層沒掃描。這是潛伏在掃描路徑裡、被 D3 的 `2→3` 長期蓋住的 toggle 陷阱，俯仰層是第一個「連續兩次掃描、中間不換 slot」的呼叫者。
+- **量測（121 四張實機幀，slot 2 區域 `Region(864,998,54,58)` 的 greenness）**：
+
+  | 幀 | 時間／情境 | slot2 greenness | 判定 |
+  |---|---|---|---|
+  | mid empty | 02:41:14，進場掃描成功後掃描器仍裝備 | **+10.50** | 已裝備（綠） |
+  | up empty | 02:42:30，層轉換盲按 "2" 卸裝後 | **+1.48** | **已卸裝（灰）＝toggle 鐵證** |
+  | d3 fire | 02:44:46，D3 的 `2→3` 後 slot3 裝著 | +1.48 | slot2 未裝備 |
+  | down found | 02:43:49，down 掃描後 boost 守門按 "5" 又卸下 slot2 | +1.48 | slot2 未裝備（掃描那一刻有裝，是 boost 之後卸的）|
+
+  門檻 5.0 兩側夾（裝備 +10.50 ≫ 5.0 ≫ 未裝備 +1.48）。slot2 未裝備基線（+1.48）比 slot1（-1.37）高——掃描器圖示本身帶微綠，但 up/d3/down 三個**不同場景**幀量出來分毫不差，是 hotbar 面板的 UI 固定屬性、不隨場景變，門檻安全。slot2 綠色範圍在 mid 幀為 x864–923（slot1 x798-852、pitch 66）。
+- **為何 121 仍成功（不是反例）**：down 層在 02:43:15 重按 D2 那一刻 slot5 裝著（boost 守門 02:41:48 按的），"2" 是「裝上」不是「卸下」→ down 掃描有效 → 撈到 Gelisol。up 層中招是因為 mid→up 之間沒換 slot；down 沒中招是因為 up→down 之間 boost 守門剛好換過 slot。**這是靠運氣繞過，不是設計**——只要連續兩次掃描中間沒換 slot（任何 resweep／層轉換路徑），第二次必中。
+- **對策**：`execute_scan` 加守門（比照 D1 的 `miner.py` slot_selected）：先 `vision.slot_selected(capture.grab(), d2_slot_region, d2_selected_greenness_min)`，**已裝備就不按 "2"、只 click 重掃**（已裝備時左鍵即重掃，與進場首次 `2→click` 同理）；未裝備才按 "2" 裝上。新增 `config.d2_slot_region`／`d2_selected_greenness_min`。守門放在 `execute_scan` 這個唯一掃描 chokepoint——`_run_scan`、`start_scan`（死碼）全經過它，所有掃描路徑一次修齊。
+- **scan_confirm_mode 仍 off 的現狀下，這個守門是唯一防線**：`_confirm_scan` 在 off 時直接 `return True` 不驗（AGENTS.md CURRENT RISK AREAS 記著）。所以 slot_selected 守門不能省——它取代了「按下去到底有沒有生效」這條本該由 confirm 把關的檢查。
+- **回歸**：`tests/test_execute_scan_toggle.py`（slot2 已裝備→不按 "2" 只 click、未裝備→按 "2" 再 click）＋`tests/test_slot_fixtures.py` D2 區塊（fixture 兩側夾：slot2_equipped_green=True、slot2_unequipped_gray=False、greenness +10.50/+1.48 夾門檻 5.0）。fixture 取自 121 實機幀（`slot2_unequipped_gray.png` 正是 up 層 toggle 卸裝那一幀）。
+- **下輪實機驗證預期**：俯仰層轉換後的 up／down 層，`harvest.log` 應出現穩定框（不再因「沒掃描」而全空）。反指標：若某層仍全空、且該層開採前 slot2 區域 greenness 落在 +1.5 附近（未裝備），代表守門誤判「已裝備」而漏按 "2"——查 `d2_slot_region` 是否因 UI 改版位移，只改座標不動邏輯。

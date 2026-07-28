@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from .geometry import aim_decision
 from . import input_control as ic
+from . import vision, capture
 from .config import DEFAULT as cfg
 
 @dataclass
@@ -376,10 +377,18 @@ def prepare_scan():
     time.sleep(0.15)                       # 等畫面更新再截 reference
 
 def execute_scan():
-    """置中後裝備 D2 + 點擊觸發掃描（與 prepare_scan 分開是為了讓呼叫端在中間截 reference）。"""
-    ic.key_press("2")                      # D2 裝備掃描器
-    time.sleep(0.3)                        # 等裝備動畫
-    ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)  # 左鍵觸發掃描
+    """置中後裝備 D2 + 點擊觸發掃描（與 prepare_scan 分開是為了讓呼叫端在中間截 reference）。
+
+    ★ D2(slot 2) 是 toggle（rule 3、fixtures/slot/README 警告）：掃描器已裝備時再按 "2"
+    會**卸裝**而非重掃。連續兩次掃描、中間沒換 slot（俯仰層轉換 mid 全空→up，沒開 D3）
+    時，第二次的 "2" 把掃描器卸下、左鍵點空氣 → 整層沒掃描（H065：harvest 121 up 層全空）。
+    守門：先讀 slot 2 是否已選中，已裝備就只 click 重掃、不按 "2"（比照 D1 的 slot_selected）。
+    """
+    if not vision.slot_selected(capture.grab(), cfg.d2_slot_region,
+                                cfg.d2_selected_greenness_min):
+        ic.key_press("2")                      # 掃描器未裝備 → 裝上（已裝備時不按：toggle 陷阱）
+        time.sleep(0.3)                        # 等裝備動畫
+    ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)  # 左鍵觸發掃描（已裝備時 click 即重掃）
     time.sleep(1.5)                        # 等追蹤框出現
 
 def start_scan():
