@@ -85,19 +85,36 @@ def verdict_agrees(detector: str, symptom: str | None):
 def rarity_choices_from_game_data(
     special_ores: list[dict],
 ) -> tuple[list[str], list[str]]:
-    """從 game_data 的礦物清單撈 tier 唯一排序字串；variants 固定四個。
+    """從 game_data 的礦物清單撈 tier，**按稀有度由低到高**排；variants 固定四個。
+
+    先前用 ``sorted(tiers)``＝字母序，玩家看到的是
+    ``Enigmatic, Exotic, Exquisite, Imaginary, ...``——跟遊戲裡的階級毫無關係，
+    標註時等於在一排無序名詞裡找字。改用資料自己的 ``rarity`` 數字排序：
+    ``Exquisite < Exotic < Transcendent < Enigmatic < Unfathomable <
+    Otherworldly < Imaginary``。
+
+    排序鍵取該 tier 的**最小 rarity**（該階的入門價）。tier 的 rarity 區間彼此
+    重疊（Exquisite 111k~15M vs Exotic 180k~7.5M），沒有一個統計量能還原遊戲的
+    官方階梯；最小值至少是資料裡有的、可重算的定義。缺 rarity 的條目不參與排序
+    （該 tier 全缺就排最後），同鍵再按名字排以求穩定。
 
     special_ores 條目可能缺 tier 或 tier=None/空字串——一律略過。
     回傳 (tiers, variants)，variants 永遠是 ``["原色", "Spectral", "Ionized"]``。
     """
-    tiers: set[str] = set()
+    mins: dict[str, float] = {}
     for entry in special_ores or []:
         if not isinstance(entry, dict):
             continue
         tier = entry.get("tier")
-        if isinstance(tier, str) and tier:
-            tiers.add(tier)
-    return sorted(tiers), list(_VARIANTS)
+        if not (isinstance(tier, str) and tier):
+            continue
+        rarity = entry.get("rarity")
+        prev = mins.get(tier, float("inf"))
+        if isinstance(rarity, (int, float)) and not isinstance(rarity, bool):
+            prev = min(prev, float(rarity))
+        mins[tier] = prev
+    tiers = sorted(mins, key=lambda t: (mins[t], t))
+    return tiers, list(_VARIANTS)
 
 
 def cell_crop_box(frame_w: int, frame_h: int, cx: int, cy: int,

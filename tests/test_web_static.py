@@ -80,12 +80,18 @@ def test_render_annotate_html_includes_variant_names():
 
 
 def test_render_annotate_html_includes_all_four_symptom_buttons():
-    """四個症狀按鈕（中文顯示）都該在 HTML。"""
+    """四個症狀按鈕都該在 HTML，且是**整句白話**不是 FN/FP 術語。
+
+    使用者原話（2026-07-29）：「症狀內容不夠明確 不知道 fn fp 是甚麼」。
+    """
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
-    assert "漏判" in html and "FN" in html
-    assert "誤判" in html and "FP" in html
-    assert "該拒沒拒" in html
-    assert "不確定" in html
+    block = html.split('<div id="symptoms">')[1].split("</div>")[0]
+    assert "沒抓到" in block          # false_negative
+    assert "什麼都沒有" in block      # false_positive
+    assert "不是礦框" in block        # should_reject_failed
+    assert "不確定" in block
+    # 按鈕文字本身不得再出現術語（CSS/JS 註解裡提到不算）
+    assert "FN" not in block and "FP" not in block
 
 
 def test_render_annotate_html_symptom_buttons_map_to_validate_annotation_values():
@@ -104,16 +110,27 @@ def test_render_annotate_html_submit_posts_to_api_annotate():
     assert "POST" in html or "method" in html.lower()
 
 
-def test_render_annotate_html_has_mineral_input():
-    """mineral 文字欄位必須存在（spec §5：可選）。"""
+def test_render_annotate_html_has_no_fields_the_player_cannot_know():
+    """礦物／相關事故／類別路徑三個輸入框必須不在（2026-07-29）。
+
+    使用者原話：「移除礦物 相關事故 類別路徑等行列，因為這些我都不會知道」。
+    schema 兩個可選欄位改送 null，category 由檔名推。
+    """
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
-    assert "mineral" in html
+    for element_id in ('id="mineral"', 'id="related-incident"', 'id="category"'):
+        assert element_id not in html, f"{element_id} 應已移除"
+    assert "mineral: null" in html
+    assert "related_incident: null" in html
 
 
-def test_render_annotate_html_has_related_incident_input():
-    """related_incident 文字欄位必須存在（spec §5：可選）。"""
+def test_render_annotate_html_category_derived_from_filename():
+    """類別路徑欄位移除後，回礦素材仍須落 reentry/teleport_board 而非 aim。
+
+    先前那個欄位預設永遠 "aim"，玩家不改就把回礦素材寫進錯資料夾。
+    """
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
-    assert "related_incident" in html or "related-incident" in html
+    assert "reentry_ep" in html and "reentry/teleport_board" in html
+    assert "categoryFor(imageName)" in html
 
 
 def test_render_annotate_html_shows_snapshot_image_when_path_provided():

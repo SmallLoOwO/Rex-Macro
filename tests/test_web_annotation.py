@@ -69,6 +69,32 @@ class TestRarityChoicesFromGameData:
         assert tiers == ["Exotic", "Mythic", "Surreal"]
         assert variants == ["原色", "Spectral", "Ionized"]
 
+    def test_orders_tiers_by_rarity_not_alphabetically(self):
+        """稀有度由低到高，不是字母序（2026-07-29）。
+
+        實機 game_data 的字母序是 ``Enigmatic, Exotic, Exquisite, Imaginary,
+        Otherworldly, Transcendent, Unfathomable``——跟遊戲階級毫無關係，
+        玩家標註時等於在無序名詞裡找字。
+        """
+        special_ores = [
+            {"ore": "A", "tier": "Unfathomable", "rarity": 2_332_960},
+            {"ore": "B", "tier": "Exquisite", "rarity": 111_112},
+            {"ore": "C", "tier": "Exotic", "rarity": 180_000},
+            {"ore": "D", "tier": "Exquisite", "rarity": 15_001_500},  # 同階高價不影響
+        ]
+        tiers, _ = rarity_choices_from_game_data(special_ores)
+        assert tiers == ["Exquisite", "Exotic", "Unfathomable"]
+
+    def test_tier_without_rarity_sorts_last(self):
+        """缺 rarity 的 tier 排最後，同鍵按名字穩定排序（不是隨機掉進中間）。"""
+        special_ores = [
+            {"ore": "A", "tier": "Zeta"},          # 無 rarity
+            {"ore": "B", "tier": "Priced", "rarity": 500},
+            {"ore": "C", "tier": "Alpha"},         # 無 rarity
+        ]
+        tiers, _ = rarity_choices_from_game_data(special_ores)
+        assert tiers == ["Priced", "Alpha", "Zeta"]
+
     def test_skips_entries_without_tier(self):
         special_ores = [
             {"ore": "A", "tier": "Mythic"},

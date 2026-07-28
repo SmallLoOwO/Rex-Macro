@@ -529,6 +529,9 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
                   color: white; border: 1px solid #555; border-radius: 3px;
                   cursor: pointer; font-size: 0.85rem; }}
 .toolbar button.active {{ background: #0084ff; border-color: #0084ff; }}
+/* 症狀改成整句白話（FN/FP 這種術語玩家看不懂），一行一顆才放得下 */
+#symptoms button {{ display: block; width: 100%; margin: 0.2rem 0;
+                    text-align: left; line-height: 1.35; }}
 .toolbar label {{ display: block; font-size: 0.8rem; margin-top: 0.5rem;
                   color: #aaa; }}
 .toolbar input[type="text"] {{ width: 100%; padding: 0.3rem; background: #111;
@@ -559,29 +562,19 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
     <div id="selection"></div>
   </div>
   <div class="toolbar">
-    <h2>Rarity（Tier）</h2>
+    <h2>稀有度（低 → 高）</h2>
     <div id="tiers">{tier_btns or '<span class="hint">（game_data 無 tier）</span>'}</div>
 
     <h2>變體</h2>
     <div id="variants">{variant_btns}</div>
 
-    <h2>症狀</h2>
+    <h2>症狀（bot 錯在哪）</h2>
     <div id="symptoms">
-      <button type="button" data-symptom="false_negative">漏判 FN</button>
-      <button type="button" data-symptom="false_positive">誤判 FP</button>
-      <button type="button" data-symptom="should_reject_failed">該拒沒拒</button>
-      <button type="button" data-symptom="unknown" class="active">不確定</button>
+      <button type="button" data-symptom="false_negative">1　這裡有礦框，bot 沒抓到（漏判）</button>
+      <button type="button" data-symptom="false_positive">2　bot 抓了，可是那裡什麼都沒有（誤判）</button>
+      <button type="button" data-symptom="should_reject_failed">3　那裡有東西，但不是礦框（地形／裝備／UI）</button>
+      <button type="button" data-symptom="unknown" class="active">4　不確定</button>
     </div>
-
-    <label>礦物（可選）
-      <input type="text" id="mineral" placeholder="例：Tin / Sapphire">
-    </label>
-    <label>相關事故（可選）
-      <input type="text" id="related-incident" placeholder="例：H042 / H057">
-    </label>
-    <label>類別路徑（預設 aim）
-      <input type="text" id="category" value="aim" placeholder="aim / reentry/teleport_board">
-    </label>
 
     <button type="button" class="submit" id="submit">送出標註</button>
     <p class="hint">在快照上拖曳出方形（1:1）；Shift + 拖曳 = 平移；
@@ -753,7 +746,8 @@ viewer.addEventListener('pointercancel', () => {{
 }});
 
 // Esc 清除方形；佇列模式另有 j/k/數字/Enter
-// ⚠ 游標在文字欄裡時全部不攔——礦物/事故欄要打得出 j、k 跟數字。
+// ⚠ 游標在文字欄裡時全部不攔。工具列現在沒有文字欄了（礦物/事故/類別已移除），
+// 但守門留著——之後再加任何輸入框都不必重新想起這件事。
 function typingInField(e) {{
   const t = e.target;
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
@@ -799,14 +793,18 @@ bindSingleSelect('symptoms', (b) => {{ activeSymptom = b.dataset.symptom; }});
 // ── 送出：POST /api/annotate（validate_annotation schema） ──────────
 document.getElementById('submit').addEventListener('click', submitAnnotation);
 
+// 「類別路徑」欄位已移除（2026-07-29）——玩家不會知道素材該進哪個資料夾。
+// 從檔名自己認：回礦快照是 `…_reentry_ep<N>_…`，其餘都是追蹤框那條路。
+// 先前那個欄位預設永遠是 aim，回礦素材只要玩家沒手動改就一律misfile。
+function categoryFor(name) {{
+  return /reentry_ep\\d+/.test(name || '') ? 'reentry/teleport_board' : 'aim';
+}}
+
 async function submitAnnotation() {{
   if (!selRect) {{
     statusEl.textContent = '請先在快照上拖曳出方形';
     return;
   }}
-  const mineral = document.getElementById('mineral').value.trim();
-  const incident = document.getElementById('related-incident').value.trim();
-  const category = document.getElementById('category').value.trim();
   const payload = {{
     image: imageName,
     source_path: sourcePath,
@@ -818,12 +816,15 @@ async function submitAnnotation() {{
     }},
     tier: activeTier,
     variant: activeVariant,
-    mineral: mineral || null,
+    // 礦物／相關事故欄位已移除（2026-07-29）：玩家標的當下不會知道礦名，
+    // 更不會知道對應哪個 H 事故——那是事後查 docs/incidents.md 的事。
+    // schema 兩欄都是可選，留 null 即可，素材格式不變。
+    mineral: null,
     source: {{ kind: 'manual' }},
     symptom: activeSymptom,
-    related_incident: incident || null,
+    related_incident: null,
   }};
-  if (category) payload.category = category;
+  payload.category = categoryFor(imageName);
   statusEl.textContent = '送出中…';
   try {{
     const r = await fetch('/api/annotate', {{
