@@ -338,6 +338,10 @@ class Config:
     snapshot_max_total_mb: int = 1024            # 全部 snapshots 總量上限，超過從最舊開始刪
     snapshot_trace_max_age_days: int = 7          # trace 高頻且低價值，較早回收
     snapshot_trace_max_total_mb: int = 256
+    # 回礦語料夾（`miningbot/corpus.py`）：有 click ground truth 的八方位圖搬離
+    # snapshots/ 才不會被上面那條 retention 從最舊刪掉（2026-07-28 實測 200 張只剩
+    # 58 張、可用配對只剩 1 正 7 負）。獨立上限、到頂時優先刪無 click 的組。
+    corpus_max_total_mb: int = 4096
     snapshot_queue_max: int = 16                  # 1080p BGR 約 6MB/張；限制最壞記憶體占用
     snapshot_queue_critical_reserve: int = 4      # 保留給 rare/review/reentry，trace 不得吃滿
     snapshot_shutdown_drain_s: float = 5.0        # Bounded shutdown wait for queued snapshot writes.

@@ -20,6 +20,7 @@ from .states import (State, Observation, decide_transition, resolve_state_transi
                      can_accept_manual_reentry, can_consume_rotate)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
+from . import corpus
 # notify 純 stdlib（urllib/json），放模組層同樣是 H061 的一環：原本各處都用
 # `from . import notify` deferred import，其中 Bot.__init__ 那次已排在 OCR worker
 # thread 之後。函式內既有的 local import 保留不動（從 sys.modules 取，無 import 工作）。
@@ -6021,8 +6022,45 @@ class Bot:
             return
         self._zoom_restore_if_touched(ctx)
         world = game_data.current_world_name()   # 已鎖定世界才記；未鎖回 None
+        self._rr_save_corpus(ctx, outcome, world)
         self._rr_ledger_append(reentry_remote.ledger_entry(
             ctx, outcome, world, time.time() - ctx.created_at))
+
+    def _rr_save_corpus(self, ctx, outcome, world):
+        """語料止血（2026-07-28）：把這一輪八方位圖搬進不受 retention 管的語料夾。
+
+        ledger 記的路徑指向 `snapshots/`，而那裡的檔案會被 `snapshot_max_total_mb`
+        從最舊刪掉——**不分有沒有 click ground truth**。實測 200 張只剩 58 張、
+        能配成 (圖, 座標) 的僅 1 正 7 負。這裡在刪之前先把整組搬走（見 corpus.py）。
+
+        `outcome=skip`／無 click 的那輪**也存**，`clicks: []`：「玩家看完八張決定
+        跳過」本身就是資訊（可能傳送板真的都不在視野內），而且那八張是天然負樣本。
+        只有連 shots 都沒有（沒掃過就收尾）才跳過，避免留下空目錄。
+
+        ⚠ 只存**最後一輪** attempt 的圖：`_rr_ensure_ctx(reroll=True)` 會清掉
+        `ctx.shots`，收尾時前幾輪的路徑早就不在記憶體裡了。要連 reroll 掉的那幾輪
+        一起留，得改成 sweep 當下就寫——目前沒有這個需求（reroll 掉的那輪多半是
+        玩家看完八張沒找到板子，價值低於它占的 10-16MB）。
+
+        best-effort：整組寫入失敗只記 log，不影響回礦收尾。
+        """
+        if not ctx.shots:
+            return
+        try:
+            root = corpus.corpus_root(cfg.log_dir)
+            group_dir, copied, requested = corpus.write_group(
+                root, episode=ctx.episode_id, attempt=ctx.attempt, world=world,
+                sticky_layer=ctx.sticky_layer, outcome=outcome, t=ctx.created_at,
+                shots=list(ctx.shots),
+                clicks=corpus.clicks_for_attempt(ctx.clicks, ctx.attempt))
+            removed = corpus.enforce_cap(root, cfg.corpus_max_total_mb)
+            self.logger.info(
+                "[RR#%s] 語料組 %s：複製 %d/%d 張%s", ctx.episode_id, group_dir,
+                copied, requested,
+                f"，容量到頂清掉 {removed} 組" if removed else "")
+        except Exception as e:
+            self.logger.warning("[RR#%s] 語料組寫入失敗（不影響回礦收尾）：%s",
+                                ctx.episode_id, e)
 
     def _rr_skip_on_pause_resume(self, source: str):
         """REENTRY 遠端 episode 進行中收到 暫停/繼續 → 視同 `跳過`（2026-07-18 需求）。

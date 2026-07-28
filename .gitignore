@@ -18,6 +18,9 @@ snap.png
 logs/
 harvest_seq.json
 radar_toggle.json
+# 回礦語料夾（miningbot/corpus.py）：一組八張 1080p PNG ≈ 10-16MB，20 組就 300MB。
+# 預設落在 log_dir（AppData）已在版控外，這條擋的是 REX_MININGBOT_LOG_DIR 指回 repo 的情形。
+corpus/
 
 # 大型/個人資產（音檔、模板截圖另行管理，避免誤入版控）
 assets/*.wav

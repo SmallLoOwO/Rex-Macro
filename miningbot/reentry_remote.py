@@ -488,9 +488,13 @@ def log_command(ctx, raw, reply, now):
 
 
 def record_click(ctx, pos, layer, region, now):
+    """`attempt` 是語料配對的關鍵（2026-07-28 加）：`ctx.shots` 每次 sweep 清空、
+    `ctx.clicks` 卻整個 episode 累積，不記 attempt 就無從判斷這個座標對應哪一組圖。
+    """
     ctx.clicks.append({"t": now, "pos": tuple(pos), "layer": layer,
                        "dir": ctx.cur_dir, "region": tuple(region),
-                       "zoom": ctx.net_zoom, "invalid": False})
+                       "zoom": ctx.net_zoom, "invalid": False,
+                       "attempt": ctx.attempt})
 
 
 def record_landing(ctx, depth_m, layer_seen) -> bool:
