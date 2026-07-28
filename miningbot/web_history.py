@@ -121,6 +121,28 @@ def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
                        annotated_stems(fixtures_dir), tier)
 
 
+def index_readable(path: str | None) -> bool:
+    """索引檔在不在、讀不讀得到。
+
+    「還沒有資料」不是「伺服器壞了」——呼叫端據此回 503 而不是 500。
+    單行壞掉是另一回事（append-only 的 partial line），那個由
+    `_iter_snapshot_records` 靜默略過。
+    """
+    return bool(path) and os.path.isfile(path) and os.access(path, os.R_OK)
+
+
+def verdict_category(label: str) -> str | None:
+    """這張**全幀**快照該交給哪一支偵測器判；`None`＝沒有可用的判法（純函式）。
+
+    - `reentry_ep<N>_…` → `"reentry"`：`teleport_board.detect` 吃的就是全幀。
+    - 其他（`sweep_empty` / `_rejected` / `aim_fail` …）→ `None`。追蹤框那條路
+      的偵測器（`detect_tracker_core`）吃的是 320×270 粗格裁圖，餵全幀會拿到
+      一個與 production 無關的答案。**寧可不給判決，也不要給一個假的**——
+      要判決就走 `/annotate`，那裡會先裁出正確格式的 crop。
+    """
+    return "reentry" if _REENTRY_LABEL_RE.match(str(label or "")) else None
+
+
 def _iter_snapshot_records(path: str) -> Iterator[dict]:
     """逐行讀 snapshot_index.jsonl；壞行（含寫到一半的 partial line）靜默略過。
 

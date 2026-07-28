@@ -23,6 +23,9 @@ from miningbot.web_protocol import (
 )
 from miningbot.web_ipc import PendingReplies, FallbackState
 from miningbot.web_annotation import cell_crop_box
+from miningbot.web_history import (
+    annotation_queue, index_readable, verdict_category,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -353,6 +356,53 @@ def create_app(
         if verdict is not None:
             content["verdict"] = verdict
         return JSONResponse(status_code=201, content=content)
+
+    _FAILURES_DEFAULT_LIMIT = 50
+
+    def _failure_items(limit: int):
+        """tier0 快照 + 現行偵測器判定；回 None 代表索引讀不到（呼叫端回 503）。
+
+        判決來源就是 `/api/annotate` 那一支 `annotation_verdict`——沒有第二份實作。
+        `verdict_category` 回 None 的（追蹤框那條路的全幀快照）不給判決並附理由：
+        那支偵測器吃的是粗格裁圖，餵全幀等於給一個與 production 無關的答案。
+        """
+        if not snapshot_index_path or not index_readable(snapshot_index_path):
+            return None
+        rows = annotation_queue(snapshot_index_path, None, 0)
+        items = []
+        for row in rows[:limit]:
+            category = verdict_category(row["label"])
+            verdict = note = None
+            if category is None:
+                note = "全幀不是追蹤框偵測器吃的格式（需 320×270 粗格裁圖）——請走 /annotate"
+            else:
+                verdict = annotation_verdict(category, None, row["path"], None)
+                if verdict is None:
+                    note = "偵測不可用（見 log）"
+            items.append({**row, "verdict": verdict, "verdict_note": note})
+        return {"total": len(rows), "shown": len(items), "limit": limit,
+                "items": items}
+
+    @app.get("/api/failures")
+    def get_api_failures(limit: int = _FAILURES_DEFAULT_LIMIT):
+        """agent 用 `curl` 抓的 JSON 版（與 `/failures` 同一份資料）。"""
+        data = _failure_items(limit)
+        if data is None:
+            return _err(503, "snapshot index not available")
+        return data
+
+    @app.get("/failures")
+    def get_failures(limit: int = _FAILURES_DEFAULT_LIMIT):
+        """偵測失敗佇列（spec D4a）——tier0 快照集中一頁，每張附現行判定。
+
+        這一頁的讀者是 agent，不是玩家：排版可以醜，資料要全。
+        """
+        data = _failure_items(limit)
+        if data is None:
+            return _err(503, "snapshot index not available")
+        from miningbot.web_static import render_failures_html
+        return Response(content=render_failures_html(data),
+                        media_type="text/html")
 
     @app.get("/history")
     def get_history():

@@ -17,6 +17,9 @@ _NAV_ITEMS = (
     # 2026-07-28：批次標註要找得到才會有人用（三個月只標了 2 張，一半原因是
     # 得先從歷史頁一張一張點進來）。直接給待標註佇列的入口。
     ("/annotate?queue=tier0", "🏷️ 標註佇列"),
+    # 這兩頁的讀者是 AI agent 不是玩家（使用者原話：「這些資料對我來說沒有意義，
+    # 對 AI agent 比較有價值，讓他去處理微調的問題」）。排版可以醜，資料要全。
+    ("/failures", "🤖 失敗佇列"),
 )
 
 NAV_CSS = """
@@ -1060,6 +1063,70 @@ def _js_str(s: str) -> str:
     """
     import json
     return json.dumps(str(s), ensure_ascii=False)
+
+
+_AGENT_PAGE_CSS = """
+body { margin: 0; background: #101010; color: #ddd; font-family: monospace;
+       font-size: 13px; }
+h1 { font-size: 1rem; margin: 0.6rem 1rem; }
+.meta { padding: 0 1rem 0.6rem; color: #999; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #333; padding: 0.25rem 0.4rem; text-align: left;
+         vertical-align: top; }
+th { background: #1c1c1c; position: sticky; top: 0; }
+tr:nth-child(even) { background: #161616; }
+td.note { color: #a08a4a; }
+td.ok { color: #57f287; }
+td.bad { color: #ed4245; }
+a { color: #6ab7ff; }
+"""
+
+
+def render_failures_html(data: dict) -> str:
+    """偵測失敗佇列（spec D4a）。**讀者是 agent，不是玩家：排版可以醜，資料要全。**
+
+    每列＝一張 tier0 快照 + 現行偵測器判定 + 分數明細；沒有判決的那些照實寫出
+    原因（全幀不是那支偵測器吃的格式），不假裝有答案。
+    """
+    rows = []
+    for item in data.get("items", []):
+        verdict = item.get("verdict")
+        if verdict:
+            cls = "ok" if verdict.get("detector") == "accepted" else "bad"
+            score = "、".join(f"{k} {v}" for k, v in
+                             (verdict.get("score") or {}).items()) or "—"
+            judged = f'<td class="{cls}">{_esc(verdict.get("detector", ""))}</td>' \
+                     f'<td>{_esc(score)}</td>'
+        else:
+            judged = (f'<td class="note">（無判決）</td>'
+                      f'<td class="note">{_esc(item.get("verdict_note") or "")}</td>')
+        path = item.get("path", "")
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(_format_ts(item.get("written_at")))}</td>'
+            f'<td>{_esc(item.get("label", ""))}</td>'
+            f"{judged}"
+            f'<td><a href="/snapshot?path={_url_q(path)}">圖</a>　'
+            f'<a href="/annotate?snapshot={_url_q(path)}">標註</a></td>'
+            f'<td>{_esc(path)}</td>'
+            "</tr>")
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><title>MiningBot 偵測失敗佇列</title>
+<style>{NAV_CSS}{_AGENT_PAGE_CSS}</style></head>
+<body>
+{render_nav("/failures")}
+<h1>偵測失敗佇列（tier0：掃描全空／框被拒／瞄準失敗）</h1>
+<div class="meta">共 {data.get('total', 0)} 張，顯示 {data.get('shown', 0)} 張
+（<code>?limit=</code> 可改，預設 {data.get('limit', 0)}）。
+JSON：<a href="/api/failures">/api/failures</a></div>
+<table>
+<tr><th>時間</th><th>label</th><th>現行判</th><th>分數</th><th>連結</th><th>path</th></tr>
+{"".join(rows)}
+</table>
+</body>
+</html>
+"""
 
 
 def render_intervention_html() -> str:
