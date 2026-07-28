@@ -343,11 +343,16 @@ def create_app(
         except OSError as e:
             _log.warning("web: /api/annotate 寫入失敗 (%s): %s", target_path, e)
             return _err(500, f"write failed: {e}")
-        return JSONResponse(
-            status_code=201,
-            content={"ok": True, "path": target_path, "category": category,
-                     "png": png_path},
-        )
+        # 存好了才回判決：偵測掛掉不可影響存檔（annotation_verdict 自己 fail-open）。
+        verdict = annotation_verdict(
+            category, png_path,
+            source_path if isinstance(source_path, str) else None,
+            record.get("symptom"))
+        content = {"ok": True, "path": target_path, "category": category,
+                   "png": png_path}
+        if verdict is not None:
+            content["verdict"] = verdict
+        return JSONResponse(status_code=201, content=content)
 
     @app.get("/history")
     def get_history():
@@ -589,6 +594,66 @@ def _safe_snapshot_target(path: str, snapshots_root: str | None):
     if not os.path.isfile(target):
         return None, (404, "snapshot not found")
     return target, None
+
+
+def annotation_verdict(category: str, crop_png: str | None,
+                       source_frame: str | None, symptom):
+    """跑現行偵測器對這張素材，回 `verdict` dict；不可用時回 `None`。
+
+    **降級規則（H061 的教訓）**：web 路徑要跑偵測器就會把 `cv2`/`vision` 這串相依
+    拉進來。用 deferred import + try/except，缺件或偵測器拋例外時回 `None`
+    （＝存檔照樣成功、回應不附 verdict），而且**降級要留一行 log**——H061 正是
+    daemon thread 裡的 ImportError 噴進不存在的 stderr 而整個蒸發。
+
+    哪一支偵測器：跟 production 實際跑的那支對齊，才有診斷價值。
+    - `aim/`：`vision.detect_tracker_core` 吃 320×270 粗格裁圖（素材 PNG 就是這個
+      格式，見 `web_annotation.cell_crop_box`）。
+    - `reentry/`：`teleport_board.detect` 吃**全幀**——它的 ROI 是螢幕座標，餵裁圖
+      等於把整張圖切在 ROI 外，判什麼都沒意義。所以這裡用原始快照。
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        from miningbot.config import DEFAULT as _cfg
+        from miningbot.web_annotation import verdict_agrees
+
+        def _load(path):
+            if not path:
+                return None
+            return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+        if category.split("/", 1)[0] == "reentry":
+            from miningbot import teleport_board
+            frame = _load(source_frame)
+            if frame is None:
+                return None
+            got = teleport_board.detect(frame)
+            detector = "accepted" if got else "rejected"
+            score = ({"score": round(float(got[2]), 3), "x": got[0], "y": got[1]}
+                     if got else {})
+        else:
+            from miningbot import vision
+            crop = _load(crop_png)
+            if crop is None:
+                return None
+            hit = vision.detect_tracker_core(
+                crop, _cfg.tracker_core_profiles,
+                min_area=_cfg.tracker_core_min_area,
+                max_area=_cfg.tracker_core_max_area,
+                ar_lo=_cfg.tracker_core_ar_lo, ar_hi=_cfg.tracker_core_ar_hi,
+                extent_min=_cfg.tracker_core_extent_min,
+                border_margin=_cfg.tracker_core_border_margin,
+                border_dark_max=_cfg.tracker_core_border_dark_max,
+                border_dark_frac_min=_cfg.tracker_core_border_dark_frac_min)
+            detector = "accepted" if hit else "rejected"
+            score = ({"profile": hit[2], "border_frac": round(float(hit[3]), 3),
+                      "x": hit[0], "y": hit[1]} if hit else {})
+    except Exception as e:
+        _log.warning("web: /api/annotate 回判決降級（偵測不可用，存檔不受影響）：%r", e)
+        return None
+    return {"detector": detector, "score": score, "your_label": symptom,
+            "agree": verdict_agrees(detector, symptom)}
 
 
 def _write_cell_crop_png(source_path: str, target_png: str, cx: int, cy: int):

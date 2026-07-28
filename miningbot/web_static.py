@@ -751,11 +751,26 @@ document.getElementById('submit').addEventListener('click', async () => {{
       throw new Error(err.error || ('HTTP ' + r.status));
     }}
     const data = await r.json().catch(() => ({{}}));
-    statusEl.textContent = `已送出 ✓ ${{data.category || ''}}`;
+    statusEl.textContent = `已送出 ✓ ${{data.category || ''}}　` + verdictText(data.verdict);
   }} catch (err) {{
     statusEl.textContent = '送出失敗：' + err.message;
   }}
 }});
+
+// 即時回判決：標完當下就知道這張圖是不是真的暴露 bug，還是偵測器其實已經修好了。
+// 沒有 verdict（偵測模組不可用）就只顯示存檔結果，不假裝有判決。
+function verdictText(v) {{
+  if (!v) return '（無現行判定）';
+  const label = {{
+    false_negative: '漏判', false_positive: '誤判',
+    should_reject_failed: '該拒沒拒', unknown: '不確定',
+  }}[v.your_label] || '沒問題';
+  const parts = Object.entries(v.score || {{}}).map(([k, n]) => k + ' ' + n);
+  const detail = parts.length ? '（' + parts.join('、') + '）' : '';
+  const judged = v.detector === 'accepted' ? '接受' : '拒絕';
+  const agree = v.agree === null ? '—' : (v.agree ? '✅ 一致' : '❌ 不一致');
+  return `現行判：${{judged}}${{detail}}／你標：${{label}} → ${{agree}}`;
+}}
 </script>
 </body>
 </html>

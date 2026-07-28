@@ -51,6 +51,32 @@ def normalize_symptom(s: str | None) -> str | None:
     return _SYMPTOM_MAP.get(s)
 
 
+# 玩家標的症狀，換算成「這張圖裡到底有沒有目標」。偵測器 accepted/rejected 只要
+# 跟這個對得上就是一致。`unknown` 無從比較 → None。
+_SYMPTOM_EXPECTS_TARGET: dict[str | None, bool | None] = {
+    None: True,                     # 對照組：玩家確認過的真框（symptom 留空）
+    "false_negative": True,         # 「有框，你沒抓到」
+    "false_positive": False,        # 「沒框，你卻抓了」
+    "should_reject_failed": False,  # 「該拒沒拒」
+    "unknown": None,
+}
+
+
+def verdict_agrees(detector: str, symptom: str | None):
+    """現行偵測器判定 vs 玩家標的症狀：一致 True／不一致 False／無從比較 None。
+
+    這是標註即時回判決的核心：玩家標完的當下就知道**這張圖是不是真的暴露 bug**，
+    還是偵測器其實已經修好了。沒有這個回饋，標註對玩家零回報——三個月只標了 2 張。
+
+    例：玩家標「漏判」（他說有框）而偵測器 `rejected`（它說沒有）→ 兩邊看到的
+    不是同一件事 → 不一致，bug 確實還在。
+    """
+    expects = _SYMPTOM_EXPECTS_TARGET.get(symptom)
+    if expects is None:
+        return None
+    return (detector == "accepted") == expects
+
+
 def rarity_choices_from_game_data(
     special_ores: list[dict],
 ) -> tuple[list[str], list[str]]:
