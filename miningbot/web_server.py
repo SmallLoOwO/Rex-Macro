@@ -542,6 +542,9 @@ def create_app(
         await websocket.accept()
         fallback.client_connected()
         registry.add(websocket)
+        # 連線進出要留痕（2026-07-29）：「網頁介入為什麼沒觸發」只能靠這個分辨
+        # 「人根本沒連上」與「連上了但沒點」——先前兩者在 log 裡完全同形。
+        _log.info("web: client 連上（目前 %d 條）", fallback.client_count)
         # 2026-07-27：使用者是「被提醒才連進來」，不是整場開著分頁——連上那一刻
         # 補送目前這輪介入（如果有的話），不然剛好連在 push 之後就永遠看不到。
         await registry.replay_to(websocket)
@@ -567,6 +570,7 @@ def create_app(
         finally:
             registry.remove(websocket)
             fallback.client_disconnected()
+            _log.info("web: client 斷線（剩 %d 條）", fallback.client_count)
 
     # P3: 玩家設定面板 endpoints（僅在傳入 config 時掛上；既有呼叫端不受影響）
     if config is not None:

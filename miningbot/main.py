@@ -3736,11 +3736,26 @@ class Bot:
 
         同時輪詢點擊 reply 與控制鍵，因為主迴圈整個卡在這裡——控制鍵若只靠
         `_consume_web_pending`，玩家按了「重骰」要等這輪逾時（最長 5 分鐘）才生效。
+
+        兩段等候（2026-07-29）：進來時沒有任何 client 連著，只等
+        `cfg.web_join_grace_s`——圖已經推進 replay 緩衝、Discord 提醒也發了，人要
+        來就是這段時間內來；沒來就退回 Discord，不能讓無人看顧的場次卡滿 `timeout_s`。
+        等待期間有人連上（含手機分頁背景化後重連）就升級成完整 `timeout_s`，
+        從進來那刻起算——玩家正在看圖時不會被 grace 砍掉。
         """
         if self._web_pending is None:
             return None, None
-        deadline = time.monotonic() + timeout_s
+        start = time.monotonic()
+        deadline = start + timeout_s
+        # None＝已有人在線（或曾經連上），只受 deadline 管；否則多一道短閘
+        grace_deadline = (None if self._web_client_online()
+                          else start + cfg.web_join_grace_s)
         while time.monotonic() < deadline:
+            if grace_deadline is not None:
+                if self._web_client_online():
+                    grace_deadline = None         # 有人開網頁了 → 給完整預算
+                elif time.monotonic() >= grace_deadline:
+                    return None, None
             reply = self._web_pending.pop(routing_key)
             if reply is not None:
                 return "click", reply
@@ -4073,7 +4088,8 @@ class Bot:
                 f"（attempt {ctx.attempt}）已拍好 {frame_count} 個方位\n"
                 f"{url}\n"
                 f"左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。"
-                f"不理它會在 {int(cfg.web_intervention_budget_s / 60)} 分鐘後改用 Discord 八方位；"
+                f"**{int(cfg.web_join_grace_s / 60)} 分鐘內沒人開網頁就改用 Discord 八方位**"
+                f"（開了之後最多等 {int(cfg.web_intervention_budget_s / 60)} 分鐘）；"
                 f"想現在就用 Discord 就按下面的 {_WEB_ESCALATE_EMOJI}。")
         try:
             ok, _detail, mid = notify.send_message_with_id(
@@ -6578,7 +6594,15 @@ class Bot:
         # 網頁明明連著（不是 fallback），只是沒東西可點。掃完再推，玩家才有得選。
         #
         # 掃描本身兩條路徑共用（_rr_sweep_capture），不會為了 web 多轉一圈。
-        captured = self._rr_sweep_capture(encode_for_web=self._web_client_online())
+        #
+        # 2026-07-29：編碼條件從 `_web_client_online()` 改成「網頁伺服器有起來」。
+        # 舊條件是雞生蛋——使用者是**被 Discord 提醒才開網頁**的，掃描當下當然沒
+        # 連線（手機分頁背景化也一樣斷），於是永遠 encode_for_web=False → 一張都不推
+        # → 每次都直接洗 Discord 八方位，「網頁優先」在實機從來沒發生過。
+        # registry 的 replay 緩衝本來就是為晚到的連線設計的（`replay_to`），
+        # 先推進去，人開頁面時補得到。
+        captured = self._rr_sweep_capture(
+            encode_for_web=getattr(self, "_web_thread", None) is not None)
         if captured is None:
             return                                # 掃到一半遇到重置：下一輪 tick 處理
         pairs, rot_missed, web_pngs = captured
@@ -7321,14 +7345,23 @@ class Bot:
         `_consume_web_pending` 跑不到）——重掃就地再掃一圈重推，重骰/跳過排進
         既有 `_pending_reentry` 由主迴圈下個 tick 消費。
 
+        **2026-07-29 的「沒人在線也要推」修正**：舊版第一行就是
+        `if not self._web_client_online(): return False`，而使用者是**被 Discord
+        提醒才開網頁**的人（手機分頁背景化也會斷 WebSocket）——掃描當下永遠沒連線，
+        於是網頁永遠拿不到圖、每次都直接洗 Discord 八方位。現在無條件推進 registry
+        的 replay 緩衝（`replay_to` 就是為晚到連線做的），Discord 提醒照發；
+        沒人連進來時只等 `web_join_grace_s`（不是整份 budget）就退回 Discord，
+        無人看顧的場次不會因此卡上 15 分鐘。
+
         回 True＝web 已接手（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
-        回 False＝無 web 連線／逾時／聚焦失敗 → caller fall through Discord 流程。
+        回 False＝沒人開網頁／逾時／聚焦失敗 → caller fall through Discord 流程。
 
         attempt_id（wire protocol 對 reentry flow 的 id 欄位名）＝ episode_id：
         每集唯一、與 Discord 卡片標題 #ep{episode_id} 一致，玩家可對照。
         """
-        if not self._web_client_online() or not web_pngs:
+        if not web_pngs:
             return False
+        online = self._web_client_online()
         routing_key = f"reentry:{ctx.episode_id}"
         if not self._focus_roblox():
             self.log_discord.info(
@@ -7346,6 +7379,10 @@ class Bot:
             return False
         # 網頁在等你點——Discord 發一則提醒（玩家不必剛好開著面板盯著）
         self._notify_web_intervention_pending(ctx, len(web_pngs))
+        self.log_discord.info(
+            "[RR#%s] 回礦 web 介入：已推 %d 張（推送當下 client %s；沒人開網頁等 %.0fs）",
+            ctx.episode_id, len(web_pngs), "在線" if online else "離線",
+            cfg.web_join_grace_s)
 
         try:
             for attempt in range(1, max_attempts + 1):
@@ -7359,7 +7396,9 @@ class Bot:
                         "[RR#%s] 回礦 web 介入：%s，fall through Discord 八方位",
                         ctx.episode_id,
                         "玩家按 🔀 選擇改用 Discord" if escalated else
-                        f"逾時無回應（attempt {attempt}/{max_attempts}，等了 {timeout:.0f}s）")
+                        ("沒人開網頁（等了 %.0fs）" % cfg.web_join_grace_s
+                         if not self._web_client_online() else
+                         f"逾時無回應（attempt {attempt}/{max_attempts}，等了 {timeout:.0f}s）"))
                     # 2026-07-27：這裡原本沒有任何 INTERVENTION_RESULT——面板連著的人
                     # 只會看到畫面停在原地，之後才連進來的人（使用者是「有提醒才連」）
                     # 靠重播緩衝也會看到一份早就作廢的等待畫面。補一則結果訊息，順便

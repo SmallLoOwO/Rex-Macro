@@ -603,6 +603,12 @@ class Config:
     # 停更久的實際成本比看起來小：逾時退回 Discord 八方位一樣要等人。
     web_intervention_budget_s: float = 900.0
     web_intervention_retry_budget_s: float = 120.0
+    # 推完圖之後「還沒有任何 client 連進來」的短等候（2026-07-29）。
+    # 舊流程根本不推圖給離線的網頁，所以永遠走不到這裡；改成無條件推之後，
+    # 無人看顧的場次不能拿 web_intervention_budget_s 去等一個不會來的人——
+    # Discord 提醒發出後 2 分鐘沒人開頁面就退回 Discord 八方位。
+    # 這段時間內有人連上就升級成完整 budget（見 _await_web_reentry_action）。
+    web_join_grace_s: float = 120.0
     websocket_ping_interval_s: float = 30.0
     # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，
     # 無法偵測手機背景化／Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn

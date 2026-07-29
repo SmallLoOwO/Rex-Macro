@@ -329,17 +329,87 @@ def test_main_reentry_timeout_falls_back_to_discord(monkeypatch):
     assert bot._reentry_await_player_click(ctx, _PNGS) is False
 
 
-def test_main_reentry_returns_false_when_web_offline(monkeypatch):
-    """web 離線 → 回 False，caller fall through 既有 Discord 流程。"""
+def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
+    """核心修復（2026-07-29）：沒人連著也要推圖 + 發提醒。
+
+    舊版第一行就 `if not _web_client_online(): return False`——而使用者是被
+    Discord 提醒才開網頁的人，掃描當下當然沒連線 → 網頁永遠拿不到圖，
+    「網頁優先」在實機從來沒發生過（07-29 RR#32：掃完直接洗 Discord 八方位，
+    log 連一行 `web 介入` 都沒有）。圖推進 registry replay 緩衝，人開頁面時補得到。
+    """
     from tests.fake_bot import FakeFallback, FakeReentryCtx
-    touched = []
+    pushed, notified = [], []
     bot = _reentry_bot(
         monkeypatch,
-        _web_fallback=FakeFallback(fallback=True),
-        _send_web_intervention_frames=lambda **kw: touched.append("push") or True,
+        _web_fallback=FakeFallback(fallback=True),        # 沒有任何 client
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append(len(kw["frames"])) or True),
+        _notify_web_intervention_pending=lambda ctx, n: notified.append(n),
+        _await_web_reentry_action=lambda routing_key, timeout_s: (None, None),
+        _broadcast_intervention_result=lambda ctx, verdict, summary, flow="reentry": None,
     )
-    assert bot._reentry_await_player_click(FakeReentryCtx(), _PNGS) is False
-    assert touched == [], "fallback 中不該推任何東西"
+    ctx = FakeReentryCtx(episode_id="32")
+    ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
+    assert bot._reentry_await_player_click(ctx, _PNGS) is False
+    assert pushed == [8], f"離線也要推 8 張進 replay 緩衝，實際：{pushed}"
+    assert notified == [8], "要發 Discord 提醒叫人來開網頁"
+
+
+def test_await_web_reentry_action_gives_up_after_join_grace(monkeypatch):
+    """沒人連進來 → 只等 web_join_grace_s，不是整份 budget。
+
+    無人看顧的場次不能因為「網頁優先」卡滿 15 分鐘。
+    """
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+
+    clock = [0.0]
+    monkeypatch.setattr(main_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(main_mod.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 10))
+    monkeypatch.setattr(main_mod.cfg, "web_join_grace_s", 120.0)
+
+    class _NoReply:
+        def pop(self, key):
+            return None
+
+    bot = make_fake_bot(
+        bind=["_await_web_reentry_action"],
+        _web_pending=_NoReply(),
+        _web_client_online=lambda: False,
+        _mine_resetting=False,
+    )
+    assert bot._await_web_reentry_action(routing_key="reentry:9",
+                                         timeout_s=900.0) == (None, None)
+    assert clock[0] < 200.0, f"應在 grace 內放棄，實際等了 {clock[0]}s"
+
+
+def test_await_web_reentry_action_extends_when_player_joins(monkeypatch):
+    """grace 內有人開網頁 → 升級成完整 budget，不會在 grace 到期時砍掉。"""
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+
+    clock = [0.0]
+    monkeypatch.setattr(main_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(main_mod.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 10))
+    monkeypatch.setattr(main_mod.cfg, "web_join_grace_s", 120.0)
+
+    class _ReplyAt300:
+        """玩家 300s 才點下去（早就過了 grace，但他人已經在線上）。"""
+
+        def pop(self, key):
+            if key == "reentry:9" and clock[0] >= 300.0:
+                return {"x": 1, "y": 2, "dir": 3}
+            return None
+
+    bot = make_fake_bot(
+        bind=["_await_web_reentry_action"],
+        _web_pending=_ReplyAt300(),
+        _web_client_online=lambda: clock[0] >= 60.0,   # 60s 時開了頁面
+        _mine_resetting=False,
+    )
+    kind, reply = bot._await_web_reentry_action(routing_key="reentry:9",
+                                                timeout_s=900.0)
+    assert kind == "click" and reply["dir"] == 3
 
 
 def test_main_reentry_returns_false_without_frames(monkeypatch):
