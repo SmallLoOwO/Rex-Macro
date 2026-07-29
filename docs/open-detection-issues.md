@@ -159,3 +159,67 @@ H057 上線後綠世界 giveup 頻率再決定要不要做「偵測到特寫就�
 實機幀在 MSIX LocalCache（`snapshots/review/*_sweep_empty_dir?.png`，九場 72 幀）。
 上表的真框座標即 ground truth；`_TRACKER_COLORS` 綠系掃不到 C 型黃框（087 dir3 是
 用 `find_tracker` 全幀跑出來才補進表的），列清單時要連黃/藍系一起掃。
+
+---
+
+## D07（2026-07-29，harvest 121）：`sweep_pitch_step_px=185` 的 up 層必定撞出 camera collision，down 層又壓過頭
+
+### 症狀
+
+121 是俯仰層掃描**啟用後的第一場**（`sweep_pitch_enabled=True`、`step_px=185`、
+`center_back_px=370`）。up 層八方位全空、down 層才撈到唯二兩顆 Gelisol。
+原本歸因於 H065 的 D2 toggle，**實機幀顯示不是**（或不只是）。
+
+### 量測（實機幀，肉眼判讀；MSIX LocalCache）
+
+三層同方位對照 + 每次拖曳的前後全幀（`_pitch_drag_verified` 落盤的 `trace/pitch_ok_*`）：
+
+| 幀 | 內容 |
+|---|---|
+| `review/…121_sweep_empty_dir0.png`（mid） | 隧道水平視角，牆-地交界 y≈620、角色高 ~170px、鏡頭正常吊臂距離 |
+| `review/…121_sweep_empty_dir7.png`（mid） | 同上，交界 y≈700 |
+| `review/…121_sweep_empty_up_dir0.png` | **角色塞滿畫面中央**，鏡頭貼身；交界掉到 y≈950 |
+| `review/…121_sweep_empty_up_dir4.png` | 角色＋背包塞滿中央，底部只剩一條地面 |
+| `review/…121_sweep_empty_up_dir7.png` | 角色佔滿，背景全是貼近的地面/牆體 |
+| `trace/20260729_024143_*_pitch_ok_{before,after}.png` | up nudge −185px 的前後：before＝正常隧道視角，after＝鏡頭已被拉到貼身 |
+| `trace/20260729_024308_*_pitch_ok_before.png` | up 層**掃完八方位後**的視野：角色佔滿約 70% 畫面 |
+| `trace/20260729_024312_*_pitch_ok_{before,after}.png` | down nudge +185px 的前後：before＝水平，after＝俯視地面、鏡頭距離仍正常 |
+| `review/…121_sweep_accepted_dir7_1440_162.png` | down 層命中，框在 **y=162** |
+| `review/…121_sweep_accepted_dir0_896_154.png` | down 層命中，框在 **y=154** |
+
+log 側五次拖曳全部判「生效」，被吃不是原因：
+
+```
+02:41:38 俯仰層 up 歸位   mean=5.44   （冪等歸位，本來就該接近 0）
+02:41:43 俯仰層 up nudge -185px  mean=7.79
+02:43:08 俯仰層 down 歸位 mean=14.38  （從 up 拉回 mid，變化最大）
+02:43:13 俯仰層 down nudge 185px mean=9.00
+02:45:47 收尾 挖礦標準角歸位 mean=8.42
+```
+
+### 兩個結論
+
+1. **up 層是自己製造出 D05 的條件**。抬高俯仰＝鏡頭吊臂往下擺進地面 → Roblox 把鏡頭
+   拉到貼身 → 角色身體蓋住畫面中央，而候選 ROI 正好在中央。查過的三個方位（0/4/7）
+   加層尾幀**都**是這個狀態，不是某個方位運氣不好。up 層八方位全空是幾何必然。
+2. **down 層壓太低**。全場唯二命中落在 y=154／162（畫面最上 15%），代表真正有料的
+   帶狀區在畫面之外、只擦到下緣進來一點。以 70° 垂直 FOV 反推，那兩顆的仰角其實
+   還在 mid 層的視野帶內。
+
+⚠ 交界位移換算角度會被鏡頭距離（碰撞）污染，上面的 y 值只能當「方向與量級」，
+不是精準的度數量測。
+
+### 待修
+
+`config.py` 的註解已預留這條退路：「驗收發現視野抬得太多/太少或方向相反時，
+只改這個數字或它的正負，不動任何邏輯」。下一步就是把 `sweep_pitch_step_px`
+往下調（185 → 100~120 量級）再跑一場，收兩側夾：
+
+- up 側要看的是「角色**不再**塞滿中央」且交界確實往下移；
+- down 側要看的是命中不再擠在畫面最上緣。
+
+### 順帶存疑（證據不足，別當結論）
+
+down 層那次重掃 D2 距上次掃描 **87.3s**（log 實錄），也就是 down 層拿到的是**新鮮的**
+掃描標記，mid 層那次已經很舊。「down 層才撈到」有可能主要是重掃的功勞而非俯仰的功勞。
+要分開，得讓某一場的 mid 層在同樣新鮮的掃描下重跑一次。
