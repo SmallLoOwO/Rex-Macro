@@ -591,6 +591,95 @@ def test_capacity_blocks_opening_two_sided_clamp():
     assert capacity_blocks_opening("reset", 100.0, th) is True
 
 
+# ===== H066：重置收尾等候有自己的預算（不再吃開場探測的 300s）=====
+from miningbot.reentry_remote import plan_reset_drain
+
+_DRAIN_BUDGET = 900.0   # Config.reentry_reset_drain_budget_s
+_PERIOD_S = 20.5        # 實機每輪間隔（reentry_open_retry_wait_s 20s + OCR 開銷）
+
+
+def _drain_replay(caps, budget=_DRAIN_BUDGET, period_s=_PERIOD_S):
+    """把一串實機容量讀值餵進 plan_reset_drain，回 (最終 verdict, 最大 stall 輪數)。"""
+    prev, stall, worst, verdict = None, 0, 0, "wait"
+    for i, cap in enumerate(caps):
+        verdict, stall = plan_reset_drain(cap, prev, stall, i * period_s, budget)
+        worst = max(worst, stall)
+        prev = cap
+        if verdict != "wait":
+            break
+    return verdict, worst
+
+
+# 實機容量軌跡（miningbot.log `開場前容量` 行逐筆抄錄，2026-07-21 ~ 07-29）
+_DRAIN_HEALTHY = [
+    [95, 79, 71, 63, 56, 43, 6],            # RR#13 07-21 23:38
+    [96, 80, 71, 61, 61, 39],               # RR#16 07-22 02:26（含一次持平）
+    [96, 81, 74, 66, 56, 56, 50],           # RR#17 07-22 03:46
+    [93, 77, 68, 60, 54, 12],               # RR#18 07-22 11:45
+    [95, 76, 62, 53, 21],                   # RR#20 07-22 13:43
+    [95, 80, 75, 65, 65, 42],               # RR#27 07-28 00:36
+    [94, 80, 73, 66, 61, 47],               # RR#29 07-29 01:49
+]
+_DRAIN_RR31 = [97, 88, 88, 82, 82, 72, 72, 72, 72, 72, 72, 72, 72, 48, 48]
+_DRAIN_RR30 = [99, 93, 87, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81]
+
+
+def test_plan_reset_drain_healthy_episodes_finish_well_inside_budget():
+    """健康場次（RR#13~#29 實錄）：~110~160s 就排完，全程 wait、最長只連 1 輪沒再降。"""
+    for caps in _DRAIN_HEALTHY:
+        verdict, worst = _drain_replay(caps)
+        assert verdict == "wait", f"{caps} 不該收口，得到 {verdict}"
+        assert worst <= 1, f"{caps} 健康側最長持平 1 輪，實得 {worst}"
+        assert len(caps) * _PERIOD_S < 200.0     # 實測 ~110~160s
+
+
+def test_plan_reset_drain_rr31_slow_but_moving_survives_new_budget():
+    """RR#31（07-29 16:02）：慢但一直在降——舊 300s 預算殺掉它，900s 放行。
+
+    實測 97%→48% 花 315s（~0.165 個百分點/s），照這個速度排到 ≤5% 約 575s。
+    """
+    verdict, worst = _drain_replay(_DRAIN_RR31)
+    assert verdict == "wait"
+    assert worst == 7                       # 72 連 8 次讀值＝連 7 輪沒再降
+    assert len(_DRAIN_RR31) * _PERIOD_S < _DRAIN_BUDGET
+    # 舊制的兩側夾：走到最後一筆讀值時已等 ~289s（實機 log 寫「預算剩 10s」），
+    # 下一輪就被舊的 300s 砍掉——RR#31 真正發生的事。
+    assert plan_reset_drain(48.0, 48.0, 8, 15 * _PERIOD_S, 300.0)[0] == "timeout"
+
+
+def test_plan_reset_drain_stall_count_cannot_separate_slow_from_frozen():
+    """RR#30（07-29 03:34）容量卡在 81%：stall 輪數**不足以**當凍結門檻。
+
+    這顆是刻意的「不要寫門檻」守門（H059 教訓）：RR#31 慢但會動連 7 輪、RR#30
+    連 9 輪，而 9 是被舊 300s 預算截斷的**上界**——沒人知道第 11 輪會不會恢復。
+    兩者只差兩輪、上界又是截斷值，任何門檻都不可否證。要放門檻進來，得先補一組
+    「等到確定不會恢復」的負樣本，並在這裡把兩側夾寫出來。
+    """
+    _, rr30_worst = _drain_replay(_DRAIN_RR30)
+    _, rr31_worst = _drain_replay(_DRAIN_RR31)
+    assert rr30_worst == 9 and rr31_worst == 7
+    assert rr30_worst - rr31_worst <= 2      # 分不開：不得據此判決
+    # 現行契約：兩者都只是 wait（預算內），差別交給通知文字讓人判讀
+    assert _drain_replay(_DRAIN_RR30)[0] == "wait"
+
+
+def test_plan_reset_drain_timeout_at_budget():
+    verdict, stall = plan_reset_drain(40.0, 45.0, 0, 900.0, _DRAIN_BUDGET)
+    assert (verdict, stall) == ("timeout", 0)
+    assert plan_reset_drain(40.0, 45.0, 0, 899.0, _DRAIN_BUDGET)[0] == "wait"
+
+
+def test_plan_reset_drain_ocr_miss_does_not_count_as_stall():
+    """容量 OCR 掉一幀（None）不是「沒再降」的證據——stall 計數歸零。"""
+    assert plan_reset_drain(None, 72.0, 7, 100.0, _DRAIN_BUDGET) == ("wait", 0)
+    assert plan_reset_drain(72.0, None, 7, 100.0, _DRAIN_BUDGET) == ("wait", 0)
+
+
+def test_plan_reset_drain_capacity_going_up_counts_as_stall():
+    # 「沒再降」包含回升（凍結舊幀／OCR 跳動）：72→75 不可當成有進展
+    assert plan_reset_drain(75.0, 72.0, 3, 100.0, _DRAIN_BUDGET) == ("wait", 4)
+
+
 # ===== H046 depth 錨解析（實機拖尾雜訊全來自裁圖右緣的金額 "$..."）=====
 from miningbot.ocr import parse_depth_surface
 

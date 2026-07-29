@@ -1031,10 +1031,15 @@ class WebIPCThread:
         """
         self.app.state.registry.set_loop(loop)
 
-    def start(self) -> None:
-        """啟動 uvicorn daemon thread；阻塞到 actual_port 已知或 5s 超時。
+    def start(self, bind_wait_s: float = 20.0) -> None:
+        """啟動 uvicorn daemon thread；阻塞到 actual_port 已知或 `bind_wait_s` 超時。
 
         port=0 時 actual_port 是 OS 分配的隨機 port；呼叫端可接著 log 出 URL。
+
+        預設 5.0→20.0（2026-07-29 實機，見 Config.web_server_bind_wait_s）：超時**不是**
+        「這個位址綁不上」的證據——真綁不上時 uvicorn 自己會設 should_exit，下面的迴圈
+        立刻跳出。超時只代表 uvicorn 第一次啟動的一次性成本還沒付完（主執行緒忙著
+        Bot.__init__ 時特別容易），砍掉它反而害呼叫端誤判位址不通、退回 127.0.0.1。
         """
         if self._thread is not None:
             return  # 已啟動（冪等）
@@ -1075,7 +1080,7 @@ class WebIPCThread:
         # 等 uvicorn bind 完 socket 才能讀 actual_port（lifespan startup 階段
         # servers 還沒建立；這裡 polling 是簡單可靠的解法，< 5s）。
         # `servers` 屬性在 startup() 跑完前不存在，用 getattr 避免 AttributeError。
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + bind_wait_s
         while time.monotonic() < deadline:
             servers = getattr(self._server, "servers", None) or []
             for srv in servers:
@@ -1087,15 +1092,23 @@ class WebIPCThread:
             if self._server.should_exit:
                 break  # uvicorn 綁失敗（例如 port 被佔）；讓 actual_port 留 0
             time.sleep(0.02)
-        # 5s 超時仍無 actual_port：uvicorn 可能還在 init 或 bind 失敗（且沒有自己
-        # 設 should_exit）。silent return 會讓呼叫端 log 出 http://127.0.0.1:0
+        # 超時仍無 actual_port：silent return 會讓呼叫端 log 出 http://127.0.0.1:0
         # 看似成功；這裡顯式警告＋請求 thread 退出，避免 daemon 殘留與假啟動訊息。
+        # ⚠ 兩種情況要分開講（2026-07-29 排錯教訓：舊訊息把兩者寫成一句「可能還在
+        # init 或綁失敗」，害人以為 Tailscale 沒起來，實際是超時太短）：
+        #   should_exit=True  → uvicorn 自己判定綁不上（位址不存在／port 被佔）。
+        #   should_exit=False → 還沒綁到失敗那一步，純粹是 bind_wait_s 不夠。
         if self.actual_port == 0:
-            _log.warning(
-                "WebIPC server 5s 內未 bind socket；uvicorn 可能還在 init 或綁失敗"
-                "（should_exit=%s）——已請求 thread 退出，actual_port 留 0",
-                self._server.should_exit,
-            )
+            if self._server.should_exit:
+                _log.warning(
+                    "WebIPC server 綁不上 %s:%s（uvicorn 已自行放棄；位址不存在或 "
+                    "port 被佔）——actual_port 留 0", self.host, self.port)
+            else:
+                _log.warning(
+                    "WebIPC server %.0fs 內未 bind socket，但 uvicorn 沒判定失敗"
+                    "（should_exit=False）＝**還在 init、不是位址不通**；"
+                    "調大 Config.web_server_bind_wait_s 再看——已請求 thread 退出",
+                    bind_wait_s)
             self._server.should_exit = True
 
     def stop(self) -> None:

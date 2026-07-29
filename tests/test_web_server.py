@@ -742,3 +742,29 @@ def test_broadcast_frame_snapshot_sends_meta_then_binary(monkeypatch):
     calls = bot._web_thread.registry.calls
     assert len(calls) == 1
     assert calls[0].payload == {"event": "FRAME_SNAPSHOT"}
+
+
+# ===== H067（2026-07-29）：綁定等待 5s 太短，把「uvicorn 還在 init」誤判成「位址不通」=====
+def test_webipcthread_bind_wait_is_configurable_and_wired_from_config():
+    """綁定等待秒數必須可調，且 main.py 真的把 Config 值餵進去。
+
+    實機：bot 14:31 啟動、14:36 綁 100.110.130.17 逾時退回 127.0.0.1，手機整場連
+    不進來。但當時 Tailscale 早就起來（開機在 07-25，事後實測該 IP bind 得上），
+    log 也寫著 `should_exit=False`＝uvicorn **還沒走到綁失敗那一步**——真綁不上時
+    uvicorn 自己會設 should_exit。純粹是第一次啟動的一次性成本（asyncio event loop／
+    config.load／protocol import）撞上忙碌的主執行緒，5s 不夠；隨後退回 127.0.0.1
+    那次 <1s 就成了（模組已熱），正是「超時太短」而非「位址不通」的鐵證。
+
+    兩道守門：簽章可調（不再是寫死的 5.0），以及 main.py 呼叫端有把 cfg 值傳進來
+    ——只改預設值卻沒接線的話，production 依舊吃函式預設值。
+    """
+    import inspect
+    from miningbot.web_server import WebIPCThread
+    from miningbot.config import Config
+    from miningbot import main as _main
+
+    assert "bind_wait_s" in inspect.signature(WebIPCThread.start).parameters
+    assert Config().web_server_bind_wait_s > 5.0, "5s 已被實機證明不夠"
+    assert "bind_wait_s=cfg.web_server_bind_wait_s" in inspect.getsource(_main), (
+        "main.py 沒把 Config.web_server_bind_wait_s 傳給 WebIPCThread.start()"
+        "——production 會繼續吃函式預設值")

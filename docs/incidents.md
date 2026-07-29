@@ -628,3 +628,27 @@ fixture 位置慣例：
 - **scan_confirm_mode 仍 off 的現狀下，這個守門是唯一防線**：`_confirm_scan` 在 off 時直接 `return True` 不驗（AGENTS.md CURRENT RISK AREAS 記著）。所以 slot_selected 守門不能省——它取代了「按下去到底有沒有生效」這條本該由 confirm 把關的檢查。
 - **回歸**：`tests/test_execute_scan_toggle.py`（slot2 已裝備→不按 "2" 只 click、未裝備→按 "2" 再 click）＋`tests/test_slot_fixtures.py` D2 區塊（fixture 兩側夾：slot2_equipped_green=True、slot2_unequipped_gray=False、greenness +10.50/+1.48 夾門檻 5.0）。fixture 取自 121 實機幀（`slot2_unequipped_gray.png` 正是 up 層 toggle 卸裝那一幀）。
 - **下輪實機驗證預期**：俯仰層轉換後的 up／down 層，`harvest.log` 應出現穩定框（不再因「沒掃描」而全空）。反指標：若某層仍全空、且該層開採前 slot2 區域 greenness 落在 +1.5 附近（未裝備），代表守門誤判「已裝備」而漏按 "2"——查 `d2_slot_region` 是否因 UI 改版位移，只改座標不動邏輯。
+
+## H066（2026-07-29 03:34 RR#30／16:02 RR#31 兩次；使用者回報「回礦 #31：開場探了 300s 仍未全過驗證，最後一探 depth=讀不到｜capacity=讀不到｜pitch幀差=0.00/0.0000」）：重置收尾的**被動等候**吃掉開場探測預算，交人工訊息還附上一組從未量測過的讀值
+
+- **症狀**：RR#31 16:02:07~16:06:56 共 15 輪 `[RR#N] 開場前容量 XX% > 5%（重置收尾中）`，容量 97→88,88→82,82→72×8→48,48，預算耗盡交人工。使用者收到的訊息寫「最後一探：depth=讀不到｜capacity=讀不到｜pitch幀差=0.00/0.0000」，照訊息附的判讀表（`pitch 0.00/0.0000＝凍結`）等於宣告遊戲凍結——但同一份 log 顯示容量 OCR 每輪都讀得到、而且一直在降。RR#30 03:34 同型（99→93→87→81×10）。此前 RR#13~#29 共 17 場全部正常（等 ~110~160s 就放行）。
+- **一句話根因**：H058 的開場前容量預檢是「不點擊、不拖曳，只被動等遊戲把容量排掉」，但 `_rr_open_episode` 把 `_rr_open_first_ts`（開場**探測**預算 `reentry_open_budget_s`=300s 的起算點）設在函式開頭——於是被動等候的每一秒都從探測預算裡扣。等候本身完全沒有探測動作，`_rr_last_probe` 一次都沒被寫過，give_up 印出來的是它的初始值 `(None, None, 0.0, 0.0)`：depth/capacity 的「讀不到」與 pitch 的「0.00/0.0000」全是**佔位符不是量測**。
+- **量測**（同一份 `miningbot.log` 的 19 場重置回礦，逐筆抄容量軌跡）：
+  | 場次 | 軌跡 | 最長「沒再降」 | 結果 |
+  |---|---|---|---|
+  | RR#13/16/17/18/20/27/29（健康，7 場） | 95→79→71→63→56→43→6 之類，~110~160s | **1 輪** | 正常放行 |
+  | RR#31 | 97→88,88→82,82→**72×8**→48,48 | **7 輪** | 一直在降，只是慢（~0.165 個百分點/s，排到 ≤5% 需 ~575s）|
+  | RR#30 | 99→93→87→**81×10** | **9 輪** | 81% 後沒再降過（但 9 是被舊 300s 截斷的上界）|
+- **對策**：(1) 等候有**自己的預算** `reentry_reset_drain_budget_s`=900s（最壞觀測 ~575s 的 1.5 倍），純函式 `reentry_remote.plan_reset_drain` 收口；`_rr_open_first_ts` 改在「容量過關、真的要點回到地表」那一刻才起算，探測拿回完整 300s。(2) 等候輪的節奏改由 `_rr_drain_first_ts` 驅動（這階段 `_rr_open_first_ts` 是 0，舊的 H044 迴圈條件會失效，首輪之後就再也沒人呼叫 `_rr_open_episode`）。(3) 等候超預算走 `_rr_drain_give_up`：講容量軌跡（最後讀值＋連續沒再降輪數＋已等秒數），明說「這不是開場探測失敗，bot 全程沒點過回到地表也沒拖曳俯仰」，不再借用凍結敘事。(4) HUD 等候輪不得被「回礦等待指令」覆蓋（那會謊報 bot 在等人）。
+- **刻意不做：不寫「凍結」門檻**。stall 輪數只寫進 log／通知供人判讀。健康 1 輪 vs RR#31 的 7 輪 vs RR#30 的 9 輪——只差兩輪，而 9 還是被舊預算截斷的上界，沒人知道 RR#30 第 11 輪會不會恢復。任何門檻都不可否證（H059 教訓）。要放門檻進來，得先收一組「等到確定不會恢復」的負樣本。`tests/test_reentry_remote.py::test_plan_reset_drain_stall_count_cannot_separate_slow_from_frozen` 就是釘住這個決定的守門測試。
+- **回歸**：`tests/test_reentry_remote.py` H066 七例（健康 7 場實機軌跡全程 wait 且 stall ≤1、RR#31 在 900s 下放行／在舊 300s 下必被砍、stall 分不開慢與凍、預算邊界 899/900、OCR None 不計 stall、容量回升算沒再降）＋`tests/test_main_pitch_home.py` 五例整合（等候輪不起算探測預算且不點不拖、放行才起算、放行後照舊 sweep、逾時通知講真症狀且不得出現 `pitch幀差`／`0.00/0.0000`、stall 計數累加）。
+- **下輪實機驗證預期**：重置回礦輪的 `開場前容量` 行結尾改成「（已等 Ns／900s，連續沒再降 M 輪）」。慢速場次（如 RR#31）應該自己等到 ≤5% 後接上 `reentry_epN_dir1` 拍照，不再交人工。真的等不到時 Discord 訊息不得再出現 `pitch幀差=0.00/0.0000`。反指標：若某場 stall 輪數衝到 20+ 仍等滿 900s，那就是「確定不會恢復」的負樣本，拿它回頭補門檻。
+
+## H067（2026-07-29 14:36 啟動；使用者回報「網頁 UI：http://127.0.0.1:8765/ ⚠ 綁不到 100.110.130.17」）：綁定等待 5s 太短，把「uvicorn 還在 init」誤判成「位址不通」而退回 127.0.0.1，手機整場連不進來
+
+- **症狀**：`miningbot.log` 14:36:37 連三行——`WebIPC server 5s 內未 bind socket；uvicorn 可能還在 init 或綁失敗（should_exit=False）`→`WebIPC 綁 100.110.130.17 失敗`→14:36:38 `WebIPC server 啟動：http://127.0.0.1:8765`＋`綁不到設定的 100.110.130.17（Tailscale 沒起來？）`。介入面板只在 bot 這台開得起來，手機（同 tailnet）整場連不進來。07-26~07-29 01:35 之前的每一次啟動都綁得上 100.110.130.17。
+- **一句話根因**：`should_exit=False` 就是答案——uvicorn 真的綁不上時會自己設 `should_exit`（`Server.startup` 捕 OSError），polling 迴圈立刻跳出。這裡 5s 到期時 uvicorn **還沒走到綁那一步**，只是第一次啟動要付一次性成本（asyncio proactor event loop 建立、`config.load()`、protocol 模組 import），而主執行緒正忙著 `Bot.__init__`（bot 程序 14:31:48 起、這裡已經是 14:36）。緊接著退回 127.0.0.1 的那次 <1s 就成了——模組已經熱了，正是「超時太短」而非「位址不通」的鐵證。
+- **反證「Tailscale 沒起來」**：開機時間 07-25 15:45（事發前四天）、`tailscaled`/`tailscale-ipn` 都在跑、`Get-NetIPAddress` 顯示 `100.110.130.17` 為 `Preferred`，事後用 `TcpListener` 實測該 IP bind 得上。log 那句「（Tailscale 沒起來？）」是寫死的臆測，把排錯往錯方向帶了一整場。
+- **對策**：(1) `WebIPCThread.start(bind_wait_s=20.0)`，值走新的 `Config.web_server_bind_wait_s`（預設 20.0）；真綁不上時 `should_exit` 讓迴圈立刻跳出，不會白等 20s。(2) 逾時警告按 `should_exit` 分兩種講法——True＝「uvicorn 已自行放棄（位址不存在或 port 被佔）」，False＝「還在 init、**不是位址不通**，調大 `web_server_bind_wait_s`」。(3) main.py 退回警告刪掉「Tailscale 沒起來？」的臆測，改叫人先看上一行分型。
+- **回歸**：`tests/test_web_server.py::test_webipcthread_bind_wait_is_configurable_and_wired_from_config`（簽章有 `bind_wait_s`、Config 預設 >5.0、**且 main.py 真的把 cfg 值傳進去**——只改預設值沒接線的話 production 照樣吃寫死的 5s）。
+- **下輪實機驗證預期**：啟動 log 出現 `WebIPC server 啟動：http://100.110.130.17:8765`，手機連得進去。反指標：若仍逾時且新訊息說「還在 init」，就是 20s 還不夠（再往上調）；若說「uvicorn 已自行放棄」，才是真的去查 Tailscale／port 佔用。

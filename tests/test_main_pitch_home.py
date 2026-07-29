@@ -400,3 +400,110 @@ def test_rr_pitch_save_clamps_value(monkeypatch, tmp_path):
         episode_id=7, created_at=0.0, sticky_layer="L")
     assert bot._rr_pitch_save(ctx, path=str(fake_cfg)) is True
     assert "reentry_pitch_back_px: int = 0" in fake_cfg.read_text(encoding="utf-8")
+
+
+# ===== H066（2026-07-29 RR#30/#31）：重置收尾等候不得吃掉開場探測預算 =====
+def _rr_drain_bot(monkeypatch, caps):
+    """reset 觸發的開場鏈最小 Bot：容量 OCR 依序回 caps，記錄點擊/拖曳/通知。"""
+    bot = Bot.__new__(Bot)
+    bot.logger = _LogRecorder()
+    bot._focus_roblox = lambda: True
+    bot._rr_open_first_ts = 0.0
+    bot._rr_open_last_ts = 0.0
+    bot._rr_drain_first_ts = 0.0
+    bot._rr_drain_last_cap = None
+    bot._rr_drain_stall = 0
+    bot._rr_ctx = reentry_remote.RemoteReentryContext(
+        episode_id=31, created_at=0.0, sticky_layer="L", trigger="reset")
+    bot._rr_ensure_ctx = lambda reroll: None
+    bot._rr_pitch_back_px = None
+    bot._pitch_offset_px = 0
+    bot.clicks, bot.drags, bot.notes, bot.sweeps = [], [], [], []
+    bot._click_surface_verified = lambda tag: bot.clicks.append(tag) or False
+    bot._sampler_pitch_prepare = lambda: None
+    bot._pitch_drag_measured = lambda label, drag: (
+        bot.drags.append(label) or (True, 19.7, 0.31))
+    bot._maybe_arm_chime = lambda pct: None
+    bot._rr_notify = lambda msg, **kw: bot.notes.append(msg)
+    bot._rr_sync_write = lambda snap, name: name
+    bot._rr_sweep_capture = lambda encode_for_web=False: (
+        bot.sweeps.append(1) or ([], 0, []))
+    bot._rr_sweep_send_discord = lambda pairs, rot_missed, prefix_msg="": None
+    bot._web_client_online = lambda: False
+    bot._reentry_await_player_click = lambda ctx, web_pngs, rot_missed=0: False
+    bot._rr_embed_mid = None
+    bot._rr_post_embed = lambda: None
+    bot.last_action = ""
+    monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
+    monkeypatch.setattr(main.capture, "crop", lambda f, region: f)
+    monkeypatch.setattr(main.ocr, "read_depth_is_surface", lambda img, path: True)
+    seq = list(caps)
+    monkeypatch.setattr(main.ocr, "read_capacity_pct",
+                        lambda img, path: seq.pop(0) if seq else 0.0)
+    return bot
+
+
+def test_drain_wait_does_not_start_probe_budget(monkeypatch):
+    """RR#31 根因：收尾等候把 _rr_open_first_ts 設起來，300s 探測預算被空等吃光。
+
+    等候輪必須完全不動作（不點「回到地表」、不拖曳俯仰）**且**不起算探測預算。
+    """
+    bot = _rr_drain_bot(monkeypatch, [97.0])
+    bot._rr_open_episode()
+    assert bot._rr_open_first_ts == 0.0, "等候輪不得起算開場探測預算"
+    assert bot._rr_drain_first_ts > 0.0, "等候輪要起算自己的預算"
+    assert bot.clicks == [] and bot.drags == []      # H058 契約：不點不拖
+    assert bot.sweeps == []
+    assert "等重置收尾" in bot.last_action
+
+
+def test_drain_release_starts_probe_budget_with_full_amount(monkeypatch):
+    """容量降到門檻以下＝等候結束：這一刻才起算探測預算，且拿到完整額度。
+
+    用 depth 讀不到讓開場閘 defer，探測預算才留在計時中看得到（全閘通過的話
+    _rr_open_first_ts 會被清成 0，那條路徑由下一顆測試驗）。
+    """
+    bot = _rr_drain_bot(monkeypatch, [97.0, 1.0])
+    monkeypatch.setattr(main.ocr, "read_depth_is_surface", lambda img, path: None)
+    bot._rr_open_episode()                            # 等候輪
+    assert bot._rr_open_first_ts == 0.0
+    bot._rr_open_episode()                            # 容量 1% → 放行
+    assert bot._rr_drain_first_ts == 0.0, "放行後要清等候狀態"
+    assert bot._rr_open_first_ts > 0.0, "探測預算要到這一刻才起算（拿滿額度）"
+    assert bot.clicks == ["開場"] and bot.drags       # 真的開始回礦動作
+
+
+def test_drain_release_proceeds_to_sweep(monkeypatch):
+    """等候結束＋開場閘全過 → 照舊拍八方位（等候層不改變原有放行行為）。"""
+    bot = _rr_drain_bot(monkeypatch, [97.0, 1.0])
+    bot._rr_open_episode()
+    bot._rr_open_episode()
+    assert bot.clicks == ["開場"] and bot.sweeps == [1]
+    assert bot._rr_open_first_ts == 0.0               # 全閘通過即清（既有契約）
+
+
+def test_drain_timeout_notifies_real_symptom_not_frozen_pitch(monkeypatch):
+    """等候超預算的通知必須講容量軌跡，不得再借「pitch 0.00/0.0000＝凍結」。
+
+    舊版走 _tick_reentry_remote 的 give_up，附的是 _rr_last_probe 初始值
+    (None, None, 0.0, 0.0)——那條路徑一次都沒探過（RR#31 使用者收到的就是這則）。
+    """
+    monkeypatch.setattr(main.cfg, "reentry_reset_drain_budget_s", 0.0)
+    bot = _rr_drain_bot(monkeypatch, [72.0])
+    bot._rr_open_episode()
+    assert len(bot.notes) == 1
+    msg = bot.notes[0]
+    assert "72%" in msg and "沒再降" in msg
+    # 「凍結」可以出現在**給人判讀的說明**裡，但不得附上那組從未量測過的讀值
+    assert "pitch幀差" not in msg and "0.00/0.0000" not in msg
+    assert bot.clicks == [] and bot.drags == []
+    assert bot._rr_drain_first_ts == 0.0             # 交人工後清狀態，等指令
+
+
+def test_drain_stall_counter_tracks_capacity_trace(monkeypatch):
+    """連續沒再降的輪數要真的累加——它是通知裡讓人分辨慢/凍的唯一資訊。"""
+    bot = _rr_drain_bot(monkeypatch, [82.0, 72.0, 72.0, 72.0])
+    for _ in range(4):
+        bot._rr_open_episode()
+    assert bot._rr_drain_stall == 2                   # 72 連 3 次＝連 2 輪沒再降
+    assert bot.clicks == [] and bot.drags == []

@@ -242,6 +242,9 @@ class Bot:
         self._stuck_seen: dict[str, int] = {}  # 🏠 反應數基線（bot 自己貼成功時為 1）
         self._rr_open_first_ts = 0.0           # H044 開場探測：episode 首擊時刻（0=非探測中）
         self._rr_open_last_ts = 0.0            # H044 開場探測：上一次探測時刻
+        self._rr_drain_first_ts = 0.0          # H066 重置收尾等候：首輪時刻（0=非等候中）
+        self._rr_drain_last_cap = None         # H066：上一輪容量讀值（判有沒有在降）
+        self._rr_drain_stall = 0               # H066：連續「沒再降」輪數
         self._rr_last_probe = (None, None, 0.0, 0.0)  # 最後一探讀值 (surface, cap, p_mean, p_frac)；give_up 通知附帶
         self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
@@ -2667,7 +2670,8 @@ class Bot:
                         layer_getter=self._effective_layer_info,
                         player_state_getter=self._player_state_snapshot,
                     )
-                    self._web_thread.start()
+                    self._web_thread.start(
+                        bind_wait_s=cfg.web_server_bind_wait_s)
                     if self._web_thread.actual_port > 0:
                         self._web_host = attempt_host
                         break
@@ -2686,9 +2690,14 @@ class Bot:
                 if self._web_thread.actual_port > 0:
                     self.logger.info("WebIPC server 啟動：%s", self._web_url())
                     if self._web_host != cfg.web_server_host:
+                        # ⚠ 別再把這裡預設成「Tailscale 沒起來」（2026-07-29 就是這樣
+                        # 誤導了一整場）：退回也可能只是 web_server_bind_wait_s 太短，
+                        # 上一行 WebIPCThread 的警告會說明是哪一種。
                         self.logger.warning(
-                            "綁不到設定的 %s（Tailscale 沒起來？）——已退回 %s，"
-                            "手機連不進來；等 Tailscale 起來後重啟 bot 即可。",
+                            "綁不到設定的 %s——已退回 %s，手機連不進來。"
+                            "先看上一行判是「uvicorn 自行放棄」（位址真的不通，查 "
+                            "Tailscale）還是「還在 init」（調大 "
+                            "Config.web_server_bind_wait_s）；排除後重啟 bot。",
                             cfg.web_server_host, self._web_host)
                 else:
                     self.logger.warning(
@@ -5941,9 +5950,22 @@ class Bot:
             finally:
                 self._rr_busy = False
             return
+        # H066 重置收尾等候：這階段 _rr_open_first_ts 還是 0（探測預算尚未起算），
+        # 節奏得由 _rr_drain_first_ts 驅動，否則首輪之後就再也沒人呼叫 _rr_open_episode。
+        # 收口（stalled/timeout）由 _rr_open_episode 判——只有它讀得到容量。
+        if self._rr_drain_first_ts and self._pending_reentry is None:
+            if (time.time() - self._rr_open_last_ts
+                    >= cfg.reentry_open_retry_wait_s):
+                self._rr_busy = True
+                try:
+                    self._rr_open_episode()      # 等候輪不 reroll（不 increment attempt）
+                finally:
+                    self._rr_busy = False
+                return
+            # 節奏未到 → 落到下方等待分支更新 HUD
         # H044 開場探測：上一擊未傳送（first_ts 非 0）→ 依節奏重探/放棄。使用者指令優先
         #（重骰/跳過照常走 pending 消費；重骰失敗會回到這裡繼續計預算）。
-        if self._rr_open_first_ts and self._pending_reentry is None:
+        elif self._rr_open_first_ts and self._pending_reentry is None:
             act = reentry_remote.plan_open_retry(
                 self._rr_open_first_ts, time.time(),
                 cfg.reentry_open_retry_wait_s, cfg.reentry_open_budget_s,
@@ -5981,7 +6003,11 @@ class Bot:
             # 等待指令：更新 HUD 顯示（last_action 進 status_hud 的「動作」欄）
             ctx = self._rr_ctx
             mins = int((time.time() - ctx.created_at) // 60)
-            if self._rr_open_first_ts:
+            if self._rr_drain_first_ts:
+                # H066：等候輪的 last_action 由 _rr_open_episode 寫（帶容量讀值），
+                # 這裡不可覆蓋成「等待指令」——那會謊報 bot 在等人。
+                pass
+            elif self._rr_open_first_ts:
                 self.last_action = f"回礦開場探測中 #{ctx.episode_id}（畫面可能凍結，已 {mins} 分）"
             else:
                 self.last_action = f"回礦等待指令 #{ctx.episode_id}（已等 {mins} 分）"
@@ -6004,6 +6030,7 @@ class Bot:
         # 遙控器一直埋在上面。旗標制不依賴輪詢看到哪則訊息，競態消失。
         self._remote_repin.mark_pending()
         self._rr_open_first_ts = 0.0             # episode 收尾清探測狀態
+        self._rr_drain_reset()                   # H066：收尾等候狀態也一併清
         # Task 4：episode 結束收走 embed 卡片（避免殘留一堆死卡）。放在 ctx 清除前，
         # 即使 ctx 已 None（防禦性呼叫）也能清掉殘留 embed。
         if self._rr_embed_mid:
@@ -6379,6 +6406,41 @@ class Bot:
         notify.send_message(token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
         self.log_discord.info("STUCK 🏠 反應 +%d -> manual_reentry", delta)
 
+    def _rr_drain_reset(self):
+        """清 H066 重置收尾等候狀態（等候結束／episode 收尾／交人工後都要清）。"""
+        self._rr_drain_first_ts = 0.0
+        self._rr_drain_last_cap = None
+        self._rr_drain_stall = 0
+
+    def _rr_drain_give_up(self, ctx, verdict: str, cap_s: str, waited: float):
+        """重置收尾等不到（H066）：按**真症狀**通知，不再借用開場探測的凍結敘事。
+
+        舊版走 _tick_reentry_remote 的 give_up，附的 `format_gate_readings` 讀值來自
+        `_rr_last_probe`——這條路徑一次都沒探過，印出來的是初始值 `(None, None,
+        0.0, 0.0)`，而說明文字寫著「pitch 0.00/0.0000＝凍結」，等於對著沒發生的
+        量測下診斷（2026-07-29 RR#31 使用者收到的就是這則）。
+
+        慢 vs 凍不由 bot 判（門檻湊不出兩側夾，見 plan_reset_drain）：把容量軌跡
+        （最後讀值＋連續沒再降輪數）連同截圖交出去，讓人一眼分辨。
+        """
+        stall = self._rr_drain_stall
+        self.logger.warning(
+            "[RR#%s] 重置收尾等候收口（%s）：容量 %s、已等 %.0fs、連續沒再降 %d 輪",
+            ctx.episode_id, verdict, cap_s, waited, stall)
+        snap = capture.grab()
+        path = self._rr_sync_write(
+            snap, f"reentry_ep{ctx.episode_id}_drain_{verdict}")
+        self._rr_notify(
+            f"⚠ 回礦 #{ctx.episode_id}：等重置收尾等了 {waited:.0f}s，容量還沒降到 "
+            f"≤{cfg.reentry_open_capacity_max_pct:.0f}%。\n"
+            f"最後讀到 {cap_s}，連續 {stall} 輪沒再降"
+            f"（每輪 {cfg.reentry_open_retry_wait_s:.0f}s）。\n"
+            "（連續沒再降的輪數大＝畫面／伺服器可能凍結；輪數小＝只是排得慢。"
+            "這**不是**開場探測失敗，bot 全程沒點過「回到地表」也沒拖曳俯仰）。"
+            "回 `重骰` 重新等一輪或 `跳過` 直接開挖",
+            image_paths=[path])
+        self._rr_drain_reset()
+
     def _rr_open_episode(self, reroll: bool = False):
         """按回到地表 →（狀態閘）→ 俯仰歸位 → 八方位拍照 → Discord 發送 → 建/續 context。
 
@@ -6395,8 +6457,6 @@ class Bot:
             self._rr_ensure_ctx(reroll)
             return
         now = time.time()
-        if self._rr_open_first_ts == 0.0:
-            self._rr_open_first_ts = now         # 探測預算起算（episode 首擊）
         # H058：預檢需要 ctx（trigger＋episode_id）；首 tick 先建（不 increment attempt）
         if self._rr_ctx is None:
             self._rr_ensure_ctx(reroll=False)
@@ -6405,6 +6465,12 @@ class Bot:
         # 遊戲卡頓會吃掉這些輸入（RR#8~12 實錄：REENTRY 起跑時容量 60~76%，每 20s 一輪
         # click+pitch+OCR 持續 ~90s 到容量自然排到門檻才放行），且動作對「等容量排掉」無益。
         # 被動觀測到容量 ≤ 門檻才開始真正的回礦行動。手動回礦（trigger!="reset"）不擋。
+        #
+        # H066（2026-07-29 RR#30/#31）：這段等候**有自己的預算**，不再吃開場探測預算。
+        # 舊版把 _rr_open_first_ts 設在函式開頭，於是被動等候的每一秒都從探測的 300s
+        # 裡扣——RR#31 容量還在降（48%）預算就見底，RR#30 容量卡死也只是等滿同一個
+        # 300s；兩種全走同一條 give_up、印同一句「pitch 0.00/0.0000＝凍結」（那組讀值
+        # 根本沒探過，是 _rr_last_probe 的初始值）。現在探測預算改在真的要點擊時才起算。
         if ctx is not None and ctx.trigger == "reset":
             pre_cap = ocr.read_capacity_pct(
                 capture.crop(capture.grab(), cfg.capacity_region), cfg.tesseract_path)
@@ -6412,19 +6478,32 @@ class Bot:
                     ctx.trigger, pre_cap, cfg.reentry_open_capacity_max_pct):
                 self._maybe_arm_chime(pre_cap)   # 預檢路徑也推進鈴聲錨（容量 ≤10 即開窗、冪等）
                 self._rr_open_last_ts = time.time()
-                remain = max(0.0, cfg.reentry_open_budget_s
-                             - (time.time() - self._rr_open_first_ts))
+                if self._rr_drain_first_ts == 0.0:
+                    self._rr_drain_first_ts = now
+                waited = time.time() - self._rr_drain_first_ts
+                verdict, self._rr_drain_stall = reentry_remote.plan_reset_drain(
+                    pre_cap, self._rr_drain_last_cap, self._rr_drain_stall,
+                    waited, cfg.reentry_reset_drain_budget_s)
+                self._rr_drain_last_cap = pre_cap
                 cap_s = "讀不到" if pre_cap is None else f"{pre_cap:.0f}%"
+                if verdict != "wait":
+                    self._rr_drain_give_up(ctx, verdict, cap_s, waited)
+                    return
                 self.logger.info(
                     "[RR#%s] 開場前容量 %s > %.0f%%（重置收尾中）——不點擊不拖曳，"
-                    "%.0fs 後再探（預算剩 %.0fs）",
+                    "%.0fs 後再探（已等 %.0fs／%.0fs，連續沒再降 %d 輪）",
                     ctx.episode_id, cap_s, cfg.reentry_open_capacity_max_pct,
-                    cfg.reentry_open_retry_wait_s, remain)
+                    cfg.reentry_open_retry_wait_s, waited,
+                    cfg.reentry_reset_drain_budget_s, self._rr_drain_stall)
                 self.last_action = (
                     f"等重置收尾：容量 {cap_s}"
                     f"（降至 ≤{cfg.reentry_open_capacity_max_pct:.0f}% 才開始回礦）")
                 return
-        # 容量 OK（或 manual／讀不到）：reroll increment（若適用）→ 點擊 → 拖曳 → 閘
+        # 容量 OK（或 manual／讀不到）：等候結束，探測預算從這裡才起算（H066）
+        self._rr_drain_reset()
+        if self._rr_open_first_ts == 0.0:
+            self._rr_open_first_ts = time.time()  # 探測預算起算（episode 首擊）
+        # reroll increment（若適用）→ 點擊 → 拖曳 → 閘
         if reroll:
             self._rr_ensure_ctx(reroll=True)
         teleported = self._click_surface_verified("開場")

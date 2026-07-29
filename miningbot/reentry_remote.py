@@ -444,6 +444,40 @@ def capacity_blocks_opening(trigger: str, capacity_pct,
     return capacity_pct > capacity_max_pct
 
 
+def plan_reset_drain(capacity_pct, prev_capacity_pct, stall_rounds: int,
+                     waited_s: float, budget_s: float) -> tuple[str, int]:
+    """重置收尾等候的收口（H066 2026-07-29）：回 `(verdict, 新 stall_rounds)`。
+
+    `capacity_blocks_opening` 只回答「現在該不該動」，沒有任何收口——H058 把這段
+    被動等候掛在開場探測預算（`reentry_open_budget_s` 300s）上，於是「等遊戲排容量」
+    和「探測畫面有沒有凍結」共用同一個預算。實機兩次撞牆（同一天）：
+      * RR#31 16:02（97→88,88→82,82→72×8→48,48）容量**一直在降**、只是慢，300s
+        用完時還在 48%（實測 ~0.165 個百分點/s，排到 ≤5% 需 ~575s）；
+      * RR#30 03:34（99→93→87→81×10）容量在 81% 就沒再降過，同樣等到預算耗盡。
+    兩者都走同一條 give_up、印同一句「pitch 0.00/0.0000＝凍結」——而那組讀值來自
+    `_rr_last_probe` 的**初始值**，這條路徑一次都沒探過。
+
+    `stall_rounds`＝連續「沒再降」的輪數，**只當診斷資訊回報給人，不參與判決**。
+    想拿它當「凍結」門檻的兩側夾湊不出來：健康場次最長連 1 輪（RR#16/17/26/27/28），
+    RR#31 慢但會動連 **7** 輪後續降，RR#30 連 **9** 輪——而 RR#30 的 9 是被舊 300s
+    預算截斷的，沒人知道它第 11 輪會不會恢復。7 vs 9 只差兩輪、上界還是截斷值，
+    寫門檻等於不可否證（H059 教訓）。要寫，得先有「久到確定不會恢復」的負樣本。
+
+    "wait"＝仍在等（下一輪再探）；"timeout"＝超過等候預算，交人工並附上容量軌跡
+    （最後讀值＋連續沒再降輪數），讓人自己分辨是慢還是凍。
+    容量讀不到（None）不計 stall——OCR 掉一幀不是「沒再降」的證據。
+    """
+    if capacity_pct is None or prev_capacity_pct is None:
+        stall_rounds = 0
+    elif capacity_pct < prev_capacity_pct:
+        stall_rounds = 0
+    else:
+        stall_rounds += 1
+    if waited_s >= budget_s:
+        return "timeout", stall_rounds
+    return "wait", stall_rounds
+
+
 def plan_click_verdict(on_surface, frame_changed: bool, timed_out: bool) -> str:
     """細格點擊後的成功判定（H046(c) 預防性修正：狀態錨取代轉移式幀差）。
 
