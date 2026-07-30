@@ -130,6 +130,23 @@ class TestFormatPingContent:
         assert "[007]" not in c
         assert "X" in c
 
+    def test_web_url_wins_over_fallback_flag(self):
+        """2026-07-31：素材推上網頁了就一定給網址，不看當下有沒有 WebSocket 連線。
+
+        玩家是被這則 PING 叫來才開網頁的——發訊當下必然 fallback=True，舊版因此
+        永遠只印「請在 Discord 文字回覆」，網址一次都沒出現過。
+        """
+        c = format_ping_content(harvest_id="144", reason="全方位皆空",
+                                fallback=True, web_url="http://x:8765/intervention")
+        assert "http://x:8765/intervention" in c
+        assert "🔀" in c, "要告訴玩家怎麼切回 Discord"
+        assert "fallback 模式" not in c
+
+    def test_no_web_url_keeps_old_wording(self):
+        c = format_ping_content(harvest_id="144", reason="X", fallback=True)
+        assert "http" not in c
+        assert "fallback 模式" in c
+
 
 class TestFormatResolveText:
     def test_web_resolve(self):

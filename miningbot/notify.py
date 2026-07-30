@@ -113,24 +113,35 @@ def format_status_text(state: str, last_action: str, audio_score: float,
     )
 
 
-def format_ping_content(harvest_id: str | None, reason: str, fallback: bool) -> str:
+def format_ping_content(harvest_id: str | None, reason: str, fallback: bool,
+                        web_url: str | None = None,
+                        escalate_emoji: str = "🔀") -> str:
     """NEEDS_HUMAN PING 訊息內容。
 
-    用 <@USER_ID> mention 推播；harvest_id 有則前綴 [XXX]；fallback 與否
-    決定後續玩家該去哪處理（Discord 文字回覆 vs 網頁點選）。
+    用 <@USER_ID> mention 推播；harvest_id 有則前綴 [XXX]。
 
     2026-07-27：這則本身只是純文字 PING（send_ping 從不掛反應），舊文案寫
     「用 Discord 反應按鈕處理」是錯的——玩家點開訊息找反應鈕，什麼都沒有。
     實際要做的是照訊息內容打字回覆（候選編號／`跳過`／`resume` 等，因 reason
     而異），所以文案改成通用、不點名反應。
+
+    2026-07-31：`web_url` 有值＝這次的介入素材**已經推上網頁**，訊息就要帶網址，
+    而且這則會被掛上 `escalate_emoji` 反應（呼叫端負責掛）。舊版靠 `fallback`
+    （＝當下有沒有 WebSocket 連線）二選一寫文案，而玩家是**被這則 PING 叫來才
+    開網頁**的，發訊當下必然沒連線 → 永遠只印「請在 Discord 文字回覆」，網址一次
+    都沒出現過。連線與否不該決定給不給網址，只有「有沒有推成功」才該決定。
     """
     hid = f"[{harvest_id}] " if harvest_id else ""
     ping = f"<@{PING_USER_ID}>"
+    head = f"{ping} ⚠️ {hid}需要人工：{reason}"
+    if web_url:
+        return (f"{head}\n{web_url}\n"
+                f"（圖已推上網頁，直接 pinch-zoom 點目標即可；"
+                f"**慢慢來，圖會留著等你，不會逾時**。"
+                f"要改用 Discord 圖文操作就按下面的 {escalate_emoji}）")
     if fallback:
-        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（fallback 模式：請依 Discord 訊息內容文字回覆處理）"
-    else:
-        body = f"{ping} ⚠️ {hid}需要人工：{reason}\n（在網頁處理：pinch-zoom 點選截圖）"
-    return body
+        return f"{head}\n（fallback 模式：請依 Discord 訊息內容文字回覆處理）"
+    return f"{head}\n（在網頁處理：pinch-zoom 點選截圖）"
 
 
 def format_resolve_text(harvest_id: str | None, reply_source: str, detail: str = "") -> str:
@@ -946,12 +957,14 @@ class PingResolveMessenger:
         self._issued_ids: set[str] = set()
 
     def send_ping(self, harvest_id: str | None, reason: str,
-                  fallback: bool, now: float) -> str | None:
+                  fallback: bool, now: float,
+                  web_url: str | None = None) -> str | None:
         """發 PING 訊息，回 message_id（失敗 None）。
 
         now 參數目前未直接使用（保留給未來 rate-limit）；先介面對齊 StatusMessenger。
+        web_url 有值＝素材已推上網頁，訊息帶網址（見 format_ping_content）。
         """
-        content = format_ping_content(harvest_id, reason, fallback)
+        content = format_ping_content(harvest_id, reason, fallback, web_url)
         ok, detail, mid = self._send_fn(self._token, self._channel_id, content)
         if not ok or mid is None:
             if self._log:

@@ -85,10 +85,13 @@ Search symbols instead of line numbers:
 - Sampling/HUD: `_sampler_pitch_prepare`, remote-control 📷 branch in
   `_poll_remote_reactions` (the R-key Tk sampler window is retired).
 - Web UI: `_web_pending`, `_web_fallback`, `_web_thread`, `_consume_web_pending`,
-  `_execute_remote_fire_from_web`, `_rr_click_from_web`, `_reentry_await_player_click`,
-  `_send_web_intervention_event`, `_await_web_pointer_reply`, `_save_auto_fixture`,
+  `_rr_click_from_web`, `_reentry_await_player_click`, `_await_manual_survey_web_click`,
+  `_send_web_intervention_frames`, `_await_web_action`, `_save_auto_fixture`,
   `_resolve_ping_if_any`, `_send_needs_human_ping`, `_handle_web_aim_click`,
-  `_push_web_aim_candidates`.
+  `_push_web_aim_candidates`, `_release_web_held_aim`.
+  `_execute_remote_fire_from_web` has had no caller since 2026-07-31 (the manual-survey
+  web click now queues `_pending_aim` and goes through `_execute_remote_fire`); its
+  `_save_auto_fixture` collection is the only thing worth salvaging from it.
 - Web 遙控器鏡射（2026-07-28，跟 Discord ▶️⏸️⚡📷🏠 對應）：`_status_snapshot`,
   `_player_state_snapshot`, `_broadcast_status`, `_broadcast_status_note`,
   `_broadcast_frame_snapshot`；`_consume_web_pending` 內對應

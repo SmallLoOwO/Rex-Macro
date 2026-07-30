@@ -55,73 +55,111 @@ def test_intervention_html_has_pinch_zoom_or_scroll_zoom():
 # ---------------------------------------------------------------------------
 
 
-def test_main_harvest_manual_survey_consumes_web_reply(monkeypatch):
-    """manual_survey 進入時檢查 web_pending，有玩家 reply 就直接走 fire+verify。
-
-    斷言：走了 _execute_remote_fire_from_web，且**沒有**進 Discord 八方位流程
-    （notify.send_images_message / send_message 都不該被呼叫）。
-    """
+def _manual_survey_bot(monkeypatch, discord_calls, **over):
+    """手動瞄準八方位的 fake bot：D2/旋轉/落盤全 stub，只留「掃完之後怎麼分流」。"""
     import numpy as np
     import miningbot.main as main_mod
-    from tests.fake_bot import make_fake_bot, FakeFallback, FakeHarvestCtx
+    from tests.fake_bot import make_fake_bot, FakeWebThread
 
-    frame = np.zeros((1080, 1920, 3), np.uint8)
+    frame = np.zeros((8, 8, 3), np.uint8)
     monkeypatch.setattr(main_mod.capture, "grab", lambda: frame)
-    discord_calls = []
     monkeypatch.setattr(main_mod.notify, "send_images_message",
                         lambda *a, **kw: (discord_calls.append("images"), (True, "ok"))[1])
     monkeypatch.setattr(main_mod.notify, "send_message",
                         lambda *a, **kw: (discord_calls.append("text"), (True, "ok"))[1])
-
-    fired = []
-
-    def _fire(ctx, x, y):
-        fired.append((x, y))
-        return True, "confirmed"
-
-    bot = make_fake_bot(
-        bind=["_execute_manual_survey"],
-        _web_pending=object(),                      # truthy＝web 在線
-        _web_fallback=FakeFallback(fallback=False),
-        _focus_roblox=lambda: True,
-        _send_web_intervention_event=lambda **kw: None,
-        _summarize_survey_ctx=lambda ctx: "summary",
-        _await_web_pointer_reply=lambda routing_key, timeout_s: {"x": 851, "y": 189},
-        _execute_remote_fire_from_web=_fire,
-    )
-
-    ok, detail = bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
-
-    assert fired == [(851, 189)], f"應把 web reply 座標交給 fire 路徑，實際：{fired}"
-    assert ok is True and detail == "confirmed"
-    assert discord_calls == [], f"web 在線時不該碰 Discord 八方位流程，實際：{discord_calls}"
-
-
-def test_main_manual_survey_falls_through_to_discord_when_web_offline(monkeypatch):
-    """反向：web 離線（fallback=True）時完全不走 web 路徑。
-
-    只驗「沒推 INTERVENTION_NEEDED、沒等 reply」——底下整條 Discord 八方位鏈牽涉
-    D2 掃描與旋轉實機 I/O，不在此測試範圍（由既有 Discord 測試覆蓋）。
-    """
-    import miningbot.main as main_mod
-    from tests.fake_bot import make_fake_bot, FakeFallback, FakeHarvestCtx
-
-    monkeypatch.setattr(main_mod.notify, "send_message", lambda *a, **kw: (True, "ok"))
-    touched = []
-    bot = make_fake_bot(
-        bind=["_execute_manual_survey"],
+    monkeypatch.setattr(main_mod.harvester, "prepare_scan", lambda: None)
+    attrs = dict(
         _web_pending=object(),
-        _web_fallback=FakeFallback(fallback=True),   # 網頁沒人在線
-        _send_web_intervention_event=lambda **kw: touched.append("event"),
-        _await_web_pointer_reply=lambda **kw: touched.append("await"),
-        # fall through 後第一件事就是 _focus_roblox；讓它失敗即刻收尾，
-        # 不必把整條 Discord 鏈都 stub 出來
-        _focus_roblox=lambda: False,
+        _web_thread=FakeWebThread(),
+        _focus_roblox=lambda: True,
+        _web_url=lambda: "http://test:8765",
+        _web_intervention_mid={},
+        _web_escalate={},
+        _web_held_aim=None,
+        _summarize_survey_ctx=lambda ctx: "summary",
+        _await_scan_ready=lambda tag: None,
+        _run_scan=lambda: None,
+        _confirm_scan=lambda tag: True,
+        _rotate_verified=lambda step: True,
+        _hsnap=lambda f, label: "",       # 落盤走非同步，測試不落地
+        _encode_png=lambda f: b"png",
+        _notify_web_intervention_pending=lambda key, headline, hint: None,
+        _broadcast_intervention_result=lambda *a, **kw: None,
     )
+    attrs.update(over)
+    return make_fake_bot(
+        bind=["_execute_manual_survey", "_await_manual_survey_web_click",
+              "_release_web_held_aim"],
+        **attrs)
+
+
+def test_main_manual_survey_pushes_eight_frames_then_waits(monkeypatch):
+    """2026-07-31：掃完八方位才推網頁，且**不看有沒有連線**。
+
+    舊版三個毛病：只在 `is_fallback()==False` 時推、推的是掃描前的當下一幀、
+    60s 逾時就洗 Discord。玩家是被 Discord 提醒才開網頁的人，那三條加起來
+    等於網頁路徑在實機從未成立。
+    """
+    from tests.fake_bot import FakeHarvestCtx
+    pushed, discord_calls = [], []
+    bot = _manual_survey_bot(
+        monkeypatch, discord_calls,
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append((kw["routing_key"], len(kw["frames"]))) or True),
+        _await_web_action=lambda routing_key, controls=(): (
+            "click", {"x": 851, "y": 189, "dir": 5, "layer": "mid"}),
+        _resolve_web_intervention_ping=lambda key: None,
+    )
+    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert pushed == [("harvest:007", 8)], f"應推 8 張原幀，實際：{pushed}"
+    assert discord_calls == [], f"網頁接手時不該發 Discord 八方位圖，實際：{discord_calls}"
+    # 點擊排進 _pending_aim（走 _execute_remote_fire 的完整對齊＋重掃）
+    assert bot._pending_aim.kind == "point"
+    assert bot._pending_aim.pos == (851, 189)
+    assert bot._pending_aim.dir_idx == 4          # 介面 1-8 → 內部 0-based
+
+
+def test_main_manual_survey_escalate_sends_discord_images(monkeypatch):
+    """玩家按 🔀 → 才發 Discord 八方位圖（同一批掃描，不重掃）。"""
+    from tests.fake_bot import FakeHarvestCtx
+    discord_calls = []
+    bot = _manual_survey_bot(
+        monkeypatch, discord_calls,
+        _send_web_intervention_frames=lambda **kw: True,
+        _await_web_action=lambda routing_key, controls=(): ("force_discord", None),
+        _resolve_web_intervention_ping=lambda key: None,
+        _hsnap=lambda f, label: f"C:/tmp/{label}.png",
+        _wait_snapshot_ready=lambda path, remaining: True,
+    )
+    import miningbot.main as main_mod
+    import numpy as np
+    import cv2
+    monkeypatch.setattr(cv2, "imread", lambda p: np.zeros((8, 8, 3), np.uint8))
+    monkeypatch.setattr(cv2, "imwrite", lambda p, img: True)
+    monkeypatch.setattr(main_mod.diagnostics, "append_snapshot_index",
+                        lambda *a, **kw: None)
 
     bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
 
-    assert touched == [], f"fallback 中不該走 web 介入，實際碰到：{touched}"
+    assert discord_calls == ["images", "images"], (
+        f"按 🔀 後要補發八方位圖（4 張/則 → 2 則），實際：{discord_calls}")
+
+
+def test_main_manual_survey_without_web_server_goes_straight_to_discord(monkeypatch):
+    """沒有網頁伺服器（缺件降級／設定關閉）→ 一路走既有 Discord 流程，不等任何人。"""
+    from tests.fake_bot import FakeHarvestCtx
+    discord_calls, waited = [], []
+    bot = _manual_survey_bot(
+        monkeypatch, discord_calls,
+        _web_thread=None,
+        _send_web_intervention_frames=lambda **kw: waited.append("push") or True,
+        _await_web_action=lambda routing_key, controls=(): waited.append("await"),
+        _focus_roblox=lambda: False,     # 立刻收尾，不必 stub 整條 Discord 鏈
+    )
+    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert waited == [], f"沒有網頁伺服器就不該碰 web 介入，實際：{waited}"
 
 
 def test_main_execute_remote_fire_short_circuits_on_web_reply(monkeypatch):
@@ -183,7 +221,7 @@ def _reentry_bot(monkeypatch, **over):
         _web_thread=FakeWebThread(),
         _focus_roblox=lambda: True,
         _web_url=lambda: "http://test:8765",
-        _web_intervention_mid=None,
+        _web_intervention_mid={},
         _pending_reentry=None,
     )
     attrs.update(over)
@@ -344,7 +382,7 @@ def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
         _web_fallback=FakeFallback(fallback=True),        # 沒有任何 client
         _send_web_intervention_frames=lambda **kw: (
             pushed.append(len(kw["frames"])) or True),
-        _notify_web_intervention_pending=lambda ctx, n: notified.append(n),
+        _notify_web_intervention_pending=lambda key, headline, hint: notified.append(key),
         _await_web_reentry_action=lambda routing_key:(None, None),
         _broadcast_intervention_result=lambda ctx, verdict, summary, flow="reentry": None,
     )
@@ -352,7 +390,7 @@ def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
     ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
     assert bot._reentry_await_player_click(ctx, _PNGS) is False
     assert pushed == [8], f"離線也要推 8 張進 replay 緩衝，實際：{pushed}"
-    assert notified == [8], "要發 Discord 提醒叫人來開網頁"
+    assert notified == ["reentry:32"], "要發 Discord 提醒叫人來開網頁"
 
 
 def test_await_web_reentry_action_never_times_out(monkeypatch):
@@ -600,7 +638,7 @@ def _build_stub_bot_for_reentry(monkeypatch):
     # _reentry_await_player_click 的協作物件
     bot._focus_roblox = lambda: True
     bot._pending_reentry = None
-    bot._web_intervention_mid = None
+    bot._web_intervention_mid = {}
     bot._web_escalate = {}
     bot._web_url = lambda: "http://test:8765"
     # capture.grab 在主迴圈 thread 上跑，monkeypatch module attr 即可
@@ -752,10 +790,11 @@ def test_notify_web_intervention_pending_arms_escalate_reaction(monkeypatch):
         "miningbot.main.notify.add_reaction",
         lambda token, ch, mid, emoji: (added_calls.append((mid, emoji)), (True, "HTTP 204"))[1])
 
-    bot._notify_web_intervention_pending(_FakeCtx(), frame_count=8)
+    bot._notify_web_intervention_pending("reentry:test_ep", "回礦 #test_ep 已拍好 8 個方位", "點傳送板。")
 
     assert added_calls == [("notify-mid", "🔀")]
     assert bot._web_escalate.get("reentry:test_ep") == ("notify-mid", 1)
+    assert bot._web_intervention_mid == {"reentry:test_ep": "notify-mid"}
 
 
 def test_notify_web_intervention_pending_reaction_add_failure_does_not_arm(monkeypatch):
@@ -764,7 +803,7 @@ def test_notify_web_intervention_pending_reaction_add_failure_does_not_arm(monke
     monkeypatch.setattr(
         "miningbot.main.notify.add_reaction", lambda *a, **kw: (False, "HTTP 403"))
 
-    bot._notify_web_intervention_pending(_FakeCtx(), frame_count=8)
+    bot._notify_web_intervention_pending("reentry:test_ep", "回礦 #test_ep", "點傳送板。")
 
     assert bot._web_escalate == {}
 
@@ -815,13 +854,13 @@ def test_resolve_web_intervention_ping_clears_escalate_entry(monkeypatch):
     再查那則訊息的反應只會白費一次 API。
     """
     bot = _build_stub_bot_for_reentry(monkeypatch)
-    bot._web_intervention_mid = "notify-mid"
+    bot._web_intervention_mid = {"reentry:test_ep": "notify-mid"}
     bot._web_escalate = {"reentry:test_ep": ("notify-mid", 1)}
 
-    bot._resolve_web_intervention_ping(_FakeCtx())
+    bot._resolve_web_intervention_ping("reentry:test_ep")
 
     assert bot._web_escalate == {}
-    assert bot._web_intervention_mid is None
+    assert bot._web_intervention_mid == {}
 
 
 def test_await_web_reentry_action_returns_force_discord_on_control_key():
@@ -1693,6 +1732,138 @@ def test_consume_web_pending_skips_during_awaiting_fine():
     bot._consume_web_pending()
     assert routed == []
     assert pending.pop("harvest:115") is not None  # 沒被撿走，留給下一輪/其他消費者
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-31：交人工候選清單「無條件推網頁 + 扣住 Discord 圖等 🔀」
+# ---------------------------------------------------------------------------
+
+
+def test_push_web_aim_candidates_pushes_when_nobody_connected(monkeypatch):
+    """連線閘拿掉：沒人連著也要推進 replay 緩衝（玩家是被 PING 叫來才開網頁的）。"""
+    import numpy as np
+    from tests.fake_bot import make_fake_bot, FakeFallback, FakeWebThread, FakeHarvestCtx
+    import cv2
+    monkeypatch.setattr(cv2, "imread", lambda p: np.zeros((8, 8, 3), np.uint8))
+    pushed = []
+    bot = make_fake_bot(
+        bind=["_push_web_aim_candidates"],
+        _web_thread=FakeWebThread(),
+        _web_fallback=FakeFallback(fallback=True),     # 一條連線都沒有
+        _encode_png=lambda img: b"png",
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append((kw["routing_key"], len(kw["frames"]))) or True),
+    )
+    rendered = [((1,), 0, "mid", "a.png"), ((2,), 3, "up", "b.png")]
+
+    assert bot._push_web_aim_candidates(
+        FakeHarvestCtx(harvest_id="144"), rendered, "summary") is True
+    assert pushed == [("harvest:144", 2)]
+
+
+def test_push_web_aim_candidates_returns_false_without_web_server():
+    """沒有網頁伺服器 → 回 False，呼叫端照舊把候選疊圖發 Discord。"""
+    from tests.fake_bot import make_fake_bot, FakeHarvestCtx
+    bot = make_fake_bot(bind=["_push_web_aim_candidates"], _web_thread=None)
+    assert bot._push_web_aim_candidates(
+        FakeHarvestCtx(harvest_id="144"), [((1,), 0, "mid", "a.png")], "s") is False
+
+
+def test_needs_human_ping_carries_url_and_arms_escalate(monkeypatch):
+    """扣住候選疊圖時，交人工 PING 就是那條流程的「網頁在等你點」提醒。
+
+    只吵一次：不另發提醒訊息，網址與 🔀 都掛在同一則 PING 上。
+    """
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+    sent = {}
+
+    class _Messenger:
+        def send_ping(self, harvest_id, reason, fallback, now, web_url=None):
+            sent["web_url"] = web_url
+            return "ping-mid"
+
+    monkeypatch.setattr(main_mod.notify, "add_reaction",
+                        lambda *a, **kw: (True, "HTTP 204"))
+    bot = make_fake_bot(
+        bind=["_send_needs_human_ping", "_arm_web_escalate_reaction"],
+        _ping_messenger=_Messenger(),
+        _web_url=lambda: "http://test:8765",
+        _web_escalate={},
+        _web_held_aim=("harvest:144", [("cap", ["a.png"])]),
+    )
+    assert bot._send_needs_human_ping(harvest_id="144", reason="全方位皆空") == "ping-mid"
+    assert sent["web_url"] == "http://test:8765/intervention"
+    assert bot._web_escalate == {"harvest:144": ("ping-mid", 1)}
+    assert bot._web_held_aim is not None, "PING 發成功時要繼續扣著，等 🔀"
+
+
+def test_needs_human_ping_failure_releases_held_images(monkeypatch):
+    """PING 發不出去＝沒有 🔀 可按 → 扣住的圖立刻補發，不能永遠鎖在記憶體。"""
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+    images = []
+    monkeypatch.setattr(main_mod.notify, "send_images_message",
+                        lambda t, c, cap, paths: images.append((cap, paths)))
+
+    class _Messenger:
+        def send_ping(self, **kw):
+            return None
+
+    bot = make_fake_bot(
+        bind=["_send_needs_human_ping", "_release_web_held_aim"],
+        _ping_messenger=_Messenger(),
+        _web_url=lambda: "http://test:8765",
+        _web_escalate={},
+        _web_held_aim=("harvest:144", [("🎯 近失候選", ["a.png", "b.png"])]),
+    )
+    bot._send_needs_human_ping(harvest_id="144", reason="全方位皆空")
+
+    assert images == [("🎯 近失候選", ["a.png", "b.png"])]
+    assert bot._web_held_aim is None
+
+
+def test_consume_web_pending_force_discord_releases_held_aim_images(monkeypatch):
+    """玩家按 🔀 → 補發扣住的候選疊圖（NEEDS_HUMAN 不阻塞，靠這個 safe point 撿）。"""
+    import miningbot.main as main_mod
+    from miningbot.main import State
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+    images = []
+    monkeypatch.setattr(main_mod.notify, "send_images_message",
+                        lambda t, c, cap, paths: images.append(cap))
+
+    pending = PendingReplies()
+    pending.push("control:force_discord:harvest:144", True)
+    bot = make_fake_bot(
+        bind=["_consume_web_pending", "_release_web_held_aim"],
+        _web_pending=pending,
+        _aim_context=None,
+        state=State.NEEDS_HUMAN,
+        _web_held_aim=("harvest:144", [("🎯 近失候選", ["a.png"])]),
+    )
+    bot._consume_web_pending()
+
+    assert images == ["🎯 近失候選"]
+    assert bot._web_held_aim is None
+
+
+def test_web_aim_click_drops_held_images(monkeypatch):
+    """玩家改在網頁點了 → Discord 那批扣住的圖直接丟掉，別事後才冒出來洗版。"""
+    from tests.fake_bot import make_fake_bot
+    bot = make_fake_bot(
+        bind=["_handle_web_aim_click", "_release_web_held_aim"],
+        _aim_context=types.SimpleNamespace(
+            harvest_id="144", pose_net_rotations=0, pose_pitch_layer="mid"),
+        _aim_busy=False,
+        _web_escalate={"harvest:144": ("ping-mid", 1)},
+        _web_held_aim=("harvest:144", [("cap", ["a.png"])]),
+    )
+    bot._handle_web_aim_click({"x": 10, "y": 20, "dir": 2, "layer": "mid"})
+
+    assert bot._pending_aim is not None
+    assert bot._web_held_aim is None
+    assert bot._web_escalate == {}, "已在網頁處理，不必再輪詢那則 PING 的反應"
 
 
 # ---------------------------------------------------------------------------

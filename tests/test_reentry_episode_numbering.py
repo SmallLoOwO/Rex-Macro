@@ -178,15 +178,18 @@ class TestWebInterventionBudget:
         import inspect
         code = ""
         for fn in (main.Bot._reentry_await_player_click,
-                   main.Bot._await_web_reentry_action):
+                   main.Bot._await_web_reentry_action,
+                   main.Bot._await_web_action):
             code += inspect.getsource(fn).replace(fn.__doc__ or "", "")
         assert "budget_s" not in code
-        assert "timeout_s" not in inspect.signature(
-            main.Bot._await_web_reentry_action).parameters
+        for fn in (main.Bot._await_web_reentry_action, main.Bot._await_web_action):
+            assert "timeout_s" not in inspect.signature(fn).parameters
 
     def test_unbounded_wait_still_aborts_on_shutdown(self):
         """無限等的前提是中止條件齊全：重置／關閉／暫停都要放得掉主迴圈。"""
         import inspect
-        src = inspect.getsource(main.Bot._await_web_reentry_action)
+        # 2026-07-31：等待迴圈本體抽成通用的 `_await_web_action`（手動瞄準共用），
+        # `_await_web_reentry_action` 只剩一行委派。
+        src = inspect.getsource(main.Bot._await_web_action)
         assert "_mine_resetting" in src
         assert "_running" in src and "paused" in src

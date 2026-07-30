@@ -162,8 +162,12 @@ conventions.
     fields in `WEB_CONFIGURABLE_FIELDS` to players; thresholds, ROI, and detection
     params are AI-agent-only via direct `config.py` edits. WebSocket IPC uses
     routing-key first-wins (`flow:episode_id`; second reply for the same key is
-    dropped). Web clients online → bot sends screenshots + waits for tap; offline
-    (after `web_fallback_grace_s`, default 30s) → existing Discord 反應按鈕 flow.
+    dropped). **Connection count never gates a push** (2026-07-31, user-specified):
+    every intervention flow pushes its frames into the registry replay buffer
+    regardless of `is_fallback()`, posts the URL on Discord, and hands over to Discord
+    only when the player presses 🔀 — the player is summoned *by* that Discord message,
+    so nobody is ever connected at push time. `web_fallback_grace_s` now only colours
+    the PING wording, never a routing decision.
     Player taps restore to native coords **client-side** (`web_static.sendClick`);
     the server only thin-validates `x ∈ [0,1920)`, `y ∈ [0,1080)` (`parse_fire_at_payload`).
     Auto-collected fixtures (`_save_auto_fixture`) are best-effort: write failures
@@ -182,8 +186,23 @@ conventions.
     the same race later — RR#34 pushed at 18:28:23, the 120s grace expired at
     18:30:23 and wiped the replay buffer, the player opened the page at 18:41:45 and
     saw a blank panel. Because it never times out, the abort conditions in
-    `_await_web_reentry_action` are load-bearing: `_mine_resetting` (stale frames)
+    `_await_web_action` are load-bearing: `_mine_resetting` (stale frames)
     and `_running`/`paused` (F12 must be able to stop the bot).
+15. The same shape now governs the two harvest intervention flows (2026-07-31):
+    - **Giveup candidate list** — `_push_web_aim_candidates` pushes unconditionally;
+      the Discord candidate overlays are **held** in `_web_held_aim` and only sent by
+      `_release_web_held_aim(send=True)` when the player presses 🔀 on the NEEDS_HUMAN
+      PING (picked up in `_consume_web_pending`, which is where NEEDS_HUMAN ticks).
+      The chat/backpack before-after crops still go out immediately: they are the
+      evidence for *why* it gave up and have no web equivalent.
+    - **Manual survey (`手動`)** — D2 rescan and the eight-direction capture run
+      **first**, then the raw frames go to the web and the grid overlays are held for
+      Discord. The web click queues `_pending_aim` (kind `point`) so it goes through
+      `_execute_remote_fire`'s realign → rescan → refind sequence; it must not borrow
+      `_handle_web_aim_click`, which drops replies while `_aim_busy` is set.
+    Both use the routing key `harvest:<harvest_id>`, so a later push replaces the
+    earlier panel — release the held images before pushing a new batch.
+
 
 ## DEVELOPMENT WORKFLOW
 
