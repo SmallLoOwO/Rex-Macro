@@ -64,9 +64,33 @@ class ConnectionRegistry:
         """
         self._loop = loop
 
-    def add(self, ws: WebSocket) -> None:
-        with self._lock:
-            self._connections.add(ws)
+    async def attach(self, ws: WebSocket) -> None:
+        """新連線併入廣播池：先補送目前這輪介入，補完才開始收廣播。
+
+        兩件事的順序不可反（2026-07-30）：舊版是 `add` 完才 `replay_to`，兩者之間
+        bot 主執行緒正在推的那批圖會**既走 broadcast 送一次、又被重播再送一次**。
+        client 靠「meta 後面緊接的那張 binary 就是它的圖」配對（見
+        `_send_web_intervention_frames`），多出來的 meta 會把後面每張圖都推移一格 →
+        圖落在錯的方位格。實測：滿載跑 tests/test_web_server_real_socket.py 時
+        layer 收到 ['mid','up','mid'] 而不是 ['mid','up']。玩家的實際用法正是
+        「被提醒才連進來」，連上時機就落在 push 進行中，這條 race 在實機必然踩到。
+
+        修法＝把「重播緩衝已無新內容」與「併池」放進同一個 lock 區段，配合
+        `_record_replay` 在**錄製當下**就固定收件人清單：任一則訊息對任一條連線，
+        要嘛在併池前被錄進 replay（由這裡送），要嘛在併池後才錄（由 broadcast 送），
+        不可能兩者皆是。併池後到 return 之間沒有 await，live 廣播插不進重播序列中間。
+        """
+        sent = 0
+        while True:
+            with self._lock:
+                items = self._replay[sent:]
+                if not items:
+                    self._connections.add(ws)
+                    return
+            if not await self._send_items(ws, items):
+                return          # 連線已斷；endpoint 的 finally 會 remove（discard 冪等）
+            sent += len(items)
+            # ponytail: 推播比重播快就會多繞一圈；一輪介入上限 ~17 則，實務上跑 1-2 圈。
 
     def remove(self, ws: WebSocket) -> None:
         with self._lock:
@@ -88,13 +112,8 @@ class ConnectionRegistry:
             self._recording = False
             self._replay = []
 
-    async def replay_to(self, ws: WebSocket) -> None:
-        """新連線一上來就補送目前這輪介入的完整序列（如果有的話）。
-
-        沒有 recording 中的介入就是 no-op——正常 idle 連線不受影響。
-        """
-        with self._lock:
-            items = list(self._replay)
+    async def _send_items(self, ws: WebSocket, items) -> bool:
+        """把 (kind, payload) 序列依序送給單一連線；送失敗回 False（連線已斷）。"""
         for kind, payload in items:
             try:
                 if kind == "text":
@@ -103,24 +122,40 @@ class ConnectionRegistry:
                     await ws.send_bytes(payload)
             except Exception as e:
                 _log.warning("web: 重播給新連線失敗: %s", e)
-                return
+                return False
+        return True
 
-    def _record_replay(self, kind: str, payload) -> None:
+    async def replay_to(self, ws: WebSocket) -> None:
+        """補送目前這輪介入的完整序列（如果有的話）給指定連線。
+
+        沒有 recording 中的介入就是 no-op——正常 idle 連線不受影響。
+        併池請走 `attach`（含防重複的分段重播）；這支只補送、不動連線池。
+        """
+        with self._lock:
+            items = list(self._replay)
+        await self._send_items(ws, items)
+
+    def _record_replay(self, kind: str, payload) -> list:
+        """錄進重播緩衝，並回傳「這一則的收件人」快照。
+
+        收件人必須在這裡（錄製當下、同一個 lock 區段）就固定，不能等 coroutine 真的
+        被 event loop 排到才去看 `self._connections`——那之間新連線可能已經併池，
+        於是同一則訊息被 broadcast 與 `attach` 的重播各送一次（見 `attach`）。
+        """
         with self._lock:
             if self._recording:
                 self._replay.append((kind, payload))
+            return list(self._connections)
 
     def broadcast(self, msg: WebMessage) -> None:
         """同步呼叫介面（事件 sink 用）；內部丟進 event loop 跑。"""
         text = serialize_message(msg)
-        self._record_replay("text", text)
-        if self._loop is None:
-            return  # server 還沒跑起來
-        asyncio.run_coroutine_threadsafe(self._broadcast_async(text), self._loop)
+        conns = self._record_replay("text", text)
+        if self._loop is None or not conns:
+            return  # server 還沒跑起來／當下沒人連著（晚到的連線靠 replay 補）
+        asyncio.run_coroutine_threadsafe(self._broadcast_async(conns, text), self._loop)
 
-    async def _broadcast_async(self, text: str) -> None:
-        with self._lock:
-            conns = list(self._connections)
+    async def _broadcast_async(self, conns, text: str) -> None:
         for ws in conns:
             try:
                 await ws.send_text(text)
@@ -130,14 +165,12 @@ class ConnectionRegistry:
 
     def broadcast_binary(self, data: bytes) -> None:
         """截圖 push 用（Task 10 在 main.py 裡接）。"""
-        self._record_replay("binary", data)
-        if self._loop is None:
+        conns = self._record_replay("binary", data)
+        if self._loop is None or not conns:
             return
-        asyncio.run_coroutine_threadsafe(self._broadcast_binary_async(data), self._loop)
+        asyncio.run_coroutine_threadsafe(self._broadcast_binary_async(conns, data), self._loop)
 
-    async def _broadcast_binary_async(self, data: bytes) -> None:
-        with self._lock:
-            conns = list(self._connections)
+    async def _broadcast_binary_async(self, conns, data: bytes) -> None:
         for ws in conns:
             try:
                 await ws.send_bytes(data)
@@ -541,13 +574,14 @@ def create_app(
     async def ws_endpoint(websocket: WebSocket):
         await websocket.accept()
         fallback.client_connected()
-        registry.add(websocket)
         # 連線進出要留痕（2026-07-29）：「網頁介入為什麼沒觸發」只能靠這個分辨
         # 「人根本沒連上」與「連上了但沒點」——先前兩者在 log 裡完全同形。
         _log.info("web: client 連上（目前 %d 條）", fallback.client_count)
         # 2026-07-27：使用者是「被提醒才連進來」，不是整場開著分頁——連上那一刻
         # 補送目前這輪介入（如果有的話），不然剛好連在 push 之後就永遠看不到。
-        await registry.replay_to(websocket)
+        # 補送與併池是同一件事，必須由 attach 一起做（先 add 再重播會送出重複的
+        # meta，把圖配到錯的方位——見 ConnectionRegistry.attach）。
+        await registry.attach(websocket)
         # P5 Task 2：app-level text-message heartbeat 已退役——uvicorn 預設 20s
         # 協議級 ping frame 是真正的 keep-alive（半開連線 OS buffer 滿才會丟例外）；
         # text "ping" 只在 TCP 全斷才拋，無法偵測手機背景化／Tailscale relay 半斷。

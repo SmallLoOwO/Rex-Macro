@@ -599,6 +599,70 @@ class TestConnectionRegistryReplay:
                  for k, t in ws.received if k == "text"]
         assert events == ["NEW"]
 
+    def test_attach_does_not_double_send_when_connect_races_push(self):
+        """玩家「被提醒才連進來」＝連上時機正好撞在推播進行中（2026-07-30）。
+
+        舊版是 endpoint 先 `registry.add`、之後才 `replay_to`，而 `_broadcast_async`
+        到**真的被 event loop 排到**才去看收件人。loop 忙的時候（滿載／主迴圈同時在
+        推圖）這兩件事會交叉：某一則在 add 之前被錄進重播緩衝，它的 send coroutine
+        卻在 add 之後才跑 → 同一則**既 broadcast 送一次、又被重播再送一次**。
+
+        client 靠「meta 後面緊接的 binary 就是它的圖」配對，多一則 meta 就把後面每張
+        圖推移一格 → 圖落在錯的方位格，玩家點下去等於朝別的方向開火。實測滿載跑
+        tests/test_web_server_real_socket.py 時 layer 收到 ['mid','up','mid']。
+
+        這裡用 gate 卡住 loop 把那個時序寫死（不靠 sleep 猜）：訊息在沒人連著時錄進
+        緩衝，放行後才 attach。該則必須**剛好送一次**。舊語意在同一時序下回 [0, 0]。
+        """
+        import asyncio
+        from miningbot.web_server import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        loop = asyncio.new_event_loop()
+        registry.set_loop(loop)
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+
+        too_early = []
+
+        class _ProbeWs(_FakeWs):
+            async def send_text(self, text):
+                # 重播還在送就已經併池 ⇒ 這之後任何一則 broadcast 都會「重播送一次、
+                # 廣播再送一次」。這正是舊順序的結構性缺陷，與時序快慢無關。
+                if self in registry._connections:
+                    too_early.append(text)
+                await super().send_text(text)
+
+            async def send_bytes(self, data):
+                if self in registry._connections:
+                    too_early.append(data)
+                await super().send_bytes(data)
+
+        ws = _ProbeWs()
+        try:
+            registry.begin_intervention_replay()
+            registry.broadcast(WebMessage(
+                type="event",
+                payload={"event": "INTERVENTION_FRAME", "index": 0}))
+            registry.broadcast_binary(b"png-0")
+
+            asyncio.run_coroutine_threadsafe(
+                registry.attach(ws), loop).result(timeout=5)
+            asyncio.run_coroutine_threadsafe(
+                asyncio.sleep(0), loop).result(timeout=5)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+        assert too_early == [], (
+            "attach 在重播送完之前就把連線併池了——這批圖會被廣播再送一次，"
+            f"meta/binary 配對位移：{len(too_early)} 則")
+        assert ws in registry._connections, "重播完成後必須併池，否則之後的廣播收不到"
+        binaries = [p for k, p in ws.received if k == "binary"]
+        assert binaries == [b"png-0"], f"圖重複或漏送：{binaries}"
+        indexes = [json.loads(p)["payload"]["index"]
+                   for k, p in ws.received if k == "text"]
+        assert indexes == [0], f"meta 重複，圖會配到錯的方位：{indexes}"
+
     def test_ws_endpoint_replays_to_late_joiner(self):
         """端到端：先推播（沒人連著），之後才連上的 client 也要收到完整序列。
 

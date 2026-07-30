@@ -14,6 +14,10 @@ INDEX = FIXTURES / "README.md"
 # 素材副檔名（README.md 本身不算素材）
 _ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".wav", ".json"}
 
+# runtime 快照 stem：`diagnostics` 的 `%Y%m%d_%H%M%S_<ns>_…`。`/api/annotate` 用它
+# 當玩家手動標註素材的檔名，所以這些檔跟 `auto_*` 一樣不必逐檔列進 README。
+_RUNTIME_STEM = re.compile(r"^\d{8}_\d{6}_\d+_")
+
 
 def _fixture_dirs():
     return sorted(p for p in FIXTURES.iterdir() if p.is_dir())
@@ -52,15 +56,22 @@ def test_index_links_all_resolve():
 def test_readme_mentions_every_asset(subdir):
     """每個素材檔都要在該目錄 README 裡被提到（檔名或去掉副檔名的名字）。
 
-    自動收集的 `auto_*`（玩家網頁介入的副產品）例外——那是 runtime 產物、數量無上限，
-    命名規則寫在 README 就夠，不必逐檔列。
+    Runtime 產物例外（數量無上限，命名規則寫在 README 就夠，不必逐檔列）：
+
+    - `auto_*`：`main.Bot._save_auto_fixture` 在玩家網頁介入後寫的。
+    - 快照 stem 命名（`_RUNTIME_STEM`）：`POST /api/annotate` 用**原始快照檔名**
+      寫玩家手動標註的 crop+json（`web_server.post_api_annotate`，檔名來自
+      `diagnostics` 的 `%Y%m%d_%H%M%S_<ns>_…`）。這條路徑跟 `auto_*` 同樣是
+      runtime 寫入、同樣落進 `tests/fixtures/<category>/`，卻沒有 `auto_` 前綴——
+      2026-07-30 前這裡沒放行它，於是**玩家每標註一張，測試就紅一次**，除非有人
+      手動把檔名補進 README 表格。那是索引守門的假警報，不是素材漏登記。
     """
     readme = (subdir / "README.md").read_text(encoding="utf-8")
     missing = []
     for asset in sorted(subdir.iterdir()):
         if asset.is_dir() or asset.suffix.lower() not in _ASSET_SUFFIXES:
             continue
-        if asset.name.startswith("auto_"):
+        if asset.name.startswith("auto_") or _RUNTIME_STEM.match(asset.name):
             continue
         if asset.name not in readme and asset.stem not in readme:
             missing.append(asset.name)
