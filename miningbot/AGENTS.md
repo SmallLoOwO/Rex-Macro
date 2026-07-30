@@ -58,8 +58,8 @@ change rules; repository-wide behavior belongs in the root contract.
 | `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (4 fields), `is_web_configurable`, `validate_value` |
 | `web_config_persistence.py` | `load/save/apply_overrides_to_config` (atomic JSON write; idempotent on restart) |
 | `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` (single or tier queue), `render_failures_html` / `render_stats_html` (agent-facing: ugly layout, complete data) |
-| `web_annotation.py` | `build_annotation`, `normalize_symptom`, `rarity_choices_from_game_data`, `validate_annotation`, `verdict_agrees` + `NO_LABEL` sentinel |
-| `web_history.py` | `load_episodes`, `load_episode_detail`, `list_annotations_for_episode` (recursive `os.walk`), `annotation_tier` / `build_queue` (tier queue), `aggregate_labels` (`written_at` only, never directory mtime), `verdict_category` |
+| `web_annotation.py` | `build_annotation`, `normalize_symptom`, `symptom_from_observation` (player states what he sees; symptom is derived), `rarity_choices_from_game_data`, `validate_annotation`, `verdict_agrees` + `NO_LABEL` sentinel |
+| `web_history.py` | `load_episodes`, `load_episode_detail`, `list_annotations_for_episode` (recursive `os.walk`), `annotation_tier` / `build_queue` (multi-tier queue), `label_verdict` (bot's live accept/reject + coords, parsed from the snapshot label), `aggregate_labels` (`written_at` only, never directory mtime), `verdict_category` |
 
 Design spec: `docs/superpowers/specs/2026-07-26-web-ui-design.md`. Commit
 history: `docs/superpowers/plans/2026-07-26-web-ui-p[1-5]-*.md`.

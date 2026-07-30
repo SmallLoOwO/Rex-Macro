@@ -334,3 +334,75 @@ class TestValidateAnnotation:
         assert validate_annotation("not a dict") is False
         assert validate_annotation(None) is False
         assert validate_annotation([]) is False
+
+
+# ---- 看到什麼 × bot 判定 → 症狀（2026-07-31）---------------------------------
+
+
+class TestSymptomFromObservation:
+    """玩家只描述畫面，症狀由 bot 當下判定推出來。
+
+    使用者原話：「給予的圖片大部分只有 1 與 4，所以我也不知道 2 與 3 的差別，
+    並且 bot 有沒有接受，我認為這部分腳本在記錄圖片的時候應該就會有了」。
+    """
+
+    def test_ore_accepted_is_the_control_group(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("ore", "accepted") is None
+
+    def test_ore_rejected_is_false_negative(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("ore", "rejected") == "false_negative"
+
+    def test_decoy_accepted_is_should_reject_failed(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("decoy", "accepted") == "should_reject_failed"
+
+    def test_empty_accepted_is_false_positive(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("empty", "accepted") == "false_positive"
+
+    def test_decoy_and_empty_are_true_negatives_when_bot_rejected(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("decoy", "rejected") == "no_target"
+        assert symptom_from_observation("empty", "rejected") == "no_target"
+
+    def test_missing_verdict_never_claims_bot_accepted(self):
+        """沒記判定就不可以推出需要「接受」才成立的症狀（誤判／該拒沒拒）。"""
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("empty", None) == "no_target"
+        assert symptom_from_observation("decoy", "") == "no_target"
+        assert symptom_from_observation("ore", None) == "false_negative"
+
+    def test_unknown_observation_falls_back_to_unsure(self):
+        from miningbot.web_annotation import symptom_from_observation
+        assert symptom_from_observation("garbage", "accepted") == "unknown"
+        assert symptom_from_observation(None, "rejected") == "unknown"
+
+    def test_every_derived_symptom_passes_validate(self):
+        """推導出來的值一定要是 validate_annotation 收得下的 enum。"""
+        from miningbot.web_annotation import (
+            SYMPTOM_BY_OBSERVATION, symptom_from_observation,
+            validate_annotation,
+        )
+        for obs in SYMPTOM_BY_OBSERVATION:
+            for verdict in ("accepted", "rejected", None):
+                ann = {
+                    "image": "x.png",
+                    "annotation": {"type": "square", "cx": 1, "cy": 2, "size": 3},
+                    "source": {"kind": "manual"},
+                    "observation": obs,
+                    "symptom": symptom_from_observation(obs, verdict),
+                }
+                assert validate_annotation(ann) is True
+
+
+def test_validate_accepts_observation_field():
+    """玩家原話要存得進 json——decoy 與 empty 在 bot 拒絕時都推成 no_target，
+    推導不可逆，只有這個欄位留得住「像礦的地形」這種硬負樣本的身分。"""
+    from miningbot.web_annotation import validate_annotation
+    ann = {"image": "x.png", "source": {"kind": "manual"},
+           "symptom": "no_target", "observation": "decoy"}
+    assert validate_annotation(ann) is True
+    ann["observation"] = 5
+    assert validate_annotation(ann) is False

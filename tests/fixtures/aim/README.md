@@ -39,8 +39,15 @@ auto_<episode_id>_fail.png / .json         verify 未通過（症狀組）
 ```
 
 `.json` schema 見 `miningbot/web_annotation.py:build_annotation`；玩家在 `/annotate`
-網頁補 rarity／礦名／症狀／關聯事故編號。**根因描述不寫在 `.json` 裡**，寫
+網頁補 rarity 與「看到什麼」。**根因描述不寫在 `.json` 裡**，寫
 `docs/incidents.md`（spec §12 非目標）。
+
+`symptom` 不是玩家挑的（2026-07-31）：玩家只答 `observation`
+（`ore`／`decoy`／`empty`／`unsure`），配上快照 label 記的 bot 當下判定
+（`web_history.label_verdict`）推成症狀（`web_annotation.symptom_from_observation`）。
+**推導不可逆**——`decoy`（像礦的地形／裝備／UI）與 `empty` 在 bot 拒絕時都推成
+`no_target`，只有 `observation` 欄位分得出誰是硬負樣本；調門檻要挑素材時看它，
+不要只看 `symptom`。
 
 ## `/annotate` 手動標註素材（2026-07-26 起也是兩檔一組）
 

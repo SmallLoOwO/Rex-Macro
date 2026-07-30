@@ -16,7 +16,9 @@ _NAV_ITEMS = (
     ("/history", "📜 歷史"),
     # 2026-07-28：批次標註要找得到才會有人用（三個月只標了 2 張，一半原因是
     # 得先從歷史頁一張一張點進來）。直接給待標註佇列的入口。
-    ("/annotate?queue=tier0", "🏷️ 標註佇列"),
+    # 2026-07-31 加 tier2：tier0 清一色是 bot 全拒的圖，「bot 接受了但接錯」
+    # 那兩個症狀只有 tier2（sweep_accepted / d3_fire / aim_fire）舉得出例子。
+    ("/annotate?queue=tier0,tier2", "🏷️ 標註佇列"),
     # 這兩頁的讀者是 AI agent 不是玩家（使用者原話：「這些資料對我來說沒有意義，
     # 對 AI agent 比較有價值，讓他去處理微調的問題」）。排版可以醜，資料要全。
     ("/failures", "🤖 失敗佇列"),
@@ -446,9 +448,18 @@ def render_annotate_html(
     snapshot_path=None/"" 時不渲染 ``<img>``（viewer 顯示佔位文字）；其他 UI 不變。
 
     ``queue``（2026-07-28）＝``web_history.annotation_queue`` 回的 tier 佇列；
-    非空時進「佇列模式」：底部顯示第幾 / 共幾張，`j`/`k` 上下張、數字鍵選症狀、
-    `Enter` 送出並自動跳下一張。沒有這條連續動線，標註就永遠停在 2 張。
+    非空時進「佇列模式」：底部顯示第幾 / 共幾張，`j`/`k` 上下張、數字鍵選看到
+    什麼、`Enter` 送出並自動跳下一張。沒有這條連續動線，標註就永遠停在 2 張。
+
+    2026-07-31：**玩家不再挑症狀，只回答「你看到什麼」**（ore/decoy/empty/
+    unsure），症狀由它配上 `label_verdict` 推出來的 bot 判定算（
+    `web_annotation.symptom_from_observation`）。舊的五顆症狀鍵裡有兩顆
+    （誤判／該拒沒拒）只在 bot 已接受候選時成立，玩家得先知道 bot 接受了沒才選
+    得對——而那件事 label 早就記著，連座標都有，頁面直接畫成黃圈給他看。
     """
+    from .web_annotation import SYMPTOM_BY_OBSERVATION
+    from .web_history import label_verdict
+
     tiers, variants = rarity_choices
     queue_mode = queue is not None       # []＝有進佇列模式但沒東西可標，要講清楚
     queue = list(queue or [])
@@ -485,18 +496,24 @@ def render_annotate_html(
     # （spec §5「每張 2 檔」）。server 端會走跟 /snapshot 同一份路徑守門，
     # 所以這裡送完整路徑是安全的——它本來就是 server 自己寫進 snapshot_index 的值。
     img_source_js = _js_str(snapshot_path or "")
-    # 佇列只送前端需要的三欄（path/label/stem），written_at 之類不必上前端。
+    # 佇列每列附 bot 當下判定（verdict/mark_x/mark_y）——症狀就是靠它推的。
     queue_js = json.dumps(
-        [{"path": r.get("path", ""), "label": r.get("label", "")} for r in queue],
+        [{"path": r.get("path", ""), "label": r.get("label", ""),
+          "verdict": r.get("verdict"),
+          "x": r.get("mark_x"), "y": r.get("mark_y")} for r in queue],
         ensure_ascii=False)
+    # 單張模式（`?snapshot=`）沒有佇列列可抄，從檔名自己推——檔名尾端就是 label。
+    init_verdict_js = json.dumps(
+        label_verdict(img_basename.rsplit(".", 1)[0]), ensure_ascii=False)
+    symptom_map_js = json.dumps(SYMPTOM_BY_OBSERVATION, ensure_ascii=False)
     if queue:
         queue_bar = ('<div id="queue-bar">佇列模式：<span id="queue-pos"></span>'
                      '　<code>j</code>/<code>k</code> 上下張・'
-                     '<code>1</code>-<code>4</code> 選症狀・'
+                     '<code>1</code>-<code>4</code> 選你看到什麼・'
                      '<code>Enter</code> 送出並跳下一張</div>')
     elif queue_mode:
         queue_bar = ('<div id="queue-bar" class="empty">佇列是空的——目前沒有'
-                     '待標註的 tier0 快照（掃描全空／框被拒／瞄準失敗），'
+                     '待標註的快照（掃描全空／框被拒／瞄準失敗／已接受的候選），'
                      '或全都標過了</div>')
     else:
         queue_bar = ""
@@ -529,9 +546,22 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
                   color: white; border: 1px solid #555; border-radius: 3px;
                   cursor: pointer; font-size: 0.85rem; }}
 .toolbar button.active {{ background: #0084ff; border-color: #0084ff; }}
-/* 症狀改成整句白話（FN/FP 這種術語玩家看不懂），一行一顆才放得下 */
-#symptoms button {{ display: block; width: 100%; margin: 0.2rem 0;
-                    text-align: left; line-height: 1.35; }}
+/* 整句白話（FN/FP 這種術語玩家看不懂），一行一顆才放得下 */
+#observations button {{ display: block; width: 100%; margin: 0.2rem 0;
+                        text-align: left; line-height: 1.35; }}
+#observations .obs-hint {{ font-size: 0.72rem; color: #999; line-height: 1.4;
+                          margin: 0 0 0.5rem 0.1rem; }}
+/* bot 當下判定：從 label 讀的（`sweep_accepted_dir4_947_520`），不是玩家猜的 */
+#botline {{ font-size: 0.8rem; line-height: 1.4; padding: 0.4rem 0.5rem;
+           border-radius: 3px; background: #2b2b16; color: #e8e08a; }}
+#botline.rejected {{ background: #16262b; color: #9fd2e0; }}
+#botline.unknown {{ background: #2b2b2b; color: #aaa; }}
+#derived {{ font-size: 0.8rem; color: #bbb; margin: 0.5rem 0 0; }}
+#derived b {{ color: #fff; }}
+/* bot 接受／看到的位置：畫面座標固定大小，縮放時不跟著變小才找得到 */
+#botmark {{ position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px;
+           border: 2px solid #ffe600; border-radius: 50%; pointer-events: none;
+           display: none; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); }}
 .toolbar label {{ display: block; font-size: 0.8rem; margin-top: 0.5rem;
                   color: #aaa; }}
 .toolbar input[type="text"] {{ width: 100%; padding: 0.3rem; background: #111;
@@ -560,50 +590,121 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
   <div id="viewer">
     {img_block}
     <div id="selection"></div>
+    <div id="botmark"></div>
   </div>
   <div class="toolbar">
+    <h2>bot 當下判定</h2>
+    <div id="botline"></div>
+
+    <h2>你看到什麼</h2>
+    <div id="observations">
+      <button type="button" data-obs="ore">1　有礦框／追蹤目標</button>
+      <p class="obs-hint">畫面裡真的有一個礦的追蹤框——框出它。</p>
+      <button type="button" data-obs="decoy">2　有東西，但不是礦框</button>
+      <p class="obs-hint">亮綠地形、裝備、UI 之類「長得像框」的東西——框出它。這種硬負樣本對調門檻最有用。</p>
+      <button type="button" data-obs="empty">3　什麼都沒有</button>
+      <p class="obs-hint">整張圖沒有目標也沒有像框的東西，不必框。</p>
+      <button type="button" data-obs="unsure" class="active">4　不確定</button>
+      <p class="obs-hint">看不出來、不想憑肉眼猜，之後有更多資訊再回頭標。</p>
+    </div>
+    <p id="derived"></p>
+
     <h2>稀有度（低 → 高）</h2>
     <div id="tiers">{tier_btns or '<span class="hint">（game_data 無 tier）</span>'}</div>
 
     <h2>變體</h2>
     <div id="variants">{variant_btns}</div>
 
-    <h2>症狀（bot 錯在哪）</h2>
-    <div id="symptoms">
-      <button type="button" data-symptom="false_negative">1　這裡有礦框，bot 沒抓到（漏判）</button>
-      <button type="button" data-symptom="false_positive">2　bot 抓了，可是那裡什麼都沒有（誤判）</button>
-      <button type="button" data-symptom="should_reject_failed">3　那裡有東西，但不是礦框（地形／裝備／UI）</button>
-      <button type="button" data-symptom="no_target">4　這張真的什麼都沒有（確認空幀）</button>
-      <button type="button" data-symptom="unknown" class="active">5　不確定</button>
-    </div>
-
     <button type="button" class="submit" id="submit">送出標註</button>
     <p class="hint">在快照上拖曳出方形（1:1）；Shift + 拖曳 = 平移；
     滾輪 / 雙指 = 縮放；Esc 清除方形。</p>
   </div>
 </div>
-<div id="status">提示：拖曳出方形 → 選 rarity / 症狀 → 送出</div>
+<div id="status">提示：看 bot 判定 → 選你看到什麼 → 框出來 → 送出</div>
 
 <script>
 const viewer = document.getElementById('viewer');
 const img = document.getElementById('snapshot');
 const sel = document.getElementById('selection');
 const statusEl = document.getElementById('status');
+const botmark = document.getElementById('botmark');
+const botlineEl = document.getElementById('botline');
+const derivedEl = document.getElementById('derived');
 
 let zoom = 1.0;
 let pan = [0, 0];
 let selRect = null;       // {{ x, y, size }} in natural img coords
 let activeTier = null;
 let activeVariant = null;
-let activeSymptom = 'unknown';
+// 選擇跨張記憶（2026-07-30）：大多數待標快照是「什麼都沒有」，玩家選過一次後
+// 下一張直接帶上次的選擇，不必每張重選。localStorage 是瀏覽器原生、純前端、
+// 免改後端。tier/variant 不記——它們是「畫面裡那個礦」的屬性，每張不同，
+// 記了反而無聲套用錯誤稀有度。
+const OBS_KEY = 'annotate.observation';
+let activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
+
+// 症狀不由玩家挑：（你看到什麼 × bot 當下判定）推出來。這張表由 Python 端的
+// web_annotation.SYMPTOM_BY_OBSERVATION 直接渲染下來，只有一份定義。
+const SYMPTOM_BY_OBS = {symptom_map_js};
+const SYMPTOM_LABELS = {{
+  false_negative: '漏判（有框沒抓到）',
+  false_positive: '誤判（抓了但那裡沒東西）',
+  should_reject_failed: '該拒沒拒（抓到不是框的東西）',
+  no_target: '確認空幀（真陰性）',
+  unknown: '不確定',
+}};
+// bot 接受在哪但玩家沒框時的預設框大小（與 main._AUTO_FIXTURE_DEFAULT_SIZE 同值）
+const BOT_MARK_SIZE = 50;
+let bot = {init_verdict_js};   // {{ verdict: 'accepted'|'rejected'|null, x, y }}
 
 // ── 佇列模式（2026-07-28）──────────────────────────────────────────────
-// 一次把 tier0 快照排成一串連續走完。沒有這條動線就永遠停在 2 張。
+// 一次把待標快照排成一串連續走完。沒有這條動線就永遠停在 2 張。
 const queue = {queue_js};
 let qIndex = 0;
 let imageName = {img_basename_js};
 let sourcePath = {img_source_js};
 const queuePosEl = document.getElementById('queue-pos');
+
+function derivedSymptom() {{
+  const column = SYMPTOM_BY_OBS[activeObs] || SYMPTOM_BY_OBS.unsure;
+  // 只認 'accepted'；沒記判定的一律走 rejected 那欄（見 symptom_from_observation）
+  return column[bot.verdict === 'accepted' ? 'accepted' : 'rejected'];
+}}
+
+function renderBotLine() {{
+  if (!botlineEl) return;
+  const at = (bot.x === null || bot.x === undefined)
+    ? '' : `（黃圈 ${{bot.x}},${{bot.y}}）`;
+  let text, cls;
+  if (bot.verdict === 'accepted') {{
+    text = `接受了這個候選${{at}}`; cls = '';
+  }} else if (bot.verdict === 'rejected') {{
+    text = at ? `看到候選但沒採信${{at}}` : '整張沒有任何候選';
+    cls = 'rejected';
+  }} else {{
+    text = '這張沒記判定（當成沒接受處理）'; cls = 'unknown';
+  }}
+  botlineEl.textContent = text;
+  botlineEl.className = cls;
+  if (derivedEl) {{
+    const s = derivedSymptom();
+    derivedEl.innerHTML = '會記成：<b>'
+      + (s ? SYMPTOM_LABELS[s] : '對照組——bot 判對了') + '</b>';
+  }}
+}}
+
+// bot 判定的位置畫成黃圈：玩家一眼看到「bot 抓的是這裡」，才判得出那裡到底是
+// 礦框、像礦的地形、還是空的——這正是舊版症狀 2 與 3 分不出來的原因。
+function applyBotMark() {{
+  if (!botmark) return;
+  if (bot.x === null || bot.x === undefined) {{
+    botmark.style.display = 'none';
+    return;
+  }}
+  botmark.style.display = 'block';
+  botmark.style.left = (pan[0] + bot.x * zoom) + 'px';
+  botmark.style.top = (pan[1] + bot.y * zoom) + 'px';
+}}
 
 function renderQueuePos() {{
   if (!queuePosEl || !queue.length) return;
@@ -619,7 +720,10 @@ function showQueueItem(i) {{
   imageName = item.path.split('/').pop().split('\\\\').pop();
   img.src = '/snapshot?path=' + encodeURIComponent(item.path);
   selRect = null; sel.style.display = 'none';
-  zoom = 1.0; pan = [0, 0]; applyTransform();
+  bot = {{ verdict: item.verdict, x: item.x, y: item.y }};
+  resetToolbar();  // 上一張標的 tier/variant/看到什麼 不該帶進這張新圖
+  renderBotLine();
+  applyBotMark();
   renderQueuePos();
 }}
 renderQueuePos();
@@ -627,8 +731,26 @@ renderQueuePos();
 function applyTransform() {{
   if (!img) return;
   img.style.transform = `translate(${{pan[0]}}px, ${{pan[1]}}px) scale(${{zoom}})`;
+  applyBotMark();      // 黃圈跟著平移/縮放走，否則放大後指到別的地方
 }}
-if (img) applyTransform();
+
+// 預設顯示全圖（見「全 8 方位」這類 1920×1080 全幀）：naturalWidth/Height 遠
+// 大於 #viewer 的顯示區，zoom=1 等於原始像素→畫面只看得到一角，每次都要手動
+// 縮小才看得到全貌。改成 load 完就縮到「整張塞進 viewer」＋置中，需要細看再
+// 自己滾輪/雙指放大。
+function fitToView() {{
+  if (!img || !img.naturalWidth || !img.naturalHeight) return;
+  const vw = viewer.clientWidth, vh = viewer.clientHeight;
+  if (!vw || !vh) return;
+  zoom = Math.min(vw / img.naturalWidth, vh / img.naturalHeight);
+  pan = [(vw - img.naturalWidth * zoom) / 2, (vh - img.naturalHeight * zoom) / 2];
+  applyTransform();
+}}
+if (img) {{
+  img.addEventListener('load', fitToView);
+  if (img.complete && img.naturalWidth) fitToView();  // 首次載入時可能已經 cache 命中，load 事件不會再等
+  else applyTransform();                               // 圖還沒到之前先套預設值，避免 transform 是空字串
+}}
 
 // ── wheel zoom（桌機） ────────────────────────────────────────────────
 viewer.addEventListener('wheel', (e) => {{
@@ -766,30 +888,63 @@ document.addEventListener('keydown', (e) => {{
   if (e.key === 'j') {{ showQueueItem(qIndex + 1); e.preventDefault(); }}
   else if (e.key === 'k') {{ showQueueItem(qIndex - 1); e.preventDefault(); }}
   else if (e.key === 'Enter') {{ submitAnnotation(); e.preventDefault(); }}
-  else if (e.key >= '1' && e.key <= '5') {{
-    const btns = document.querySelectorAll('#symptoms button');
+  else if (e.key >= '1' && e.key <= '4') {{
+    const btns = document.querySelectorAll('#observations button');
     const b = btns[Number(e.key) - 1];
     if (b) {{ b.click(); e.preventDefault(); }}
   }}
 }});
 
 // ── toolbar：tier / variant / symptom 單選切換 ──────────────────────
-function bindSingleSelect(containerId, setter) {{
+// tier/variant 允許再點一次已選的按鈕取消（deselect）——先前點了就卡死選不掉，
+// 玩家點錯稀有度或想改標「沒東西」都無法回到未選狀態。symptom 永遠要有現役值
+// （預設「不確定」），不開放取消到空，佇列/送出邏輯都假設它恆不為 null。
+function bindSingleSelect(containerId, setter, opts) {{
+  const deselectable = !!(opts && opts.deselectable);
   const btns = document.querySelectorAll(`#${{containerId}} button`);
   btns.forEach((b) => {{
     b.addEventListener('click', () => {{
+      if (deselectable && b.classList.contains('active')) {{
+        b.classList.remove('active');
+        setter(null);
+        return;
+      }}
       btns.forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       setter(b);
     }});
   }});
 }}
-bindSingleSelect('tiers', (b) => {{ activeTier = b.dataset.tier || null; }});
+bindSingleSelect('tiers', (b) => {{ activeTier = b ? (b.dataset.tier || null) : null; }},
+                 {{ deselectable: true }});
 bindSingleSelect('variants', (b) => {{
-  const v = b.dataset.variant;
+  const v = b && b.dataset.variant;
   activeVariant = (!v || v === '原色') ? null : v;
+}}, {{ deselectable: true }});
+bindSingleSelect('observations', (b) => {{
+  activeObs = b.dataset.obs;
+  localStorage.setItem(OBS_KEY, activeObs);  // 跨張記憶：下一張帶上來
+  renderBotLine();                            // 推出來的症狀即時更新
 }});
-bindSingleSelect('symptoms', (b) => {{ activeSymptom = b.dataset.symptom; }});
+
+// 佇列翻頁時把 toolbar 選擇歸位（見 showQueueItem）：「看到什麼」帶上次的記憶
+// （玩家選過 3「什麼都沒有」就固定住，不必每張重選），tier/variant 清空
+// （每張畫面的礦不同，記了會無聲套用錯誤稀有度），按鈕高亮一併同步。
+function resetToolbar() {{
+  activeTier = null; activeVariant = null;
+  activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
+  document.querySelectorAll('#tiers button, #variants button')
+    .forEach((b) => b.classList.remove('active'));
+  document.querySelectorAll('#observations button')
+    .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
+}}
+
+// 首載入也要同步：HTML 裡 'unsure' 按鈕硬寫了 class="active"，但若 localStorage
+// 記的是別的選擇，按鈕高亮跟 activeObs 會不一致。
+document.querySelectorAll('#observations button')
+  .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
+renderBotLine();
+applyBotMark();
 
 // ── 送出：POST /api/annotate（validate_annotation schema） ──────────
 document.getElementById('submit').addEventListener('click', submitAnnotation);
@@ -802,28 +957,44 @@ function categoryFor(name) {{
 }}
 
 async function submitAnnotation() {{
-  // no_target：玩家確認「這張沒東西」，不需要畫框。
-  if (activeSymptom !== 'no_target' && !selRect) {{
-    statusEl.textContent = '請先在快照上拖曳出方形（或選「這張真的什麼都沒有」）';
-    return;
-  }}
-  const payload = {{
-    image: imageName,
-    source_path: sourcePath,
-    tier: activeTier,
-    variant: activeVariant,
-    mineral: null,
-    source: {{ kind: 'manual' }},
-    symptom: activeSymptom,
-    related_incident: null,
-  }};
-  if (activeSymptom !== 'no_target') {{
-    payload.annotation = {{
+  const symptom = derivedSymptom();
+  // 框從哪來：玩家拖的優先；玩家說「什麼都沒有」但 bot 卻接受了（＝誤判），
+  // 就用 bot 自己記的座標當框心——那塊裁圖正是要拿去調門檻的硬負樣本，
+  // 而叫玩家去框一個「他說不存在的東西」是矛盾的。
+  let annotation = null;
+  if (selRect) {{
+    annotation = {{
       type: 'square',
       cx: Math.round(selRect.x),
       cy: Math.round(selRect.y),
       size: selRect.size,
     }};
+  }} else if (symptom !== 'no_target'
+             && bot.x !== null && bot.x !== undefined) {{
+    annotation = {{ type: 'square', cx: bot.x, cy: bot.y, size: BOT_MARK_SIZE }};
+  }}
+  // no_target（人確認過的真陰性）走全幀存檔，不需要框；其餘一定要有框，
+  // 不然素材只剩一份指不到裁圖的孤兒 json。
+  if (symptom !== 'no_target' && !annotation) {{
+    statusEl.textContent = '請先在快照上拖曳出方形（或選「什麼都沒有」）';
+    return;
+  }}
+  // 稀有度/變體是「畫面裡那個礦物」的屬性，只有玩家說看到礦框時才成立；
+  // 其餘情況就算他先前點過也不送出去，不然會是「沒有礦的圖」標著一個稀有度。
+  const isOre = activeObs === 'ore';
+  const payload = {{
+    image: imageName,
+    source_path: sourcePath,
+    tier: isOre ? activeTier : null,
+    variant: isOre ? activeVariant : null,
+    mineral: null,
+    source: {{ kind: 'manual' }},
+    observation: activeObs,       // 玩家原話；症狀是它推出來的，推導不可逆
+    symptom: symptom,
+    related_incident: null,
+  }};
+  if (symptom !== 'no_target') {{
+    payload.annotation = annotation;
     payload.category = categoryFor(imageName);
   }}
   statusEl.textContent = '送出中…';
@@ -857,10 +1028,7 @@ async function submitAnnotation() {{
 // 沒有 verdict（偵測模組不可用）就只顯示存檔結果，不假裝有判決。
 function verdictText(v) {{
   if (!v) return '（無現行判定）';
-  const label = {{
-    false_negative: '漏判', false_positive: '誤判',
-    should_reject_failed: '該拒沒拒', unknown: '不確定',
-  }}[v.your_label] || '沒問題';
+  const label = SYMPTOM_LABELS[v.your_label] || '沒問題';
   const parts = Object.entries(v.score || {{}}).map(([k, n]) => k + ' ' + n);
   const detail = parts.length ? '（' + parts.join('、') + '）' : '';
   const judged = v.detector === 'accepted' ? '接受' : '拒絕';
@@ -1367,6 +1535,7 @@ function _unlockAudio() {
 }
 document.addEventListener('pointerdown', _unlockAudio);
 document.addEventListener('keydown', _unlockAudio);
+
 function fitCanvas() {
   const cw = container.clientWidth;
   const ch = container.clientHeight;
@@ -1488,6 +1657,7 @@ function connect() {
         currentEvent = null;
         frames = [{ img: null, dir: null }];
         curFrame = 0; seen = new Set();
+        zoom = 1.0; pan = [0, 0];  // 上一輪留下的放大不該帶進這張無關的即時畫面
         loadImage(e.data, 0);
         setStatus('📷 即時畫面（僅供查看，不能點擊送出）', 'idle');
         return;
@@ -1502,6 +1672,7 @@ function connect() {
       } else {
         frames = [{ img: null, dir: 1 }];
         curFrame = 0; seen = new Set();
+        zoom = 1.0; pan = [0, 0];  // 同上：新一輪開火幀不該繼承前一輪的縮放
         loadImage(e.data, 0);
       }
       return;
@@ -1511,7 +1682,10 @@ function connect() {
     const p = (msg && msg.payload) || {};
     if (!msg || msg.type !== 'event') return;
     if (p.event === 'INTERVENTION_FRAME') {
-      if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; }
+      // p.index===0 是每一輪新事件的第一張——縮放/平移在這裡歸位，而不是等玩家
+      // 翻頁時才靠 showFrame() 歸位；不然上一輪介入結束時留的放大倍率，會直接
+      // 套在下一輪還沒看過的第一張圖上，玩家每次都得先手動縮小才看得到全貌。
+      if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; zoom = 1.0; pan = [0, 0]; }
       pendingMeta = { index: p.index, dir: p.dir, layer: p.layer, total: p.total,
                       predict: p.predict };
     } else if (p.event === 'INTERVENTION_NEEDED') {
@@ -1525,6 +1699,7 @@ function connect() {
       for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = !isReentry;
       confirmBtn.hidden = true; voidBtn.hidden = true;
       curFrame = 0;
+      zoom = 1.0; pan = [0, 0];  // 保底：萬一這裡才是這輪第一次拿到 frames
       renderNav();       // 採用建議鍵由 renderNav 依「這張有沒有預測」決定顯不顯示
       if (frames.length) drawFrame(0);
       startFlashing(p.summary || '需要介入');

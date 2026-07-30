@@ -369,3 +369,44 @@ class TestDuplicateEpisodeNumbers:
         ])
         ep = load_episode_detail("reentry:26", str(idx))
         assert ep["harvest_id"] == "26"
+
+
+# ---- bot 當下判定（2026-07-31）---------------------------------------------
+#
+# 「bot 有沒有接受」寫在 label 裡（main.py 的 _hsnap 呼叫點），標註頁不該叫玩家猜。
+
+
+class TestLabelVerdict:
+    def test_accepted_labels_carry_coordinates(self):
+        from miningbot.web_history import label_verdict
+        assert label_verdict("138_sweep_accepted_dir4_947_520") == {
+            "verdict": "accepted", "x": 947, "y": 520}
+        # d3_fire 用 `%dx%d` 寫法（同一件事、兩種分隔字元）
+        assert label_verdict("138_d3_fire_dir3_1397x513") == {
+            "verdict": "accepted", "x": 1397, "y": 513}
+
+    def test_sweep_empty_is_rejected_without_mark(self):
+        from miningbot.web_history import label_verdict
+        assert label_verdict("137_sweep_empty_dir4") == {
+            "verdict": "rejected", "x": None, "y": None}
+
+    def test_seen_once_is_rejected_but_keeps_its_mark(self):
+        """看到一次沒過雙幀穩定＝掃描照樣繼續、沒開火，就 bot 的行為是拒絕；
+        座標仍要留著，頁面才畫得出「看到但沒採信」的圈。"""
+        from miningbot.web_history import label_verdict
+        assert label_verdict("123_sweep_seen_once_dir0_1208_476") == {
+            "verdict": "rejected", "x": 1208, "y": 476}
+
+    def test_unrelated_labels_have_no_verdict(self):
+        """俯仰／boost／回礦那些不是追蹤框那條路的快照＝不知道，不可當成拒絕以外的東西。"""
+        from miningbot.web_history import label_verdict
+        for label in ("reentry_ep27_dir3", "pitch_ok_before",
+                      "134_boost_count_unreadable", ""):
+            assert label_verdict(label)["verdict"] is None
+
+    def test_filename_stem_works_too(self):
+        """單張模式只有檔名可推——檔名尾端就是 label，奈秒序號不可被誤讀成座標。"""
+        from miningbot.web_history import label_verdict
+        got = label_verdict(
+            "20260731_001105_587684100_000172_133_sweep_empty_dir4")
+        assert got == {"verdict": "rejected", "x": None, "y": None}

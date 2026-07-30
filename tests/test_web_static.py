@@ -79,28 +79,32 @@ def test_render_annotate_html_includes_variant_names():
         assert v in html, f"variant {v!r} 應出現在 HTML"
 
 
-def test_render_annotate_html_includes_all_four_symptom_buttons():
-    """四個症狀按鈕都該在 HTML，且是**整句白話**不是 FN/FP 術語。
+def test_render_annotate_html_asks_what_you_see_not_which_symptom():
+    """玩家只回答「看到什麼」，四顆按鈕整句白話、不出現 FN/FP 術語。
 
-    使用者原話（2026-07-29）：「症狀內容不夠明確 不知道 fn fp 是甚麼」。
+    使用者原話（2026-07-29）：「症狀內容不夠明確 不知道 fn fp 是甚麼」；
+    （2026-07-31）：「給予的圖片大部分只有 1 與 4，所以我也不知道 2 與 3 的
+    差別，並且 bot 有沒有接受……腳本在記錄圖片的時候應該就會有了」——症狀改成
+    由（看到什麼 × bot 判定）推導，玩家不再挑症狀。
     """
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
-    block = html.split('<div id="symptoms">')[1].split("</div>")[0]
-    assert "沒抓到" in block          # false_negative
-    assert "什麼都沒有" in block      # false_positive
-    assert "不是礦框" in block        # should_reject_failed
+    block = html.split('<div id="observations">')[1].split("<p id=")[0]
+    assert "有礦框" in block
+    assert "不是礦框" in block
+    assert "什麼都沒有" in block
     assert "不確定" in block
-    # 按鈕文字本身不得再出現術語（CSS/JS 註解裡提到不算）
     assert "FN" not in block and "FP" not in block
 
 
-def test_render_annotate_html_symptom_buttons_map_to_validate_annotation_values():
-    """症狀按鈕的 data-symptom 必須是 validate_annotation 接受的標準 enum 值。"""
+def test_render_annotate_html_observation_buttons_cover_the_mapping():
+    """四顆按鈕的 data-obs 必須就是 SYMPTOM_BY_OBSERVATION 的鍵，一個不漏。
+
+    少一顆＝那一列推導永遠觸不到（例如 decoy 沒了就再也標不出「該拒沒拒」）。
+    """
+    from miningbot.web_annotation import SYMPTOM_BY_OBSERVATION
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
-    assert 'data-symptom="false_negative"' in html
-    assert 'data-symptom="false_positive"' in html
-    assert 'data-symptom="should_reject_failed"' in html
-    assert 'data-symptom="unknown"' in html
+    for obs in SYMPTOM_BY_OBSERVATION:
+        assert f'data-obs="{obs}"' in html
 
 
 def test_render_annotate_html_submit_posts_to_api_annotate():

@@ -190,6 +190,43 @@ def test_annotate_without_queue_param_is_unchanged(tmp_path):
     assert 'id="queue-bar"' not in body
 
 
+def test_annotate_queue_route_accepts_multiple_tiers(tmp_path):
+    """`?queue=tier0,tier2`：bot 全拒的圖與 bot 已接受的圖排在同一串。
+
+    2026-07-31 使用者回報「給予的圖片大部分只有 1 與 4」——實測索引 tier0 227 張
+    有 220 張 `sweep_empty`（bot 什麼都沒接受），而「接受了但接錯」只有 tier2
+    舉得出例子；只排 tier0 的話那兩種症狀玩家一輩子遇不到。
+    """
+    client = _client(tmp_path, [
+        _rec("113_sweep_empty", str(tmp_path / "a.png"), 2.0),
+        _rec("138_sweep_accepted_dir4_947_520", str(tmp_path / "c.png"), 3.0),
+        _rec("120_rare_found", str(tmp_path / "b.png"), 1.0),
+    ])
+    body = client.get("/annotate?queue=tier0,tier2").text
+    assert "a.png" in body and "c.png" in body
+    assert "b.png" not in body        # tier3 仍不進
+
+
+def test_annotate_queue_route_bad_tier_falls_back_to_tier0(tmp_path):
+    client = _client(tmp_path, [_rec("113_sweep_empty", str(tmp_path / "a.png"), 1.0)])
+    assert "a.png" in client.get("/annotate?queue=nonsense").text
+
+
+def test_build_queue_carries_bot_verdict_and_mark():
+    """佇列每列都帶 bot 當下判定與座標——標註頁靠它推症狀，不叫玩家猜。"""
+    got = web_history.build_queue(
+        [_rec("138_sweep_accepted_dir4_947_520", "hit.png", 2.0),
+         _rec("137_sweep_empty_dir4", "empty.png", 1.0)],
+        tier=(0, 2), exists=lambda p: True)
+    by_stem = {r["stem"]: r for r in got}
+    assert by_stem["hit"]["verdict"] == "accepted"
+    assert (by_stem["hit"]["mark_x"], by_stem["hit"]["mark_y"]) == (947, 520)
+    assert by_stem["hit"]["tier"] == 2
+    assert by_stem["empty"]["verdict"] == "rejected"
+    assert by_stem["empty"]["mark_x"] is None
+    assert by_stem["empty"]["tier"] == 0
+
+
 def test_annotate_queue_uses_existing_tier_logic():
     """沒有另寫一套排序——tier 判定只有 annotation_tier 一份。"""
     import inspect
@@ -221,12 +258,13 @@ def test_build_queue_overlay_deduped_when_clean_exists():
     assert [r["stem"] for r in got] == ["shot"]
 
 
-def test_build_queue_overlay_kept_when_clean_gone():
-    """乾淨原幀被 retention 刪掉時，疊圖留下（比沒有好）。"""
+def test_build_queue_overlay_filtered_even_when_clean_gone():
+    """疊圖畫了格線燒進像素、裁出來一定是壞語料——乾淨原幀在不在都不排進佇列
+    （2026-07-30 前會留下當「聊勝於無」的紀錄，使用者確認不需要，改無條件濾）。"""
     got = web_history.build_queue(
         [_rec("a_sweep_empty", "shot_aim.png", 1.0)],
         exists=lambda p: True)
-    assert [r["stem"] for r in got] == ["shot_aim"]
+    assert got == []
 
 
 def test_annotation_queue_negatives_dir_dedup(tmp_path):

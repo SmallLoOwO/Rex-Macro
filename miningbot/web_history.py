@@ -71,6 +71,46 @@ def annotation_tier(label: str) -> int:
     return _DEFAULT_TIER
 
 
+# ── bot 當下判定（2026-07-31）──────────────────────────────────────────────
+#
+# 「bot 有沒有接受這個候選」快照 label 早就記著了，標註頁卻叫玩家自己猜——2/3
+# 兩個症狀只在已接受時成立，猜錯就是壞語料。label 甚至連座標都有：
+# `138_sweep_accepted_dir4_947_520`、`138_d3_fire_dir3_1397x513`
+# （`_%d_%d` 與 `_%dx%d` 兩種寫法，見 main.py 的 `_hsnap` 呼叫點）。
+#
+# `seen_once` 算**拒絕**：偵測器看到一次但雙幀穩定沒過，掃描照樣繼續、沒有開火
+# ——就 bot 的行為而言它拒絕了。它帶座標，所以頁面仍畫得出「看到但沒採信」的圈。
+_VERDICT_ACCEPTED_RE = re.compile(
+    r"_accepted|sweep_confirmed|d3_fire|aim_fire|d3_miss|gone_unconfirmed"
+    r"|harvest_success|_fired")
+_VERDICT_REJECTED_RE = re.compile(r"sweep_empty|_rejected|seen_once")
+# 結尾的一對座標；`\d{1,4}` 擋掉檔名裡的奈秒序號（`_000172_133_...` 是 6 位）。
+_VERDICT_MARK_RE = re.compile(r"_(\d{1,4})[_x](\d{1,4})$")
+
+
+def label_verdict(label: str) -> dict:
+    """快照 label（或檔名主幹）→ bot 當下判定與座標（純函式）。
+
+    回 ``{"verdict": "accepted"|"rejected"|None, "x": int|None, "y": int|None}``。
+    ``None`` ＝這個 label 沒記判定（俯仰／boost／聊天／回礦那些不是追蹤框那條路
+    的快照），呼叫端要當「不知道」處理，**不可以當成拒絕以外的東西**。
+
+    accepted 先比：`aim_overlay` 的 statuses 可能是 ``rejected,accepted`` 混合，
+    有任何一個被接受就算接受。
+    """
+    text = str(label or "")
+    if _VERDICT_ACCEPTED_RE.search(text):
+        verdict = "accepted"
+    elif _VERDICT_REJECTED_RE.search(text):
+        verdict = "rejected"
+    else:
+        verdict = None
+    m = _VERDICT_MARK_RE.search(text)
+    return {"verdict": verdict,
+            "x": int(m.group(1)) if m else None,
+            "y": int(m.group(2)) if m else None}
+
+
 def snapshot_stem(path: str) -> str:
     """快照路徑 → 標註素材的檔名主幹（`/annotate` 用 basename 當 `image` 欄位）。"""
     return os.path.splitext(os.path.basename(str(path or "")))[0]
@@ -97,13 +137,18 @@ def annotated_stems(*dirs: str | None) -> set:
 # `_render_aim_shots` 把疊了粗格線與 DIR 標頭的複本另存成 `<原檔>_aim.png` 並
 # 各自寫進索引，於是**同一幀在佇列裡出現兩次**。實測 tier0 活語料 161 張裡有
 # 53 張是這種複本，53 張的乾淨原幀全部也在佇列裡——玩家翻到的「廢圖」有三分之一
-# 就是這個。疊圖本身不能當偵測語料（畫上去的線會進裁圖），但**只有在乾淨原幀
-# 還在時才丟得起**，所以下面是條件式去重而不是無腦過濾。
+# 就是這個。疊圖本身不能當偵測語料（畫上去的線會進裁圖，`/api/annotate` 裁的是
+# 這張來源圖，裁出來的框會帶著燒進去的格線——是壞語料）。
+#
+# 2026-07-30 之前只在乾淨原幀也還在佇列時才丟（怕乾淨原幀被 retention 清掉後，
+# 這個失敗案例在佇列裡完全消失）。使用者看過一次「疊圖跳出來要標」的實例後
+# 明確表示不需要——壞語料就是壞語料，乾淨原幀在不在都不该排進待標佇列，寧可
+# 少一筆紀錄也不要逼玩家標一張裁出來註定要丟的圖。改成無條件濾掉。
 _AIM_OVERLAY_SUFFIX = "_aim.png"
 
 
-def build_queue(records, annotated=(), tier: int = 0, exists=None) -> list:
-    """快照記錄 → 指定 tier 的標註佇列（純函式）。
+def build_queue(records, annotated=(), tier=0, exists=None) -> list:
+    """快照記錄 → 指定 tier（可多個）的標註佇列（純函式）。
 
     排序：`written_at` 由新到舊——最近的失敗最可能還沒被修掉，先標它的資訊量最高。
     `written_at` 缺值排到最後（`snapshot_index` 是 append-only，理論上都有）。
@@ -114,16 +159,29 @@ def build_queue(records, annotated=(), tier: int = 0, exists=None) -> list:
     早就被 `snapshot_max_total_mb` 從最舊刪掉了。實測 500 列裡 339 列是死連結，
     玩家一路翻過去全是破圖。不傳＝維持舊行為（測試與純資料呼叫端不受影響）。
 
-    疊圖去重：`<原檔>_aim.png` 在乾淨原幀也留在佇列裡時丟掉（見上方註解）。
+    疊圖濾除：`<原檔>_aim.png`（畫了格線/DIR 標頭的複本）一律不進佇列，不論
+    乾淨原幀還在不在（見上方註解）。
+
+    `tier` 收單一數字或一串數字（`(0, 2)`）。要一串是因為 tier0 全是 bot 什麼都
+    沒接受的圖：實測索引裡 tier0 227 張有 220 張 `sweep_empty`，而「bot 接受了
+    但接錯」這種症狀只在 tier2（`sweep_accepted` / `d3_fire` / `aim_fire`）看得到
+    ——只排 tier0 的話那兩個症狀玩家一輩子遇不到（使用者 2026-07-31 回報）。
+
+    每列附 `verdict`/`mark_x`/`mark_y`（`label_verdict`）：bot 當下接受了什麼、
+    接受在哪，標註頁據此決定症狀，不必玩家猜。
     """
     done = set(annotated or ())
+    wanted = {tier} if isinstance(tier, int) else set(tier)
     rows = []
     for record in records or ():
         path = record.get("path")
         if not isinstance(path, str) or not path:
             continue
+        if path.endswith(_AIM_OVERLAY_SUFFIX):
+            continue
         label = str(record.get("label") or "")
-        if annotation_tier(label) != tier:
+        row_tier = annotation_tier(label)
+        if row_tier not in wanted:
             continue
         if exists is not None and not exists(path):
             continue
@@ -131,21 +189,18 @@ def build_queue(records, annotated=(), tier: int = 0, exists=None) -> list:
         if stem in done:
             continue
         done.add(stem)                     # 同一張圖在索引裡出現兩次也只排一次
+        verdict = label_verdict(label)
         rows.append({"path": path, "label": label, "stem": stem,
                      "written_at": record.get("written_at"),
-                     "tier": tier})
-    survivors = {r["path"] for r in rows}
-    out = [
-        r for r in rows
-        if not (r["path"].endswith(_AIM_OVERLAY_SUFFIX)
-                and r["path"][:-len(_AIM_OVERLAY_SUFFIX)] + ".png" in survivors)
-    ]
-    out.sort(key=lambda r: (r["written_at"] is None, -(r["written_at"] or 0.0)))
-    return out
+                     "tier": row_tier,
+                     "verdict": verdict["verdict"],
+                     "mark_x": verdict["x"], "mark_y": verdict["y"]})
+    rows.sort(key=lambda r: (r["written_at"] is None, -(r["written_at"] or 0.0)))
+    return rows
 
 
 def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
-                     tier: int = 0, negatives_dir: str | None = None) -> list:
+                     tier=0, negatives_dir: str | None = None) -> list:
     """`build_queue` 的 I/O 版：讀索引 + 掃已標註目錄去重 + 濾掉檔案已不在的列。"""
     return build_queue(_iter_snapshot_records(snapshot_index_path),
                        annotated_stems(fixtures_dir, negatives_dir), tier,

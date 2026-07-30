@@ -48,6 +48,47 @@ _SYMPTOM_VALUES: frozenset[str | None] = frozenset(
      "no_target", "unknown", None}
 )
 
+# 玩家看到什麼（2026-07-31）。**症狀不再由玩家挑**——玩家只描述畫面，症狀由
+# 這張表配上「bot 當下的判定」推出來。
+#
+# 為什麼改：症狀那五顆按鈕裡，2（誤判）與 3（該拒沒拒）只在 bot 已經接受候選時
+# 成立，玩家得先知道 bot 到底接受了沒才選得對——而那件事**快照 label 早就記著**
+# （`sweep_accepted_dir4_947_520` / `sweep_empty_dir4`），沒有理由叫玩家猜。
+# 使用者原話：「給予的圖片大部分只有 1 與 4，所以我也不知道 2 與 3 的差別」——
+# 實測佇列 227 張裡 220 張是 `sweep_empty`（bot 全拒），2/3 根本輪不到。
+#
+# 順帶保住 2 vs 3 的資訊：`decoy`（有東西但不是礦框）與 `empty`（真的空）在
+# bot 拒絕時都是真陰性 `no_target`，但 `observation` 欄位仍原樣存進 json——
+# 「像礦的地形」是調門檻最值錢的硬負樣本，跟空幀不是同一種負樣本。
+OBSERVATIONS: tuple[str, ...] = ("ore", "decoy", "empty", "unsure")
+
+SYMPTOM_BY_OBSERVATION: dict[str, dict[str, str | None]] = {
+    # 有礦框：bot 接受＝判對（對照組，symptom 留空）；沒接受＝漏判
+    "ore": {"accepted": None, "rejected": "false_negative"},
+    # 像礦的地形／裝備／UI：bot 接受＝該拒沒拒；沒接受＝bot 判對的真陰性
+    "decoy": {"accepted": "should_reject_failed", "rejected": "no_target"},
+    # 什麼都沒有：bot 接受＝誤判；沒接受＝真陰性
+    "empty": {"accepted": "false_positive", "rejected": "no_target"},
+    "unsure": {"accepted": "unknown", "rejected": "unknown"},
+}
+
+
+def symptom_from_observation(observation: str | None,
+                             bot_verdict: str | None) -> str | None:
+    """（玩家看到什麼, bot 當下判定）→ 症狀 enum。
+
+    `bot_verdict` 只認 ``"accepted"``；其餘（``"rejected"``／``None``／沒記錄）
+    一律走 rejected 那一欄——**沒有證據說 bot 接受過，就不要記一個需要它接受才
+    成立的症狀**（誤判／該拒沒拒）。判決真偽由 `/api/annotate` 回應裡的
+    `annotation_verdict` 用現行偵測器重跑，這裡不必也不該猜。
+
+    認不得的 observation → ``"unknown"``（等同玩家說不確定），不會靜默變成別的。
+    """
+    column = SYMPTOM_BY_OBSERVATION.get(observation or "")
+    if column is None:
+        return "unknown"
+    return column["accepted" if bot_verdict == "accepted" else "rejected"]
+
 
 def normalize_symptom(s: str | None) -> str | None:
     """把玩家可見的症狀文字（「漏判」/「誤判」/FN/FP/...）對應到標準 enum。
@@ -192,8 +233,14 @@ def validate_annotation(ann: Any) -> bool:
     必須帶。``no_target`` 標的是「整張圖裡什麼都沒有」，玩家不該被逼畫一個假框
     才送得出去；這時 ``annotation`` 允許缺，存檔走 corpus/negatives 而非 fixtures。
 
-    選填：``tier`` / ``variant`` / ``mineral`` / ``symptom`` / ``related_incident``
-    存在時非 None 必須是 str；``symptom`` 非 None 必須是 _SYMPTOM_VALUES 之一。
+    選填：``tier`` / ``variant`` / ``mineral`` / ``observation`` /
+    ``related_incident`` 存在時非 None 必須是 str；``symptom`` 非 None 必須是
+    _SYMPTOM_VALUES 之一。
+
+    ``observation``（2026-07-31）＝玩家原話「我看到什麼」（ore/decoy/empty/
+    unsure）。症狀是它推出來的（`symptom_from_observation`），但推導**不可逆**
+    ——`decoy` 與 `empty` 在 bot 拒絕時都推成 `no_target`，而「像礦的地形」正是
+    調門檻最值錢的硬負樣本。存原話才留得住這個差別。
     """
     if not isinstance(ann, dict):
         return False
@@ -209,8 +256,8 @@ def validate_annotation(ann: Any) -> bool:
     if src.get("kind") not in _SOURCE_KINDS:
         return False
 
-    # optional strings: tier / variant / mineral / related_incident
-    for k in ("tier", "variant", "mineral", "related_incident"):
+    # optional strings: tier / variant / mineral / observation / related_incident
+    for k in ("tier", "variant", "mineral", "observation", "related_incident"):
         v = ann.get(k)
         if v is not None and not isinstance(v, str):
             return False

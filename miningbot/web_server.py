@@ -549,17 +549,21 @@ def create_app(
         `?queue=tier0`（2026-07-28）：把所有 tier0 快照排成一串，一張接一張走。
         沒有這個佇列就永遠停在 2 張——tier 排序早就寫好了，缺的只是連續動線。
         索引沒配置就退回單張模式（不是錯誤，只是沒得排）。
+
+        `?queue=tier0,tier2`（2026-07-31）：多個 tier 併成一串。tier0 全是 bot
+        什麼都沒接受的圖（實測 227 張裡 220 張 `sweep_empty`），「bot 接受了但
+        接錯」那兩個症狀只在 tier2 出現得了——導覽列的入口因此改指這一串。
+        認不得的 tier 字樣直接略過；全都認不得就退回 tier0。
         """
         from miningbot.web_static import render_annotate_html
         rarity_choices = _rarity_choices_from_game_data()
         rows = None                    # None＝沒進佇列模式（有別於「佇列是空的」）
         if queue and snapshot_index_path:
             from miningbot.web_history import annotation_queue
-            tier = 0
-            if queue.startswith("tier") and queue[4:].isdigit():
-                tier = int(queue[4:])
-            rows = annotation_queue(snapshot_index_path, fixtures_dir, tier,
-                                    negatives_dir=negatives_dir)
+            tiers = [int(part[4:]) for part in queue.split(",")
+                     if part.startswith("tier") and part[4:].isdigit()]
+            rows = annotation_queue(snapshot_index_path, fixtures_dir,
+                                    tiers or [0], negatives_dir=negatives_dir)
         return Response(
             content=render_annotate_html(
                 episode_id=episode or "",
