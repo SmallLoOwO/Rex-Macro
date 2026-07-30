@@ -392,13 +392,6 @@ def execute_scan():
     ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)  # 左鍵觸發掃描（已裝備時 click 即重掃）
     time.sleep(1.5)                        # 等追蹤框出現
 
-def start_scan():
-    prepare_scan()
-    execute_scan()
-
-def fire_d3():
-    ic.key_press("3")
-
 def restore_view(net_rotations: int, rotate=None):
     """實際送鍵把視角轉回原角度（挖完成功後呼叫）。
 

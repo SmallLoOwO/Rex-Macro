@@ -162,15 +162,3 @@ def use_cave_skim():       # D2 Z Cave Skim：削掉特殊洞穴的洞穴方塊�
     ic.key_press("2"); ic.key_press("z")
     ic.key_press("1"); ic.mouse_down()
 
-def handle_cave(rotate=None):  # CAVE 變體：F 進入→等待→旋轉視角+X 退出（對照 boost+cave .mcr）
-    import time
-    ic.key_press("f"); time.sleep(3.0)
-    if rotate is not None:     # 驗證式：只回轉「確認轉成」的次數，成對淨 0 不歪 45°
-        done = sum(1 for _ in range(2) if rotate(+1))
-        ic.key_press("x"); time.sleep(1.0)
-        for _ in range(done):
-            rotate(-1)
-    else:
-        ic.rotate_right(); ic.rotate_right(); ic.key_press("x"); time.sleep(1.0)
-        ic.rotate_left(); ic.rotate_left()
-    ic.key_down("w"); ic.mouse_down()

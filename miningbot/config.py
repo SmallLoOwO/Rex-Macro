@@ -153,12 +153,10 @@ class Config:
     window_check_interval_s: float = 1.0         # 多久查一次視窗狀態（Win32 很快，節流即可）
     window_pos_tolerance_px: int = 6             # 位置偏移容差（相對基準）
     window_size_tolerance_px: int = 8            # 大小偏移容差（相對基準）
-    # D1（鎬子）是否已裝備——舊寫死單點 slot_pixel/slot_color（對照原巨集 IF PIXEL FOUND
-    # 2302755=0x232323）在工作列調回顯示後失準（底部 UI 整條上移約 50px、單點落到場景上）。
+    # D1（鎬子）是否已裝備——舊寫死單點 slot_pixel=(1011,845)/slot_color=0x232323（對照原巨集
+    # IF PIXEL FOUND 2302755）在工作列調回顯示後失準（底部 UI 整條上移約 50px、單點落到場景上）。
     # 2026-07-10 起改「區域顏色」：hotbar 選中的槽位底色會轉綠 → 量 slot 1 內部區域的綠色主導
-    # 程度（vision.slot_selected）。slot_pixel/slot_color 保留給 calibrate 說明字串，偵測已不用。
-    slot_pixel: tuple = (1011, 845)              # 已停用（見 d1_slot_region）
-    slot_color: int = 0x232323                   # 已停用（原巨集 0x232323 灰＝未拿鎬子）
+    # 程度（vision.slot_selected）。兩個舊欄位 2026-07-30 刪除（全 repo 零讀取）。
     d1_slot_region: Region = field(default_factory=lambda: Region(798, 998, 54, 58))  # slot 1（鎬子）內部；2026-07-28 全螢幕版面（y948→998，底端錨定 +50）
     d1_selected_greenness_min: float = 5.0       # greenness=平均G-平均(R+B)/2 ≥ 此值＝槽位選中(裝備中)；實測 選中≈+9.8~+11.5、未選中≈-1.4~0 → 5.0 兩側夾
     d2_slot_region: Region = field(default_factory=lambda: Region(864, 998, 54, 58))  # slot 2（掃描器）內部；2026-07-29 全螢幕校準（slot1 x798-852、pitch 66 → slot2 x864-918；H065）
@@ -206,8 +204,6 @@ class Config:
     reset_chime_max_clips: int = 20              # 單輪 RESET_WAIT 存檔上限（防洗版）
 
     # 採集
-    marker_color_invariant: bool = True          # 標記用「形狀/邊緣」比對（顏色會變時必須開）
-    marker_edge_threshold: float = 0.45          # 邊緣比對門檻（校準時調）
     marker_scales: tuple = (0.6, 0.8, 1.0, 1.2, 1.5)  # 多尺度比對：模板（含 wiki 圖）尺寸對不準時自動試縮放
     buff_scales: tuple = (0.9, 1.0, 1.1)         # buff/冷卻圖示是固定尺寸 UI（boost 瓶子/D4 Used）→ 少尺度即可；marker_scales 的 5 尺度是給會變大小的追蹤框，對固定 UI 是浪費（實測 5→1 尺度快 4x，可再降成 (1.0,)）
     marker_dir: str = "assets/markers"           # 多階級標記模板資料夾（每個階級一張 png；用 fetch_trackers 下載）
@@ -233,7 +229,6 @@ class Config:
     tracker_margin_frac: float = 0.02            # find_tracker 邊緣排除帶（實戰值；vision 函式預設仍 0.10）。H019(1862,418)/H026(1288,1020) 兩次真框都被 0.10 的帶擋掉——D5 到期 FOV 收縮（以中心為錨 ~2.6x 縮放）把框推到邊緣，且 yaw 旋轉不改 y、底緣框 8 方位永遠在帶內。0.02 收得回兩顆（回歸 fixture：edge_clipped/bottom_edge_tracker_scene.png）且對全 fixture 集無新假陽性；邊緣雜訊由 preexist 差分/colored_frac/形狀確認擋
     boost_fov_settle_s: float = 1.5              # 採集中補 D5 後等 FOV 展開的時間（H026 boost 守門；補完必須重抓幀才能偵測/開火）
     aim_center_tolerance_px: int = 25            # 準心對準容差
-    mouse_aim_gain: float = 0.2                  # 像素偏移→滑鼠相對位移的縮放（校準時調，避免過衝）
     vertical_extreme_ratio: float = 0.35         # 標記 y 偏離中心超過此比例→頭頂/腳下
     max_aim_rotations: int = 8                   # 水平轉視角上限
     sweep_timeout_s: float = 30.0                # 全方位掃描階段時限（實測 8 方位 ~19s，留 1.5x 餘裕）
@@ -495,8 +490,8 @@ class Config:
     reentry_move_stable_ticks: int = 3          # 連續 N tick 幀差近零＝角色停下
     reentry_move_diff: float = 2.0              # 「近零」門檻（與 stuck/chat 同尺度）
     reentry_mine_max_brightness: float = 60.0   # 礦內判定：stuck_region 平均亮度上限（校準時定）
-    # R 鍵手動取樣（校準素材收集；也可用於裁追蹤框模板/補 OCR fixture）
-    hotkey_sample: str = "r"
+    # 手動取樣（校準素材收集；也可用於裁追蹤框模板/補 OCR fixture）。R 鍵視窗已於
+    # 2026-07-17 退役，改走遙控器 📷／回礦 `仰角`；hotkey_sample 欄位 2026-07-30 刪除。
     manual_snapshot_dir: str = "logs/snapshots/manual"
     sample_pitch_step_px: int = 40              # R 視窗上/下微調一次的拖曳量
     sampler_pitch_focus_settle_s: float = 0.5   # 俯仰鈕：聚焦回遊戲→拖曳前的沉澱。2026-07-11 實機：
@@ -582,11 +577,11 @@ class Config:
     zoom_eaten_mean_diff: float = 8.0           # zoom 送鍵被吃判定（初值抄 pitch_eaten_*；獨立門檻，
     zoom_eaten_changed_frac: float = 0.15       # 不可共用旋轉門檻——歸位冪等、誤判重做無害，方向安全性與旋轉相反）
 
-    # 熱鍵（控制權）
-    hotkey_emergency_stop: str = "ctrl+q"        # 只暫停（不結束程式、不繼續）：放開所有按鍵，等 Q 繼續
-    hotkey_pause: str = "q"                      # 開關 暫停 ↔ 繼續（也用於人工介入/礦坑重置定位後重啟；
-                                                 # 啟動環境檢查期間按 Q＝跳過剩餘檢查直接開挖——原 F8 專用鍵
-                                                 # 與 Roblox 內建功能衝突而廢棄，2026-07-10）
+    # 熱鍵（控制權）。Ctrl+Q／Q 的鍵碼寫死在 main._HotkeyController（GetAsyncKeyState
+    # 0x11/0x51），對應的 hotkey_emergency_stop/hotkey_pause 欄位沒人讀，2026-07-30 刪除。
+    # 語意留存：Ctrl+Q＝只暫停（不結束程式、不繼續）放開所有按鍵等 Q 繼續；Q＝開關 暫停 ↔ 繼續
+    # （也用於人工介入／礦坑重置定位後重啟；啟動環境檢查期間按 Q＝跳過剩餘檢查直接開挖——
+    # 原 F8 專用鍵與 Roblox 內建功能衝突而廢棄，2026-07-10）。
     hotkey_quit: str = "f12"                     # 真正結束程式
     antiafk_interval_s: float = 900.0            # 防掛機踢除：暫停中每 N 秒按一次 Space（預設 15 分鐘）
     antiafk_chill_mute_s: float = 6.0            # H060：按 Space 後 N 秒不採信 chill——原地跳的音效
@@ -645,7 +640,6 @@ class Config:
     # 但 ws_endpoint 不再讀它（silent ignored）。
 
     # Discord（Phase 2）— token 從 .env 讀，不寫死在程式碼
-    discord_webhook_url: str = ""
     discord_bot_token: str = field(default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", ""))
     discord_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_CHANNEL_ID", ""))
     discord_poll_interval_s: float = 1.0        # Discord 命令/反應輪詢間隔（秒；單卡 reaction 摘要已把每輪 GET 壓到 1 次）

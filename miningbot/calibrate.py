@@ -13,7 +13,7 @@ def main():
         x, y, w, h = map(int, r)
         print(f"{name} = Region({x}, {y}, {w}, {h})")
     print("把上面數值貼進 miningbot/config.py 對應欄位。")
-    print("另外用截圖工具確認 slot_pixel / window_focus_pixel 的座標與顏色（cv2 BGR）。")
+    print("槽位判定已改區域綠色主導（vision.slot_selected）：改框 d1_slot_region / d2_slot_region。")
 
 if __name__ == "__main__":
     main()

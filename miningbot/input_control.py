@@ -53,10 +53,6 @@ def mouse_click(button: str = "left", hold: float = 0.0):
         pydirectinput.click(button=button)
     time.sleep(_STEP)
 
-def mouse_move_rel(dx: int, dy: int):
-    pydirectinput.moveRel(dx, dy, relative=True)
-    time.sleep(_STEP)
-
 _MOUSEEVENTF_WHEEL = 0x0800
 _WHEEL_DELTA = 120           # Windows 滾輪一格的標準單位
 
