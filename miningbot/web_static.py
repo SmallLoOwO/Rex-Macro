@@ -1318,25 +1318,55 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) stopFlashing();
 });
 
+// Web Audio 合成，不載外部音檔——CSP 擋掉所有外部資源，音檔一定會失敗。
+// 瀏覽器自動播放限制：初次開頁時 AudioContext 被 suspended，beep() 丟不出去。
+// 用 shared context ＋ unlock 模式：開頁時 try beep，被擋就排隊；使用者一碰
+// 螢幕就 resume → 補一聲（開頁這個動作本身就是 gesture，但行動瀏覽器常拖到
+// WebSocket 收到 INTERVENTION_NEEDED 時 gesture 已過，resume 無效）。
+let _audioCtx = null;
+let _beepQueued = false;
+
+function _playBeep(ac) {
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.0001, ac.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.45);
+  osc.start();
+  osc.stop(ac.currentTime + 0.5);
+}
+
 function beep() {
-  // Web Audio 合成，不載外部音檔——CSP 擋掉所有外部資源，音檔一定會失敗。
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    const ac = new AC();
-    const osc = ac.createOscillator();
-    const gain = ac.createGain();
-    osc.connect(gain); gain.connect(ac.destination);
-    osc.frequency.value = 880;
-    gain.gain.setValueAtTime(0.0001, ac.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.45);
-    osc.start();
-    osc.stop(ac.currentTime + 0.5);
-    setTimeout(() => ac.close(), 1000);
-  } catch (e) { /* 自動播放被瀏覽器擋：靜音即可，標題閃爍仍在 */ }
+    if (!_audioCtx) _audioCtx = new AC();
+    if (_audioCtx.state === 'suspended') {
+      _beepQueued = true;          // 等使用者碰一下螢幕再補
+      return;
+    }
+    _playBeep(_audioCtx);
+  } catch (e) { /* 標題閃爍仍在 */ }
 }
 
+// 解鎖音訊：第一次互動（點／按鍵）即 resume，補播佇列中的 beep
+function _unlockAudio() {
+  if (!_audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) _audioCtx = new AC();
+  }
+  if (_audioCtx && _audioCtx.state === 'suspended') {
+    _audioCtx.resume().then(() => {
+      if (_beepQueued) { _playBeep(_audioCtx); _beepQueued = false; }
+    });
+  } else if (_audioCtx && _beepQueued) {
+    _playBeep(_audioCtx); _beepQueued = false;
+  }
+}
+document.addEventListener('pointerdown', _unlockAudio);
+document.addEventListener('keydown', _unlockAudio);
 function fitCanvas() {
   const cw = container.clientWidth;
   const ch = container.clientHeight;

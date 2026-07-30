@@ -4138,7 +4138,8 @@ class Bot:
         """
         from . import notify
         url = f"{self._web_url()}/intervention"
-        text = (f"🌐 **網頁在等你點**：回礦 #{ctx.episode_id}"
+        ping = f"<@{notify.PING_USER_ID}>"
+        text = (f"{ping} 🌐 **網頁在等你點**：回礦 #{ctx.episode_id}"
                 f"（attempt {ctx.attempt}）已拍好 {frame_count} 個方位\n"
                 f"{url}\n"
                 f"左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。"
