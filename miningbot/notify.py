@@ -154,6 +154,12 @@ _TEMPLATES = {
                                  + (f"：{m['mineral']}" if m.get("mineral") else "")
                                  + (f"\n🆕 新增：\n" + "\n".join(m["new_found_lines"])
                                     if m.get("new_found_lines") else ""),
+    # 交人工前救援（spec 2026-07-30）：這是唯一「bot 決定不叫人」的路徑，誤判會靜默
+    # 放生一顆真稀有礦。實機驗證期必須每次都看得到，才算得出命中率／誤判率。
+    "HARVEST_RESCUED": lambda m: ("🛟 交人工前救援命中："
+                                  + "、".join(m.get("ore_names") or ["?"])
+                                  + f"（{m.get('source', '?')} 證據）已在 chill 前進帳"
+                                    "，不交人工、繼續挖礦"),
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "SPAWN_CHILL":     lambda m: (f"💎 spawn chill！稀有礦可能生在 礦坑刷新的預設方塊，"
                                   f"bot 處於 {m.get('state', '?')} 挖不到，請手動處理"),

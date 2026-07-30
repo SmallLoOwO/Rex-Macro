@@ -299,3 +299,62 @@ def test_default_mute_window_covers_measured_tail():
     assert _cfg.antiafk_chill_mute_s >= 5.0
     # 但不可長到吃掉 15 分鐘保活週期的可觀測時間（<1%）
     assert _cfg.antiafk_chill_mute_s < _cfg.antiafk_interval_s * 0.01
+
+
+# ── chill 上升緣／回落（spec 2026-07-30-prechill-evidence-cache-design.md B 段）──
+# 為什麼要數上升緣：latest_score() 是滾動比對，同一聲 chill 會連續多個 tick 都在門檻上
+# （2026-07-22 01:43:31~33 三秒七行是同一聲）。「一場響幾聲」只能由回落再上來的次數決定。
+
+def _edges(samples, threshold=0.25):
+    from miningbot.audio import chill_edges
+    return chill_edges(samples, threshold)
+
+
+def test_chill_edge_step_reports_rise_and_fall_once():
+    from miningbot.audio import chill_edge_step
+    assert chill_edge_step(False, 0.30, 0.25) == (True, "rise")
+    assert chill_edge_step(True, 0.30, 0.25) == (True, "")      # 續在門檻上＝同一聲
+    assert chill_edge_step(True, 0.10, 0.25) == (False, "fall")
+    assert chill_edge_step(False, 0.10, 0.25) == (False, "")
+
+
+def test_multiple_ticks_above_threshold_count_as_one_edge():
+    """連續多 tick 在門檻上只算一次上升緣（07-22 三秒七行是同一聲）。"""
+    samples = [(0.0, 0.01), (0.3, 0.31), (0.6, 0.44), (0.9, 0.38), (1.2, 0.02)]
+    assert len(_edges(samples)) == 1
+
+
+def test_two_separate_chills_give_two_edges():
+    """實錄間隔：07-29 14:43:58 → 14:44:14 共 16 秒。"""
+    samples = [(0.0, 0.40), (1.0, 0.02), (16.0, 0.37), (17.0, 0.01)]
+    edges = _edges(samples)
+    assert [e[0] for e in edges] == [0.0, 16.0]
+    assert edges[0][2] is None            # 序列開頭就在門檻上＝沒有可比的回落
+    assert edges[1][2] == 15.0            # 距上次回落（1.0）15 秒
+
+
+def test_no_edge_when_never_above_threshold():
+    assert _edges([(0.0, 0.10), (1.0, 0.24), (2.0, 0.0)]) == []
+
+
+def test_count_chill_edges_debounces_short_dips():
+    """回落沒維持滿 release_s 就又上來＝同一聲的抖動，不另計。"""
+    from miningbot.audio import count_chill_edges
+    samples = [(0.0, 0.40), (0.3, 0.02), (0.6, 0.41), (1.0, 0.01),
+               (20.0, 0.38), (21.0, 0.0)]
+    edges = _edges(samples)
+    assert len(edges) == 3                       # 原始上升緣三個
+    assert count_chill_edges(edges, 0.0) == 3    # release=0 ＝完全不去抖動
+    assert count_chill_edges(edges, 2.0) == 2    # 0.3s 的短回落被吃掉
+    assert count_chill_edges(edges, 25.0) == 1   # 連 19s 的真間隔都吃掉（過大門檻＝漏判）
+
+
+def test_antiafk_muted_scores_never_produce_edges():
+    """H060：防掛機 Space 的原地跳音效必須在上升緣判定**之前**被靜音，否則污染分布。"""
+    from miningbot.audio import chill_edge_step, chill_muted_after_antiafk
+    pressed_at, above, rises = 100.0, False, 0
+    for ts, raw in [(101.0, 0.38), (102.0, 0.37), (103.0, 0.25), (120.0, 0.40)]:
+        score = 0.0 if chill_muted_after_antiafk(pressed_at, ts, 6.0) else raw
+        above, edge = chill_edge_step(above, score, 0.25)
+        rises += edge == "rise"
+    assert rises == 1          # 只有窗外那次真 chill 算數

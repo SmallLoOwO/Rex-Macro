@@ -226,6 +226,48 @@ def chill_muted_after_antiafk(pressed_at: float, now: float, mute_s: float) -> b
     return 0.0 <= now - pressed_at <= mute_s
 
 
+def chill_edge_step(above: bool, score: float, threshold: float) -> tuple:
+    """chill 上升緣狀態機的單步（純函式）→ (新的 above, "rise"|"fall"|"")。
+
+    為什麼要數上升緣：`AudioListener.latest_score()` 是滾動比對，同一聲 chill 會連續
+    多個 tick 都在門檻上（2026-07-22 01:43:31~33 三秒七行是同一聲）。「這個 episode
+    響了幾聲」只能由「分數回落到門檻下再上來」的次數決定。
+
+    ⚠ 呼叫端必須先套 `chill_muted_after_antiafk`（H060）再進來——防掛機跳躍音會被認成
+    chill，混進來會直接污染上升緣分布。
+    """
+    now_above = score >= threshold
+    if now_above == above:
+        return now_above, ""
+    return now_above, "rise" if now_above else "fall"
+
+
+def chill_edges(samples, threshold: float) -> list:
+    """[(時間戳, 分數)] → 上升緣 [(時間戳, 分數, 距上次回落秒數)]（純函式）。
+
+    距上次回落秒數為 None＝序列開頭就在門檻上（沒有可比的回落）。這一欄是
+    `count_chill_edges` 去抖動的唯一依據，也是實機分布要收的那份資料。
+    """
+    above, fell_at, out = False, None, []
+    for ts, score in samples:
+        above, edge = chill_edge_step(above, score, threshold)
+        if edge == "rise":
+            out.append((ts, score, None if fell_at is None else ts - fell_at))
+        elif edge == "fall":
+            fell_at = ts
+    return out
+
+
+def count_chill_edges(edges, release_s: float) -> int:
+    """`chill_edges` 的輸出 → 去抖動後的上升緣數（純函式）。
+
+    回落沒有維持滿 release_s 就又上來＝同一聲的抖動，不另計一聲。
+    release_s=0 → 每個原始上升緣都算（＝完全不去抖動）。
+    """
+    return sum(1 for _ts, _score, since_fall in edges
+               if since_fall is None or since_fall >= release_s)
+
+
 def save_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
     """把樣本忠實存成 16-bit WAV。samples 已是 int16 值域的 float（loopback int16→float32），
     故**直接轉 int16，不可再乘 32767**（乘了會溢位繞回成雜訊——舊 save_buffer_wav 的 bug）。

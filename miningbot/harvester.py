@@ -1,3 +1,4 @@
+import re
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -492,3 +493,90 @@ def plan_boost_pair_due(screen_count, last_pair_count, every_n: int) -> bool:
     if every_n <= 0 or screen_count is None:
         return False
     return last_pair_count is None or screen_count - last_pair_count >= every_n
+
+
+# ── chill 前證據快取 ＋ NORMAL 面板名字欄（spec 2026-07-30）────────────────────
+
+def pick_prechill_ref(entries, before_ts: float, min_age_s: float, max_age_s: float):
+    """環形緩衝取用（純函式）：回「落在 [before_ts-max_age_s, before_ts-min_age_s] 的最新一筆」。
+
+    entries 依時間遞增（deque append 天生保序）。沒有合格的回 None。
+
+    **下界** `min_age_s`：太新的參考可能已經含了那次挖掘（chill 偵測本身有延遲），
+    差分就會是 0＝救不到。
+
+    **上界** `max_age_s`：快取進 HARVESTING 時不清空（spec 要求），所以「上一場採集
+    剛結束、回到 MINING 沒幾秒又 chill」時，緩衝裡還留著**上一場之前**的幀。拿它當基準
+    會把上一場採到的礦算成這一場的新增＝假救援＝靜默放生一顆真稀有礦且沒有任何 log
+    會發現。過期就回 None（＝救援整個跳過＝回到今日行為），寧漏勿誤。
+    """
+    newest = before_ts - min_age_s
+    oldest = before_ts - max_age_s
+    for entry in reversed(list(entries)):
+        if entry[0] <= newest:
+            return entry if entry[0] >= oldest else None
+    return None
+
+
+# 名字與數量黏成同一框時的切點：第一個數字或逗號之前
+# （"Cloverstone 1,6" → "Cloverstone"、"Imbollyx. 8" → "Imbollyx."）。
+_PANEL_COUNT_START = re.compile(r"[\d,]")
+
+
+def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -> list:
+    """左下 NORMAL 面板的 `ocr.read_text_boxes` 結果 → 畫面上有哪些礦名（保序去重、小寫）。
+
+    boxes 的 center 必須是 **crop 座標**（`read_text_boxes` 不加 region_offset 時就是）。
+    兩道幾何閘與字母下限見 `Config.panel_name_col_max_x` / `panel_row_min_y` /
+    `panel_name_min_letters`：靜態 UI（NORMAL／www）在前後兩張裁圖本來就會互相抵銷，
+    閘擋的是**會變動**的右側 craft 面板數字被讀歪成假礦名。
+
+    ⚠ 本函式**只讀名字不讀數字**，所以不需要 craft 面板守門——2026-07-30 實測 125 那張是
+    Shamrock「Materials to Craft」面板開著拍的，名字仍 0.999+ 全數讀出。未來任何要讀**數字**
+    的實作**必須**先守門：該面板從 x≈185 起疊在數字欄上，OCR 會讀到配方需求
+    （`310/190 Siogyne`）而不是存量——那是**錯的值不是缺值**。
+    """
+    out, seen = [], set()
+    for box in boxes or []:
+        cx, cy = box.get("center", (0, 0))
+        if cx > max_x or cy < min_y:
+            continue
+        text = box.get("text") or ""
+        cut = _PANEL_COUNT_START.search(text)
+        name = (text[:cut.start()] if cut else text).strip(" .,:;-_|")
+        if sum(ch.isalpha() for ch in name) < min_letters:
+            continue
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def new_noncommon_panel_ores(pre_names, cur_names) -> list:
+    """面板名字集合差分 → cur 新增、且**非 common** 的礦名（保序）。
+
+    pre 為空 → 一律回 []：快取剛建立／OCR 全滅時每個名字看起來都是新的，會把整個面板
+    當成「這次挖到的」。寧漏勿誤（誤判的代價是靜默放生一顆真稀有礦）。
+
+    common 判定走 `game_data.classify_found_ore`（不是 `fuzzy_match_ore`——那個只比對
+    **事件**礦名，本面板的 Faedrine／Cloverstone 全數對不上）。它含變體前綴剝除、
+    startswith 尾端雜訊容忍與模糊兜底，正是「尾點之類雜訊不要漏配」要的東西。
+    分類 unknown 視為非-common，與採集確認鏈同一套「排除清單是守門員」的規則。
+    """
+    from . import game_data              # 延後 import：game_data 載入資料檔，模組層會拖慢 import
+    pre = {n.lower() for n in pre_names or ()}
+    if not pre:
+        return []
+    return [n for n in cur_names or ()
+            if n.lower() not in pre and game_data.classify_found_ore(n)[0] != "common"]
+
+
+def chill_reconcile_unbalanced(edge_count: int, gained_count: int) -> bool:
+    """雙 chill 對帳（純函式）：上升緣數 ≥2 且進帳非-common 礦名數 < 上升緣數 → 帳不平。
+
+    上升緣數 <2 一律帳平——單聲 chill 不進對帳。
+    ⚠ 已知漏判：兩顆**同礦種**只會算成一顆（名字早就在面板上、只有數量 +1，而數量欄
+    在 craft 面板開著時讀到的是配方需求不是存量）。這是漏判不是錯判，寧漏勿誤。
+    """
+    return edge_count >= 2 and gained_count < edge_count

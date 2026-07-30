@@ -38,6 +38,12 @@ def _observing_bot(score, pressed_at):
     bot.logger = _LogRecorder()
     bot._antiafk_pressed_at = pressed_at
     bot._antiafk_mute_logged = False
+    # chill 上升緣純記錄（spec 2026-07-30 B 段）：靜音必須在上升緣判定**之前**生效，
+    # 否則 bot 自製的跳躍音會污染那份要拿來定 debounce 門檻的實機分布。
+    bot._chill_above = False
+    bot._chill_fell_at = None
+    bot._chill_edges = []
+    bot.log_harvest = _LogRecorder()
     bot._manual_reentry = False
     bot.human_cleared = False
     bot._reentry_done = False
@@ -117,3 +123,30 @@ def test_antiafk_press_arms_mute_window(monkeypatch):
     assert presses == ["space"]
     assert bot._antiafk_pressed_at == clock[0], "錨點要是按下當刻，不是進函式時的 now"
     assert bot._antiafk_mute_logged is False, "新一次按鍵要重新武裝靜音 log"
+
+
+def test_muted_score_never_becomes_a_chill_edge(monkeypatch):
+    """靜音要在**上升緣判定之前**套用（spec 2026-07-30 B 段）。
+
+    上升緣分布是之後用來定 `chill_edge_release_s` 的唯一依據；讓 bot 自己的跳躍音
+    進去，等於用假資料訂門檻，再用那個門檻去製造新的人工次數。
+    """
+    monkeypatch.setattr(main.time, "time", lambda: 102.0)
+    bot = _observing_bot(score=0.38, pressed_at=100.0)      # 窗內
+
+    bot.observe(frame=None)
+
+    assert bot._chill_edges == [], "防掛機靜音期間不得產生上升緣"
+    assert bot._chill_above is False
+
+
+def test_real_chill_outside_mute_window_records_an_edge(monkeypatch):
+    """兩側夾：窗外的真 chill 必須留下上升緣，否則整份記錄形同關閉。"""
+    monkeypatch.setattr(main.time, "time", lambda: 200.0)
+    bot = _observing_bot(score=0.38, pressed_at=100.0)      # 窗外
+
+    bot.observe(frame=None)
+
+    assert len(bot._chill_edges) == 1
+    ts, score, since_fall = bot._chill_edges[0]
+    assert (ts, score, since_fall) == (200.0, 0.38, None)

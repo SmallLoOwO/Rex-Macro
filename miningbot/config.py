@@ -326,6 +326,35 @@ class Config:
     capacity_fast_from: float = 99.0          # ≥此值 banner worker 輪詢加速（容量飽和期間高頻監看橫幅）
     capacity_fast_interval_s: float = 0.5     # 加速後間隔（平時沿用 reset_check_interval_s=2.0）
 
+    # chill 前證據快取（spec 2026-07-30-prechill-evidence-cache-design.md A 段）
+    # 為什麼要：聊天基準到 _on_enter(HARVESTING) 才拍，那時礦已被鎬子挖掉、證據就在基準
+    # 裡面、差分恆為 0。MINING 期間先留幾秒的裁圖，交人工前的救援才有 chill **之前**的
+    # 參考點。只裁圖不 OCR——OCR 進 MINING 熱路徑會重演 H026。
+    prechill_cache_interval_s: float = 1.0    # 取樣間隔（秒）
+    prechill_cache_depth: int = 6             # 環形緩衝深度（× interval = 回溯秒數）；
+                                              # 6 × (460×280 + 226×335) × 3B ≈ 3.7MB
+    prechill_min_age_s: float = 3.0           # 參考點至少要比 chill 早這麼久。**待實機資料修正**：
+                                              # 太新的參考可能已含那次挖掘（chill 偵測本身有延遲），
+                                              # 太舊則把無關挖掘算進差分、製造假「已被挖走」
+
+    # 交人工前救援（spec 2026-07-30-giveup-rescue-already-mined-design.md）
+    giveup_rescue_enabled: bool = True        # 關掉即完全回到 2026-07-30 之前的行為
+    # NORMAL 面板名字欄的兩道幾何閘（2026-07-30 實機量測，crop 座標＝相對
+    # backpack_review_region）。靜態 UI（NORMAL/www）本來就會在前後兩張裁圖互相抵銷，
+    # 這兩道閘擋的是**會變動**的右側 craft 面板數字被 OCR 讀歪成假礦名。
+    panel_name_col_max_x: int = 185           # 名字框中心 x 上界：實測名字 72~103、
+                                              # craft 面板（Materials to Craft）自 x≈185 起疊在數字欄
+    panel_row_min_y: int = 60                 # 礦物列框中心 y 下界：標頭 y≈14、篩選框 y≈45、
+                                              # 第一列 y≈78 → 60 兩側夾（擋掉 NORMAL/www/Sh/Mat）
+    panel_name_min_letters: int = 3           # 切掉數量後至少要這麼多字母才算礦名：擋 craft
+                                              # 欄被讀歪的 1-2 字雜訊（實測 '•P11/'、'.73'、'4/'）
+
+    # 雙 chill 對帳（spec 2026-07-30-double-chill-reconciliation-design.md）
+    # 兩個都預設關。chill_edge_release_s 的初值**必須**由實機上升緣／回落分布決定，
+    # 不可憑感覺填——門檻猜錯會直接製造新的人工次數（見該 spec Blocked On）。
+    chill_edge_release_s: float = 0.0         # 分數要回落多久才算下一聲；0 = 對帳停用
+    chill_reconcile_enabled: bool = False     # 帳不平時交人工（需 chill_edge_release_s > 0 才生效）
+
     # 記錄 / 診斷
     log_dir: str = field(default_factory=default_log_dir)
     log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）

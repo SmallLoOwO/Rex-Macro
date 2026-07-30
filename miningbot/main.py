@@ -1,5 +1,6 @@
 import os
 import sys
+import collections
 import math
 import time
 import logging
@@ -321,6 +322,19 @@ class Bot:
         # 用完即清空（一次性），避免跨事件殘留。
         self._needs_human_extra_image = None
         self._needs_human_extra_meta: dict = {}
+        # chill 前證據快取（spec 2026-07-30 A 段）：MINING 期間留最近幾秒的
+        # (時間戳, 聊天裁圖, 面板裁圖)，交人工前的救援拿它當差分基準。**只裁圖不 OCR**
+        # ——OCR 進 MINING 熱路徑會重演 H026。進 HARVESTING 不清空（救援在 episode
+        # 中後段才用得到）。
+        self._prechill = collections.deque(maxlen=max(1, cfg.prechill_cache_depth))
+        self._prechill_at = 0.0                  # 上次取樣時刻（節流用）
+        # chill 上升緣／回落（spec 2026-07-30 B 段）：純記錄，不影響 chill_audio 的值。
+        self._chill_above = False                # 上一幀分數在門檻上嗎（上升緣狀態機）
+        self._chill_fell_at = None               # 上次回落時刻（去抖動的唯一依據）
+        self._chill_edges: list = []             # [(時間戳, 分數, 距上次回落秒數)]；_on_enter(MINING) 清空
+        self._episode_panel_pre = None           # episode 開場的面板裁圖（雙 chill 對帳用）
+        self._episode_chill_at = 0.0             # 本場 chill 時刻（救援取快取的錨點）
+        self._episode_succeeded = False          # 本場已記過 HARVEST_SUCCESS（救援不得重複認領）
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
@@ -1078,15 +1092,18 @@ class Bot:
         if score > self._peak_audio_since_hb:
             self._peak_audio_since_hb = score       # 捕捉 30s heartbeat 取樣漏掉的 chill 尖峰
         chill_audio = score >= cfg.audio_match_threshold
+        edge_score = score
         # H060：防掛機 Space 的原地跳音效會被認成 chill（2026-07-22 三次 REENTRY 誤報
         # 全在按鍵後 2s）。bot 知道自己何時按的 → 用時間窗直接排除，不倚賴參考集品質。
         if chill_audio and audio.chill_muted_after_antiafk(
                 self._antiafk_pressed_at, time.time(), cfg.antiafk_chill_mute_s):
             chill_audio = False
+            edge_score = 0.0                       # 靜音在上升緣判定**之前**生效（見 _record_chill_edge）
             if not self._antiafk_mute_logged:      # 每次按鍵只記一筆，不每幀洗 log
                 self._antiafk_mute_logged = True
                 self.logger.info("chill 靜音（音訊 %.2f）：防掛機 Space 後 %.0fs 內，"
                                  "判定為原地跳音效", score, cfg.antiafk_chill_mute_s)
+        self._record_chill_edge(edge_score)
         chill_text = False
         if chill_audio:
             if not cfg.chill_require_ocr:
@@ -1120,6 +1137,31 @@ class Bot:
                            reentry_failed=self._reentry_failed,
                            auto_reenter=self._reentry_active(),
                            manual_reentry=manual)
+
+    def _record_chill_edge(self, score: float) -> None:
+        """chill 上升緣／回落純記錄（spec 2026-07-30 B 段）——不做 debounce、不影響決策。
+
+        唯一目的是產生「上升緣與回落之間隔多久」的實機分布，讓雙 chill 對帳的
+        `chill_edge_release_s` 有數字可以填（現在完全沒有資料，見該 spec Blocked On）。
+        同一 episode 內第二聲 chill 舊版完全不留痕：07-29 14:43:58 進 harvest 123、
+        14:44:14 又響一次，log 只有一行「chill 觸發」。
+
+        ⚠ 傳進來的 score 必須**已經**套過 H060 的防掛機靜音（呼叫端 observe 負責），
+        否則 bot 自己的跳躍音會被當成一聲 chill 污染整份分布。
+        """
+        now = time.time()
+        self._chill_above, edge = audio.chill_edge_step(
+            self._chill_above, score, cfg.audio_match_threshold)
+        if edge == "rise":
+            since_fall = None if self._chill_fell_at is None else now - self._chill_fell_at
+            self._chill_edges.append((now, score, since_fall))
+            self.log_harvest.info(
+                "chill 上升緣 #%d（音訊 %.2f，距上次回落 %s）",
+                len(self._chill_edges), score,
+                "—" if since_fall is None else "%.1fs" % since_fall)
+        elif edge == "fall":
+            self._chill_fell_at = now
+            self.log_harvest.info("chill 回落（音訊 %.2f）", score)
 
     def _update_reset_complete(self) -> bool:
         """RESET_WAIT 中追蹤「banner reset 字樣已消失＋沉澱夠久」（REENTRY 觸發條件）。
@@ -2751,6 +2793,7 @@ class Bot:
 
         def _preflight_and_notify():
             self._run_preflight()
+            self._log_panel_rows_once()
             if cfg.discord_bot_token and cfg.discord_channel_id:
                 from . import notify
                 kept = game_data.format_keep_by_world(self._keep_ores)
@@ -3161,6 +3204,9 @@ class Bot:
                 self._on_enter(State.NEEDS_HUMAN, frame)  # screenshot + log + alert 副作用
                 return State.NEEDS_HUMAN                  # 信號外層降級（不直接寫 self.state）
             self.human_cleared = False
+            # chill 上升緣以 MINING 為 episode 邊界（spec 2026-07-30 B 段）：採集成功回
+            # MINING 後又立刻 chill＝正確開新的一場，不會把上一場的聲數帶進對帳。
+            self._chill_edges = []
             self._aim_context = None          # remote-aim context 作廢（回挖礦＝不再待瞄準）
             self._rr_ctx = None               # remote reentry episode 已收尾（_rr_success 已 finalize，保險清掃）
             self._pending_reentry = None
@@ -3243,6 +3289,16 @@ class Bot:
             self._chat_baseline_crop = capture.crop(gf, cfg.chat_region)
             self._chat_last_crop = self._chat_baseline_crop
             self._chat_ledger = None            # episode 帳本（ocr.ChatLedger）：基準 OCR 完成時建立
+            # 交人工前救援的錨點（spec 2026-07-30）：`prechill_min_age_s` 是「參考點要比
+            # **chill** 早這麼久」。用 giveup 當下的時間當錨會讓那道閘完全失效——episode
+            # 常跑好幾分鐘，任何快取都「夠舊」，於是永遠取到最新那筆＝礦已被挖掉的那一幀
+            # ＝差分恆為 0。`_harvest_start` 不能用：sweep 完成時會被重設成 D3 階段起點。
+            self._episode_chill_at = time.time()
+            self._episode_succeeded = False
+            # 雙 chill 對帳（spec 2026-07-30）：episode 開場的面板裁圖，收尾時與現況差分
+            # 算「本場進帳幾種非-common 礦」。用面板不用上升緣數——面板是狀態，不淡出、
+            # 不需 hover、不受前景影響；上升緣只知道響幾聲，不知道實際到手幾顆。
+            self._episode_panel_pre = capture.crop(gf, cfg.backpack_review_region).copy()
         if s is State.REENTRY:
             # 入口聚焦失敗 → 降級 NEEDS_HUMAN（兩種模式共用）：REENTRY 全程都在
             # 送鍵/點擊，焦點不在 Roblox 上會全部送錯視窗、白白燒光 reroll 次數。
@@ -4232,7 +4288,35 @@ class Bot:
             # 恢復了（boost 又被重上）→ 解鎖，允許下次再警報
             self._boost_stall_notified = False
 
+    def _prechill_sample(self, frame) -> None:
+        """MINING 每 prechill_cache_interval_s 存一組 chill 前裁圖（spec 2026-07-30 A 段）。
+
+        掛在 `_tick_mining` 就同時滿足「只在 State.MINING」與「未暫停」——run() 主迴圈
+        的 paused 分支在 `_tick` 之前 continue，暫停時根本走不到這裡。
+
+        **必須 `.copy()`**：`capture.crop` 回的是 view，不複製的話整張 1920×1080 原幀
+        會被 deque 扣住（6 筆 ≈ 37MB 而不是預算的 3.7MB）。
+        """
+        now = time.time()
+        if frame is None or now - self._prechill_at < cfg.prechill_cache_interval_s:
+            return
+        self._prechill_at = now
+        self._prechill.append((now,
+                               capture.crop(frame, cfg.chat_region).copy(),
+                               capture.crop(frame, cfg.backpack_review_region).copy()))
+
+    def _prechill_ref(self, before_ts: float):
+        """取 chill（`before_ts`）之前那一筆參考裁圖；太新／太舊都回 None。
+
+        上界取「緩衝的標稱跨度」＝depth × interval，不另開設定：比這更舊的一定是
+        上一場 episode 之前留下的殘幀（HARVESTING 期間不取樣，緩衝會凍住）。
+        """
+        return harvester.pick_prechill_ref(
+            self._prechill, before_ts, cfg.prechill_min_age_s,
+            cfg.prechill_cache_depth * cfg.prechill_cache_interval_s)
+
     def _tick_mining(self, frame):
+        self._prechill_sample(frame)
         if getattr(self, '_post_harvest_watch', 0) > 0:
             self._log_w_state("MINING post-harvest tick")
             self._post_harvest_watch -= 1
@@ -4677,6 +4761,150 @@ class Bot:
             hid, observation.dir_idx, recovered)
         return True
 
+    def _log_panel_rows_once(self) -> None:
+        """啟動時記一筆 NORMAL 面板列數（spec 2026-07-30 救援設計「篩選框的角色」）。
+
+        面板上方的 `www` 是**篩選文字框**不是 placeholder：打入任何礦名都不含的字串會
+        清空顯示，之後新挖到的礦重新出現並累積。使用者手動在 session 初始化時打一次做
+        零點，**bot 不碰**（打字需要新的輸入原語，而 AGENTS 規則 11 禁用 `keyboard`；
+        脫離焦點要點 3D 世界，會打壞 MINING 期間持續按著的 LMB 狀態）。
+
+        它是**覆蓋率條件不是正確性條件**——沒武裝只會讓救援路 B 沉默（舊礦名早就在面板
+        上），不會給出錯誤答案。列數少＝很可能剛清過零點，列數多＝完整帳號庫存。這一筆
+        log 就是事後判斷「那場的路 B 覆蓋率如何」的唯一依據。跑在 preflight 背景執行緒
+        （一次 OCR ~1s，不佔主迴圈）。
+        """
+        try:
+            if not ocr.rapidocr_available():
+                return
+            names = harvester.parse_panel_ore_names(
+                ocr.read_text_boxes(capture.crop(capture.grab(),
+                                                 cfg.backpack_review_region)),
+                cfg.panel_name_col_max_x, cfg.panel_row_min_y,
+                cfg.panel_name_min_letters)
+            self.logger.info(
+                "NORMAL 面板列數 %d（%s）——列數少多半是篩選框剛清過零點，"
+                "救援路 B 覆蓋率較高；bot 不碰篩選框",
+                len(names), "、".join(names) or "空")
+        except Exception as e:                  # 純診斷，失敗不擋啟動
+            self.logger.warning("NORMAL 面板列數記錄失敗：%s", e)
+
+    def _rescue_chat_ores(self, pre_crop, cur_crop, hid: str) -> list:
+        """救援路 A（聊天）：chill 前 vs 現在，新增 has-found 行裡的非-common 礦名。
+
+        走既有的 `extract_new_found_lines_multi`（集合差集、逐 pass 聯集）。它只保留含
+        `found_keywords` 的行，所以 H055 的 NORMAL 面板尾端殘留天生不會混進來——不必
+        再過一次 `_chat_lines`（且它用集合差集而非尾端錨點，本來就不受 H055 影響）。
+
+        優點：每一次挖到都會記錄。天花板：聊天會淡出（~15s 無新訊息），`_reveal_chat`
+        在 Roblox 非前景時整個被丟掉——所以還要有路 B。
+        """
+        pre_texts = ocr.read_text_multi(pre_crop, cfg.tesseract_path)
+        # H054：基準沒看到任何 has-found 歷史＝那張裁圖落在聊天淡出期。之後任何新訊息
+        # 會讓**舊行連同新行**整段重新顯示，差分會把 chill 前早就在聊天裡的舊採集行
+        # 全當成本次新增＝假救援＝靜默放生一顆真稀有礦。空基準什麼都確認不了。
+        if not ocr.baseline_saw_found_history(pre_texts, cfg.found_keywords):
+            self.log_harvest.info(
+                "[%s] 交人工前救援 路A：chill 前聊天無 has-found 歷史（淡出）→ 差分無效，跳過", hid)
+            return []
+        cur_texts = ocr.read_text_multi(cur_crop, cfg.tesseract_path)
+        names = []
+        for line in ocr.extract_new_found_lines_multi(
+                pre_texts, cur_texts, cfg.found_keywords):
+            ore = ocr.found_ore_name(line, cfg.found_keywords)
+            if ore and game_data.classify_found_ore(ore)[0] != "common" and ore not in names:
+                names.append(ore)
+        self.log_harvest.info("[%s] 交人工前救援 路A：新增非-common 礦名 %s", hid, names or "無")
+        return names
+
+    def _panel_ore_gain(self, pre_crop, cur_crop, hid: str, why: str) -> list:
+        """兩張 NORMAL 面板裁圖 → 新增的非-common 礦名。救援路 B 與雙 chill 對帳共用。
+
+        面板是**狀態不是訊息流**——不會淡出、不需要 hover、不受前景影響。這是聊天在
+        前景失守時的唯一證據。天花板：同一 filter 零點之後第二次挖到**同一礦種**時全盲
+        （名字已在、只有數量 +1）。
+
+        `read_text_boxes` 只有 rapidocr 路徑、不做 tesseract 後備 → 引擎不可用時整條跳過。
+        """
+        if not ocr.rapidocr_available():
+            self.log_harvest.info(
+                "[%s] 面板差分（%s）：rapidocr 不可用（read_text_boxes 無後備）→ 跳過", hid, why)
+            return []
+        gates = (cfg.panel_name_col_max_x, cfg.panel_row_min_y,
+                 cfg.panel_name_min_letters)
+        pre_names = harvester.parse_panel_ore_names(ocr.read_text_boxes(pre_crop), *gates)
+        cur_names = harvester.parse_panel_ore_names(ocr.read_text_boxes(cur_crop), *gates)
+        names = harvester.new_noncommon_panel_ores(pre_names, cur_names)
+        self.log_harvest.info("[%s] 面板差分（%s）：列數 %d → %d，新增非-common 礦名 %s",
+                              hid, why, len(pre_names), len(cur_names), names or "無")
+        return names
+
+    def _giveup_rescue(self, reason: str) -> bool:
+        """交人工前救援：判「這顆礦其實在 chill 之前就被鎬子挖走了」（spec 2026-07-30）。
+
+        用 chill 前裁圖快取當基準比對現在，聊天與面板兩路**取聯集**——兩路互補、
+        都不完整（聊天會淡出、面板對重複礦種全盲）。任一路有新的非-common 礦名 →
+        判定本 episode 的礦已經進帳，收尾回 MINING，不交人工。
+
+        範圍刻意保守：只在 giveup 前跑，**不動** `_late_chat_confirm` 的
+        `_chat_baseline is None` guard——拆掉那個 guard 會讓 pre-sweep／post-sweep 兩個
+        呼叫點活過來＝變成「提早中止 episode」，那條路的誤判代價是靜默放生一顆真稀有礦
+        且沒有任何 log 會讓你發現。
+
+        **不偽造 `HARVEST_SUCCESS`**：實機驗證期要能把「救援命中」與「正常採集成功」
+        分開統計，混在一起就算不出救援的命中率與誤判率。
+
+        降級全部維持今日行為：沒有 chill 前快取／rapidocr 不可用／任何例外 → 回 False。
+        """
+        if not cfg.giveup_rescue_enabled:
+            return False
+        if getattr(self, "_episode_succeeded", False):
+            # 本場已記過 HARVEST_SUCCESS，剩下的 giveup 只有一條：「採到了但無法重新聚焦
+            # Roblox」。那條路**必須**照舊交人工——(a) 救援會為同一顆礦再記一次
+            # HARVEST_RESCUED，把「救援命中 vs 正常採集成功」的統計混掉，正是 spec 拒絕
+            # 偽造 HARVEST_SUCCESS 要避免的事；(b) 更糟的是它會呼叫 _harvest_resume_mining
+            # → init_mining_sequence，在焦點**不在** Roblox 的情況下送 W/D1/Shift/視角鍵，
+            # 全被別的視窗吃掉——那正是呼叫端註解裡「偶爾挖到稀有礦回正不會動」的根因。
+            return False
+        hid = self.harvest.harvest_id if self.harvest else "?"
+        try:
+            # 錨在 **chill 時刻**不是現在：見 _on_enter(HARVESTING) 的 _episode_chill_at
+            ref = self._prechill_ref(getattr(self, "_episode_chill_at", 0.0) or time.time())
+            if ref is None:
+                self.log_harvest.info(
+                    "[%s] 交人工前救援：沒有夠舊的 chill 前裁圖（快取 %d 筆）→ 跳過",
+                    hid, len(self._prechill))
+                return False
+            pre_ts, pre_chat, pre_panel = ref
+            frame = capture.grab()
+            cur_chat = capture.crop(frame, cfg.chat_region)
+            cur_panel = capture.crop(frame, cfg.backpack_review_region)
+            chat_names = self._rescue_chat_ores(pre_chat, cur_chat, hid)
+            panel_names = self._panel_ore_gain(pre_panel, cur_panel, hid, "救援路B")
+            if not (chat_names or panel_names):
+                return False
+            paths = [p for p in (
+                self._enqueue_snapshot(pre_chat, self._hlabel("rescue_pre_chat")),
+                self._enqueue_snapshot(cur_chat, self._hlabel("rescue_cur_chat")),
+                self._enqueue_snapshot(pre_panel, self._hlabel("rescue_pre_panel")),
+                self._enqueue_snapshot(cur_panel, self._hlabel("rescue_cur_panel")),
+            ) if p]
+        except Exception as e:                  # 救援本身絕不能把 giveup 弄壞
+            self.log_harvest.warning("[%s] 交人工前救援例外（維持交人工）：%s", hid, e)
+            return False
+        source = ("both" if (chat_names and panel_names)
+                  else ("chat" if chat_names else "panel"))
+        ore_names = list(dict.fromkeys(chat_names + panel_names))
+        self.logger.info(
+            "[%s] 交人工前救援命中（%s）：%s 已進帳（參考點早 %.1fs）→ 不交人工，回 MINING"
+            "（原因原本是：%s）",
+            hid, source, "、".join(ore_names), time.time() - pre_ts, reason)
+        self.log.log("HARVEST_RESCUED", harvest_id=hid, source=source,
+                     ore_names=ore_names, giveup_reason=reason,
+                     image_path=paths[-1] if paths else None, image_paths=paths)
+        self._harvest_resume_mining()
+        return True
+
     def _harvest_giveup(self, reason: str, *, face_tracker: bool = False):
         """採集放棄 → 依「有無追蹤框」決定視角處置 + 截圖，交人工（需求 A+C）。
 
@@ -4688,6 +4916,14 @@ class Bot:
         一物；前後對比才判得出「礦其實已採到」的好假警報）。
         視角/截圖決策抽在 harvester.plan_giveup（純函式、有測試）；本方法只做 I/O glue。
         """
+        # ★ 交人工前最後一道：這顆礦其實已經進帳了嗎（spec 2026-07-30 救援設計）。
+        #   最常見的交人工型態是礦在 chill 響**之前**就被鎬子挖掉——之後八方位掃描
+        #   必然全空，證據卻明明就在畫面上（125 實錄：聊天最底行與面板都有 Faedrine）。
+        #   回 True＝已判定進帳並走完收尾，這裡必須立刻 return。
+        if self._giveup_rescue(reason):
+            return
+        # 雙 chill 對帳的另一個收尾點。這條路本來就要交人工 → 只記一筆帳，不改流程。
+        self._chill_reconcile("giveup", notify=False)
         # NEEDS_HUMAN 事件一律帶本輪編號（Discord 顯示 [Hxxx]，與截圖/log 串連，事後一鍵搜查）
         self._needs_human_extra_meta = {"harvest_id": self.harvest.harvest_id}
         # face_tracker 需真的有 marker 才成立（防呼叫端誤傳；D3 超時路徑 marker 必已設）
@@ -5815,6 +6051,7 @@ class Bot:
         self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
                      special=special, rare_before=rare_before, rare_after=rare_after,
                      new_found_lines=new_lines, image_path=chat_after_path)
+        self._episode_succeeded = True      # 之後任何 giveup 都不得再走救援（見 _giveup_rescue）
         self.stats["rares"] += 1
         self.last_action = "採集成功！" + ("（特殊階！）" if special else "")
         self._hsnap(after_frame, "harvest_success" + ("_special" if special else ""))
@@ -5875,7 +6112,78 @@ class Bot:
         pickup 動畫等待（time.sleep 1.0）由呼叫端在 recheck 前先跑過，這裡不重睡。
         """
         self._pitch_restore_if_touched()  # 先俯仰歸位（動過才回置中標準角）、再 yaw 回正
+        if self._chill_reconcile("收尾"):  # 響兩聲只進帳一顆 → 交人工，不回 MINING
+            return
         self._resume_mining_tail(self.harvest.net_rotations)
+
+    def _episode_panel_gains(self) -> list:
+        """本 episode 進帳的非-common 礦名（開場面板裁圖 vs 現況）。
+
+        用面板不用上升緣數：面板是狀態，不淡出、不需要 hover、不受前景影響；上升緣
+        只知道響了幾聲，不知道實際到手幾顆。缺開場裁圖 → 回 []（其餘降級在 _panel_ore_gain）。
+        """
+        pre = getattr(self, "_episode_panel_pre", None)
+        if pre is None:
+            return []
+        cur = capture.crop(capture.grab(), cfg.backpack_review_region)
+        hid = self.harvest.harvest_id if self.harvest else "?"
+        return self._panel_ore_gain(pre, cur, hid, "對帳")
+
+    def _chill_reconcile(self, where: str, *, notify: bool = True) -> bool:
+        """雙 chill 對帳（spec 2026-07-30）：響兩聲只進帳一顆就結案＝帳不平 → 交人工。
+
+        回 True＝已切 NEEDS_HUMAN，呼叫端必須立刻 return。
+        `notify=False`＝giveup 路徑：那條路本來就要交人工，只記一筆帳不改流程
+        （記它是為了 06 的淨值檢查——要分得出「對帳新增的人工次數」與「本來就會交的」）。
+
+        **出廠關閉**：`chill_edge_release_s` 的初值必須由實機上升緣分布決定，門檻猜錯
+        會直接製造新的人工次數。在有分布之前 `chill_reconcile_enabled=False` 且
+        `chill_edge_release_s=0.0`，這條路完全不跑（見該 spec Blocked On）。
+
+        不嘗試分辨三種真因（第二顆在別方位／被別人挖走／同一顆重播或誤觸）——證據上
+        分不開，一律通知人工由使用者判斷。
+        """
+        if not (cfg.chill_reconcile_enabled and cfg.chill_edge_release_s > 0):
+            return False
+        hid = self.harvest.harvest_id if self.harvest else "?"
+        try:
+            edges = audio.count_chill_edges(self._chill_edges, cfg.chill_edge_release_s)
+            gains = self._episode_panel_gains()
+            unbalanced = harvester.chill_reconcile_unbalanced(edges, len(gains))
+            self.log_harvest.info("[%s] 雙 chill 對帳（%s）：上升緣 %d、進帳 %s → %s",
+                                  hid, where, edges, gains or "無",
+                                  "帳不平" if unbalanced else "帳平")
+            if not unbalanced or not notify:
+                return False
+            groups = []
+            panel_paths = [p for p in (
+                self._enqueue_snapshot(self._episode_panel_pre,
+                                       self._hlabel("reconcile_panel_open")),
+                self._snapshot_crop(capture.grab(), cfg.backpack_review_region,
+                                    self._hlabel("reconcile_panel_close"))) if p]
+            if panel_paths:
+                groups.append(("backpack", panel_paths))
+            sweep_paths = [s.snapshot_path for s in self._sweep_shots[-8:]
+                           if getattr(s, "snapshot_path", "")]
+            if sweep_paths:
+                groups.append(("sweep", sweep_paths))
+        except Exception as e:                  # 對帳是加值路徑，壞了就照常收尾
+            self.log_harvest.warning("[%s] 雙 chill 對帳例外（照常收尾）：%s", hid, e)
+            return False
+        edge_txt = "、".join(
+            "%s(%.2f)" % (time.strftime("%H:%M:%S", time.localtime(ts)), score)
+            for ts, score, _since in self._chill_edges)
+        harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
+        self.harvest.net_rotations = 0
+        self._human_reason = (
+            f"chill 響了 {edges} 聲但只進帳 {len(gains)} 種礦"
+            f"（上升緣 {edge_txt}；進帳 {'、'.join(gains) or '無'}），請確認是否還有一顆")
+        self._needs_human_extra_meta = {"harvest_id": hid}
+        if groups:
+            self._needs_human_extra_meta["image_groups"] = groups
+        self.state = State.NEEDS_HUMAN
+        self._on_enter(State.NEEDS_HUMAN, capture.grab())
+        return True
 
     def _resume_mining_tail(self, net_rotations: int):
         """採集成功（正常/遠端 fire）後的共用收尾：yaw 回正→切 MINING→init→鎬子/W 保險段。

@@ -491,3 +491,162 @@ def test_plan_boost_pair_due():
     assert plan_boost_pair_due(52, 42, 10) is True         # 滿 N
     assert plan_boost_pair_due(None, 42, 10) is False      # 讀不出＝無 x 軸標籤，不存
     assert plan_boost_pair_due(42, None, 0) is False       # 功能關閉
+
+
+# ── chill 前證據快取取用（spec 2026-07-30-prechill-evidence-cache-design.md A 段）──
+
+def _entry(ts):
+    return (ts, f"chat@{ts}", f"panel@{ts}")
+
+
+def test_pick_prechill_ref_takes_newest_old_enough():
+    from miningbot.harvester import pick_prechill_ref
+    entries = [_entry(100.0), _entry(101.0), _entry(102.0), _entry(103.0)]
+    # before_ts=105、min_age=3 → 上界 102 → 取 102（≤ 上界的最新一筆）
+    assert pick_prechill_ref(entries, 105.0, 3.0, 6.0)[0] == 102.0
+
+
+def test_pick_prechill_ref_empty_buffer():
+    from miningbot.harvester import pick_prechill_ref
+    assert pick_prechill_ref([], 105.0, 3.0, 6.0) is None
+
+
+def test_pick_prechill_ref_all_too_new():
+    """全部都比 chill 晚不到 min_age_s → None（太新的參考可能已含那次挖掘）。"""
+    from miningbot.harvester import pick_prechill_ref
+    entries = [_entry(104.0), _entry(104.5)]
+    assert pick_prechill_ref(entries, 105.0, 3.0, 6.0) is None
+
+
+def test_pick_prechill_ref_boundary_is_inclusive():
+    from miningbot.harvester import pick_prechill_ref
+    assert pick_prechill_ref([_entry(102.0)], 105.0, 3.0, 6.0)[0] == 102.0
+    assert pick_prechill_ref([_entry(102.01)], 105.0, 3.0, 6.0) is None
+
+
+def test_pick_prechill_ref_rejects_stale_previous_episode_frame():
+    """上界：快取進 HARVESTING 不清空，回 MINING 沒幾秒又 chill 時緩衝裡還留著
+    **上一場之前**的幀。拿它當基準會把上一場採到的礦算成這一場的新增＝假救援
+    ＝靜默放生一顆真稀有礦。過期一律回 None（救援整個跳過＝回到今日行為）。"""
+    from miningbot.harvester import pick_prechill_ref
+    # 上一場 episode 跑了三分鐘：緩衝裡只有 chill 前 180 秒的殘幀
+    assert pick_prechill_ref([_entry(925.0)], 1105.0, 3.0, 6.0) is None
+    # 剛好落在上界內就仍然可用（兩側夾）
+    assert pick_prechill_ref([_entry(1099.0)], 1105.0, 3.0, 6.0)[0] == 1099.0
+
+
+def test_pick_prechill_ref_stale_entry_never_rescued_by_older_one():
+    """最新的合格候選過期時不得往回找更舊的——更舊只會更糟。"""
+    from miningbot.harvester import pick_prechill_ref
+    assert pick_prechill_ref([_entry(900.0), _entry(925.0)], 1105.0, 3.0, 6.0) is None
+
+
+# ── NORMAL 面板名字欄剖析（spec 2026-07-30-giveup-rescue-already-mined-design.md）──
+# 幾何依 2026-07-30 全螢幕實機量測：名字框中心 x 72~103、標頭 y≈14、篩選框 y≈45、
+# 第一列 y≈78；右側 craft 面板自 x≈185 起。
+
+_GATES = dict(max_x=DEFAULT.panel_name_col_max_x, min_y=DEFAULT.panel_row_min_y)
+
+
+def _box(text, x, y):
+    return {"text": text, "score": 0.99, "center": (x, y)}
+
+
+def test_parse_panel_splits_name_from_stuck_count():
+    """黏框切在第一個數字或逗號之前（RapidOCR 實測 125 的最後兩列）。"""
+    from miningbot.harvester import parse_panel_ore_names
+    boxes = [_box("Cloverstone 1,6", 101, 258), _box("Imbollyx. 8", 103, 320)]
+    assert parse_panel_ore_names(boxes, **_GATES) == ["cloverstone", "imbollyx"]
+
+
+def test_parse_panel_passes_clean_names_through():
+    from miningbot.harvester import parse_panel_ore_names
+    boxes = [_box("Leprechaun", 82, 78), _box("Faedrine", 83, 113)]
+    assert parse_panel_ore_names(boxes, **_GATES) == ["leprechaun", "faedrine"]
+
+
+def test_parse_panel_drops_header_and_filter_box():
+    """NORMAL 標頭與 www 篩選框在 y 閘之上——擋掉才不會被當礦名。"""
+    from miningbot.harvester import parse_panel_ore_names
+    boxes = [_box("NORMAL", 115, 14), _box("www", 118, 45), _box("Faedrine", 83, 113)]
+    assert parse_panel_ore_names(boxes, **_GATES) == ["faedrine"]
+
+
+def test_parse_panel_drops_craft_panel_column():
+    """右側 Shamrock craft 面板（x≈185 起）整欄不得進名字集合。"""
+    from miningbot.harvester import parse_panel_ore_names
+    boxes = [_box("Materials", 204, 200), _box("310", 210, 169), _box("Siogyne", 80, 186)]
+    assert parse_panel_ore_names(boxes, **_GATES) == ["siogyne"]
+
+
+def test_parse_panel_drops_short_ocr_noise():
+    """craft 面板數字被讀歪出來的 1-2 字雜訊（實測 '\u2022P11/'、'.73'）不得變成假礦名。"""
+    from miningbot.harvester import parse_panel_ore_names
+    assert parse_panel_ore_names(
+        [_box("\u2022P11/", 100, 209), _box(".73", 100, 268), _box("4/", 100, 248)],
+        **_GATES) == []
+
+
+def test_parse_panel_dedupes_preserving_order():
+    from miningbot.harvester import parse_panel_ore_names
+    boxes = [_box("Faedrine", 83, 113), _box("faedrine", 83, 150)]
+    assert parse_panel_ore_names(boxes, **_GATES) == ["faedrine"]
+
+
+# ── 面板名字差分 ────────────────────────────────────────────────────────────
+
+def test_new_noncommon_panel_ores_reports_new_rare():
+    from miningbot.harvester import new_noncommon_panel_ores
+    pre = ["leprechaun", "cleavelite", "siogyne"]
+    assert new_noncommon_panel_ores(pre, pre + ["faedrine"]) == ["faedrine"]
+
+
+def test_new_noncommon_panel_ores_ignores_new_common():
+    """只新增低稀有度礦＝一般挖礦，不是本 episode 的稀有礦進帳。"""
+    from miningbot.harvester import new_noncommon_panel_ores
+    pre = ["leprechaun", "faedrine"]
+    assert new_noncommon_panel_ores(pre, pre + ["weevil", "siogyne"]) == []
+
+
+def test_new_noncommon_panel_ores_unchanged_is_empty():
+    from miningbot.harvester import new_noncommon_panel_ores
+    names = ["leprechaun", "faedrine", "cleavelite"]
+    assert new_noncommon_panel_ores(names, list(names)) == []
+
+
+def test_new_noncommon_panel_ores_empty_pre_is_blind():
+    """pre 為空（快取剛建立／OCR 全滅）→ 一律回 []，不可把整個面板當本次新增。"""
+    from miningbot.harvester import new_noncommon_panel_ores
+    assert new_noncommon_panel_ores([], ["faedrine", "leprechaun"]) == []
+    assert new_noncommon_panel_ores(None, ["faedrine"]) == []
+
+
+def test_new_noncommon_panel_ores_unknown_counts_as_noncommon():
+    """分類 unknown（清單漂移／新礦種）視為非-common——與採集確認鏈同一套守門員規則。"""
+    from miningbot.harvester import new_noncommon_panel_ores
+    from miningbot import game_data
+    assert game_data.classify_found_ore("cloverstone")[0] == "unknown"
+    assert new_noncommon_panel_ores(["faedrine"], ["faedrine", "cloverstone"]) \
+        == ["cloverstone"]
+
+
+# ── 雙 chill 對帳判定（spec 2026-07-30-double-chill-reconciliation-design.md）──
+
+def test_chill_reconcile_single_edge_always_balanced():
+    from miningbot.harvester import chill_reconcile_unbalanced
+    assert chill_reconcile_unbalanced(0, 0) is False
+    assert chill_reconcile_unbalanced(1, 0) is False     # 單聲 chill 不進對帳
+    assert chill_reconcile_unbalanced(1, 1) is False
+
+
+def test_chill_reconcile_two_edges_one_gain_is_unbalanced():
+    from miningbot.harvester import chill_reconcile_unbalanced
+    assert chill_reconcile_unbalanced(2, 1) is True
+    assert chill_reconcile_unbalanced(2, 0) is True
+    assert chill_reconcile_unbalanced(3, 2) is True
+
+
+def test_chill_reconcile_balanced_when_gains_match():
+    from miningbot.harvester import chill_reconcile_unbalanced
+    assert chill_reconcile_unbalanced(2, 2) is False
+    assert chill_reconcile_unbalanced(2, 3) is False     # 進帳更多（續採）也算平
