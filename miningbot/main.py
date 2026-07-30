@@ -3783,35 +3783,32 @@ class Bot:
     # 跑不到，所以這些 control key 必須由等待迴圈自己撿。
     _RR_WEB_CONTROLS = {"skip": "跳過", "reroll": "重骰", "sweep": "掃"}
 
-    def _await_web_reentry_action(self, routing_key: str, timeout_s: float):
-        """等玩家在回礦面板上做一件事；回 ``(kind, payload)``。
+    def _await_web_reentry_action(self, routing_key: str):
+        """等玩家在回礦面板上做一件事；回 ``(kind, payload)``。**無限等，不逾時。**
 
         kind："click"（payload＝reply dict）／"skip"／"reroll"／"sweep"／
-        "force_discord"（玩家按了提醒訊息上的 🔀，不想再等 web）／
-        None（逾時，payload 也是 None）。
+        "force_discord"（玩家按了提醒訊息上的 🔀，要改用 Discord）／
+        None（被中止：礦坑又重置／關閉／暫停，payload 也是 None）。
 
         同時輪詢點擊 reply 與控制鍵，因為主迴圈整個卡在這裡——控制鍵若只靠
-        `_consume_web_pending`，玩家按了「重骰」要等這輪逾時（最長 5 分鐘）才生效。
+        `_consume_web_pending`，玩家按了「重骰」永遠不會生效。
 
-        兩段等候（2026-07-29）：進來時沒有任何 client 連著，只等
-        `cfg.web_join_grace_s`——圖已經推進 replay 緩衝、Discord 提醒也發了，人要
-        來就是這段時間內來；沒來就退回 Discord，不能讓無人看顧的場次卡滿 `timeout_s`。
-        等待期間有人連上（含手機分頁背景化後重連）就升級成完整 `timeout_s`，
-        從進來那刻起算——玩家正在看圖時不會被 grace 砍掉。
+        **2026-07-30：所有逾時都拿掉了（`web_join_grace_s` 短閘＋
+        `web_intervention_budget_s` 總預算，使用者指定）。** 舊版推完圖若當下沒
+        client 連著就只等 120s，逾時退回 Discord 並清掉重播緩衝
+        （`end_intervention_replay`）。實機 RR#34 死在這裡：18:28:23 推 8 張＋發
+        Discord 提醒，18:30:23 grace 到期退場，使用者 18:41:45 才開網頁——緩衝
+        早被清空，面板一片空白。玩家是**被 Discord 推播叫來的**，拿手機、解鎖、
+        開頁面遠不止 2 分鐘，而拉長成 15 分鐘也只是把同一條 race 往後推。
+        現在「改用 Discord」只有一個開關：提醒訊息上的 🔀
+        （`_arm_web_escalate_reaction`，2026-07-27 使用者要求加的）。
+
+        無限等所以中止條件必須齊：`_mine_resetting`（圖過時）以及
+        `_running`/`paused`（關閉或暫停要放得掉主迴圈，否則 F12 關不掉）。
         """
         if self._web_pending is None:
             return None, None
-        start = time.monotonic()
-        deadline = start + timeout_s
-        # None＝已有人在線（或曾經連上），只受 deadline 管；否則多一道短閘
-        grace_deadline = (None if self._web_client_online()
-                          else start + cfg.web_join_grace_s)
-        while time.monotonic() < deadline:
-            if grace_deadline is not None:
-                if self._web_client_online():
-                    grace_deadline = None         # 有人開網頁了 → 給完整預算
-                elif time.monotonic() >= grace_deadline:
-                    return None, None
+        while True:
             reply = self._web_pending.pop(routing_key)
             if reply is not None:
                 return "click", reply
@@ -3823,8 +3820,9 @@ class Bot:
             if self._mine_resetting:
                 # 等待期間礦坑又重置：八方位圖已過時，別讓玩家對著舊圖點
                 return None, None
+            if not self._running or self.paused:
+                return None, None
             time.sleep(0.5)
-        return None, None
 
     def _save_auto_fixture(
         self,
@@ -4144,9 +4142,8 @@ class Bot:
                 f"（attempt {ctx.attempt}）已拍好 {frame_count} 個方位\n"
                 f"{url}\n"
                 f"左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。"
-                f"**{int(cfg.web_join_grace_s / 60)} 分鐘內沒人開網頁就改用 Discord 八方位**"
-                f"（開了之後最多等 {int(cfg.web_intervention_budget_s / 60)} 分鐘）；"
-                f"想現在就用 Discord 就按下面的 {_WEB_ESCALATE_EMOJI}。")
+                f"**慢慢來，圖會一直留著等你，不會逾時**；"
+                f"不想用網頁、要改用 Discord 八方位圖就按下面的 {_WEB_ESCALATE_EMOJI}。")
         try:
             ok, _detail, mid = notify.send_message_with_id(
                 cfg.discord_bot_token, cfg.discord_channel_id, text)
@@ -6571,15 +6568,22 @@ class Bot:
                 if d > max_diff:
                     max_diff = d
                 if d >= cfg.reentry_teleport_diff or fr >= cfg.reentry_teleport_frac:
-                    self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> teleported",
-                                      tag, attempt, cfg.reentry_click_retries, max_diff, fr)
+                    self.logger.info("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> teleported",
+                                     tag, attempt, cfg.reentry_click_retries, max_diff, fr)
                     return True
             # 未達門檻：游標移中央再移回按鈕，重試
             ic.move_to(960, 540)
             ic.move_to(*cfg.reentry_surface_button_xy)
-            self.logger.debug("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> retry",
-                              tag, attempt, cfg.reentry_click_retries,
-                              max_diff, fr)
+            self.logger.info("[RR] %s click attempt %d/%d: max_diff=%.1f frac=%.3f -> retry",
+                             tag, attempt, cfg.reentry_click_retries,
+                             max_diff, fr)
+        # 2026-07-30：這兩行原本是 debug 級，log_level 出廠 INFO ⇒ 實機檔案裡完全
+        # 沒有點擊證據。RR#34 使用者回報「腳本沒點 Go to surface、角色原地自轉」，
+        # 而 log 只看得到「開場閘通過→開始掃描」，分不出是「按鈕沒點到」還是
+        # 「點了但人已在地表、遊戲不傳送」（H046(b) 明說後者是常態）。升 INFO 收證據。
+        self.logger.info("[RR] %s click：%d 次全未達傳送門檻（diff≥%.1f 或 frac≥%.3f）",
+                         tag, cfg.reentry_click_retries,
+                         cfg.reentry_teleport_diff, cfg.reentry_teleport_frac)
         return False
 
     # ---- Task 4：REENTRY 互動 embed（比照遙控器四件套，但作用域是單一 episode）-----
@@ -7657,12 +7661,16 @@ class Bot:
         `if not self._web_client_online(): return False`，而使用者是**被 Discord
         提醒才開網頁**的人（手機分頁背景化也會斷 WebSocket）——掃描當下永遠沒連線，
         於是網頁永遠拿不到圖、每次都直接洗 Discord 八方位。現在無條件推進 registry
-        的 replay 緩衝（`replay_to` 就是為晚到連線做的），Discord 提醒照發；
-        沒人連進來時只等 `web_join_grace_s`（不是整份 budget）就退回 Discord，
-        無人看顧的場次不會因此卡上 15 分鐘。
+        的 replay 緩衝（`replay_to` 就是為晚到連線做的），Discord 提醒照發。
+
+        **2026-07-30：等待改成無限，逾時預算全刪**（使用者指定）。07-29 那版還留了
+        一道 120s join grace，RR#34 就死在它手上——推圖 2 分鐘後沒人連上就退場並
+        清掉重播緩衝，使用者 13 分鐘後開網頁只看到空白面板。切 Discord 現在只認
+        玩家按提醒訊息上的 🔀；其餘中止路徑（礦坑重置／關閉／暫停）見
+        `_await_web_reentry_action`。
 
         回 True＝web 已接手（caller 不發 Discord 八方位圖、不貼 embed 卡片）；
-        回 False＝沒人開網頁／逾時／聚焦失敗 → caller fall through Discord 流程。
+        回 False＝玩家按 🔀／等待被中止／聚焦失敗 → caller fall through Discord 流程。
 
         attempt_id（wire protocol 對 reentry flow 的 id 欄位名）＝ episode_id：
         每集唯一、與 Discord 卡片標題 #ep{episode_id} 一致，玩家可對照。
@@ -7688,33 +7696,28 @@ class Bot:
         # 網頁在等你點——Discord 發一則提醒（玩家不必剛好開著面板盯著）
         self._notify_web_intervention_pending(ctx, len(web_pngs))
         self.log_discord.info(
-            "[RR#%s] 回礦 web 介入：已推 %d 張（推送當下 client %s；沒人開網頁等 %.0fs）",
+            "[RR#%s] 回礦 web 介入：已推 %d 張（推送當下 client %s；無限等，玩家按 %s 才改 Discord）",
             ctx.episode_id, len(web_pngs), "在線" if online else "離線",
-            cfg.web_join_grace_s)
+            _WEB_ESCALATE_EMOJI)
 
         try:
             for attempt in range(1, max_attempts + 1):
-                timeout = (cfg.web_intervention_budget_s if attempt == 1
-                           else cfg.web_intervention_retry_budget_s)
-                kind, reply = self._await_web_reentry_action(
-                    routing_key=routing_key, timeout_s=timeout)
+                kind, reply = self._await_web_reentry_action(routing_key=routing_key)
                 if kind is None or kind == "force_discord":
                     escalated = kind == "force_discord"
                     self.log_discord.info(
                         "[RR#%s] 回礦 web 介入：%s，fall through Discord 八方位",
                         ctx.episode_id,
                         "玩家按 🔀 選擇改用 Discord" if escalated else
-                        ("沒人開網頁（等了 %.0fs）" % cfg.web_join_grace_s
-                         if not self._web_client_online() else
-                         f"逾時無回應（attempt {attempt}/{max_attempts}，等了 {timeout:.0f}s）"))
+                        f"等待被中止（重置／關閉／暫停，attempt {attempt}/{max_attempts}）")
                     # 2026-07-27：這裡原本沒有任何 INTERVENTION_RESULT——面板連著的人
                     # 只會看到畫面停在原地，之後才連進來的人（使用者是「有提醒才連」）
                     # 靠重播緩衝也會看到一份早就作廢的等待畫面。補一則結果訊息，順便
                     # 清掉重播緩衝（呼叫內含 end_intervention_replay）。
                     self._broadcast_intervention_result(
-                        ctx, "web_escalate" if escalated else "web_timeout",
+                        ctx, "web_escalate" if escalated else "web_aborted",
                         "你選擇改用 Discord，已切換八方位圖" if escalated else
-                        "網頁逾時未回應，已改用 Discord 八方位", flow="reentry")
+                        "等待被中止（礦坑重置／暫停），已改用 Discord 八方位", flow="reentry")
                     return False
                 if kind in self._RR_WEB_CONTROLS and kind != "sweep":
                     # 重骰／跳過：排進既有 reentry 指令佇列，主迴圈下個 tick 消費

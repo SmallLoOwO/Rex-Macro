@@ -1503,16 +1503,17 @@ function connect() {
       // verdict 由 main._broadcast_intervention_result 給：
       //   harvest: fire_ok / fire_failed / fire_aborted / rejected_reset / skip / web_timeout
       //   reentry: descended / awaiting_confirm / still_surface / 放棄 / rejected_reset /
-      //            轉向被吃 / web_timeout（逾時退回 Discord）/ web_escalate（玩家按 🔀 主動退回）
+      //            轉向被吃 / web_escalate（玩家按 🔀 主動退回）/ web_aborted（礦坑重置／
+      //            關閉／暫停中止；回礦已無逾時，2026-07-30 起不再有 web_timeout）
       const v = p.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
       // awaiting_confirm：Depth 已確認下礦，但 bot 設定要求人工放行才開挖——
       // 這不是「結束」也不是「失敗」，是換一組按鈕等玩家表態（好/重骰/作廢），
       // 原本這步只能切回 Discord 打字，玩家人已經在網頁上了不該被踢出去。
       const awaitingConfirm = v === 'awaiting_confirm';
-      // 逾時／主動切 Discord：這集之後這個頁面就不是主控了，跟 ok 一樣收起面板，
+      // 逾時／中止／主動切 Discord：這集之後這個頁面就不是主控了，跟 ok 一樣收起面板，
       // 不然玩家還以為能繼續點這批已經作廢的舊圖。
-      const done = ok || v === 'web_timeout' || v === 'web_escalate';
+      const done = ok || v === 'web_timeout' || v === 'web_escalate' || v === 'web_aborted';
       setStatus(p.summary || v, awaitingConfirm ? 'need' : (ok ? 'ok' : 'fail'));
       stopFlashing();
       if (awaitingConfirm) {

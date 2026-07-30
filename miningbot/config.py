@@ -616,23 +616,14 @@ class Config:
     # 真的綁不上時 uvicorn 會自己設 should_exit，polling 迴圈立刻跳出，不會白等 20s。
     web_server_bind_wait_s: float = 20.0
     web_fallback_grace_s: float = 30.0           # WebSocket 0 client 後等多久才切 fallback
-    # 網頁介入等玩家操作的預算（2026-07-26）。舊版借用 remote_aim_budget_s=120s，
-    # 而且完全沒有通知——玩家得剛好開著面板盯著才知道要點，實機 07-26 18:32
-    # 就這樣白等 120s 逾時（log: `[RR#26] 回礦 web 介入：reply timeout`）。
-    # 現在配合 Discord 提醒 + 分頁標題閃爍把首輪拉長到 5 分鐘：逾時代表「人不在」，
-    # 不是「人來不及」，退回 Discord 才有意義。retry 輪短一些（人已經在了）。
-    # 300→900（2026-07-28）：實測四次網頁介入、三次逾時各白燒 300s，而帶網址的
-    # Discord 提醒確實發出去也自動收回了（log 有 `web 介入提醒收回 … HTTP 204`）
-    # ——所以逾時是「人不在」不是「通知不到」，加通知管道無效，只能拉長預算。
-    # 停更久的實際成本比看起來小：逾時退回 Discord 八方位一樣要等人。
-    web_intervention_budget_s: float = 900.0
-    web_intervention_retry_budget_s: float = 120.0
-    # 推完圖之後「還沒有任何 client 連進來」的短等候（2026-07-29）。
-    # 舊流程根本不推圖給離線的網頁，所以永遠走不到這裡；改成無條件推之後，
-    # 無人看顧的場次不能拿 web_intervention_budget_s 去等一個不會來的人——
-    # Discord 提醒發出後 2 分鐘沒人開頁面就退回 Discord 八方位。
-    # 這段時間內有人連上就升級成完整 budget（見 _await_web_reentry_action）。
-    web_join_grace_s: float = 120.0
+    # 網頁介入的等待「預算」欄位（web_intervention_budget_s／
+    # web_intervention_retry_budget_s／web_join_grace_s）已於 2026-07-30 全部刪除：
+    # 回礦 web 介入改成**無限等，只有玩家按提醒訊息上的 🔀 才切 Discord**（使用者指定）。
+    # 沿革：120s（借 remote_aim_budget_s）→ 300s → 900s ＋ 120s join grace，每一次
+    # 拉長都只是把同一條 race 往後推。RR#34 實錄——18:28:23 推圖＋發 Discord 提醒，
+    # 18:30:23 grace 到期退場並清掉重播緩衝（end_intervention_replay），使用者
+    # 18:41:45 才開網頁 → 面板全空。玩家是被推播叫來的，任何固定窗都會漏掉他。
+    # 中止條件見 main._await_web_reentry_action：礦坑重置／關閉／暫停。
     websocket_ping_interval_s: float = 30.0
     # **P5 Task 2 deprecated**——app-level text-message "ping" 只能在 TCP 全斷才拋，
     # 無法偵測手機背景化／Tailscale relay 半斷的 half-open 連線；改依賴 uvicorn

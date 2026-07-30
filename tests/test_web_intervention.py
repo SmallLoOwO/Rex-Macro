@@ -209,7 +209,7 @@ def test_main_reentry_pushes_all_eight_frames(monkeypatch):
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: (
             pushed.append((kw["routing_key"], len(kw["frames"]))) or True),
-        _await_web_reentry_action=lambda routing_key, timeout_s: (
+        _await_web_reentry_action=lambda routing_key:(
             "click", {"x": 640, "y": 400, "dir": 3}),
         _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
     )
@@ -230,7 +230,7 @@ def test_main_reentry_click_carries_direction(monkeypatch):
     bot = _reentry_bot(
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: True,
-        _await_web_reentry_action=lambda routing_key, timeout_s: (
+        _await_web_reentry_action=lambda routing_key:(
             "click", {"x": 851, "y": 189, "dir": 5}),
         _rr_click_from_web=lambda ctx, x, y, dir_idx=None: (
             clicked.append((x, y, dir_idx)) or "descended"),
@@ -257,7 +257,7 @@ def test_main_reentry_notifies_discord_that_web_is_waiting(monkeypatch):
     bot = _reentry_bot(
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: True,
-        _await_web_reentry_action=lambda routing_key, timeout_s: (
+        _await_web_reentry_action=lambda routing_key:(
             "click", {"x": 1, "y": 1, "dir": 1}),
         _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
     )
@@ -283,7 +283,7 @@ def test_main_reentry_panel_buttons_queue_existing_commands(monkeypatch):
     bot = _reentry_bot(
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: True,
-        _await_web_reentry_action=lambda routing_key, timeout_s: ("reroll", None),
+        _await_web_reentry_action=lambda routing_key:("reroll", None),
         _queue_reentry_reply=lambda raw, reply, source: queued.append((raw, reply.kind, source)),
         _broadcast_intervention_result=lambda *a, **kw: None,
     )
@@ -303,7 +303,7 @@ def test_main_reentry_sweep_button_recaptures_and_repushes(monkeypatch):
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: (
             pushes.append(len(kw["frames"])) or True),
-        _await_web_reentry_action=lambda routing_key, timeout_s: next(actions),
+        _await_web_reentry_action=lambda routing_key:next(actions),
         _rr_sweep_capture=lambda encode_for_web=False: ([], 0, _PNGS[:8]),
         _rr_click_from_web=lambda ctx, x, y, dir_idx=None: "descended",
     )
@@ -320,7 +320,7 @@ def test_main_reentry_timeout_falls_back_to_discord(monkeypatch):
     bot = _reentry_bot(
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: True,
-        _await_web_reentry_action=lambda routing_key, timeout_s: (None, None),
+        _await_web_reentry_action=lambda routing_key:(None, None),
     )
     from tests.fake_bot import FakeReentryCtx
     ctx = FakeReentryCtx(episode_id="26")
@@ -345,7 +345,7 @@ def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
         _send_web_intervention_frames=lambda **kw: (
             pushed.append(len(kw["frames"])) or True),
         _notify_web_intervention_pending=lambda ctx, n: notified.append(n),
-        _await_web_reentry_action=lambda routing_key, timeout_s: (None, None),
+        _await_web_reentry_action=lambda routing_key:(None, None),
         _broadcast_intervention_result=lambda ctx, verdict, summary, flow="reentry": None,
     )
     ctx = FakeReentryCtx(episode_id="32")
@@ -355,10 +355,12 @@ def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
     assert notified == [8], "要發 Discord 提醒叫人來開網頁"
 
 
-def test_await_web_reentry_action_gives_up_after_join_grace(monkeypatch):
-    """沒人連進來 → 只等 web_join_grace_s，不是整份 budget。
+def test_await_web_reentry_action_never_times_out(monkeypatch):
+    """沒人連進來也不放棄——所有逾時預算已刪（2026-07-30 使用者指定）。
 
-    無人看顧的場次不能因為「網頁優先」卡滿 15 分鐘。
+    RR#34 迴歸：18:28:23 推圖＋發 Discord 提醒，120s grace 到期就退場並清掉重播
+    緩衝，使用者 18:41:45 才開網頁 → 面板全空。玩家是被推播叫來的，任何固定窗都
+    會漏掉他。離場的唯一開關是提醒訊息上的 🔀（force_discord）。
     """
     import miningbot.main as main_mod
     from tests.fake_bot import make_fake_bot
@@ -366,50 +368,86 @@ def test_await_web_reentry_action_gives_up_after_join_grace(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(main_mod.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(main_mod.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 10))
-    monkeypatch.setattr(main_mod.cfg, "web_join_grace_s", 120.0)
 
-    class _NoReply:
+    class _EscalateAtOneHour:
+        """一小時後玩家才按 🔀——在那之前不管等多久都不准自己走掉。"""
+
         def pop(self, key):
+            if key == "control:force_discord:reentry:9" and clock[0] >= 3600.0:
+                return {"ok": True}
             return None
 
     bot = make_fake_bot(
         bind=["_await_web_reentry_action"],
-        _web_pending=_NoReply(),
+        _web_pending=_EscalateAtOneHour(),
         _web_client_online=lambda: False,
         _mine_resetting=False,
+        _running=True,
+        paused=False,
     )
-    assert bot._await_web_reentry_action(routing_key="reentry:9",
-                                         timeout_s=900.0) == (None, None)
-    assert clock[0] < 200.0, f"應在 grace 內放棄，實際等了 {clock[0]}s"
+    assert bot._await_web_reentry_action(routing_key="reentry:9") == ("force_discord", None)
+    assert clock[0] >= 3600.0, f"不該提前放棄，實際只等了 {clock[0]}s"
 
 
-def test_await_web_reentry_action_extends_when_player_joins(monkeypatch):
-    """grace 內有人開網頁 → 升級成完整 budget，不會在 grace 到期時砍掉。"""
+def test_await_web_reentry_action_takes_late_click_from_offline_start(monkeypatch):
+    """推圖當下離線、玩家 13 分鐘後才開網頁點下去 → 照樣收得到（RR#34 的實際時序）。"""
     import miningbot.main as main_mod
     from tests.fake_bot import make_fake_bot
 
     clock = [0.0]
     monkeypatch.setattr(main_mod.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(main_mod.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 10))
-    monkeypatch.setattr(main_mod.cfg, "web_join_grace_s", 120.0)
 
-    class _ReplyAt300:
-        """玩家 300s 才點下去（早就過了 grace，但他人已經在線上）。"""
+    class _ReplyAt800:
+        """玩家 800s（>13 分）才點下去——舊 grace 早就把他擋在門外。"""
 
         def pop(self, key):
-            if key == "reentry:9" and clock[0] >= 300.0:
+            if key == "reentry:9" and clock[0] >= 800.0:
                 return {"x": 1, "y": 2, "dir": 3}
             return None
 
     bot = make_fake_bot(
         bind=["_await_web_reentry_action"],
-        _web_pending=_ReplyAt300(),
-        _web_client_online=lambda: clock[0] >= 60.0,   # 60s 時開了頁面
+        _web_pending=_ReplyAt800(),
+        _web_client_online=lambda: clock[0] >= 780.0,   # 780s 時才開頁面
         _mine_resetting=False,
+        _running=True,
+        paused=False,
     )
-    kind, reply = bot._await_web_reentry_action(routing_key="reentry:9",
-                                                timeout_s=900.0)
+    kind, reply = bot._await_web_reentry_action(routing_key="reentry:9")
     assert kind == "click" and reply["dir"] == 3
+
+
+def test_await_web_reentry_action_aborts_on_shutdown(monkeypatch):
+    """無限等的必要配套：_running 翻 False（F12 關閉）要放得掉主迴圈。"""
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+
+    clock = [0.0]
+    monkeypatch.setattr(main_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(main_mod.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 10))
+
+    holder = {}
+
+    class _ShutdownAt100:
+        """100s 時使用者按了 F12：_running 翻 False。"""
+
+        def pop(self, key):
+            if clock[0] >= 100.0:
+                holder["bot"]._running = False
+            return None
+
+    bot = make_fake_bot(
+        bind=["_await_web_reentry_action"],
+        _web_pending=_ShutdownAt100(),
+        _web_client_online=lambda: False,
+        _mine_resetting=False,
+        _running=True,
+        paused=False,
+    )
+    holder["bot"] = bot
+    assert bot._await_web_reentry_action(routing_key="reentry:9") == (None, None)
+    assert clock[0] < 200.0, f"關閉後應立刻放手，實際等了 {clock[0]}s"
 
 
 def test_main_reentry_returns_false_without_frames(monkeypatch):
@@ -608,7 +646,7 @@ def test_reentry_await_player_click_broadcasts_intervention_result_on_non_descen
     replies = iter([{"x": 100, "y": 100},
                     {"x": 200, "y": 200},
                     {"x": 300, "y": 300}])
-    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("click", next(replies))
+    bot._await_web_reentry_action = lambda routing_key:("click", next(replies))
     # 三次都非 descended
     bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: "still_surface"
 
@@ -640,7 +678,7 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
     bot = _build_stub_bot_for_reentry(monkeypatch)
 
     replies = iter([{"x": 100, "y": 100}, {"x": 200, "y": 200}])
-    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("click", next(replies))
+    bot._await_web_reentry_action = lambda routing_key:("click", next(replies))
     verdicts = iter(["still_surface", "descended"])
     bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: next(verdicts)
 
@@ -660,15 +698,16 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
         f"{len(bot._sent_intervention_events)}")
 
 
-def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
-    """P5 Task 2: reply timeout 時 fall through Discord（return False）。
+def test_reentry_await_player_click_aborted_returns_false(monkeypatch):
+    """等待被中止（礦坑重置／關閉／暫停）時 fall through Discord（return False）。
 
     2026-07-27 修正：先前這裡「不廣播」——面板連著的人只會看到畫面停在原地，
     之後才連上的人（使用者的實際用法是「有提醒才連」）靠重播緩衝也只會看到一份
-    早就作廢的等待畫面。現在改成廣播一則 web_timeout 結果，順便清掉重播緩衝。
+    早就作廢的等待畫面。現在改成廣播一則結果，順便清掉重播緩衝。
+    2026-07-30：回礦已無逾時，verdict 從 web_timeout 改名 web_aborted。
     """
     bot = _build_stub_bot_for_reentry(monkeypatch)
-    bot._await_web_reentry_action = lambda routing_key, timeout_s: (None, None)
+    bot._await_web_reentry_action = lambda routing_key:(None, None)
 
     result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
 
@@ -676,8 +715,14 @@ def test_reentry_await_player_click_timeout_returns_false(monkeypatch):
     calls = bot._web_thread.app.state.registry.calls
     results = [c for c in calls
                if hasattr(c, "payload") and c.payload.get("event") == "INTERVENTION_RESULT"]
-    assert len(results) == 1, "timeout 現在該廣播一則 web_timeout 結果，讓晚到的 client 看得到"
-    assert results[0].payload["verdict"] == "web_timeout"
+    assert len(results) == 1, "中止時該廣播一則結果，讓晚到的 client 看得到"
+    assert results[0].payload["verdict"] == "web_aborted"
+
+
+def test_web_panel_treats_aborted_as_done():
+    """前端要認得 web_aborted，否則面板停在「等你點」不收（P5 稽核的老病）。"""
+    from miningbot import web_static
+    assert "web_aborted" in web_static.render_intervention_html()
 
 
 def test_reentry_await_player_click_force_discord_returns_false_with_escalate_verdict(monkeypatch):
@@ -687,7 +732,7 @@ def test_reentry_await_player_click_force_discord_returns_false_with_escalate_ve
     區分成 web_escalate（玩家主動選的），不是 web_timeout（真的等到逾時）。
     """
     bot = _build_stub_bot_for_reentry(monkeypatch)
-    bot._await_web_reentry_action = lambda routing_key, timeout_s: ("force_discord", None)
+    bot._await_web_reentry_action = lambda routing_key:("force_discord", None)
 
     result = bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS)
 
@@ -787,11 +832,12 @@ def test_await_web_reentry_action_returns_force_discord_on_control_key():
     bot = Bot.__new__(Bot)
     bot._web_pending = PendingReplies()
     bot._mine_resetting = False
+    bot._running = True
+    bot.paused = False
     bot._RR_WEB_CONTROLS = Bot._RR_WEB_CONTROLS
     bot._web_pending.push("control:force_discord:reentry:26", True)
 
-    kind, reply = Bot._await_web_reentry_action(
-        bot, routing_key="reentry:26", timeout_s=5.0)
+    kind, reply = Bot._await_web_reentry_action(bot, routing_key="reentry:26")
 
     assert kind == "force_discord" and reply is None
 

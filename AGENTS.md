@@ -175,9 +175,15 @@ conventions.
     `reentry_click` carrying `dir` (1-8) must rotate to that direction before
     clicking; if rotation is eaten, abandon the click rather than clicking blind.
     Panel buttons (`sweep`/`reroll`/`skip`) are picked up inside the wait loop, not
-    by `_consume_web_pending` — the main loop is blocked there. Exhausting the retry
-    budget falls back to Discord (returns False) so the player is never left with
-    neither surface.
+    by `_consume_web_pending` — the main loop is blocked there. The wait is
+    **unbounded** (2026-07-30, user-specified): no join grace, no budget. The only
+    switch back to Discord is the 🔀 reaction on the "網頁在等你點" ping
+    (`_arm_web_escalate_reaction`); every fixed window from 120s to 900s just moved
+    the same race later — RR#34 pushed at 18:28:23, the 120s grace expired at
+    18:30:23 and wiped the replay buffer, the player opened the page at 18:41:45 and
+    saw a blank panel. Because it never times out, the abort conditions in
+    `_await_web_reentry_action` are load-bearing: `_mine_resetting` (stale frames)
+    and `_running`/`paused` (F12 must be able to stop the bot).
 
 ## DEVELOPMENT WORKFLOW
 

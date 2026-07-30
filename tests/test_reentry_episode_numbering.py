@@ -157,19 +157,36 @@ class TestSweepHappensBeforeAskingWeb:
 
 
 class TestWebInterventionBudget:
-    def test_budget_is_long_enough_to_notice(self):
-        """舊值 120s 借用 remote_aim_budget_s，且完全沒有通知——人根本來不及。
+    def test_no_timeout_config_left(self):
+        """所有等待預算欄位都刪光了（2026-07-30 使用者指定「無限時等待」）。
 
-        現在配合 Discord 提醒 + 分頁標題閃爍，首輪拉長；逾時才真的代表「人不在」。
+        沿革 120s→300s→900s＋120s join grace，每次拉長只是把同一條 race 往後推：
+        RR#34 推圖 2 分鐘後退場清緩衝，使用者 13 分鐘後開網頁看到空白面板。
         """
         from miningbot.config import Config
         c = Config()
-        assert c.web_intervention_budget_s >= 300.0
-        assert c.web_intervention_retry_budget_s <= c.web_intervention_budget_s
+        for gone in ("web_intervention_budget_s",
+                     "web_intervention_retry_budget_s",
+                     "web_join_grace_s"):
+            assert not hasattr(c, gone), f"{gone} 應已刪除（無限等不需要預算）"
 
-    def test_reentry_uses_web_budget_not_aim_budget(self):
-        """防迴歸：別再借用 remote_aim_budget_s（那是採集開火的預算）。"""
+    def test_reentry_wait_has_no_deadline(self):
+        """防迴歸：等待迴圈不得再引入任何逾時預算，也別借 remote_aim_budget_s。
+
+        只掃**程式碼**——docstring 記著 120s→900s 的沿革，那些字串不是迴歸。
+        """
         import inspect
-        src = inspect.getsource(main.Bot._reentry_await_player_click)
-        assert "web_intervention_budget_s" in src
-        assert "remote_aim_budget_s" not in src
+        code = ""
+        for fn in (main.Bot._reentry_await_player_click,
+                   main.Bot._await_web_reentry_action):
+            code += inspect.getsource(fn).replace(fn.__doc__ or "", "")
+        assert "budget_s" not in code
+        assert "timeout_s" not in inspect.signature(
+            main.Bot._await_web_reentry_action).parameters
+
+    def test_unbounded_wait_still_aborts_on_shutdown(self):
+        """無限等的前提是中止條件齊全：重置／關閉／暫停都要放得掉主迴圈。"""
+        import inspect
+        src = inspect.getsource(main.Bot._await_web_reentry_action)
+        assert "_mine_resetting" in src
+        assert "_running" in src and "paused" in src
