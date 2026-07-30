@@ -131,21 +131,25 @@ def verdict_agrees(detector: str, symptom: str | None):
     return (detector == "accepted") == expects
 
 
+# 遊戲官方階梯（2026-07-31 使用者指正：**Exotic 才是最低階**，先前排在 Exquisite
+# 之後）。這件事資料本身排不出來——tier 的 rarity 區間彼此重疊，取最小值說
+# Exquisite 低（111,112 vs 180,000）、取最大值說 Exotic 低（15,001,500 vs
+# 7,500,000），沒有一個統計量能還原官方階梯。玩家知道遊戲怎麼排，就寫死。
+# 不在這張表裡的 tier（遊戲更新新增）排在最後，彼此按最小 rarity 排。
+_TIER_LADDER: tuple[str, ...] = (
+    "Exotic", "Exquisite", "Transcendent", "Enigmatic",
+    "Unfathomable", "Otherworldly", "Imaginary",
+)
+
+
 def rarity_choices_from_game_data(
     special_ores: list[dict],
 ) -> tuple[list[str], list[str]]:
-    """從 game_data 的礦物清單撈 tier，**按稀有度由低到高**排；variants 固定四個。
+    """從 game_data 的礦物清單撈 tier，**按稀有度由低到高**排；variants 固定三個。
 
     先前用 ``sorted(tiers)``＝字母序，玩家看到的是
     ``Enigmatic, Exotic, Exquisite, Imaginary, ...``——跟遊戲裡的階級毫無關係，
-    標註時等於在一排無序名詞裡找字。改用資料自己的 ``rarity`` 數字排序：
-    ``Exquisite < Exotic < Transcendent < Enigmatic < Unfathomable <
-    Otherworldly < Imaginary``。
-
-    排序鍵取該 tier 的**最小 rarity**（該階的入門價）。tier 的 rarity 區間彼此
-    重疊（Exquisite 111k~15M vs Exotic 180k~7.5M），沒有一個統計量能還原遊戲的
-    官方階梯；最小值至少是資料裡有的、可重算的定義。缺 rarity 的條目不參與排序
-    （該 tier 全缺就排最後），同鍵再按名字排以求穩定。
+    標註時等於在一排無序名詞裡找字。現在照 `_TIER_LADDER` 的官方階梯排。
 
     special_ores 條目可能缺 tier 或 tier=None/空字串——一律略過。
     回傳 (tiers, variants)，variants 永遠是 ``["原色", "Spectral", "Ionized"]``。
@@ -162,8 +166,14 @@ def rarity_choices_from_game_data(
         if isinstance(rarity, (int, float)) and not isinstance(rarity, bool):
             prev = min(prev, float(rarity))
         mins[tier] = prev
-    tiers = sorted(mins, key=lambda t: (mins[t], t))
-    return tiers, list(_VARIANTS)
+
+    def _key(tier: str):
+        try:
+            return (_TIER_LADDER.index(tier), 0.0, tier)
+        except ValueError:            # 階梯外的新 tier：排最後，內部按入門價
+            return (len(_TIER_LADDER), mins[tier], tier)
+
+    return sorted(mins, key=_key), list(_VARIANTS)
 
 
 def cell_crop_box(frame_w: int, frame_h: int, cx: int, cy: int,

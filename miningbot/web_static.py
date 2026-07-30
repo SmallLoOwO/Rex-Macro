@@ -496,10 +496,11 @@ def render_annotate_html(
     # （spec §5「每張 2 檔」）。server 端會走跟 /snapshot 同一份路徑守門，
     # 所以這裡送完整路徑是安全的——它本來就是 server 自己寫進 snapshot_index 的值。
     img_source_js = _js_str(snapshot_path or "")
-    # 佇列每列附 bot 當下判定（verdict/mark_x/mark_y）——症狀就是靠它推的。
+    # 佇列每列附 bot 當下判定（verdict/mark_x/mark_y）——症狀就是靠它推的；
+    # episode 讓稀有度／變體在同一場內短暫固定（同一場多半是同一顆礦）。
     queue_js = json.dumps(
         [{"path": r.get("path", ""), "label": r.get("label", ""),
-          "verdict": r.get("verdict"),
+          "verdict": r.get("verdict"), "episode": r.get("episode"),
           "x": r.get("mark_x"), "y": r.get("mark_y")} for r in queue],
         ensure_ascii=False)
     # 單張模式（`?snapshot=`）沒有佇列列可抄，從檔名自己推——檔名尾端就是 label。
@@ -558,6 +559,8 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 #botline.unknown {{ background: #2b2b2b; color: #aaa; }}
 #derived {{ font-size: 0.8rem; color: #bbb; margin: 0.5rem 0 0; }}
 #derived b {{ color: #fff; }}
+#sticky-note {{ font-size: 0.75rem; color: #8fbf9c; margin: 0.4rem 0 0;
+               line-height: 1.4; }}
 /* bot 接受／看到的位置：畫面座標固定大小，縮放時不跟著變小才找得到 */
 #botmark {{ position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px;
            border: 2px solid #ffe600; border-radius: 50%; pointer-events: none;
@@ -614,6 +617,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 
     <h2>變體</h2>
     <div id="variants">{variant_btns}</div>
+    <p id="sticky-note"></p>
 
     <button type="button" class="submit" id="submit">送出標註</button>
     <p class="hint">在快照上拖曳出方形（1:1）；Shift + 拖曳 = 平移；
@@ -655,7 +659,11 @@ const SYMPTOM_LABELS = {{
 }};
 // bot 接受在哪但玩家沒框時的預設框大小（與 main._AUTO_FIXTURE_DEFAULT_SIZE 同值）
 const BOT_MARK_SIZE = 50;
-let bot = {init_verdict_js};   // {{ verdict: 'accepted'|'rejected'|null, x, y }}
+let bot = {init_verdict_js};   // {{ verdict: 'accepted'|'after'|'rejected'|null, x, y }}
+// 稀有度／變體短暫固定：同一場（episode）的連續幾張多半是同一顆礦，不必每張重選；
+// 換場自動清空——跨場硬記會無聲把上一顆礦的稀有度套到別的礦上。
+let curEpisode = null;
+const stickyEl = document.getElementById('sticky-note');
 
 // ── 佇列模式（2026-07-28）──────────────────────────────────────────────
 // 一次把待標快照排成一串連續走完。沒有這條動線就永遠停在 2 張。
@@ -664,6 +672,9 @@ let qIndex = 0;
 let imageName = {img_basename_js};
 let sourcePath = {img_source_js};
 const queuePosEl = document.getElementById('queue-pos');
+// 首張是 server 直接渲染的（queue[0]），curEpisode 要跟著起跑，否則在第一張選了
+// 稀有度、按 j 到同一場的第二張就會被當成換場清掉。
+if (queue.length) curEpisode = queue[0].episode || null;
 
 function derivedSymptom() {{
   const column = SYMPTOM_BY_OBS[activeObs] || SYMPTOM_BY_OBS.unsure;
@@ -678,6 +689,12 @@ function renderBotLine() {{
   let text, cls;
   if (bot.verdict === 'accepted') {{
     text = `接受了這個候選${{at}}`; cls = '';
+  }} else if (bot.verdict === 'after') {{
+    // 採集成功／框消失之後才拍的畫面——沒有框是正常的，不是誤判。
+    // 但框如果**還在**就是漏判證據，所以這張圖仍值得標。
+    text = '事後畫面：這時 bot 認定框已經不在（採到了或框消失）'
+         + '——看不到框是正常的；框還在才是問題';
+    cls = 'rejected';
   }} else if (bot.verdict === 'rejected') {{
     text = at ? `看到候選但沒採信${{at}}` : '整張沒有任何候選';
     cls = 'rejected';
@@ -721,7 +738,7 @@ function showQueueItem(i) {{
   img.src = '/snapshot?path=' + encodeURIComponent(item.path);
   selRect = null; sel.style.display = 'none';
   bot = {{ verdict: item.verdict, x: item.x, y: item.y }};
-  resetToolbar();  // 上一張標的 tier/variant/看到什麼 不該帶進這張新圖
+  resetToolbar(item.episode);  // 同一場沿用稀有度／變體，換場清空
   renderBotLine();
   applyBotMark();
   renderQueuePos();
@@ -915,11 +932,14 @@ function bindSingleSelect(containerId, setter, opts) {{
     }});
   }});
 }}
-bindSingleSelect('tiers', (b) => {{ activeTier = b ? (b.dataset.tier || null) : null; }},
-                 {{ deselectable: true }});
+bindSingleSelect('tiers', (b) => {{
+  activeTier = b ? (b.dataset.tier || null) : null;
+  renderSticky();
+}}, {{ deselectable: true }});
 bindSingleSelect('variants', (b) => {{
   const v = b && b.dataset.variant;
   activeVariant = (!v || v === '原色') ? null : v;
+  renderSticky();
 }}, {{ deselectable: true }});
 bindSingleSelect('observations', (b) => {{
   activeObs = b.dataset.obs;
@@ -928,15 +948,35 @@ bindSingleSelect('observations', (b) => {{
 }});
 
 // 佇列翻頁時把 toolbar 選擇歸位（見 showQueueItem）：「看到什麼」帶上次的記憶
-// （玩家選過 3「什麼都沒有」就固定住，不必每張重選），tier/variant 清空
-// （每張畫面的礦不同，記了會無聲套用錯誤稀有度），按鈕高亮一併同步。
-function resetToolbar() {{
-  activeTier = null; activeVariant = null;
+// （玩家選過 3「什麼都沒有」就固定住，不必每張重選）；稀有度／變體**同一場沿用**
+// ——同一個 episode 的連續幾張多半是同一顆礦的不同方位/幀，每張重選純粹是罰站
+// （使用者 2026-07-31 要求）。換場（或單張模式）一律清空：跨場沿用會無聲把上一
+// 顆礦的稀有度套到別的礦上，那是污染語料而不是省事。
+function resetToolbar(episode) {{
+  const ep = episode || null;
+  if (ep === null || ep !== curEpisode) {{
+    activeTier = null; activeVariant = null;
+    document.querySelectorAll('#tiers button, #variants button')
+      .forEach((b) => b.classList.remove('active'));
+  }}
+  curEpisode = ep;
   activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
-  document.querySelectorAll('#tiers button, #variants button')
-    .forEach((b) => b.classList.remove('active'));
   document.querySelectorAll('#observations button')
     .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
+  renderSticky();
+}}
+
+function renderSticky() {{
+  if (!stickyEl) return;
+  if (!activeTier && !activeVariant) {{
+    stickyEl.textContent = curEpisode
+      ? '選了稀有度／變體後，同一場（' + curEpisode + '）的下一張會自動沿用'
+      : '';
+    return;
+  }}
+  stickyEl.textContent = '📌 沿用中：' + (activeTier || '未選稀有度')
+    + (activeVariant ? '／' + activeVariant : '')
+    + '——換場自動清空，點同一顆按鈕可取消';
 }}
 
 // 首載入也要同步：HTML 裡 'unsure' 按鈕硬寫了 class="active"，但若 localStorage
@@ -945,6 +985,7 @@ document.querySelectorAll('#observations button')
   .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
 renderBotLine();
 applyBotMark();
+renderSticky();
 
 // ── 送出：POST /api/annotate（validate_annotation schema） ──────────
 document.getElementById('submit').addEventListener('click', submitAnnotation);

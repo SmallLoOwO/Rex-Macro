@@ -69,21 +69,31 @@ class TestRarityChoicesFromGameData:
         assert tiers == ["Exotic", "Mythic", "Surreal"]
         assert variants == ["原色", "Spectral", "Ionized"]
 
-    def test_orders_tiers_by_rarity_not_alphabetically(self):
-        """稀有度由低到高，不是字母序（2026-07-29）。
+    def test_orders_tiers_by_the_game_ladder_not_alphabetically(self):
+        """稀有度由低到高照**遊戲官方階梯**，不是字母序也不是資料統計量。
 
-        實機 game_data 的字母序是 ``Enigmatic, Exotic, Exquisite, Imaginary,
-        Otherworldly, Transcendent, Unfathomable``——跟遊戲階級毫無關係，
-        玩家標註時等於在無序名詞裡找字。
+        字母序是 ``Enigmatic, Exotic, Exquisite, Imaginary, ...``——跟遊戲階級
+        毫無關係。改用 rarity 數字也還原不了：兩階的區間彼此重疊，取最小值說
+        Exquisite 低（111,112 < 180,000）、取最大值說 Exotic 低
+        （7,500,000 < 15,001,500）。**Exotic 才是最低階**（使用者 2026-07-31 指正）。
         """
         special_ores = [
             {"ore": "A", "tier": "Unfathomable", "rarity": 2_332_960},
             {"ore": "B", "tier": "Exquisite", "rarity": 111_112},
             {"ore": "C", "tier": "Exotic", "rarity": 180_000},
-            {"ore": "D", "tier": "Exquisite", "rarity": 15_001_500},  # 同階高價不影響
+            {"ore": "D", "tier": "Exquisite", "rarity": 15_001_500},
         ]
         tiers, _ = rarity_choices_from_game_data(special_ores)
-        assert tiers == ["Exquisite", "Exotic", "Unfathomable"]
+        assert tiers == ["Exotic", "Exquisite", "Unfathomable"]
+
+    def test_unknown_tier_goes_last_ordered_by_entry_price(self):
+        """階梯外的新 tier（遊戲更新）排最後，彼此按最小 rarity——不擠進中間。"""
+        special_ores = [
+            {"ore": "A", "tier": "Enigmatic", "rarity": 810_000},
+            {"ore": "B", "tier": "NewTier", "rarity": 999},
+        ]
+        tiers, _ = rarity_choices_from_game_data(special_ores)
+        assert tiers == ["Enigmatic", "NewTier"]
 
     def test_tier_without_rarity_sorts_last(self):
         """缺 rarity 的 tier 排最後，同鍵按名字穩定排序（不是隨機掉進中間）。"""

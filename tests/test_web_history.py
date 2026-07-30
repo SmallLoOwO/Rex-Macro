@@ -410,3 +410,43 @@ class TestLabelVerdict:
         got = label_verdict(
             "20260731_001105_587684100_000172_133_sweep_empty_dir4")
         assert got == {"verdict": "rejected", "x": None, "y": None}
+
+    def test_after_the_fact_frames_are_not_accepted(self):
+        """採集成功／框消失後才拍的畫面：bot 當下判定是「框已經不在」。
+
+        使用者 2026-07-31 看到 `139_harvest_success` 提出：那張圖是採完之後拍的
+        （`_harvest_success(after_frame)`），畫面裡本來就不該有框；先前歸
+        accepted 會把玩家標的「什麼都沒有」推成「誤判」，於是任何標註都套不上。
+        """
+        from miningbot.web_history import label_verdict
+        for label in ("139_harvest_success", "139_harvest_success_special",
+                      "131_d3_gone_unconfirmed", "113_d3_after"):
+            assert label_verdict(label)["verdict"] == "after", label
+
+    def test_d3_miss_stays_accepted_because_the_tracker_is_still_there(self):
+        """`d3_miss` 是 gone=False 那一支（框還在、只是沒打中）——bot 確實接受了。"""
+        from miningbot.web_history import label_verdict
+        assert label_verdict("119_d3_miss_1")["verdict"] == "accepted"
+
+
+class TestQueueEpisodeField:
+    def test_rows_carry_display_episode_label(self):
+        """同一場沿用稀有度要靠它；順便當顯示名（`採#139` / `回#27`）。"""
+        from miningbot.web_history import build_queue
+        rows = build_queue(
+            [{"written_at": 2.0, "label": "139_harvest_success",
+              "path": "a.png", "harvest_id": "139"},
+             {"written_at": 1.0, "label": "reentry_ep27_dir3",
+              "path": "b.png", "harvest_id": None}],
+            tier=(2, 3), exists=lambda p: True)
+        got = {r["label"]: r["episode"] for r in rows}
+        assert got["139_harvest_success"] == "採#139"
+        assert got["reentry_ep27_dir3"] == "回#27"
+
+    def test_row_without_episode_is_none(self):
+        from miningbot.web_history import build_queue
+        rows = build_queue(
+            [{"written_at": 1.0, "label": "chat_open_fail", "path": "c.png",
+              "harvest_id": None}],
+            tier=1, exists=lambda p: True)
+        assert rows[0]["episode"] is None

@@ -80,9 +80,20 @@ def annotation_tier(label: str) -> int:
 #
 # `seen_once` 算**拒絕**：偵測器看到一次但雙幀穩定沒過，掃描照樣繼續、沒有開火
 # ——就 bot 的行為而言它拒絕了。它帶座標，所以頁面仍畫得出「看到但沒採信」的圈。
+#
+# `after`＝**事後畫面**（2026-07-31，使用者看到 `139_harvest_success` 提出）：
+# `harvest_success` 拍的是 `_harvest_success(after_frame)`——礦已經採走；
+# `d3_gone_unconfirmed` 拍的是 `gone=True` 那一輪的 after frame——bot 自己認定
+# 框已經不在。這兩種圖裡沒有框是**預期**，先前歸 accepted 會害玩家標「什麼都
+# 沒有」被推成「誤判」，於是任何標註都套不上。bot 當下的判定其實是「這裡已經
+# 沒有框了」＝與 rejected 同一欄（`symptom_from_observation` 只認 accepted），
+# 只有顯示文字不同。仍有標註價值：玩家若看到框**還在**就是漏判證據。
+#
+# `d3_miss_N` 不算事後畫面——那是 `gone=False`（框還在、只是 D3 沒打中），
+# bot 確實接受了這個候選。
+_VERDICT_AFTER_RE = re.compile(r"harvest_success|gone_unconfirmed|d3_after")
 _VERDICT_ACCEPTED_RE = re.compile(
-    r"_accepted|sweep_confirmed|d3_fire|aim_fire|d3_miss|gone_unconfirmed"
-    r"|harvest_success|_fired")
+    r"_accepted|sweep_confirmed|d3_fire|aim_fire|d3_miss|_fired")
 _VERDICT_REJECTED_RE = re.compile(r"sweep_empty|_rejected|seen_once")
 # 結尾的一對座標；`\d{1,4}` 擋掉檔名裡的奈秒序號（`_000172_133_...` 是 6 位）。
 _VERDICT_MARK_RE = re.compile(r"_(\d{1,4})[_x](\d{1,4})$")
@@ -91,15 +102,19 @@ _VERDICT_MARK_RE = re.compile(r"_(\d{1,4})[_x](\d{1,4})$")
 def label_verdict(label: str) -> dict:
     """快照 label（或檔名主幹）→ bot 當下判定與座標（純函式）。
 
-    回 ``{"verdict": "accepted"|"rejected"|None, "x": int|None, "y": int|None}``。
-    ``None`` ＝這個 label 沒記判定（俯仰／boost／聊天／回礦那些不是追蹤框那條路
-    的快照），呼叫端要當「不知道」處理，**不可以當成拒絕以外的東西**。
+    回 ``{"verdict": "accepted"|"after"|"rejected"|None, "x": int|None,
+    "y": int|None}``。``None`` ＝這個 label 沒記判定（俯仰／boost／聊天／回礦那些
+    不是追蹤框那條路的快照），呼叫端要當「不知道」處理，**不可以當成拒絕以外的
+    東西**。``"after"`` ＝事後畫面（見上方註解），推導上與 rejected 同欄。
 
-    accepted 先比：`aim_overlay` 的 statuses 可能是 ``rejected,accepted`` 混合，
-    有任何一個被接受就算接受。
+    `after` 先比（`harvest_success` 也含 `success` 字樣）、再比 accepted：
+    `aim_overlay` 的 statuses 可能是 ``rejected,accepted`` 混合，有任何一個被接受
+    就算接受。
     """
     text = str(label or "")
-    if _VERDICT_ACCEPTED_RE.search(text):
+    if _VERDICT_AFTER_RE.search(text):
+        verdict = "after"
+    elif _VERDICT_ACCEPTED_RE.search(text):
         verdict = "accepted"
     elif _VERDICT_REJECTED_RE.search(text):
         verdict = "rejected"
@@ -168,7 +183,8 @@ def build_queue(records, annotated=(), tier=0, exists=None) -> list:
     ——只排 tier0 的話那兩個症狀玩家一輩子遇不到（使用者 2026-07-31 回報）。
 
     每列附 `verdict`/`mark_x`/`mark_y`（`label_verdict`）：bot 當下接受了什麼、
-    接受在哪，標註頁據此決定症狀，不必玩家猜。
+    接受在哪，標註頁據此決定症狀，不必玩家猜。另附 `episode`：同一場的連續幾張
+    多半是同一顆礦，標註頁靠它把稀有度／變體「短暫固定」到換場為止。
     """
     done = set(annotated or ())
     wanted = {tier} if isinstance(tier, int) else set(tier)
@@ -190,11 +206,15 @@ def build_queue(records, annotated=(), tier=0, exists=None) -> list:
             continue
         done.add(stem)                     # 同一張圖在索引裡出現兩次也只排一次
         verdict = label_verdict(label)
+        # 顯示用的場次名（`採#139` / `回#27`）；同時就是「還在不在同一場」的識別。
+        ep = _episode_id_and_type(record)
+        episode = episode_label(ep[1], ep[0]) if ep else None
         rows.append({"path": path, "label": label, "stem": stem,
                      "written_at": record.get("written_at"),
                      "tier": row_tier,
                      "verdict": verdict["verdict"],
-                     "mark_x": verdict["x"], "mark_y": verdict["y"]})
+                     "mark_x": verdict["x"], "mark_y": verdict["y"],
+                     "episode": episode})
     rows.sort(key=lambda r: (r["written_at"] is None, -(r["written_at"] or 0.0)))
     return rows
 
