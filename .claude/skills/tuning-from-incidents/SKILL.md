@@ -1,6 +1,6 @@
 ---
 name: tuning-from-incidents
-description: Use when a miningbot live-run misbehavior needs detection/decision tuning — adjusting a detection threshold, OCR preprocessing, exclusion list, timing, or verify logic. Symptoms like 漏採／假陰性／誤交人工／誤觸發／OCR 讀歪／掃描全空／視角偏移 usually route here, but first confirm the root cause is detection — NOT a player-facing convention off-by-one, stale help text, or two remote flows (reentry vs aim) out of sync, which this skill does not cover (H056 fixed one such case that looked exactly like a detection miss).
+description: Use when a miningbot live-run misbehavior needs detection/decision tuning, or when unversioned player annotations under tests/fixtures/ are waiting to be turned into a tuning pass — adjusting a detection threshold, OCR preprocessing, exclusion list, timing, or verify logic. Symptoms like 漏採／假陰性／誤交人工／誤觸發／OCR 讀歪／掃描全空／視角偏移 usually route here, but first confirm the root cause is detection — NOT a player-facing convention off-by-one, stale help text, or two remote flows (reentry vs aim) out of sync, which this skill does not cover (H056 fixed one such case that looked exactly like a detection miss).
 ---
 
 # 實機事故微調迴圈（Tuning from Incidents）
@@ -23,6 +23,29 @@ description: Use when a miningbot live-run misbehavior needs detection/decision 
   「玩家指的方位被 off-by-one 送到隔壁空格」——**H056 就是這型**（瞄準介面當時還是
   0-7、回礦介面已是 1-8；現已由 `remote_aim.dir_label()` 統一成對外 1-8、內部 0-based）。
   動手前先驗慣例一致性：兩個 flow 的 parse／display／help 是不是同一套。
+
+## 標註驅動（玩家自己標素材時的入口；2026-07-31 起）
+
+玩家在網頁 `/annotate` 畫框標記，素材落 `tests/fixtures/<類別>/`（兩檔一組
+`<stem>.png` + `<stem>.json`）。**未進版控的 `.json` ＝ 還沒被微調處理過**，
+`.claude/hooks/annotation-tuning-nag.ps1` 每次提問都會檢查並提醒（提醒是靠版控狀態，
+不是 marker 檔——素材連同修復一起 commit 後自動消失）。
+
+這條入口取代下方步驟 1-3（不必先問 harvest_id，標註本身就是證據），步驟 4 之後照走：
+
+1. **crop 定位回全幀**：`.png` 是 320×270 粗格裁圖，**不要拿它量門檻**——
+   `shape_roi_px=320` 在 270 高的裁圖上會被裁掉一角，`edge` 系統性偏低（H068 差 0.05~0.1，
+   足以把結論翻面）。全幀在 MSIX LocalCache `snapshots/review/`，同名檔；用
+   `cv2.matchTemplate(全幀, crop)` 取得標註物的絕對座標。
+2. **重放現行偵測器**：對每張全幀跑 production 參數的 `find_tracker`（或該類別對應的
+   偵測器），把 `log=` 收下來——每個候選的 `colored`／`edge`／`ring_ok` 就是兩側夾的原料。
+   `symptom="false_negative"` 是收側，`symptom=None`+`observation="ore"` 是對照組。
+3. **誤收側一定要肉眼看**：把所有被拒候選裁 160×160 貼成一張圖逐格看。H068 差點把
+   「(1154,937) 是 hotbar」寫進結論，實際是粉紅岩層——**看錯誤收側＝門檻訂錯方向**。
+   誤收側不只來自這批新素材，既有實機幀（`assets/*_scene.png`、`tests/fixtures/tracker/`）
+   也要一起掃，否則會踩到別人的迴歸測試才發現。
+4. 之後接下方步驟 4（fixture 固化）起的既有流程。**夾不出兩側就別動門檻**：把量測寫進
+   `docs/open-detection-issues.md`（Dxx），素材仍要 commit——否則下次又從頭量一遍。
 
 ## 迴圈（順序不可跳）
 
