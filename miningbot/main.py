@@ -3011,8 +3011,7 @@ class Bot:
         """
         import re, cv2
         pre = f"{tag}_" if tag else ""
-        _cr = cfg.chat_region
-        excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        excl = self._tracker_exclusions()
         logs = []
         self._find_tracker(frame, excl, reference_bgr=None, log=logs.append)
         # 找最高 edge score 的 shape 候選（OK/soft/hard_rej 都算——rejected 的也要看）
@@ -4448,6 +4447,15 @@ class Bot:
             self._boost_fov_pair_save(frame, screen)
         return True
 
+    def _tracker_exclusions(self):
+        """追蹤框偵測的螢幕排除區：左上聊天 + 左側 NORMAL 礦石面板（H068）。
+
+        兩者都是不透明 UI，蓋住的世界畫面看不到也打不到；面板文字會出
+        colored=0.86 / edge=0.33 的候選，正好落在 H068 軟收路徑內。
+        """
+        return [(r.x, r.y, r.x + r.w, r.y + r.h)
+                for r in (cfg.chat_region, cfg.ore_panel_region)]
+
     def _find_tracker(self, frame, exclude, reference_bgr=None, log=None, with_score=False,
                       collect_rejects=None):
         """採集偵測統一入口：HSV 快速定位 + 實機裁圖外框形狀確認（混合方案）。
@@ -4462,6 +4470,8 @@ class Bot:
             shape_templates=self._shape_templates,
             shape_threshold=cfg.tracker_shape_threshold,
             shape_hard_floor=cfg.tracker_shape_hard_floor,
+            shape_soft_edge=cfg.tracker_shape_soft_edge,
+            shape_soft_colored=cfg.tracker_shape_soft_colored,
             shape_scales=cfg.tracker_shape_scales,
             shape_roi_px=cfg.tracker_shape_roi_px, with_score=with_score,
             collect_rejects=collect_rejects,
@@ -5478,8 +5488,7 @@ class Bot:
                 return False, "俯仰對齊被吃，可重試"
             ctx.pose_pitch_layer = pitch
         # 2. 重新 D2 掃描（框早已到期；新 episode 語意，重拍 ref 正確——非 H026 情境）
-        _cr = cfg.chat_region
-        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]   # 同 _tick_harvest 聊天排除組法
+        _excl = self._tracker_exclusions()          # 同 _tick_harvest 排除組法
         self._reveal_chat()                     # H064：基準前把淡出的聊天叫回來
         chat_base_crop = capture.crop(capture.grab(), cfg.chat_region)   # 開火前基準（截圖先、OCR 後）
         harvester.prepare_scan()
@@ -5849,8 +5858,7 @@ class Bot:
         if self._harvest_boost_guard(frame):
             return
 
-        _cr = cfg.chat_region
-        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        _excl = self._tracker_exclusions()
         _ref = getattr(self, '_pre_scan_ref', None)
 
         # ---- 階段一：全方位掃描（找追蹤框；_target_marker 尚未設定時執行）----
@@ -6207,8 +6215,7 @@ class Bot:
         # ★ 續採檢查（incident 072）：同一 chill episode 可能同畫面有第二顆礦的追蹤框。
         #   剛採掉的框 2~10s 才淡出 → 距離閘擋殘影（decide_post_success）。雙幀穩定同 sweep 慣例。
         time.sleep(1.0)   # 等 pickup 動畫（原本就有，挪到 recheck 前——也讓已採框多淡 1s）
-        _cr = cfg.chat_region
-        _excl = [(_cr.x, _cr.y, _cr.x + _cr.w, _cr.y + _cr.h)]
+        _excl = self._tracker_exclusions()
         _ref = getattr(self, '_pre_scan_ref', None)
         recheck = None
         r1 = self._find_tracker(capture.grab(), _excl, reference_bgr=_ref)

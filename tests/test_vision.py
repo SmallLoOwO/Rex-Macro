@@ -1175,3 +1175,93 @@ def test_h057_rescue_no_false_positive_on_equipment_scene():
     img = cv2.imread(img_path)
     loc = find_tracker(img, **_h057_kwargs(tmpls))
     assert loc is None, f"裝備碎片（edge≤0.34）不得因救援翻盤為追蹤框，實得 {loc}"
+
+
+# ---- H068（2026-07-31，harvest 129/133/141 玩家標註）：框被角色/裝備擋角 ----
+# edge 掉到 0.33~0.41 卡在 shape_threshold 0.42 下方 → 八方位全空誤交人工。
+# 玩家在網頁標註工具把這些幀標成 false_negative，離線重放量出兩側：
+#   真框（被拒）edge/colored = 0.33/0.86、0.36/0.86 ×3、0.40/0.86、0.41/0.86、0.36/1.00
+#   誤收側 colored≥0.80 群 edge 最高 0.33（H026 粉紅岩層 colored=1.00），其餘 ≤0.31
+# → 二維軟收 edge≥0.35 且 colored≥0.80（岩層之上留 0.02）。0.33 那顆真框救不回，記 D09。
+# 礦石面板文字 0.86/0.33 也在附近，靠 ore_panel_region 結構性排除而不是靠門檻。
+
+
+def _h068_kwargs(tmpls):
+    """production 同款參數（含 H068 軟收與 ore_panel_region 排除）。"""
+    from miningbot.config import DEFAULT as cfg
+    return dict(
+        exclude=[(r.x, r.y, r.x + r.w, r.y + r.h)
+                 for r in (cfg.chat_region, cfg.ore_panel_region)],
+        margin_frac=cfg.tracker_margin_frac,
+        shape_templates=tmpls,
+        shape_threshold=cfg.tracker_shape_threshold,
+        shape_hard_floor=cfg.tracker_shape_hard_floor,
+        shape_soft_edge=cfg.tracker_shape_soft_edge,
+        shape_soft_colored=cfg.tracker_shape_soft_colored,
+        shape_scales=cfg.tracker_shape_scales,
+        shape_roi_px=cfg.tracker_shape_roi_px,
+        rescue_v_min=cfg.tracker_rescue_v_min,
+        rescue_area_min=cfg.tracker_rescue_area_min,
+        rescue_max=cfg.tracker_rescue_max_candidates,
+        rescue_dedup_px=cfg.tracker_rescue_dedup_px)
+
+
+def test_h068_avatar_occluded_tracker_is_found():
+    """真實資料：h068_avatar_occluded_tracker.png（harvest 129 sweep dir4，20:07:45）。
+
+    真框 (937,458) edge=0.36 colored=0.86（框壓在角色頭頂、外框被擋掉一角）；
+    同幀最強誤收候選 (1054,655) edge=0.30 colored=0.87 必須留在門檻外。
+    關掉軟收（shape_soft_edge=1.0）這張就回 None——事故當下正是如此。"""
+    img_path = "tests/fixtures/tracker/h068_avatar_occluded_tracker.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h068_kwargs(tmpls))
+    assert loc is not None, "129 dir4 真框 (937,458) 應被偵測到（H068 事故根因）"
+    assert abs(loc[0] - 937) <= 20 and abs(loc[1] - 458) <= 20, f"應命中真框 (937,458)，實得 {loc}"
+
+
+def test_h068_panel_text_never_beats_tracker():
+    """真實資料：h068_panel_vs_tracker.png（harvest 141 sweep up dir6，02:31:39）。
+
+    同幀三個 0.33~0.36 的候選：真框 (1396,815) colored=1.00、裝備 (1375,719)
+    colored=0.56、NORMAL 面板文字 (70,869) colored=0.86。面板那顆兩軸都過軟收門檻，
+    只能靠 ore_panel_region 排除——所以這張同時守「軟收收得回真框」與「面板不得翻盤」。"""
+    img_path = "tests/fixtures/tracker/h068_panel_vs_tracker.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h068_kwargs(tmpls))
+    assert loc is not None, "141 up dir6 真框 (1396,815) 應被偵測到"
+    assert abs(loc[0] - 1396) <= 20 and abs(loc[1] - 815) <= 20, f"應命中真框，實得 {loc}"
+    assert loc[0] > 240, f"不得命中左側 NORMAL 面板文字，實得 {loc}"
+
+
+def test_h068_soft_path_does_not_admit_equipment_scene():
+    """軟收負樣本（實機）：069_dir5 紅緞帶裝備場景。裝備碎片最高 edge=0.29
+
+    （colored 0.88），低於軟收 edge 門檻 0.35 → 開了軟收仍必須是 None。
+    誤收側的另一半在 test_find_tracker_bottom_edge_scene_h026_...：H026 場景的粉紅
+    岩層 colored=1.00 edge=0.33，是目前量到最高的誤收值，0.35 就是壓著它訂的。"""
+    img_path = "assets/red_ribbon_equipment_scene.png"
+    tmpls = _load_real_markers_h057()
+    if not (os.path.exists(img_path) and tmpls):
+        import pytest; pytest.skip("缺實機圖/模板")
+    img = cv2.imread(img_path)
+    loc = find_tracker(img, **_h068_kwargs(tmpls))
+    assert loc is None, f"裝備碎片（edge≤0.29）不得被軟收路徑翻盤，實得 {loc}"
+
+
+def test_h068_ore_panel_region_covers_panel_text_but_not_world():
+    """ore_panel_region 兩側夾：必須蓋住量到的面板候選 (70,869)、(80,509)、(121,619)，
+
+    且不得吃到同幀真框 (1396,815)、(979,550)。"""
+    from miningbot.config import DEFAULT as cfg
+    r = cfg.ore_panel_region
+    inside = lambda p: r.x <= p[0] <= r.x + r.w and r.y <= p[1] <= r.y + r.h
+    for p in [(70, 869), (80, 509), (121, 619)]:
+        assert inside(p), f"面板文字候選 {p} 應被排除區蓋住"
+    for p in [(1396, 815), (937, 458), (1433, 491)]:
+        assert not inside(p), f"真框 {p} 不得落進排除區"

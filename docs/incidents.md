@@ -652,3 +652,20 @@ fixture 位置慣例：
 - **對策**：(1) `WebIPCThread.start(bind_wait_s=20.0)`，值走新的 `Config.web_server_bind_wait_s`（預設 20.0）；真綁不上時 `should_exit` 讓迴圈立刻跳出，不會白等 20s。(2) 逾時警告按 `should_exit` 分兩種講法——True＝「uvicorn 已自行放棄（位址不存在或 port 被佔）」，False＝「還在 init、**不是位址不通**，調大 `web_server_bind_wait_s`」。(3) main.py 退回警告刪掉「Tailscale 沒起來？」的臆測，改叫人先看上一行分型。
 - **回歸**：`tests/test_web_server.py::test_webipcthread_bind_wait_is_configurable_and_wired_from_config`（簽章有 `bind_wait_s`、Config 預設 >5.0、**且 main.py 真的把 cfg 值傳進去**——只改預設值沒接線的話 production 照樣吃寫死的 5s）。
 - **下輪實機驗證預期**：啟動 log 出現 `WebIPC server 啟動：http://100.110.130.17:8765`，手機連得進去。反指標：若仍逾時且新訊息說「還在 init」，就是 20s 還不夠（再往上調）；若說「uvicorn 已自行放棄」，才是真的去查 Tailscale／port 佔用。
+
+## H068（2026-07-31，harvest 129/133/141；由玩家在網頁標註工具標出的 `false_negative` 反查）：追蹤框被角色/裝備擋掉一角，`edge` 掉到 0.33~0.41 卡在 `tracker_shape_threshold=0.42` 下方 → 八方位全空誤交人工
+
+- **症狀**：多輪 sweep 判 `sweep_empty`／`d3_gone_unconfirmed` 交人工，但玩家在網頁標註頁對同一批快照畫框標成「這裡有礦」。快照裡的框肉眼清晰可見（黃色尖刺太陽外框＋實心綠心）。
+- **證據來源**：`tests/fixtures/aim/2026073*_*.json`＋`.png`（玩家標註的 320×270 粗格裁圖），對應全幀在 MSIX LocalCache `snapshots/review/`。把 crop 用 `matchTemplate` 定位回全幀就得到每顆框的絕對座標。
+- **一句話根因**：這些框都被角色本體或裝備擋掉外框一角，形狀相關度 `edge` 因此掉到 0.33~0.41，低於 `shape_threshold` 0.42；而 `ring_ok=False`（實心彩心框本來就不環形）讓它們連 survivor 都進不了 → 直接 `hard_rej`，整輪全空。
+- **量測（全幀重放 `find_tracker`，production 參數）**：
+  - 真框被拒：`(979,550) 0.33/0.86`、`(937,458) 0.36/0.86`、`(1015,571) 0.36/0.86`、`(1396,815) 0.36/1.00`、`(1460,555) 0.40/0.86`、`(1433,491) 0.41/0.86`（edge/colored）
+  - 真框被收（同批對照組）：0.43、0.43、0.45、0.46、0.48、0.49
+  - 誤收側（**逐張肉眼確認過是什麼**）：粉紅岩層 `0.33/1.00`、NORMAL 面板文字 `0.33/0.86`、角色 `0.33/0.73`、裝備 `0.36/0.56`、其餘同色地形 0.31/0.30/0.29/0.28/0.25
+  - → **`edge` 單軸已經沒有 gap**（真框 0.33 vs 岩層 0.33）。只調 `tracker_shape_threshold` 必然誤收地形。
+- **對策**：
+  1. `find_tracker` 加第二條 confirmed 路徑（二維軟收）：`edge ≥ tracker_shape_soft_edge(0.35)` **且** `colored ≥ tracker_shape_soft_colored(0.80)`。兩側夾＝岩層 0.33 之上留 0.02、角色 colored 0.73 之上留 0.07。軟收路徑**不重錨**（這種分數的形狀命中不足以信任座標）。
+  2. 新增 `Config.ore_panel_region`（x 0-240、y 380-1080），與 `chat_region` 一起由新的 `Bot._tracker_exclusions()` 供給四個呼叫點。左側 NORMAL 面板是不透明 UI，蓋住的世界看不到也打不到，文字卻會出 `0.33/0.86` 的候選——結構性排除，不靠門檻。量測法：同場不同視角兩幀逐像素差分取靜態區（x 11~281、y 386~1068）。
+- **回歸**：`tests/fixtures/tracker/h068_avatar_occluded_tracker.png`（129 dir4，真框 0.36/0.86 vs 同幀 0.30/0.87）、`h068_panel_vs_tracker.png`（141 up dir6，真框 0.36/1.00 vs 裝備 0.36/0.56 vs 面板 0.33/0.86）；誤收側由既有 `test_find_tracker_bottom_edge_scene_h026_recovered_by_config_margin`（粉紅岩層 0.33）與 `test_h068_soft_path_does_not_admit_equipment_scene`（裝備 0.29）兩張實機幀夾住。紅綠自證：`shape_soft_edge=1.0`（等同修復前）時兩張新幀都回 `None`。
+- **整體命中率**：玩家標成真框的 12 張快照，修復前 6 命中，修復後 **11 命中**；唯一沒救回的是 `(979,550)` 的 0.33——與粉紅岩層同分，見 `docs/open-detection-issues.md` D09。
+- **下輪實機驗證預期**：`harvest.log` 的 `shape確認` 行開始出現 `-> OK(彩心)`，且該輪不再落 `sweep_empty`。反指標：出現 `OK(彩心)` 卻在開火後 verify 全空、快照裡是地形／UI → 誤收側被 0.02 的 margin 咬到，回頭看該候選的 colored 與座標再決定加排除區還是抬 `soft_edge`。

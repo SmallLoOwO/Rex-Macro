@@ -88,6 +88,12 @@ class Config:
     # 全螢幕版面下（2026-07-28）NORMAL 面板頂緣落在 y≈388、聊天裁圖下緣 361 → 兩者**不再重疊**，
     # 但 _strip_ui_residue 保留：換回視窗化或面板加長時重疊會回來，剝除本身對無殘留的裁圖無害。
     chat_region: Region = field(default_factory=lambda: Region(0, 81, 460, 280))   # 左上事件/掉落訊息（全螢幕 y81；視窗化時為 y110）
+    # 左側 NORMAL 礦石面板：不透明 UI，蓋住的世界畫面本來就看不到也點不到 → 追蹤框偵測一律排除。
+    # H068 量測（141 dir6 vs dir7 同場不同視角逐像素差分，靜態像素比例 >0.7）：x 11~281、
+    # y 386~1068。取 x≤240 只含 NORMAL 面板本體，右側 Shamrock 製作面板不納入（非恆存，
+    # 多吃 40px 世界畫面不划算）；y 380 起、吃到底。不排除的話面板文字會出 colored=0.86 /
+    # edge=0.33 的候選，正好落在 H068 軟收路徑內 → 對 UI 開一發 D3。
+    ore_panel_region: Region = field(default_factory=lambda: Region(0, 380, 240, 700))
     # 採集放棄 NEEDS_HUMAN 附的左側「前/後對比」裁圖：拆成「聊天（寬短）」與「背包（窄高）」兩區，
     # 各自更貼近 Discord 縮圖比例、砍掉右側沒用的粉紅場景（見 2026-07-02 spec 需求 A）。
     # before＝本輪 _pre_scan_ref、after＝放棄當下；左側 UI 是螢幕覆蓋層、不隨鏡頭角度變 → 前後同框
@@ -217,6 +223,12 @@ class Config:
                                                  # 超 ROI 被跳過 → 8 方位全空誤交人工。
                                                  # 模板 213px×尺度 1.4≈298 也要裝得下 → 320。
     tracker_shape_hard_floor: float = 0.30       # edge 低於此值直接拒（soft filter 不救）；實測裝備誤判≈0.16/0.25/0.26、真追蹤框≥0.44（2026-06-28 由 0.25→0.30 擋下夜間兩次 borderline 裝備誤射）
+    # H068（2026-07-31，harvest 129/133/141 玩家標註）：框被角色/裝備擋住一角時 edge 掉到
+    # 0.33~0.41，卡在 0.42 下方 → 八方位全空誤交人工。edge 單軸已無 gap（裝備最高 0.36），
+    # 但同一批幀裡「edge 偏低」的真框 colored 一律 ≥0.86，裝備只有 0.56/0.73 → 補一條
+    # 二維軟收路徑：edge ≥ soft_edge **且** colored ≥ soft_colored 也算 confirmed。
+    tracker_shape_soft_edge: float = 0.35        # 軟收 edge 下限；兩側夾：真框 0.36×3/0.40/0.41 vs colored≥0.80 的誤收候選最高 0.33（H026 粉紅岩層 colored=1.00，另 0.31/0.30/0.29/0.28）→ 留 0.02 margin。**0.33 那顆真框（133 dir4 (979,550)）與粉紅岩層同分，軟收救不回，記在 D09**
+    tracker_shape_soft_colored: float = 0.80     # 軟收 colored 下限；兩側夾：低 edge 真框 0.86×4/1.00 vs edge≥0.35 的非框最高 0.56（裝備）／0.73（角色，edge 0.33）→ 留 0.07 margin。礦石面板文字同為 0.86/0.33，靠 ore_panel_region 排除而非門檻
     tracker_shape_early_exit: float = 0.60       # sweep 早停：某方位雙幀穩定且 edge≥此值（遠高於裝備上限 0.26）→ 直接確定、免掃完剩餘方位/免轉回 verify（實測真框 0.54-1.00）
     # H057（2026-07-20 harvest 097）超大輪廓救援：綠框貼受光綠牆被 RETR_EXTERNAL 接成
     # 一條爆 area/bbox 閘的大輪廓（bbox 493x85、area 14620），真框在形狀確認前就出局

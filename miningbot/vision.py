@@ -367,6 +367,8 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                  reference_bgr=None, shape_templates=None,
                  shape_threshold: float = 0.45,
                  shape_hard_floor: float = 0.25,
+                 shape_soft_edge: float = 0.35,
+                 shape_soft_colored: float = 0.80,
                  shape_scales=(0.6, 0.8, 1.0, 1.2, 1.5, 2.0),
                  shape_roi_px: int = 160, with_score: bool = False,
                  collect_rejects=None, rescue_v_min=None,
@@ -386,6 +388,12 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
     再在每個候選周圍的小 ROI 跑外框形狀比對確認，拒掉「有顏色但不是追蹤框形狀」的
     假陽性（如角色裝備）。空/None → 純 HSV（向後相容）。形狀比對只在小 ROI 上跑，
     比全幀模板比對快上百倍。
+
+    shape_soft_edge / shape_soft_colored：H068 二維軟收——框被角色或裝備擋掉一角時 edge
+    掉到 0.33~0.41 卡在 shape_threshold 下方，而 edge 單軸已無 gap（裝備 0.36、粉紅岩層
+    0.33）。同批幀裡這些真框的 colored ≥0.86、擋住它們的角色/裝備只有 0.73/0.56 →
+    edge≥soft_edge **且** colored≥soft_colored 才算 confirmed（不重錨：這種分數的形狀
+    命中不足以信任座標）。colored=1.00 的地形/UI 靠 soft_edge 與排除區擋，不靠 colored。
 
     shape_hard_floor：edge 低於此值的候選直接拒（連 soft filter 也不救）——擋「HSV
     很強但形狀完全錯」的裝備誤判（實測 edge≈0.16）。只有 survivor（floor≤edge<
@@ -482,7 +490,9 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                                         "edge": None, "reason": reason})
 
     # ---- 形狀確認（混合方案）：HSV 候選 → 小 ROI 外框比對，拒假陽性 ----
-    # 三區判定：edge ≥ threshold → confirmed（不看 ring_ok，救回實心/彩心真框）；
+    # 四區判定：edge ≥ threshold → confirmed（不看 ring_ok，救回實心/彩心真框）；
+    # soft_edge ≤ edge < threshold **且 colored ≥ soft_colored** → confirmed（H068：框被
+    # 角色/裝備擋角，edge 單軸已無 gap，靠 colored 第二軸分開）；
     # hard_floor ≤ edge < threshold **且 ring_ok** → survivor（退回 HSV，容忍未見階級、
     # 但要求環形以免非環形假陽性翻盤）；其餘 → 拒。
     if shape_templates:
@@ -510,7 +520,9 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                     nx, ny = rx0 + mloc[0], ry0 + mloc[1]
                     if (nx, ny) != (cx, cy) and _pos_ok(nx, ny):
                         acx, acy = nx, ny
+                soft_colored_ok = (score >= shape_soft_edge and cf >= shape_soft_colored)
                 verdict = ("OK" if score >= shape_threshold
+                           else "OK(彩心)" if soft_colored_ok
                            else "soft" if (score >= shape_hard_floor and ring_ok)
                            else "hard_rej")
                 if log is not None:
@@ -521,7 +533,7 @@ def find_tracker(frame_bgr, margin_frac: float = 0.10, exclude=(), log=None,
                 if collect is not None and verdict in ("hard_rej", "soft"):
                     collect.append({"pos": (cx, cy), "colored": cf,
                                     "edge": score, "reason": verdict})
-                if score >= shape_threshold:
+                if score >= shape_threshold or soft_colored_ok:
                     _confirmed.append((score, acx, acy))    # 形狀夠像＝真框，中心實心與否都收
                 elif score >= shape_hard_floor and ring_ok:
                     _survivors.append((score, cx, cy))      # 存 edge 分數（供 with_score / 早停）
