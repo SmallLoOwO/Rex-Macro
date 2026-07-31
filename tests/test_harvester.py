@@ -687,9 +687,27 @@ def test_panel_is_zeroed_false_for_wrong_page():
     assert panel_is_zeroed("SPECTRAL", [], "NORMAL") is False
 
 
-def test_panel_is_zeroed_false_when_has_rows():
+def test_panel_is_zeroed_false_when_whitelist_ore_present():
     from miningbot.harvester import panel_is_zeroed
     assert panel_is_zeroed("NORMAL", ["faedrine"], "NORMAL") is False
+
+
+def test_panel_is_zeroed_true_when_only_low_tier_rows():
+    """低階礦回填不算破壞零點（2026-07-31 使用者）。
+
+    清空之後那一下「點畫面中央還焦點」是真的挖礦點擊，實測馬上挖到一顆 shamrock
+    回填面板（17:37:04 讀到 1 列 shamrock）。路 B 只問「有沒有白名單礦」，所以要驗
+    的不變式是「此刻面板上沒有白名單礦」，不是「面板全空」——後者實機上永遠達不到。
+    """
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("NORMAL", ["shamrock"], "NORMAL") is True
+    assert panel_is_zeroed("NORMAL", ["shamrock", "loinnire"], "NORMAL") is True
+
+
+def test_panel_is_zeroed_false_when_low_tier_and_whitelist_mixed():
+    """混著也不行：白名單礦在場就是零點不成立。"""
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("NORMAL", ["shamrock", "faedrine"], "NORMAL") is False
 
 
 def test_panel_is_zeroed_false_when_header_missing():

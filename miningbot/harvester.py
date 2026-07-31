@@ -537,12 +537,21 @@ def panel_header(boxes, row_min_y: int, headers=_PANEL_HEADERS) -> str | None:
 
 
 def panel_is_zeroed(header: str | None, names: list, expected_header: str) -> bool:
-    """面板是否已歸零：標頭 == expected 且 names 空。
+    """面板可信任為零點：標頭 == expected **且面板上沒有任何白名單（Exotic+）礦**。
 
-    任何不過的條件（標頭讀不到、在別頁、面板有列）→ False。
-    False 時呼叫端應把 ``_panel_zeroed_at`` 設 None ＋ WARNING，路 B 據此跳過。
+    2026-07-31 實機修正（使用者提出）：舊版要求 `names` 全空，實測必然失敗——清空
+    之後那一下「點畫面中央還焦點」是真的挖礦點擊，馬上挖到一顆 shamrock 回填面板
+    （17:37:04 那次讀到 1 列 shamrock 而判失敗）。而路 B 問的從頭到尾只有一件事：
+    「面板上有沒有白名單礦」。低階礦有沒有回來完全不影響那個判準。
+
+    所以驗的是**路 B 真正需要的不變式**——此刻面板上沒有白名單礦，因此之後冒出來
+    的任何白名單礦都是這段 MINING 進帳的。這個判準對「篩選框根本沒清成功」也是安全
+    的：沒清成功但殘留列裡沒有白名單礦，結論一樣成立。
+
+    任何不過的條件（標頭讀不到、在別頁、面板已有白名單礦）→ False；呼叫端把
+    ``_panel_zeroed_at`` 設 None ＋ WARNING，路 B 據此跳過。
     """
-    return header == expected_header and not names
+    return header == expected_header and not rare_panel_ores(names)
 
 
 def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -> list:

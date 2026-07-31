@@ -4785,21 +4785,34 @@ class Bot:
         return True
 
     def _clear_panel_filter(self) -> None:
-        """清空 NORMAL 面板篩選框，維持「進 MINING 時面板必為空」的不變式（spec 2026-07-31）。
+        """清空 NORMAL 面板篩選框，維持「進 MINING 時面板上沒有白名單礦」的不變式
+        （spec 2026-07-31；判準 2026-07-31 實機放寬，見下）。
 
-        序列：click(篩選框) → typewrite("w" × N) → click(畫面中央還焦點) → settle →
-        OCR 驗「標頭 == NORMAL 且 0 列」。驗過才記 ``_panel_zeroed_at``；否則設 None
-        ＋ WARNING，02 據此跳過路 B。
+        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → click(畫面中央還焦點)。
+        驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，02 據此跳過路 B。
 
-        **不重試**：H047/H063 的教訓是 UI 上「多試幾次」會翻面；點歪的座標若是別的按鈕，
-        重試等於多按它幾次。一次失敗＝下一場路 B 關掉＝回到今日行為。
+        **驗的是「面板上沒有白名單（Exotic+）礦」，不是「面板全空」**（2026-07-31，
+        使用者提出）：還焦點那一下點擊會真的挖到石頭，低階礦立刻回填面板，要求全空
+        實機上永遠達不到。路 B 只問「有沒有白名單礦」，判準見 `harvester.panel_is_zeroed`。
+
+        **不重試打字**：H047/H063 的教訓是 UI 上「多試幾次」會翻面；點歪的座標若是別的
+        按鈕，重試等於多按它幾次。一次失敗＝下一場路 B 關掉＝回到今日行為。重讀面板
+        （不重新點也不重新打字）不在此列——那是唯讀的。
+
+        **驗證在「還焦點」之前**（同上）：那一下點擊若剛好挖出稀有礦（chill 會另外
+        觸發），零點會被自己的動作弄假。判準放寬後這條不再是唯一防線，但順序照樣
+        免費，就維持「先驗再還焦點」。
+
+        另外多讀一次（`panel_clear_verify_max_s`）：17:43:47 那次讀到的是**清空前
+        原封不動的前 8 列**，面板重繪比 settle 慢是其中一個可能。讀不到零點時把該
+        裁圖存成快照（`panel_zero_failed`），下一場才有證據分辨「點沒中／字沒進／
+        重繪沒跟上」——先前只有一行 WARNING，事後完全查不下去。
         """
         try:
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             import pydirectinput
             pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
-            ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)   # 還焦點給 3D 世界
             time.sleep(cfg.panel_clear_settle_s)
 
             if not ocr.rapidocr_available():
@@ -4807,23 +4820,41 @@ class Bot:
                 self.logger.info("面板歸零：rapidocr 不可用 → 跳過驗證（路 B 將不信任面板）")
                 return
 
-            crop = capture.crop(capture.grab(), cfg.backpack_review_region)
-            boxes = ocr.read_text_boxes(crop)
-            header = harvester.panel_header(boxes, cfg.panel_row_min_y)
-            names = harvester.parse_panel_ore_names(
-                boxes, cfg.panel_name_col_max_x, cfg.panel_row_min_y,
-                cfg.panel_name_min_letters)
-            if harvester.panel_is_zeroed(header, names, cfg.panel_expected_header):
-                self._panel_zeroed_at = time.time()
-                self.logger.info("面板已歸零（標頭 %s、0 列）", header)
-            else:
-                self._panel_zeroed_at = None
-                self.logger.warning(
-                    "面板歸零失敗：標頭 %s、列數 %d（%s）→ 路 B 將跳過下一場",
-                    header or "讀不到", len(names), "、".join(names) or "空")
+            deadline = time.time() + cfg.panel_clear_verify_max_s
+            reads = 0
+            while True:
+                crop = capture.crop(capture.grab(), cfg.backpack_review_region)
+                boxes = ocr.read_text_boxes(crop)
+                reads += 1
+                header = harvester.panel_header(boxes, cfg.panel_row_min_y)
+                names = harvester.parse_panel_ore_names(
+                    boxes, cfg.panel_name_col_max_x, cfg.panel_row_min_y,
+                    cfg.panel_name_min_letters)
+                if harvester.panel_is_zeroed(header, names, cfg.panel_expected_header):
+                    self._panel_zeroed_at = time.time()
+                    self.logger.info(
+                        "面板零點成立（標頭 %s、無白名單礦、殘留 %d 列：%s、讀 %d 次）",
+                        header, len(names), "、".join(names) or "空", reads)
+                    break
+                # 至多兩讀（次數也是上界：時鐘停住時預算不會自己到期）
+                if reads >= 2 or time.time() >= deadline:
+                    self._panel_zeroed_at = None
+                    self.logger.warning(
+                        "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次 → 路 B 將跳過下一場",
+                        header or "讀不到", len(names), "、".join(names) or "空", reads)
+                    # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
+                    self._enqueue_snapshot(crop, "panel_zero_failed")
+                    break
         except Exception as e:
             self._panel_zeroed_at = None
             self.logger.warning("面板歸零例外（路 B 將跳過）：%s", e)
+        finally:
+            # 焦點一定要還給 3D 世界，否則後續 W／D1／D3 全打進文字框。
+            # 自己包 try：上面若是 click_at 本身壞了，這裡再炸一次會蓋掉原始例外。
+            try:
+                ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)
+            except Exception:
+                pass
 
     def _rescue_chat_ores(self, pre_crop, cur_crop, hid: str) -> list:
         """救援路 A（聊天）：chill 前 vs 現在，新增 has-found 行裡的非-common 礦名。

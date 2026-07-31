@@ -449,24 +449,35 @@ def test_reconcile_giveup_path_logs_but_never_reroutes(monkeypatch):
 # ── 面板歸零：01 清空原語＋插入點（spec 2026-07-31）─────────────────────────
 
 class _PanelOCR:
-    """偽 read_text_boxes：回指定標頭框＋ 礦名列框，讓 _clear_panel_filter 不碰真 OCR。"""
+    """偽 read_text_boxes：回指定標頭框＋ 礦名列框，讓 _clear_panel_filter 不碰真 OCR。
 
-    def __init__(self, header, names):
+    `later`＝第二次以後要回的 (header, names)——用來演「第一讀面板還沒重繪、第二讀
+    才空」。`watch` 每次呼叫時被叫一下，測「OCR 時點擊做到哪一步了」。
+    """
+
+    def __init__(self, header, names, later=None, watch=None):
         self._header = header
         self._names = names
+        self._later = later
+        self._watch = watch
         self.calls = 0
 
     def __call__(self, crop, region_offset=(0, 0)):
         self.calls += 1
+        if self._watch:
+            self._watch()
+        header, names = self._header, self._names
+        if self.calls > 1 and self._later is not None:
+            header, names = self._later
         boxes = []
-        if self._header:
-            boxes.append({"text": self._header, "score": 0.99, "center": (118, 14)})
-        for i, n in enumerate(self._names):
+        if header:
+            boxes.append({"text": header, "score": 0.99, "center": (118, 14)})
+        for i, n in enumerate(names):
             boxes.append({"text": n, "score": 0.99, "center": (80, 78 + i * 36)})
         return boxes
 
 
-def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None):
+def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None):
     """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time 全旁路。"""
     import pydirectinput
     clicks = []
@@ -486,7 +497,10 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None):
     monkeypatch.setattr(main.time, "sleep", lambda *_: None)
     monkeypatch.setattr(main.time, "time", lambda: 9999.0)
 
-    panel_ocr = _PanelOCR(header, names or [])
+    clicks_at_ocr = []
+    panel_ocr = _PanelOCR(header, names or [], later=later,
+                          watch=lambda: clicks_at_ocr.append(len(clicks)))
+    panel_ocr.clicks_at_ocr = clicks_at_ocr
     monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
     monkeypatch.setattr(main.ocr, "read_text_boxes", panel_ocr)
     monkeypatch.setattr(main.capture, "grab", lambda: _frame())
@@ -532,6 +546,46 @@ def test_clear_sets_none_on_exception(monkeypatch):
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at is None
     assert any("click boom" in line for line in bot.logger.lines)
+
+
+def test_clear_accepts_low_tier_rows(monkeypatch):
+    """低階礦回填不算失敗——驗的是「沒有白名單礦」（2026-07-31 使用者提出）。"""
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+
+
+def test_clear_verifies_before_restoring_focus(monkeypatch):
+    """驗證必須在「點畫面中央還焦點」之前（2026-07-31 實機）。
+
+    那一下點擊是真的挖礦點擊：17:37:04 實測面板已清乾淨，卻在 OCR 前挖到一顆
+    shamrock，讀到 1 列判成歸零失敗。零點成不成立只跟篩選框有關，不該被自己的
+    還焦點點擊污染。
+    """
+    bot, clicks, _typed, panel_ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot._clear_panel_filter()
+    assert panel_ocr.clicks_at_ocr == [1], "OCR 當下只該點過篩選框那一下"
+    assert clicks[-1] == (960, 540), "驗完仍要把焦點還給 3D 世界"
+
+
+def test_clear_rereads_when_panel_redraw_lags(monkeypatch):
+    """第一讀還是舊清單、第二讀才空 → 算歸零成功（只重讀，不重打字）。"""
+    bot, _clicks, typed, panel_ocr = _clear_bot(
+        monkeypatch, header="NORMAL", names=["faedrine", "riches"],
+        later=("NORMAL", []))
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+    assert panel_ocr.calls == 2
+    assert typed == ["w" * cfg.panel_clear_keystrokes], "重讀不得重打字（H047/H063）"
+
+
+def test_clear_failure_saves_snapshot_for_next_session(monkeypatch):
+    """失敗要留裁圖：先前只有一行 WARNING，事後查不出點沒中還是字沒進。"""
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    saved = []
+    bot._enqueue_snapshot = lambda crop, label: saved.append(label)
+    bot._clear_panel_filter()
+    assert saved == ["panel_zero_failed"]
 
 
 def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
