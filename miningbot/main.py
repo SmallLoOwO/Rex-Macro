@@ -4885,11 +4885,37 @@ class Bot:
         重繪沒跟上」——先前只有一行 WARNING，事後完全查不下去。
         """
         try:
+            # H070 聚焦守門：Roblox 不在前景時整組輸入被系統丟掉。實機 2026-07-31
+            # 23:40:20 這條路「跑完了」但面板紋風不動，1 秒後的旋轉鍵
+            # mean_diff=0.00013 被判定被吃、重新聚焦才恢復——同一段失焦區間。
+            # 這是唯一沒有守門的輸入序列（旋轉有 _rotate_verified、俯仰有
+            # _pitch_drag_verified）。盲送的代價不只是清空失敗：那 8 個 w 若在
+            # 焦點回來後才生效，就是 8 次前進。
+            if not self._focus_roblox():
+                self._panel_zeroed_at = None
+                self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（路 B 將跳過下一場）")
+                return
+            before = vision.filter_box_ink(
+                capture.crop(capture.grab(), cfg.panel_filter_band))
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             import pydirectinput
             pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
             time.sleep(cfg.panel_clear_settle_s)
+            # 字真的進 TextBox 了嗎？框裡的亮字量會變（w 越打越多；滿框後壓縮，
+            # 字形仍會變）。沒變＝點沒中或輸入被吃——實機 H070 就是整組被丟掉，
+            # 而那時面板「維持原樣」跟「面板本來就有礦」在 OCR 上完全同形。
+            after = vision.filter_box_ink(
+                capture.crop(capture.grab(), cfg.panel_filter_band))
+            if after == before:
+                self._panel_zeroed_at = None
+                self.logger.warning(
+                    "面板歸零：篩選框墨量沒變（%d）→ 字沒進 TextBox（點沒中／輸入被吃）"
+                    "，路 B 將跳過下一場", before)
+                self._enqueue_snapshot(
+                    capture.crop(capture.grab(), cfg.backpack_review_region),
+                    "panel_zero_no_input")
+                return
 
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None

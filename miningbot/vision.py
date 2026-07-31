@@ -1018,3 +1018,17 @@ def panel_row_hues(crop, row_ys, x0: int, x1: int, half: int = 8) -> list:
         band = hsv[y0:y1, lo:hi]
         out.append(float(np.median(band[:, :, 0])) * 2.0 if band.size else None)
     return out
+
+
+def filter_box_ink(crop) -> int:
+    """篩選框裡的「墨量」＝亮像素數（純函式；spec H070 的輸入生效驗證）。
+
+    用途只有一個：分辨「字真的打進 TextBox 了」與「點沒中／輸入被系統丟掉」。
+    每多一個 `w` 墨量就變；滿框後 Roblox 會把字壓縮，字形仍變、墨量照樣不同。
+    所以比的是**有沒有變**，不是變大變小——2026-07-31 第一次調查曾誤用「寬度變寬」
+    當判準，那在滿框壓縮後恆為假。
+
+    ⚠ 不可拿來判斷「框裡有幾個字」：壓縮讓墨量與字數非單調。
+    """
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    return int((gray > 170).sum())

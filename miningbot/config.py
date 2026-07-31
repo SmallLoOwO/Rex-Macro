@@ -370,7 +370,11 @@ class Config:
     # 面板歸零（spec 2026-07-31-panel-zero-rescue-design.md）
     # bot 每次進 MINING 清空 NORMAL 面板的篩選框，維持「進 MINING 時面板必為空」的
     # 不變式。給救援路 B 一個「面板上有白名單礦 = 這場採到了」的存在性判準。
-    panel_filter_xy: tuple = (119, 441)       # 篩選框中心（2026-07-31 全螢幕 OCR 定位）
+    panel_filter_xy: tuple = (119, 441)       # 篩選框中心（2026-07-31 全螢幕 OCR 定位；
+                                              # 實機 OCR 複驗 www 中心 (118,441)，±1px 都點得中）
+    # 篩選框那一行（H070 輸入生效驗證用）：打字前後比這塊的墨量，沒變＝字沒進 TextBox。
+    panel_filter_band: Region = field(
+        default_factory=lambda: Region(0, 424, 226, 36))
     panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）

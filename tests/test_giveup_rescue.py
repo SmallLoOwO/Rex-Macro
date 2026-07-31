@@ -647,8 +647,12 @@ def _panel_crop_with_hue(hue_deg, row_ys):
 
 
 def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None,
-               row_hue=None):
-    """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time／key 全旁路。"""
+               row_hue=None, focused=True, ink_changes=True):
+    """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time／key 全旁路。
+
+    `focused`＝`_focus_roblox()` 的回傳、`ink_changes`＝打字前後篩選框墨量有沒有變
+    （H070：失焦時整組輸入被丟掉，兩者都是那條路的守門）。
+    """
     import pydirectinput
     clicks = []
     typed = []
@@ -677,6 +681,10 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None
     monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
     monkeypatch.setattr(main.ocr, "read_text_boxes", panel_ocr)
     monkeypatch.setattr(main.capture, "grab", lambda: _frame())
+    # 篩選框墨量：預設演「字有進去」（每次讀不同值）。要演 H070 的「輸入被丟掉」
+    # 就把 ink_changes 設 False——兩次讀到同一個值。
+    ink = iter(range(100, 999)) if ink_changes else iter(lambda: 42, None)
+    monkeypatch.setattr(main.vision, "filter_box_ink", lambda crop: next(ink))
     if row_hue is None:
         monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
     else:
@@ -691,8 +699,71 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None
     bot = make_fake_bot(
         bind=["_clear_panel_filter"],
         logger=_Rec(),
+        _focus_roblox=lambda: focused,
         **extra)
     return bot, clicks, typed, keys, panel_ocr
+
+
+def test_clear_requires_foreground_before_touching_ui(monkeypatch):
+    """H070：Roblox 不在前景時整組輸入被丟掉——不得盲送點擊與 8 個 w。
+
+    實機 2026-07-31 23:40:20：清空「成功」跑完但面板紋風不動，1 秒後的旋轉鍵
+    `mean_diff=0.00013` 被判定被吃、重新聚焦才恢復——同一段失焦區間。清空是唯一
+    沒有聚焦守門的輸入序列（旋轉有 _rotate_verified、俯仰有 _pitch_drag_verified）。
+    """
+    bot, clicks, typed, keys, _ocr = _clear_bot(monkeypatch, header="NORMAL",
+                                                names=[], focused=False)
+    bot._clear_panel_filter()
+    assert clicks == [], "沒有前景焦點就不該點 UI"
+    assert typed == [], "沒有前景焦點就不該打字（w 會變成 8 次前進）"
+    assert bot._panel_zeroed_at is None
+    assert any("焦點" in line for line in bot.logger.lines)
+
+
+def test_clear_detects_input_never_reached_the_textbox(monkeypatch):
+    """H070：打字前後篩選框墨量沒變＝字沒進 TextBox → 不得記零點。
+
+    這是 `_focus_roblox()` 回 True 卻仍被吃時的第二道（實機那次就是「跑完了但面板
+    紋風不動」）。沒有這道守門，「輸入全滅」與「面板本來就有礦」在 OCR 上完全同形。
+    """
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
+    saved = []
+    bot._enqueue_snapshot = lambda crop, label: saved.append(label)
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert any("字沒進" in line for line in bot.logger.lines)
+    assert saved == ["panel_zero_no_input"], "要留裁圖，下一場才查得動"
+
+
+def test_clear_ink_guard_does_not_block_the_happy_path(monkeypatch):
+    """兩側夾：墨量有變（字進去了）時，零點照樣成立。"""
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=True)
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+
+
+def test_filter_box_ink_changes_with_text():
+    """`filter_box_ink` 要真的隨字量變（合成裁圖：多畫一筆就多一些亮像素）。"""
+    import numpy as np
+    from miningbot.vision import filter_box_ink
+    blank = np.zeros((36, 226, 3), dtype=np.uint8)
+    one = blank.copy(); one[10:26, 100:108] = 255
+    two = one.copy(); two[10:26, 112:120] = 255
+    assert filter_box_ink(blank) == 0
+    assert filter_box_ink(one) > 0
+    assert filter_box_ink(two) != filter_box_ink(one)
+
+
+def test_clear_focuses_before_clicking(monkeypatch):
+    """有焦點才動：_focus_roblox 必須在第一次點擊之前被呼叫到。"""
+    order = []
+    bot, _clicks, _typed, _keys, _ocr = _clear_bot(monkeypatch, header="NORMAL",
+                                                   names=[])
+    bot._focus_roblox = lambda: (order.append("focus"), True)[1]
+    monkeypatch.setattr(main.ic, "click_at",
+                        lambda *a, **kw: order.append("click"))
+    bot._clear_panel_filter()
+    assert order[:2] == ["focus", "click"]
 
 
 def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):

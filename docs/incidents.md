@@ -688,3 +688,23 @@ fixture 位置慣例：
 - **不動**：救援路 A（聊天）維持「非 common」判準。聊天只印 Surreal+，unknown 在那裡的意思是「白名單漂移或 OCR 讀歪的高階礦」，與面板的語意相反——`ocr._is_rare_ore` 的守門員規則在該路徑仍然正確。
 - **回歸**：`tests/fixtures/panel/145_rescue_{pre,cur}_panel.png` 兩張實機裁圖跑完整 RapidOCR 管線（`test_h069_live_panel_diff_must_not_rescue`：確認有新增列、且差分必須是空）＋`test_new_rare_panel_ores_h069_live_panel_names`（合成名字版）＋`test_new_rare_panel_ores_ignores_unknown`＋`test_classify_short_whitelist_name_needs_word_boundary`（`eg` 與 `eg (eggshell cave)` 仍是 rare、`egguinox` 落 unknown）。真陽性側由既有的 125 Faedrine 兩例夾住（`test_faedrine_is_the_rescue_signal` 已改成斷言 `== "rare"`）。
 - **下輪實機驗證預期**：`harvest.log` 的行改成 `面板差分（救援路B）：列數 X → Y，新增高階礦名 無`，giveup 照常交人工。反指標：若某場面板上肉眼看得到高階礦名、log 卻寫「無」→ 才是真漏判，照 `docs/data-collection-pipeline.md` 的分類表往 OCR／幾何閘查。救援的實機命中率統計要**從 H069 之後重新起算**：在此之前的每一筆 `HARVEST_RESCUED` 都可能是這型假命中。
+
+## H070（2026-07-31 23:40:20，harvest 148 收尾；使用者回報「實機測試過了，似乎背包依然沒有清空」）：`_clear_panel_filter` 是唯一沒有聚焦守門的輸入序列，Roblox 失焦時整組點擊＋8 個 `w` 被系統丟掉，而失敗與「面板本來就有礦」在 OCR 上完全同形
+
+- **症狀**：面板歸零上線後三次實機全失敗。前兩次（17:37、17:43）另有根因（已修）；23:40:20 這次在修完之後仍然失敗，log 寫「面板零點不成立：標頭 NORMAL、列數 8」，但 `panel_zero_failed` 裁圖顯示**篩選框裡是 `www`**——那是使用者 session 初始化時手打的原始值，bot 送的 8 個 `w` 一個都沒進去。
+- **鐵證（log 相鄰兩行）**：
+  ```
+  23:40:20 WARNING 面板零點不成立：標頭 NORMAL、列數 8（faedrine、…）讀 1 次
+  23:40:21 WARNING 旋轉鍵 . 疑似被吃（mean_diff=0.00013802 changed_frac=3.9e-06，attempt 1/3）→ 重新聚焦後重送
+  23:40:24 INFO    Roblox 聚焦成功
+  ```
+  清空與那個被吃的按鍵只隔 1 秒，是**同一段失焦區間**。上一次聚焦成功是 23:39:54，中間隔了俯仰歸位（23:40:12）。
+- **根因**：`_clear_panel_filter` 裸送 `click_at` + `pydirectinput.typewrite`，沒有聚焦守門也沒有生效驗證。repo 裡其他輸入序列都有：旋轉走 `_rotate_verified`（被吃會重新聚焦重送）、俯仰走 `_pitch_drag_verified`（前後幀比對）。只有這條沒有——因為它是最後才加的，且「清空失敗」與「面板真的有礦」在 OCR 結果上一模一樣，失敗被靜默吸收。
+- **調查中被否證的兩個假說**（都花了實機量測才排除，記下來免得重走）：
+  1. **座標差 1px**：OCR 複驗 `www` 中心是 (118,441)、設定值 (119,441)。第一輪 A/B 測試看似 118 過、119 不過，但**交錯重複三輪後兩者都 3/3**——差別是「框已被點過」而非座標。
+  2. **第一次點擊不生效（要點兩次）**：冷啟（先按 Enter 把焦點還給 3D 世界）後點 1 次，3/3 全過。
+  兩個假說都是在**腳本自己先 `focus_roblox()` 之後**測的，所以永遠重現不了實機那個失焦狀態——這正是「查實機問題要先確認重現環境與 production 是同一個狀態」的又一次（H061 是同一顆 Python 與否，這次是同一個焦點狀態與否）。
+- **⚠ 量測方法本身也踩過坑**：篩選框的 `w` 會**越積越多並被壓縮成一條線**（使用者指出），所以「亮字寬度變寬」不能當「字進去了」的判準——滿框後恆為假。改用**墨量有沒有變**（`vision.filter_box_ink`，亮像素計數），壓縮會改變字形，墨量照樣不同。
+- **對策**：(1) 清空前先 `_focus_roblox()`，拿不到焦點整條跳過並記 WARNING——盲送的代價不只清空失敗，那 8 個 `w` 若在焦點回來後才生效就是 8 次前進。(2) 打字前後比 `filter_box_ink(panel_filter_band)`，墨量沒變＝字沒進 TextBox，記 WARNING ＋ 存 `panel_zero_no_input` 裁圖，不記零點。兩道守門的失敗模式都是「路 B 下一場關掉」＝回到今日行為。
+- **回歸**：`test_clear_requires_foreground_before_touching_ui`（失焦時零點擊零打字）、`test_clear_focuses_before_clicking`（順序）、`test_clear_detects_input_never_reached_the_textbox`（墨量沒變 → 不記零點＋留裁圖）、`test_clear_ink_guard_does_not_block_the_happy_path`（兩側夾）、`test_filter_box_ink_changes_with_text`（純函式）。
+- **實機驗收（2026-07-31 當場跑過）**：情境 1 模擬失焦 → 點擊次數 0、`_panel_zeroed_at is None`；情境 2 正常路徑 → 自己聚焦、面板真的清空、零點成立。⚠ 未驗到的一段：「面板有礦時清得掉嗎」——驗收腳本想用 40 個 backspace 把篩選框清掉讓礦回來，但**backspace 沒生效**（框仍滿是 `w`），所以往返沒測成。下一場實機採集成功後看 log 是否出現「面板零點成立」即可補上。
