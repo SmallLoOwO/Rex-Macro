@@ -710,6 +710,64 @@ def test_panel_is_zeroed_false_when_low_tier_and_whitelist_mixed():
     assert panel_is_zeroed("NORMAL", ["shamrock", "faedrine"], "NORMAL") is False
 
 
+# ── 列底色 → tier（D11 量測：每階一色、零重疊）────────────────────────────
+
+def test_whitelist_hue_hits_catches_the_three_high_tiers():
+    """Exotic 46／Exquisite 128／Transcendent 210 都要認得。"""
+    from miningbot.harvester import whitelist_hue_hits
+    hues = list(DEFAULT.panel_whitelist_hues)
+    assert whitelist_hue_hits(hues, DEFAULT.panel_whitelist_hues,
+                              DEFAULT.panel_hue_tol_deg) == hues
+
+
+def test_whitelist_hue_hits_rejects_every_measured_low_tier_band():
+    """實機量到的非白名單色帶（Mythic 304／Surreal 166／低階 0、30、280）一個都不能中。
+
+    最近的一對是 Exotic 46 vs 低階 30（相隔 16°），tol=6 兩側各留 10° 餘裕。
+    """
+    from miningbot.harvester import whitelist_hue_hits
+    assert whitelist_hue_hits([0.0, 30.0, 166.0, 280.0, 304.0],
+                              DEFAULT.panel_whitelist_hues,
+                              DEFAULT.panel_hue_tol_deg) == []
+
+
+def test_whitelist_hue_hits_is_circular_and_skips_none():
+    """色相是環狀的（358 與 2 相差 4°）；讀不到的列（None）直接略過不當命中。"""
+    from miningbot.harvester import whitelist_hue_hits
+    assert whitelist_hue_hits([358.0], (2.0,), 6.0) == [358.0]
+    assert whitelist_hue_hits([None, 30.0], DEFAULT.panel_whitelist_hues,
+                              DEFAULT.panel_hue_tol_deg) == []
+
+
+def test_panel_row_hues_reads_the_row_background():
+    """合成一張兩列不同底色的面板裁圖，色相要讀回那兩個值。"""
+    import cv2
+    import numpy as np
+
+    from miningbot.vision import panel_row_hues
+    crop = np.zeros((200, 226, 3), dtype=np.uint8)
+    # OpenCV HSV：H 是 0..179（度數的一半）。Exotic 46° → 23；Surreal 166° → 83
+    for y0, y1, h in ((40, 80, 23), (100, 140, 83)):
+        band = np.zeros((y1 - y0, 226, 3), dtype=np.uint8)
+        band[:, :] = (h, 200, 200)
+        crop[y0:y1] = cv2.cvtColor(band, cv2.COLOR_HSV2BGR)
+    got = panel_row_hues(crop, [60, 120], *DEFAULT.panel_hue_sample_x)
+    assert [round(v) for v in got] == [46, 166]
+
+
+def test_panel_rows_keeps_row_y_for_hue_sampling():
+    """`parse_panel_rows` 要回 (name, cy)，名字版本是它的投影（只有一份實作）。"""
+    from miningbot.harvester import parse_panel_ore_names, parse_panel_rows
+    boxes = [{"text": "Faedrine 17", "center": (80, 78)},
+             {"text": "Weevil 229", "center": (80, 114)}]
+    rows = parse_panel_rows(boxes, DEFAULT.panel_name_col_max_x,
+                            DEFAULT.panel_row_min_y, DEFAULT.panel_name_min_letters)
+    assert rows == [("faedrine", 78), ("weevil", 114)]
+    assert parse_panel_ore_names(boxes, DEFAULT.panel_name_col_max_x,
+                                 DEFAULT.panel_row_min_y,
+                                 DEFAULT.panel_name_min_letters) == ["faedrine", "weevil"]
+
+
 def test_panel_is_zeroed_false_when_header_missing():
     from miningbot.harvester import panel_is_zeroed
     assert panel_is_zeroed(None, [], "NORMAL") is False

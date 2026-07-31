@@ -4827,10 +4827,22 @@ class Bot:
                 boxes = ocr.read_text_boxes(crop)
                 reads += 1
                 header = harvester.panel_header(boxes, cfg.panel_row_min_y)
-                names = harvester.parse_panel_ore_names(
+                rows = harvester.parse_panel_rows(
                     boxes, cfg.panel_name_col_max_x, cfg.panel_row_min_y,
                     cfg.panel_name_min_letters)
-                if harvester.panel_is_zeroed(header, names, cfg.panel_expected_header):
+                names = [n for n, _ in rows]
+                # 第二條 tier 訊號：列底色。礦名讀歪時名字閘會漏，色相不會（D11）。
+                # 只用保守方向——命中就當零點不成立。
+                hue_hits = harvester.whitelist_hue_hits(
+                    vision.panel_row_hues(crop, [cy for _, cy in rows],
+                                          *cfg.panel_hue_sample_x),
+                    cfg.panel_whitelist_hues, cfg.panel_hue_tol_deg)
+                if hue_hits:
+                    self.logger.warning(
+                        "面板列底色顯示還有 Exotic+ 礦（H=%s）→ 零點不成立",
+                        "、".join("%.0f" % h for h in hue_hits))
+                if not hue_hits and harvester.panel_is_zeroed(
+                        header, names, cfg.panel_expected_header):
                     self._panel_zeroed_at = time.time()
                     self.logger.info(
                         "面板零點成立（標頭 %s、無白名單礦、殘留 %d 列：%s、讀 %d 次）",
@@ -4896,12 +4908,37 @@ class Bot:
             self.log_harvest.info(
                 "[%s] 面板讀取（%s）：rapidocr 不可用 → 跳過", hid, why)
             return []
-        names = harvester.parse_panel_ore_names(
-            ocr.read_text_boxes(capture.crop(capture.grab(), cfg.backpack_review_region)),
-            cfg.panel_name_col_max_x, cfg.panel_row_min_y, cfg.panel_name_min_letters)
+        crop = capture.crop(capture.grab(), cfg.backpack_review_region)
+        rows = harvester.parse_panel_rows(
+            ocr.read_text_boxes(crop), cfg.panel_name_col_max_x,
+            cfg.panel_row_min_y, cfg.panel_name_min_letters)
+        names = [n for n, _ in rows]
         ores = harvester.rare_panel_ores(names)
-        self.log_harvest.info("[%s] 面板讀取（%s）：列數 %d，白名單礦名 %s",
-                              hid, why, len(names), ores or "無")
+        # 列底色的 tier 訊號（D11）：兩條訊號**都只往保守方向用**——
+        #   零點閘：底色說有 Exotic+ → 零點不成立（即使礦名讀歪成低階）
+        #   救援側（這裡）：底色說沒有 → 否決，照舊交人工
+        # 兩邊的失敗模式都是「多交一次人工」，絕不會多宣告一次「已進帳」。
+        # 實例：`essence of luck`（低階、底色 H=0）被 classify 模糊配到 Lovessence
+        # （Transcendent、Aesteria）ratio 0.82 → 礦名側假陽性，底色否決掉。
+        hue_hits = harvester.whitelist_hue_hits(
+            vision.panel_row_hues(crop, [cy for _, cy in rows],
+                                  *cfg.panel_hue_sample_x),
+            cfg.panel_whitelist_hues, cfg.panel_hue_tol_deg)
+        self.log_harvest.info(
+            "[%s] 面板讀取（%s）：列數 %d，白名單礦名 %s，底色白名單列 %s",
+            hid, why, len(names), ores or "無",
+            "、".join("H=%.0f" % h for h in hue_hits) or "無")
+        if ores and not hue_hits:
+            self.log_harvest.warning(
+                "[%s] 面板兩訊號不一致（%s）：礦名說 %s、底色說沒有 Exotic+ → 否決，照舊交人工",
+                hid, why, "、".join(ores))
+            return []
+        if hue_hits and not ores:
+            # 反向不一致：底色有、礦名讀不出來。這裡不自己宣告命中（沒有礦名可寫進
+            # ledger／通知），只留 WARNING——下一場才有證據判斷該不該補這條路。
+            self.log_harvest.warning(
+                "[%s] 面板兩訊號不一致（%s）：底色有 %d 列 Exotic+、礦名一個都沒認出來",
+                hid, why, len(hue_hits))
         # ⚠ 一定要回 `ores`（白名單）而不是 `names`（面板上全部的礦名）。
         # 回 names 的話：面板永遠有鎬子挖出來的低階礦 → 路 B 每次 giveup 都「命中」
         # → 每顆真稀有礦都被判成「已進帳」而靜默放生，正是 H069 的災情。

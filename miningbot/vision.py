@@ -992,3 +992,29 @@ def read_boost_use_count(crop_bgr, max_mismatch: float = 0.08):
             return None
         digits += best[0]
     return int(digits)
+
+
+def panel_row_hues(crop, row_ys, x0: int, x1: int, half: int = 8) -> list:
+    """NORMAL 背包面板每一列的**底色色相**（度，0..360；讀不到的列回 None）。
+
+    2026-07-31 量測（238 幀 1909 列，`docs/open-detection-issues.md` D11）：面板列底色
+    是**每個 tier 一個色相**，不是每顆礦一色——
+
+        Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
+
+    每一階的色相在所有幀裡都是**單一值**（零變異），最近的兩帶是 Exotic 46 與低階 30，
+    相隔 16°。所以色相是 OCR 之外的第二條 tier 訊號，礦名讀歪也還在。
+
+    取樣窗 `x0..x1` 要落在**名字與數量之間**的純底色帶（`Config.panel_hue_sample_x`）：
+    列底色左亮右暗是漸層，H 全程不變、只有 V 變，所以取中位數即可；左緣 x<10 是面板
+    邊框（讀到的是深藍 H≈120，跟真的列色無關——第一次量測就是踩這個坑）。
+    """
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    h, w = hsv.shape[:2]
+    lo, hi = max(0, int(x0)), min(w, int(x1))
+    out = []
+    for cy in row_ys:
+        y0, y1 = max(0, int(cy) - half), min(h, int(cy) + half + 1)
+        band = hsv[y0:y1, lo:hi]
+        out.append(float(np.median(band[:, :, 0])) * 2.0 if band.size else None)
+    return out

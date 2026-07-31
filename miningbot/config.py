@@ -368,6 +368,14 @@ class Config:
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
                                               # 只重讀不重打字：H047/H063 的「多試幾次會翻面」只針對點擊/按鍵
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
+    # 列底色 → tier（2026-07-31 量測 238 幀 1909 列，見 docs/open-detection-issues.md D11）：
+    #   Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
+    # 每階單一色相、零變異、零重疊。最近的兩帶是 Exotic 46 vs 低階 30（相隔 16°）→ tol 6
+    # 兩側各留 10° 餘裕。用途只有保守方向：命中＝面板有 Exotic+ ⇒ 零點不成立。
+    panel_whitelist_hues: tuple = (46.0, 128.0, 210.0)
+    panel_hue_tol_deg: float = 6.0
+    panel_hue_sample_x: tuple = (120, 165)    # 取樣窗（crop 座標）：名字與數量之間的純底色帶。
+                                              # ⚠ 別往左取，x<10 是面板邊框（深藍 H≈120，與列色無關）
 
     # 雙 chill 對帳（spec 2026-07-30-double-chill-reconciliation-design.md）
     # 兩個都預設關。chill_edge_release_s 的初值**必須**由實機上升緣／回落分布決定，

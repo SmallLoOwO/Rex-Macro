@@ -567,6 +567,15 @@ def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -
     的實作**必須**先守門：該面板從 x≈185 起疊在數字欄上，OCR 會讀到配方需求
     （`310/190 Siogyne`）而不是存量——那是**錯的值不是缺值**。
     """
+    return [name for name, _cy in parse_panel_rows(boxes, max_x, min_y, min_letters)]
+
+
+def parse_panel_rows(boxes, max_x: int, min_y: int, min_letters: int = 3) -> list:
+    """同 `parse_panel_ore_names`，但每列附上列框中心 y（``(name, cy)`` 保序去重）。
+
+    y 是給 `vision.panel_row_hues` 取列底色用的——底色色相是 tier 的第二條訊號
+    （見那支函式的 docstring 與 D11 量測）。名字版本走這一支，只有一份實作。
+    """
     out, seen = [], set()
     for box in boxes or []:
         cx, cy = box.get("center", (0, 0))
@@ -580,8 +589,29 @@ def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -
         key = name.lower()
         if key not in seen:
             seen.add(key)
-            out.append(key)
+            out.append((key, int(cy)))
     return out
+
+
+def whitelist_hue_hits(hues, whitelist_hues, tol_deg: float) -> list:
+    """列底色色相裡落在白名單（Exotic+）色帶內的那些（保序）。
+
+    白名單色帶＝`Config.panel_whitelist_hues`（Exotic 46／Exquisite 128／
+    Transcendent 210，2026-07-31 量測）。色相是環狀的，比距離要繞回 360。
+
+    用途是**保守方向**：命中就代表面板上有 Exotic+ 礦，因此「面板零點」不成立。
+    反向（沒命中就宣告採到了）不在這裡做——那要先有實機對帳資料。
+    """
+    hits = []
+    for h in hues or ():
+        if h is None:
+            continue
+        for target in whitelist_hues or ():
+            d = abs(float(h) - float(target)) % 360.0
+            if min(d, 360.0 - d) <= tol_deg:
+                hits.append(float(h))
+                break
+    return hits
 
 
 def rare_panel_ores(names) -> list:

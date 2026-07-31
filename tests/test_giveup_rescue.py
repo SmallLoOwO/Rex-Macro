@@ -347,15 +347,34 @@ def test_panel_path_returns_only_whitelist_ores(monkeypatch):
     assert bot._panel_rare_ores("125", "救援路B") == []
 
 
-def test_panel_path_still_reports_whitelist_hit(monkeypatch):
-    """有白名單礦時照樣回它（低階礦一起在場也不影響）。"""
+def _panel_bot(monkeypatch, names, row_hue):
     bot = make_fake_bot(bind=["_panel_rare_ores"], log_harvest=_Rec())
+    rows = [78 + i * 36 for i in range(len(names))]
+    crop = _panel_crop_with_hue(row_hue, rows)
     monkeypatch.setattr(main.capture, "grab", _frame)
-    monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: crop.copy())
     monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
     monkeypatch.setattr(main.ocr, "read_text_boxes",
-                        lambda *a, **kw: _panel_boxes(["faedrine", "shamrock"]))
+                        lambda *a, **kw: _panel_boxes(names))
+    return bot
+
+
+def test_panel_path_still_reports_whitelist_hit(monkeypatch):
+    """有白名單礦、底色也是白名單色 → 照樣回它。"""
+    bot = _panel_bot(monkeypatch, ["faedrine", "shamrock"], 128.0)
     assert bot._panel_rare_ores("125", "救援路B") == ["faedrine"]
+
+
+def test_panel_path_vetoed_when_row_colour_says_low_tier(monkeypatch):
+    """礦名說白名單、底色說低階 → 否決（照舊交人工）。
+
+    實例：`essence of luck`（低階、底色 H=0）被 `classify_found_ore` 模糊配到
+    Lovessence（Transcendent、Aesteria）ratio 0.82。單靠礦名，這一列會讓每一次
+    giveup 都假命中——而假命中的代價是靜默放生一顆真稀有礦。
+    """
+    bot = _panel_bot(monkeypatch, ["essence of luck"], 0.0)
+    assert bot._panel_rare_ores("125", "救援路B") == []
+    assert any("否決" in line for line in bot.log_harvest.lines)
 
 
 # ── 05：雙 chill 對帳（出廠關閉）────────────────────────────────────────────
@@ -513,7 +532,20 @@ class _PanelOCR:
         return boxes
 
 
-def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None):
+def _panel_crop_with_hue(hue_deg, row_ys):
+    """合成一張面板裁圖：指定列的底色是 `hue_deg`（度），其餘全黑。"""
+    import cv2
+    crop = np.zeros((cfg.backpack_review_region.h, cfg.backpack_review_region.w, 3),
+                    dtype=np.uint8)
+    for cy in row_ys:
+        band = np.zeros((17, crop.shape[1], 3), dtype=np.uint8)
+        band[:, :] = (int(round(hue_deg / 2.0)), 200, 200)
+        crop[cy - 8:cy + 9] = cv2.cvtColor(band, cv2.COLOR_HSV2BGR)
+    return crop
+
+
+def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None,
+               row_hue=None):
     """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time 全旁路。"""
     import pydirectinput
     clicks = []
@@ -540,7 +572,12 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None
     monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
     monkeypatch.setattr(main.ocr, "read_text_boxes", panel_ocr)
     monkeypatch.setattr(main.capture, "grab", lambda: _frame())
-    monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+    if row_hue is None:
+        monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+    else:
+        rows = [78 + i * 36 for i in range(len(names or []))]
+        crop = _panel_crop_with_hue(row_hue, rows)
+        monkeypatch.setattr(main.capture, "crop", lambda f, r: crop.copy())
 
     extra = {"_panel_zeroed_at": None}
     if exc:
@@ -587,6 +624,23 @@ def test_clear_sets_none_on_exception(monkeypatch):
 def test_clear_accepts_low_tier_rows(monkeypatch):
     """低階礦回填不算失敗——驗的是「沒有白名單礦」（2026-07-31 使用者提出）。"""
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+
+
+def test_clear_blocked_by_whitelist_row_colour_even_when_names_look_clean(monkeypatch):
+    """礦名讀歪成低階、但列底色是 Exotic 46 → 零點不成立（D11 的第二條 tier 訊號）。"""
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"],
+                         row_hue=46.0)
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert any("底色" in line for line in bot.logger.lines)
+
+
+def test_clear_not_blocked_by_low_tier_row_colour(monkeypatch):
+    """低階色帶（30）不擋——否則每一次都不成立。"""
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"],
+                         row_hue=30.0)
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
 

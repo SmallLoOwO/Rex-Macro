@@ -359,41 +359,53 @@ bbox (1032, 108,  6, 17) area  57.0
 `config.tracker_core_profiles` 的註解本來就寫著「新色 fixture 到手才加」——素材到手了，
 負樣本還沒有。
 
-## D11（2026-07-31，使用者提案）：用面板列的底色判斷有沒有稀有礦——色相是「每顆礦一色」不是「每階一色」，夾不出兩側
+## D11（2026-07-31，使用者提案並指正）：面板列底色＝tier，可當礦名之外的第二條訊號；殘留缺口是 `classify_found_ore` 的模糊假陽性
 
-### 提案
+### 提案與第一次量測的錯誤
 
-面板歸零救援（路 B）現在靠 OCR 讀礦名再查白名單。使用者提出：稀有礦都有自己的
-顏色，可以改看顏色，避開「偵測出的字其實不夠準確」。
+使用者提出：稀有礦都有自己的顏色，可以用顏色推斷、避開礦名讀不準。第一次量測我用
+`classify_found_ore` 的 `rare`／`common` 當分組軸就下了「色相是每顆礦一色、夾不出來」
+的結論——**那是錯的**。`rare/common` 是**聊天排除清單**分類，不是 tier。使用者指出
+「應該是每階一色，只是漸層讓它看起來不明顯」，改用 `assets` 的真 tier 重跑就對上了。
 
-### 量測（2026-07-31 四張實機全幀、33 列；`backpack_review_region` 內取列底色中位數）
+### 量測（238 幀、1909 列；取樣窗 x120-165＝名字與數量之間的純底色帶）
 
-取樣窗 x10-30／x120-165／x196-214（列底色是左亮右暗的漸層，三窗色相一致、只有 V 不同）：
+| tier | 色相 H | S | 出現列數 | 例 |
+|---|---|---|---|---|
+| Transcendent | **210** | 255 | 185 | coinstorm、darkhelm |
+| Exquisite | **128** | 143 | 30 | faedrine、leprechaun、fortuitous |
+| Exotic | **46** | 189 | 105 | feebrechaun、clovara |
+| Mythic | 304 | 255 | 230 | toppatrick、riches、cleavelite |
+| Surreal | 166 | 221 | 319 | weevil、siogyne、vitiscus |
+| 低階（資料集未收） | 0 / 30 / 280 | — | 1040 | loinnire、fortunatum、cloverstone… |
 
-| 礦 | tier | H | S |
-|---|---|---|---|
-| Feebrechaun | Exotic（白名單） | 46 | 189 |
-| Faedrine | Exquisite（白名單） | 128 | 143 |
-| Cleavelite / Riches / Toppatrick | common | 304 | 255 |
-| Weevil / Siogyne | common | 166 | 220 |
-| Cloverstone / Plentium / Imbollyx | 低階 | 280 | 255 |
-| Fortunatum / Auriclase / Pixy Emerald / Gilded Chocolatine | 低階 | 30 | 253 |
-| Loinnire / Essence of Luck / Draichite / Irelint / Prospertine | 低階 | 0 | 217 |
+**每一階在所有幀裡都是單一色相、零變異、零重疊。** 最近的兩帶是 Exotic 46 與低階 30
+（相隔 16°）→ `panel_hue_tol_deg=6` 兩側各留 10°。列底色左亮右暗是漸層，H 全程不變、
+只有 V 變——所以「看起來不明顯」但量起來乾淨。⚠ 取樣窗別往左，x<10 是面板邊框
+（深藍 H≈120，與列色無關；第一次量測就是踩這個坑）。
 
-### 結論：不實作
+### 已實作（保守方向雙向用）
 
-- **色相是礦的身分，不是階級。** 低階礦已經佔掉 0／30／166／280／304 五個色帶，
-  白名單那兩顆（46、128）只是「剛好目前沒有低階礦用這兩色」。任何「H 落某區間＝
-  稀有」的門檻都沒有負樣本支撐，換一個世界或換一批礦就會翻面。
-- **同色會撞。** Weevil 與 Siogyne 同為 166、Cloverstone／Plentium／Imbollyx 同為 280
-  ——顏色本身無法唯一辨識礦名。
-- **飽和度看似有戲、樣本不足。** Faedrine S=143 是全表唯一 <180 的，但同為白名單的
-  Feebrechaun S=189 落在低階礦區間內，單側就已經穿幫。
-- **資料集裡沒有顏色欄位。** `assets/ores_all.json`／`rare_ores.json` 只有
-  ore/tier/rarity/layer，要走色表得為每顆礦手工校色，成本遠高於現況。
+`vision.panel_row_hues` ＋ `harvester.whitelist_hue_hits`：
 
-補齊條件：收到「低階礦出現在 H 40~60 或 110~140」的實機反例，或反過來累積 10+ 顆
-白名單礦的色值後仍與低階礦不重疊，才有資格談門檻。
+- **零點閘**（`_clear_panel_filter`）：底色說有 Exotic+ → 零點不成立，即使礦名讀歪成低階。
+- **救援路 B**（`_panel_rare_ores`）：底色說沒有 → 否決該次命中，照舊交人工。
 
-現況足夠的理由：同一批幀裡 RapidOCR 讀礦名的信心值 0.99+，路 B 的判準只需要
-「面板上有沒有白名單礦」，不需要唯一辨識每一列。
+兩邊的失敗模式都是「多交一次人工」，絕不會多宣告一次「已進帳」。反向（底色有、礦名
+讀不出來）只記 WARNING，不自己宣告命中——沒有礦名可寫進 ledger／通知。
+
+### 殘留缺口：`essence of luck` → Lovessence 的模糊假陽性
+
+`classify_found_ore("essence of luck")` 回 `rare_fuzzy`，配到 **Lovessence
+（Transcendent、Aesteria 的礦）ratio 0.82**。底色 H=0（低階帶）直接否決，救援側安全，
+但**零點閘是 OR（任一訊號說有就不成立）**，所以只要背包裡有 Essence of Luck——實機面板
+上很常駐——零點就一直不成立，路 B 等於還是關著。
+
+修法方向（**都還沒做，缺兩側夾**）：
+
+- 收緊面板路徑的 `fuzzy_ratio` 下限：面板礦名的 OCR 信心 0.999+，模糊比對本來就不該
+  像聊天那樣寬。要先量 `rare_fuzzy` 真陽性的 ratio 分布才知道門檻擺哪。
+- 或加世界閘：路 B 問的是「這段 MINING 挖到了嗎」＝當前世界的礦；Lovessence 是
+  Aesteria 的礦，當前世界 Lucernia 就不該配上。
+
+在那之前，零點閘會偏保守（多交人工），不會誤放生礦。
