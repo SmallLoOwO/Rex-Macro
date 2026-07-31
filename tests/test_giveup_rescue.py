@@ -546,10 +546,11 @@ def _panel_crop_with_hue(hue_deg, row_ys):
 
 def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None,
                row_hue=None):
-    """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time 全旁路。"""
+    """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time／key 全旁路。"""
     import pydirectinput
     clicks = []
     typed = []
+    keys = []
 
     def fake_click(x, y, **kw):
         clicks.append((x, y))
@@ -560,6 +561,8 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None
         monkeypatch.setattr(main.ic, "click_at", boom)
     else:
         monkeypatch.setattr(main.ic, "click_at", fake_click)
+    monkeypatch.setattr(main.ic, "key_press",
+                        lambda k, **kw: keys.append(k))
     monkeypatch.setattr(pydirectinput, "typewrite",
                         lambda s, **kw: typed.append(s))
     monkeypatch.setattr(main.time, "sleep", lambda *_: None)
@@ -587,16 +590,16 @@ def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None, later=None
         bind=["_clear_panel_filter"],
         logger=_Rec(),
         **extra)
-    return bot, clicks, typed, panel_ocr
+    return bot, clicks, typed, keys, panel_ocr
 
 
 def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
-    bot, clicks, typed, ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot, clicks, typed, keys, ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
-    assert clicks[0] == (119, 441)                          # 先點篩選框
-    assert clicks[1] == (960, 540)                          # 再點畫面中央
+    assert clicks == [(119, 441)]                           # 只點篩選框，不再點畫面中央
+    assert keys == ["enter"]                                # spec 01：改按 Enter 脫離
     assert typed == ["w" * cfg.panel_clear_keystrokes]
 
 
@@ -637,6 +640,18 @@ def test_clear_blocked_by_whitelist_row_colour_even_when_names_look_clean(monkey
     assert any("底色" in line for line in bot.logger.lines)
 
 
+def test_clear_blocked_by_unknown_row_colour_treats_as_high_tier(monkeypatch):
+    """未量到的色相（90）→ 反向閘當成高階、擋零點成立（spec 01 核心決定）。
+
+    正向閘（只認 46/128/210）會放過 90 → 零點誤判成立 → 新 tier 礦的證據基礎是錯的。
+    反向閘「不落在已知低階帶就擋」把這個洞補起來。
+    """
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"],
+                         row_hue=90.0)
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+
+
 def test_clear_not_blocked_by_low_tier_row_colour(monkeypatch):
     """低階色帶（30）不擋——否則每一次都不成立。"""
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["shamrock"],
@@ -646,21 +661,20 @@ def test_clear_not_blocked_by_low_tier_row_colour(monkeypatch):
 
 
 def test_clear_verifies_before_restoring_focus(monkeypatch):
-    """驗證必須在「點畫面中央還焦點」之前（2026-07-31 實機）。
+    """驗證必須在「按 Enter 脫離文字框」之前（spec 01）。
 
-    那一下點擊是真的挖礦點擊：17:37:04 實測面板已清乾淨，卻在 OCR 前挖到一顆
-    shamrock，讀到 1 列判成歸零失敗。零點成不成立只跟篩選框有關，不該被自己的
-    還焦點點擊污染。
+    舊版那一下是點畫面中央＝真的挖礦點擊：17:37:04 實測面板已清乾淨，卻在 OCR 前挖到
+    一顆 shamrock 回填。改成 Enter 之後不再挖到任何東西，但順序仍維持「先驗再脫離」。
     """
-    bot, clicks, _typed, panel_ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot, clicks, _typed, keys, panel_ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
     bot._clear_panel_filter()
     assert panel_ocr.clicks_at_ocr == [1], "OCR 當下只該點過篩選框那一下"
-    assert clicks[-1] == (960, 540), "驗完仍要把焦點還給 3D 世界"
+    assert keys == ["enter"], "驗完才按 Enter 脫離"
 
 
 def test_clear_rereads_when_panel_redraw_lags(monkeypatch):
     """第一讀還是舊清單、第二讀才空 → 算歸零成功（只重讀，不重打字）。"""
-    bot, _clicks, typed, panel_ocr = _clear_bot(
+    bot, _clicks, typed, _keys, panel_ocr = _clear_bot(
         monkeypatch, header="NORMAL", names=["faedrine", "riches"],
         later=("NORMAL", []))
     bot._clear_panel_filter()

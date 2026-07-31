@@ -373,6 +373,9 @@ class Config:
     # 每階單一色相、零變異、零重疊。最近的兩帶是 Exotic 46 vs 低階 30（相隔 16°）→ tol 6
     # 兩側各留 10° 餘裕。用途只有保守方向：命中＝面板有 Exotic+ ⇒ 零點不成立。
     panel_whitelist_hues: tuple = (46.0, 128.0, 210.0)
+    # 已量到的非白名單色帶（D11）：Mythic 304｜Surreal 166｜低階 0/30/280。
+    # 給 spec 01 反向閘用——色相不落在這些帶就當成高階、擋零點成立。
+    panel_low_tier_hues: tuple = (0.0, 30.0, 166.0, 280.0, 304.0)
     panel_hue_tol_deg: float = 6.0
     panel_hue_sample_x: tuple = (120, 165)    # 取樣窗（crop 座標）：名字與數量之間的純底色帶。
                                               # ⚠ 別往左取，x<10 是面板邊框（深藍 H≈120，與列色無關）

@@ -768,6 +768,39 @@ def test_panel_rows_keeps_row_y_for_hue_sampling():
                                  DEFAULT.panel_name_min_letters) == ["faedrine", "weevil"]
 
 
+# ── 反向色相閘（spec 01：未知色相當高階，擋零點成立）─────────────────────
+
+def test_non_low_tier_hues_blocks_known_whitelist_bands():
+    """三個已量到的高階色帶（46/128/210）都要回來——它們不是低階。"""
+    from miningbot.harvester import non_low_tier_hues
+    got = non_low_tier_hues([46.0, 128.0, 210.0],
+                            DEFAULT.panel_low_tier_hues, DEFAULT.panel_hue_tol_deg)
+    assert got == [46.0, 128.0, 210.0]
+
+
+def test_non_low_tier_hues_rejects_every_measured_low_tier_band():
+    """五個已量到的低階色帶（0/30/166/280/304）一個都不能中。"""
+    from miningbot.harvester import non_low_tier_hues
+    assert non_low_tier_hues([0.0, 30.0, 166.0, 280.0, 304.0],
+                             DEFAULT.panel_low_tier_hues,
+                             DEFAULT.panel_hue_tol_deg) == []
+
+
+def test_non_low_tier_hues_treats_unknown_hue_as_high_tier():
+    """未量到的色相（例如 90）→ 當成高階、擋零點成立（spec 01 核心決定）。"""
+    from miningbot.harvester import non_low_tier_hues
+    assert non_low_tier_hues([90.0], DEFAULT.panel_low_tier_hues,
+                             DEFAULT.panel_hue_tol_deg) == [90.0]
+
+
+def test_non_low_tier_hues_skips_none_and_is_circular():
+    """None 略過；環狀（358 與 0 相差 2°）要算落在低階帶。"""
+    from miningbot.harvester import non_low_tier_hues
+    assert non_low_tier_hues([None, 30.0], DEFAULT.panel_low_tier_hues,
+                             DEFAULT.panel_hue_tol_deg) == []
+    assert non_low_tier_hues([358.0], (0.0,), 6.0) == []   # 358 距 0 是 2°
+
+
 def test_panel_is_zeroed_false_when_header_missing():
     from miningbot.harvester import panel_is_zeroed
     assert panel_is_zeroed(None, [], "NORMAL") is False

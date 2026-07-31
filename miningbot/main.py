@@ -4789,20 +4789,20 @@ class Bot:
         """清空 NORMAL 面板篩選框，維持「進 MINING 時面板上沒有白名單礦」的不變式
         （spec 2026-07-31；判準 2026-07-31 實機放寬，見下）。
 
-        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → click(畫面中央還焦點)。
+        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → key_press("enter")。
         驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，02 據此跳過路 B。
 
         **驗的是「面板上沒有白名單（Exotic+）礦」，不是「面板全空」**（2026-07-31，
-        使用者提出）：還焦點那一下點擊會真的挖到石頭，低階礦立刻回填面板，要求全空
-        實機上永遠達不到。路 B 只問「有沒有白名單礦」，判準見 `harvester.panel_is_zeroed`。
+        使用者提出）：舊版「點畫面中央還焦點」是一次真的挖礦點擊，低階礦立刻回填面板，
+        要求全空實機上永遠達不到。改成 Enter 脫離後面板維持真空，但判準仍放寬成
+        「沒有白名單礦」——低階礦回填不影響路 B 的結論。
+
+        **列底色用反向閘**（spec 01）：色相不落在已知低階帶（0/30/166/280/304）就當成
+        高階 → 零點不成立。未量到的新 tier 也擋得住，代價只是多交一次人工。
 
         **不重試打字**：H047/H063 的教訓是 UI 上「多試幾次」會翻面；點歪的座標若是別的
         按鈕，重試等於多按它幾次。一次失敗＝下一場路 B 關掉＝回到今日行為。重讀面板
         （不重新點也不重新打字）不在此列——那是唯讀的。
-
-        **驗證在「還焦點」之前**（同上）：那一下點擊若剛好挖出稀有礦（chill 會另外
-        觸發），零點會被自己的動作弄假。判準放寬後這條不再是唯一防線，但順序照樣
-        免費，就維持「先驗再還焦點」。
 
         另外多讀一次（`panel_clear_verify_max_s`）：17:43:47 那次讀到的是**清空前
         原封不動的前 8 列**，面板重繪比 settle 慢是其中一個可能。讀不到零點時把該
@@ -4833,16 +4833,17 @@ class Bot:
                     cfg.panel_name_min_letters)
                 names = [n for n, _ in rows]
                 # 第二條 tier 訊號：列底色。礦名讀歪時名字閘會漏，色相不會（D11）。
-                # 只用保守方向——命中就當零點不成立。
-                hue_hits = harvester.whitelist_hue_hits(
+                # spec 01 反向閘：色相不落在已知低階帶（0/30/166/280/304）就當成高階
+                # → 零點不成立。未量到的新 tier 也擋得住。
+                hue_high = harvester.non_low_tier_hues(
                     vision.panel_row_hues(crop, [cy for _, cy in rows],
                                           *cfg.panel_hue_sample_x),
-                    cfg.panel_whitelist_hues, cfg.panel_hue_tol_deg)
-                if hue_hits:
+                    cfg.panel_low_tier_hues, cfg.panel_hue_tol_deg)
+                if hue_high:
                     self.logger.warning(
-                        "面板列底色顯示還有 Exotic+ 礦（H=%s）→ 零點不成立",
-                        "、".join("%.0f" % h for h in hue_hits))
-                if not hue_hits and harvester.panel_is_zeroed(
+                        "面板列底色顯示還有高階礦（H=%s）→ 零點不成立",
+                        "、".join("%.0f" % h for h in hue_high))
+                if not hue_high and harvester.panel_is_zeroed(
                         header, names, cfg.panel_expected_header):
                     self._panel_zeroed_at = time.time()
                     self.logger.info(
@@ -4862,10 +4863,12 @@ class Bot:
             self._panel_zeroed_at = None
             self.logger.warning("面板歸零例外（路 B 將跳過）：%s", e)
         finally:
-            # 焦點一定要還給 3D 世界，否則後續 W／D1／D3 全打進文字框。
-            # 自己包 try：上面若是 click_at 本身壞了，這裡再炸一次會蓋掉原始例外。
+            # 脫離文字框改按 Enter（spec 01）：舊版點畫面中央是一次真的挖礦點擊，
+            # 實測 17:37:04 那次挖到一顆 shamrock 回填面板、害零點判失敗。Enter 不會
+            # 挖到任何東西（玩家確認這款遊戲 Enter 不開聊天輸入列），面板維持真空。
+            # 自己包 try：上面若是 click_at 壞了，這裡再炸一次會蓋掉原始例外。
             try:
-                ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)
+                ic.key_press("enter")
             except Exception:
                 pass
 

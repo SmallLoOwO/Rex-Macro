@@ -614,6 +614,38 @@ def whitelist_hue_hits(hues, whitelist_hues, tol_deg: float) -> list:
     return hits
 
 
+def non_low_tier_hues(hues, low_tier_hues, tol_deg: float) -> list:
+    """列底色色相裡**不落在**任何已知低階色帶的那些（保序）——spec 01 反向閘。
+
+    與 `whitelist_hue_hits` 相反：那個認「落在高階帶」，這個認「不落在低階帶」。
+    差異在於對**未量到的色相**的處置——
+
+    - `whitelist_hue_hits`：未知色相不命中（保守：不算高階）→ 給救援側用
+    - `non_low_tier_hues`：未知色相命中（保守：當成高階）→ 給零點閘用
+
+    零點閘要的是「面板上沒有 Exotic+」；用反向寫法，將來出現沒量過的新 tier
+    （比如比 Transcendent 更高的）也擋得住——新 tier 的色相不會落在已知低階帶裡。
+    猜錯的後果只是「多交一次人工」，不會多放生一顆礦。
+
+    低階色帶清單（`Config.panel_low_tier_hues`）來自 D11 量測：Mythic 304／
+    Surreal 166／低階 0、30、280。色相是環狀的。
+    """
+    out = []
+    for h in hues or ():
+        if h is None:
+            continue
+        h = float(h)
+        in_low = False
+        for target in low_tier_hues or ():
+            d = abs(h - float(target)) % 360.0
+            if min(d, 360.0 - d) <= tol_deg:
+                in_low = True
+                break
+        if not in_low:
+            out.append(h)
+    return out
+
+
 def rare_panel_ores(names) -> list:
     """面板上的白名單（Exotic+）礦名（保序）。
 
