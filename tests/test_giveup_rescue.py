@@ -435,3 +435,151 @@ def test_reconcile_giveup_path_logs_but_never_reroutes(monkeypatch):
     assert bot._chill_reconcile("giveup", notify=False) is False
     assert entered == []
     assert any("帳不平" in line for line in bot.log_harvest.lines)
+
+
+# ── 面板歸零：01 清空原語＋插入點（spec 2026-07-31）─────────────────────────
+
+class _PanelOCR:
+    """偽 read_text_boxes：回指定標頭框＋ 礦名列框，讓 _clear_panel_filter 不碰真 OCR。"""
+
+    def __init__(self, header, names):
+        self._header = header
+        self._names = names
+        self.calls = 0
+
+    def __call__(self, crop, region_offset=(0, 0)):
+        self.calls += 1
+        boxes = []
+        if self._header:
+            boxes.append({"text": self._header, "score": 0.99, "center": (118, 14)})
+        for i, n in enumerate(self._names):
+            boxes.append({"text": n, "score": 0.99, "center": (80, 78 + i * 36)})
+        return boxes
+
+
+def _clear_bot(monkeypatch, *, header="NORMAL", names=None, exc=None):
+    """組一個 fake bot 只綁 _clear_panel_filter，OCR／click／time 全旁路。"""
+    import pydirectinput
+    clicks = []
+    typed = []
+
+    def fake_click(x, y, **kw):
+        clicks.append((x, y))
+
+    if exc:
+        def boom(*a, **kw):
+            raise RuntimeError(exc)
+        monkeypatch.setattr(main.ic, "click_at", boom)
+    else:
+        monkeypatch.setattr(main.ic, "click_at", fake_click)
+    monkeypatch.setattr(pydirectinput, "typewrite",
+                        lambda s, **kw: typed.append(s))
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(main.time, "time", lambda: 9999.0)
+
+    panel_ocr = _PanelOCR(header, names or [])
+    monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
+    monkeypatch.setattr(main.ocr, "read_text_boxes", panel_ocr)
+    monkeypatch.setattr(main.capture, "grab", lambda: _frame())
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+
+    extra = {"_panel_zeroed_at": None}
+    if exc:
+        extra["_panel_zeroed_at"] = 1234.0   # 驗證例外會清成 None
+
+    bot = make_fake_bot(
+        bind=["_clear_panel_filter"],
+        logger=_Rec(),
+        **extra)
+    return bot, clicks, typed, panel_ocr
+
+
+def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
+    bot, clicks, typed, ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+    assert ocr.calls == 1                                   # 只 OCR 一次
+    assert clicks[0] == (119, 441)                          # 先點篩選框
+    assert clicks[1] == (960, 540)                          # 再點畫面中央
+    assert typed == ["w" * cfg.panel_clear_keystrokes]
+
+
+def test_clear_sets_none_when_wrong_page(monkeypatch):
+    bot, *_ = _clear_bot(monkeypatch, header="SPECTRAL", names=[])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert any("SPECTRAL" in line for line in bot.logger.lines)
+
+
+def test_clear_sets_none_when_has_rows(monkeypatch):
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert any("faedrine" in line for line in bot.logger.lines)
+
+
+def test_clear_sets_none_on_exception(monkeypatch):
+    bot, *_ = _clear_bot(monkeypatch, exc="click boom")
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert any("click boom" in line for line in bot.logger.lines)
+
+
+def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
+    """插入點 A：_on_enter(MINING) 清空排在 init_mining_sequence 之前。"""
+    order = []
+    bot = make_fake_bot(
+        bind=["_on_enter"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        human_cleared=True, _movement_check_due=False,
+        _movement_mode_checked=True,
+        _chill_edges=[], _aim_context=None,
+        _release_web_held_aim=lambda send=False: None,
+        _rr_ctx=None, _pending_reentry=None,
+        _mine_resetting=False,
+        _capacity_pct=None, _capacity_streak=0, _capacity_full_logged=False,
+        _post_harvest_watch=0,
+        _focus_roblox=lambda: (order.append("focus") or True),
+        _zoom_normalize=lambda *_: None,
+        _clear_panel_filter=lambda: order.append("clear"),
+        _rotate_verified=None,
+        _log_w_state=lambda *_: None)
+    monkeypatch.setattr(main.miner, "init_mining_sequence",
+                        lambda **kw: order.append("init"))
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
+    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+
+    bot._on_enter(State.MINING, _frame())
+    assert order.index("clear") < order.index("init")
+
+
+def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
+    """插入點 B：_resume_mining_tail 清空排在 init_mining_sequence 之前。"""
+    order = []
+    net_rots = 0
+    bot = make_fake_bot(
+        bind=["_resume_mining_tail"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        harvest=_harvest(), _mine_resetting=False,
+        _post_harvest_watch=0,
+        _log_w_state=lambda *_: None,
+        _rotate_verified=None,
+        _clear_panel_filter=lambda: order.append("clear"))
+    monkeypatch.setattr(main.harvester, "restore_view", lambda *a, **kw: None)
+    monkeypatch.setattr(main.miner, "init_mining_sequence",
+                        lambda **kw: order.append("init"))
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
+    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+
+    bot._resume_mining_tail(net_rots)
+    assert order.index("clear") < order.index("init")

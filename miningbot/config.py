@@ -297,8 +297,10 @@ class Config:
     # 狀態小窗（置頂顯示機器人在做什麼；放左下角避開偵測區，採集時自動隱藏）
     hud_enabled: bool = True
     hud_x: int = 12
-    hud_y: int = 860                      # 905→860（2026-07-12）：工作列調回顯示後頂緣 y≈1015，
-                                          # 905 時倒數畫面（5 行 ~145px）底緣被工作列蓋到；860 連倒數也放得下
+    hud_y: int = 910                      # 905→860（2026-07-12，工作列可見）→910（2026-07-28，全螢幕）：
+                                          # 9925cd9 校準偵測區域時漏改這個——HUD 是獨立 Win32 視窗，錨點是
+                                          # 「螢幕底部可用邊界」不是遊戲畫面，windowed 時工作列擋在 y≈1015、
+                                          # fullscreen 工作列不再擋，邊界下移到螢幕底 1080，同一顆 +50 平移
     launch_countdown_s: int = 0           # 啟動倒數秒數（給時間切到 Roblox）；0 = 不倒數直接啟動
                                           # 3→0（2026-07-12 需求）：啟動環境檢查本身夠長，倒數多餘；
                                           # 要找回倒數改回 >0 即可（HUD _countdown_tick 分支仍在）
@@ -355,6 +357,14 @@ class Config:
                                               # 第一列 y≈78 → 60 兩側夾（擋掉 NORMAL/www/Sh/Mat）
     panel_name_min_letters: int = 3           # 切掉數量後至少要這麼多字母才算礦名：擋 craft
                                               # 欄被讀歪的 1-2 字雜訊（實測 '•P11/'、'.73'、'4/'）
+
+    # 面板歸零（spec 2026-07-31-panel-zero-rescue-design.md）
+    # bot 每次進 MINING 清空 NORMAL 面板的篩選框，維持「進 MINING 時面板必為空」的
+    # 不變式。給救援路 B 一個「面板上有白名單礦 = 這場採到了」的存在性判準。
+    panel_filter_xy: tuple = (119, 441)       # 篩選框中心（2026-07-31 全螢幕 OCR 定位）
+    panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
+    panel_clear_settle_s: float = 0.3         # 打完到 OCR 的等待（OCR 自身 ~1.1s 已是充分 settle）
+    panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
 
     # 雙 chill 對帳（spec 2026-07-30-double-chill-reconciliation-design.md）
     # 兩個都預設關。chill_edge_release_s 的初值**必須**由實機上升緣／回落分布決定，

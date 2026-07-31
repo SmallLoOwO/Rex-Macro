@@ -343,6 +343,7 @@ class Bot:
         self._chill_edges: list = []             # [(時間戳, 分數, 距上次回落秒數)]；_on_enter(MINING) 清空
         self._episode_panel_pre = None           # episode 開場的面板裁圖（雙 chill 對帳用）
         self._episode_chill_at = 0.0             # 本場 chill 時刻（救援取快取的錨點）
+        self._panel_zeroed_at: float | None = None  # 面板歸零時刻（spec 2026-07-31）；None = 不信任面板
         self._episode_succeeded = False          # 本場已記過 HARVEST_SUCCESS（救援不得重複認領）
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
@@ -3243,6 +3244,7 @@ class Bot:
             # 鏡頭距離歸位（2026-07-19）：從 NEEDS_HUMAN/RESET_WAIT/REENTRY 回來，
             # 等待期間人可能滾輪動過鏡頭、且 boost FOV 隨次數漂移——每輪開挖前歸一。
             self._zoom_normalize("MINING 入口")
+            self._clear_panel_filter()                        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -4815,6 +4817,47 @@ class Bot:
         except Exception as e:                  # 純診斷，失敗不擋啟動
             self.logger.warning("NORMAL 面板列數記錄失敗：%s", e)
 
+    def _clear_panel_filter(self) -> None:
+        """清空 NORMAL 面板篩選框，維持「進 MINING 時面板必為空」的不變式（spec 2026-07-31）。
+
+        序列：click(篩選框) → typewrite("w" × N) → click(畫面中央還焦點) → settle →
+        OCR 驗「標頭 == NORMAL 且 0 列」。驗過才記 ``_panel_zeroed_at``；否則設 None
+        ＋ WARNING，02 據此跳過路 B。
+
+        **不重試**：H047/H063 的教訓是 UI 上「多試幾次」會翻面；點歪的座標若是別的按鈕，
+        重試等於多按它幾次。一次失敗＝下一場路 B 關掉＝回到今日行為。
+        """
+        try:
+            ic.click_at(*cfg.panel_filter_xy)
+            time.sleep(0.15)
+            import pydirectinput
+            pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
+            ic.click_at(cfg.screen_w // 2, cfg.screen_h // 2)   # 還焦點給 3D 世界
+            time.sleep(cfg.panel_clear_settle_s)
+
+            if not ocr.rapidocr_available():
+                self._panel_zeroed_at = None
+                self.logger.info("面板歸零：rapidocr 不可用 → 跳過驗證（路 B 將不信任面板）")
+                return
+
+            crop = capture.crop(capture.grab(), cfg.backpack_review_region)
+            boxes = ocr.read_text_boxes(crop)
+            header = harvester.panel_header(boxes, cfg.panel_row_min_y)
+            names = harvester.parse_panel_ore_names(
+                boxes, cfg.panel_name_col_max_x, cfg.panel_row_min_y,
+                cfg.panel_name_min_letters)
+            if harvester.panel_is_zeroed(header, names, cfg.panel_expected_header):
+                self._panel_zeroed_at = time.time()
+                self.logger.info("面板已歸零（標頭 %s、0 列）", header)
+            else:
+                self._panel_zeroed_at = None
+                self.logger.warning(
+                    "面板歸零失敗：標頭 %s、列數 %d（%s）→ 路 B 將跳過下一場",
+                    header or "讀不到", len(names), "、".join(names) or "空")
+        except Exception as e:
+            self._panel_zeroed_at = None
+            self.logger.warning("面板歸零例外（路 B 將跳過）：%s", e)
+
     def _rescue_chat_ores(self, pre_crop, cur_crop, hid: str) -> list:
         """救援路 A（聊天）：chill 前 vs 現在，新增 has-found 行裡的非-common 礦名。
 
@@ -6349,6 +6392,7 @@ class Bot:
             return
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
+        self._clear_panel_filter()        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
         miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
         # init 已在動畫後執行；仍保留 release→置中→鎬子→re-press 保險：動畫偶爾拖過 1s，
         # 且遊戲會認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。

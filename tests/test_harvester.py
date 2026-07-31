@@ -656,6 +656,62 @@ def test_new_rare_panel_ores_h069_live_panel_names():
         game_data.clear_world()
 
 
+# ── 面板標頭與歸零驗證（spec 2026-07-31 面板歸零救援）──────────────────────
+
+_PANEL_HEADERS = ("NORMAL", "IONIZED", "SPECTRAL")
+
+
+def test_panel_header_finds_normal():
+    from miningbot.harvester import panel_header
+    boxes = [_box("NORMAL", 118, 14), _box("faedrine", 80, 78)]
+    assert panel_header(boxes, DEFAULT.panel_row_min_y, _PANEL_HEADERS) == "NORMAL"
+
+
+def test_panel_header_finds_spectral():
+    from miningbot.harvester import panel_header
+    boxes = [_box("SPECTRAL", 118, 14)]
+    assert panel_header(boxes, DEFAULT.panel_row_min_y, _PANEL_HEADERS) == "SPECTRAL"
+
+
+def test_panel_header_none_when_below_row_min_y():
+    """標頭框落在 row_min_y 以下（ 礦名列區）→ 不算標頭。"""
+    from miningbot.harvester import panel_header
+    boxes = [_box("NORMAL", 118, 78)]
+    assert panel_header(boxes, DEFAULT.panel_row_min_y, _PANEL_HEADERS) is None
+
+
+def test_panel_header_none_when_empty():
+    from miningbot.harvester import panel_header
+    assert panel_header([], DEFAULT.panel_row_min_y, _PANEL_HEADERS) is None
+
+
+def test_panel_header_ignores_non_header_text():
+    """www 篩選框 y≈45 < row_min_y=60，但文字不在標頭集合 → 不算標頭。"""
+    from miningbot.harvester import panel_header
+    boxes = [_box("wwww", 119, 45), _box("Faedrine", 80, 78)]
+    assert panel_header(boxes, DEFAULT.panel_row_min_y, _PANEL_HEADERS) is None
+
+
+def test_panel_is_zeroed_true_for_normal_empty():
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("NORMAL", [], "NORMAL") is True
+
+
+def test_panel_is_zeroed_false_for_wrong_page():
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("SPECTRAL", [], "NORMAL") is False
+
+
+def test_panel_is_zeroed_false_when_has_rows():
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("NORMAL", ["faedrine"], "NORMAL") is False
+
+
+def test_panel_is_zeroed_false_when_header_missing():
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed(None, [], "NORMAL") is False
+
+
 # ── 雙 chill 對帳判定（spec 2026-07-30-double-chill-reconciliation-design.md）──
 
 def test_chill_reconcile_single_edge_always_balanced():

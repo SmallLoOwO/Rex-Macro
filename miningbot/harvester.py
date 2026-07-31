@@ -515,6 +515,35 @@ def pick_prechill_ref(entries, before_ts: float, min_age_s: float, max_age_s: fl
 # （"Cloverstone 1,6" → "Cloverstone"、"Imbollyx. 8" → "Imbollyx."）。
 _PANEL_COUNT_START = re.compile(r"[\d,]")
 
+# NORMAL 背包面板的三個頁籤標頭（spec 2026-07-31 面板歸零救援）
+_PANEL_HEADERS = frozenset(("NORMAL", "IONIZED", "SPECTRAL"))
+
+
+def panel_header(boxes, row_min_y: int, headers=_PANEL_HEADERS) -> str | None:
+    """從 ``read_text_boxes`` 結果取面板標頭（``NORMAL``／``IONIZED``／``SPECTRAL``）。
+
+    標頭框 center.y < row_min_y（標頭排在礦物列之上），文字在 ``headers`` 集合內。
+    ``www`` 篩選框 y≈45 雖然也在 row_min_y 之上，但文字不在集合內 → 不算標頭。
+    同一次 OCR 呼叫同時取標頭與礦名列，不必開新 region。
+    """
+    for box in boxes or []:
+        _, cy = box.get("center", (0, 0))
+        if cy >= row_min_y:
+            continue
+        text = (box.get("text") or "").strip().upper()
+        if text in headers:
+            return text
+    return None
+
+
+def panel_is_zeroed(header: str | None, names: list, expected_header: str) -> bool:
+    """面板是否已歸零：標頭 == expected 且 names 空。
+
+    任何不過的條件（標頭讀不到、在別頁、面板有列）→ False。
+    False 時呼叫端應把 ``_panel_zeroed_at`` 設 None ＋ WARNING，路 B 據此跳過。
+    """
+    return header == expected_header and not names
+
 
 def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -> list:
     """左下 NORMAL 面板的 `ocr.read_text_boxes` 結果 → 畫面上有哪些礦名（保序去重、小寫）。
