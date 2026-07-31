@@ -55,8 +55,11 @@ def test_intervention_html_has_pinch_zoom_or_scroll_zoom():
 # ---------------------------------------------------------------------------
 
 
-def _manual_survey_bot(monkeypatch, discord_calls, **over):
-    """手動瞄準八方位的 fake bot：D2/旋轉/落盤全 stub，只留「掃完之後怎麼分流」。"""
+def _manual_survey_bot(monkeypatch, discord_calls, *, step_px=100, **over):
+    """手動瞄準的 fake bot：D2/旋轉/俯仰/落盤全 stub，只留「拍了幾層、之後怎麼分流」。
+
+    `step_px=0` ＝俯仰未校準 → `plan_pitch_layers` 回空 list → 只拍 mid（舊行為）。
+    """
     import numpy as np
     import miningbot.main as main_mod
     from tests.fake_bot import make_fake_bot, FakeWebThread
@@ -68,6 +71,8 @@ def _manual_survey_bot(monkeypatch, discord_calls, **over):
     monkeypatch.setattr(main_mod.notify, "send_message",
                         lambda *a, **kw: (discord_calls.append("text"), (True, "ok"))[1])
     monkeypatch.setattr(main_mod.harvester, "prepare_scan", lambda: None)
+    monkeypatch.setattr(main_mod.cfg, "sweep_pitch_step_px", step_px)
+    monkeypatch.setattr(main_mod.cfg, "sweep_pitch_center_back_px", 370)
     attrs = dict(
         _web_pending=object(),
         _web_thread=FakeWebThread(),
@@ -81,6 +86,7 @@ def _manual_survey_bot(monkeypatch, discord_calls, **over):
         _run_scan=lambda: None,
         _confirm_scan=lambda tag: True,
         _rotate_verified=lambda step: True,
+        _pitch_goto_layer=lambda tag, nudge_px: True,
         _hsnap=lambda f, label: "",       # 落盤走非同步，測試不落地
         _encode_png=lambda f: b"png",
         _notify_web_intervention_pending=lambda key, headline, hint: None,
@@ -89,39 +95,87 @@ def _manual_survey_bot(monkeypatch, discord_calls, **over):
     attrs.update(over)
     return make_fake_bot(
         bind=["_execute_manual_survey", "_await_manual_survey_web_click",
-              "_release_web_held_aim"],
+              "_release_web_held_aim", "_send_manual_survey_discord"],
         **attrs)
 
 
-def test_main_manual_survey_pushes_eight_frames_then_waits(monkeypatch):
-    """2026-07-31：掃完八方位才推網頁，且**不看有沒有連線**。
+def test_main_manual_survey_pushes_three_layers_then_waits(monkeypatch):
+    """2026-07-31：掃完才推網頁、**不看有沒有連線**，而且拍的是三層。
 
     舊版三個毛病：只在 `is_fallback()==False` 時推、推的是掃描前的當下一幀、
     60s 逾時就洗 Discord。玩家是被 Discord 提醒才開網頁的人，那三條加起來
     等於網頁路徑在實機從未成立。
+    第四個毛病是只拍 mid（harvest 144：礦在候選上方，交還之後根本挖不到）。
     """
     from tests.fake_bot import FakeHarvestCtx
     pushed, discord_calls = [], []
     bot = _manual_survey_bot(
         monkeypatch, discord_calls,
         _send_web_intervention_frames=lambda **kw: (
-            pushed.append((kw["routing_key"], len(kw["frames"]))) or True),
+            pushed.append((kw["routing_key"], kw["frames"])) or True),
         _await_web_action=lambda routing_key, controls=(): (
-            "click", {"x": 851, "y": 189, "dir": 5, "layer": "mid"}),
+            "click", {"x": 851, "y": 189, "dir": 5, "layer": "up"}),
         _resolve_web_intervention_ping=lambda key: None,
     )
-    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+    ctx = FakeHarvestCtx(harvest_id="007")
+    bot._execute_manual_survey(ctx)
 
-    assert pushed == [("harvest:007", 8)], f"應推 8 張原幀，實際：{pushed}"
-    assert discord_calls == [], f"網頁接手時不該發 Discord 八方位圖，實際：{discord_calls}"
+    assert len(pushed) == 1 and pushed[0][0] == "harvest:007"
+    frames = pushed[0][1]
+    assert len(frames) == 24, f"應推 3 層 × 8 方位，實際：{len(frames)}"
+    assert {lay for _d, lay, _p in frames} == {"mid", "up", "down"}
+    # 只有一則「要拍三層、約 2 分鐘」的預告文字；圖一張都不該發
+    assert discord_calls == ["text"], f"網頁接手時不該發 Discord 圖，實際：{discord_calls}"
     # 點擊排進 _pending_aim（走 _execute_remote_fire 的完整對齊＋重掃）
     assert bot._pending_aim.kind == "point"
     assert bot._pending_aim.pos == (851, 189)
     assert bot._pending_aim.dir_idx == 4          # 介面 1-8 → 內部 0-based
+    assert bot._pending_aim.layer == "up", "玩家點的是抬頭層那張，開火前要調回去"
+    assert ctx.pose_pitch_layer == "mid", "收尾要歸位，否則 plan_alignment 起點記錯"
+
+
+def test_main_manual_survey_stays_single_layer_when_uncalibrated(monkeypatch):
+    """步進量未校準（0）→ 逐字回到只拍 mid 的舊行為，不多花那 90 秒。"""
+    from tests.fake_bot import FakeHarvestCtx
+    pushed, discord_calls = [], []
+    bot = _manual_survey_bot(
+        monkeypatch, discord_calls, step_px=0,
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append(kw["frames"]) or True),
+        _await_web_action=lambda routing_key, controls=(): (
+            "click", {"x": 1, "y": 1, "dir": 1}),
+        _resolve_web_intervention_ping=lambda key: None,
+    )
+    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert len(pushed[0]) == 8
+    assert {lay for _d, lay, _p in pushed[0]} == {"mid"}
+
+
+def test_main_manual_survey_skips_layer_whose_drag_was_eaten(monkeypatch):
+    """抬頭拖曳兩輪都被吃 → 跳過那層繼續，不在角度不明的情況下硬拍。"""
+    from tests.fake_bot import FakeHarvestCtx
+    pushed, discord_calls = [], []
+
+    def _goto(tag, nudge_px):
+        return "up" not in tag                    # up 層拖曳被吃
+
+    bot = _manual_survey_bot(
+        monkeypatch, discord_calls,
+        _pitch_goto_layer=_goto,
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append(kw["frames"]) or True),
+        _await_web_action=lambda routing_key, controls=(): (
+            "click", {"x": 1, "y": 1, "dir": 1}),
+        _resolve_web_intervention_ping=lambda key: None,
+    )
+    bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
+
+    assert {lay for _d, lay, _p in pushed[0]} == {"mid", "down"}
 
 
 def test_main_manual_survey_escalate_sends_discord_images(monkeypatch):
-    """玩家按 🔀 → 才發 Discord 八方位圖（同一批掃描，不重掃）。"""
+    """玩家按 🔀 → 才發 Discord 圖；三層分開發，每層 4 張/則。"""
     from tests.fake_bot import FakeHarvestCtx
     discord_calls = []
     bot = _manual_survey_bot(
@@ -142,8 +196,9 @@ def test_main_manual_survey_escalate_sends_discord_images(monkeypatch):
 
     bot._execute_manual_survey(FakeHarvestCtx(harvest_id="007"))
 
-    assert discord_calls == ["images", "images"], (
-        f"按 🔀 後要補發八方位圖（4 張/則 → 2 則），實際：{discord_calls}")
+    # 開場一則文字（三層預告）＋ 3 層 × 2 則圖
+    assert discord_calls == ["text"] + ["images"] * 6, (
+        f"三層各 8 張、4 張/則分層發，實際：{discord_calls}")
 
 
 def test_main_manual_survey_without_web_server_goes_straight_to_discord(monkeypatch):

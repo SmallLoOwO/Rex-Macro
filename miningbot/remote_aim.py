@@ -280,9 +280,26 @@ def format_candidate_summary(candidates) -> str:
 
 AIM_GROUP_HEADER = ("🎯 近失候選——回編號（如 `2`）腳本自動對齊射擊；"
                     "`跳過` 回挖礦；`手動` 最後手段（重掃＋全方位圖）")
+# 層名 → 網格語法後綴（`5U C3`）。_LAYER_SUFFIX 的反向表，兩邊都要改時才不會漏一邊。
+LAYER_SUFFIX = {"mid": "", "up": "U", "down": "D"}
 MANUAL_SURVEY_HELP = ("🧭 手動瞄準（D2 已重掃、效果窗內實況）——回 `方位 格子` 射擊（方位 1-8）："
                       "`5 C3`＝圖上 DIR5 的 C3 格；`5U C3`/`5D C3`＝上/下層（盲射）；"
                       "`跳過` 回挖礦。選格後會先自動抓框中心，抓不到再放大讓你點")
+
+
+def manual_survey_help(multi_layer: bool) -> str:
+    """手動瞄準首則 caption（純函式）。
+
+    三層都拍了就不能再說 `5U`/`5D` 是「盲射」——上下層的圖就在同一批訊息裡，
+    照著標頭的 `| UP` / `| DOWN` 打即可（harvest 144：礦在候選上方，只給平視圖
+    等於那顆礦挖不到）。未校準時仍只拍 mid，維持舊文案。
+    """
+    if not multi_layer:
+        return MANUAL_SURVEY_HELP
+    return ("🧭 手動瞄準（D2 每層都重掃、效果窗內實況）——回 `方位 格子` 射擊（方位 1-8）："
+            "`5 C3`＝**平視層** DIR5 的 C3 格；`5U C3`／`5D C3`＝**抬頭／低頭層**"
+            "（照圖上標頭 `| UP`／`| DOWN` 打，不是盲射）；`跳過` 回挖礦。"
+            "選格後會先自動抓框中心，抓不到再放大讓你點")
 
 
 def aim_unknown_help(awaiting_fine: bool = False) -> str:

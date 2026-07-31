@@ -195,11 +195,21 @@ conventions.
       PING (picked up in `_consume_web_pending`, which is where NEEDS_HUMAN ticks).
       The chat/backpack before-after crops still go out immediately: they are the
       evidence for *why* it gave up and have no web equivalent.
-    - **Manual survey (`手動`)** — D2 rescan and the eight-direction capture run
-      **first**, then the raw frames go to the web and the grid overlays are held for
-      Discord. The web click queues `_pending_aim` (kind `point`) so it goes through
+    - **Manual survey (`手動`)** — D2 rescan and the direction capture run **first**,
+      then the raw frames go to the web and the grid overlays are held for Discord.
+      The web click queues `_pending_aim` (kind `point`) so it goes through
       `_execute_remote_fire`'s realign → rescan → refind sequence; it must not borrow
       `_handle_web_aim_click`, which drops replies while `_aim_busy` is set.
+      It captures **mid + up + down** (24 frames) whenever pitch is calibrated,
+      gated on `plan_pitch_layers(True, …)` and deliberately **not** on
+      `sweep_pitch_enabled` — that flag governs the automatic failure path, while
+      `手動` is an explicit player request (harvest 144: the ore sat above near-miss
+      candidate ⑨, and a mid-only handoff made it unreachable). `_handle_aim_reply`
+      accepts `5U`/`5D` under the same calibration-only gate, or the images would be
+      sent to a syntax that answers 看不懂. Per-layer: re-press D2 (a full layer takes
+      ~30s and trackers expire), budget restarts after the rescan, an eaten drag skips
+      that layer, and the survey ends with `_pitch_goto_layer(…, 0)` so
+      `ctx.pose_pitch_layer` is honest for the next `plan_alignment`.
     Both use the routing key `harvest:<harvest_id>`, so a later push replaces the
     earlier panel — release the held images before pushing a new batch.
 

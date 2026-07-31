@@ -83,6 +83,10 @@ _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；�
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
+# 手動瞄準三層掃描（2026-07-31）：顯示順序與人話層名。up 排最前——實機經驗礦多在
+# 壁上高處（同 harvester.plan_pitch_layers 的順序論證）。
+_MANUAL_LAYER_ORDER = {"up": 0, "mid": 1, "down": 2}
+_MANUAL_LAYER_LABEL = {"up": "抬頭層", "mid": "平視層", "down": "低頭層"}
 # 遙控器 embed 標題——啟動時靠它掃頻道「認領」跨重啟殘留的遙控器（find_remote_messages），
 # 故字串必須與 _build_remote_embed 的 "title" 一字不差（含中間那個空格）。
 _REMOTE_TITLE = "🎮 挖 礦機器人遙控器"
@@ -2474,8 +2478,11 @@ class Bot:
         if ctx is None:      # 競態：elif 檢查過到此期間主迴圈已作廢 context（回 MINING 等）
             notify.send_message(token, ch, "目前沒有待瞄準的採集（已回挖礦/作廢）")
             return
+        # `5U C3`/`5D C3` 收不收，只看**俯仰有沒有校準**，不看 sweep_pitch_enabled
+        # （2026-07-31）：那個開關管的是「自動掃描要不要自己多掃兩層」，而 `手動`
+        # 現在一律拍三層——用它當閘會出現「圖發了、打上去卻回看不懂」的死路。
         layers = ("mid", "up", "down") if harvester.plan_pitch_layers(
-            cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
+            True, cfg.sweep_pitch_step_px,
             cfg.sweep_pitch_center_back_px) else ("mid",)
         reply = remote_aim.parse_reply(content, len(ctx.candidates), layers,
                                        awaiting_fine=ctx.awaiting_fine)
@@ -5205,9 +5212,19 @@ class Bot:
         """手動最後手段（2026-07-19 spec §4）：現場重按 D2＋確認生效 → 8 方位各拍一張
         （效果窗內＝手動圖的 D2 保證）→ 網頁推原幀等點，或 Discord 疊網格分則發送。
 
-        只拍 mid 層（`5U C3`/`5D C3` 盲射語法仍可用）、不開火；失敗回報後不自動重試
-        （有界），_aim_context 保留等下一則回覆。姿態記帳走 ctx.pose_net_rotations，
-        旋轉被吃不計（同 fire 路徑慣例）——轉滿 8 次回原方位。
+        不開火；失敗回報後不自動重試（有界），_aim_context 保留等下一則回覆。
+        姿態記帳走 ctx.pose_net_rotations，旋轉被吃不計（同 fire 路徑慣例）——
+        每層轉滿 8 次回原方位。
+
+        **2026-07-31：改拍 mid/up/down 三層**（使用者指定）。舊版只拍 mid，於是
+        「自動掃描沒找到 → 交人工 → 人工也只看得到同一層」——harvest 144 就是這型：
+        礦在近失候選 ⑨ 的**上方**，交還之後玩家手上只有八張平視圖，那顆礦不可能被挖到。
+        `5U C3`/`5D C3` 的盲射語法一直都在，但沒有那層的圖等於叫人閉著眼睛開槍。
+        層序列取自 `harvester.plan_pitch_layers`（與失敗路徑同一份定義），
+        **不看 `sweep_pitch_enabled`**——那個開關管的是「自動掃描要不要自己多掃兩層」，
+        而 `手動` 是玩家明確要求的最後手段，這時少給一層資訊沒有道理。
+        步進量未校準（`sweep_pitch_step_px=0`）時序列為空，逐字回到只拍 mid 的行為。
+        代價：約多 90-100 秒（兩次俯仰拖曳 + 兩圈旋轉），進場時就告知玩家。
 
         **2026-07-31：改成「先掃再問、無條件推、無限等、🔀 才轉 Discord」**（使用者
         指定，與回礦 `_reentry_await_player_click` 同一套規則）。舊版三個毛病一次修掉：
@@ -5229,52 +5246,78 @@ class Bot:
         routing_key = f"harvest:{hid}"
         # 玩家改用 `手動`＝要的是新的一批圖，giveup 那批扣住的候選疊圖就此作廢
         self._release_web_held_aim(send=False)
-        deadline = time.time() + cfg.remote_aim_budget_s
         if not self._focus_roblox():
             notify.send_message(token, ch, "❌ 無法聚焦 Roblox，可再回 `手動` 重試或 `跳過`")
             return
         if self._mine_resetting:
             notify.send_message(token, ch, "❌ 礦坑重置中，`跳過` 回挖礦")
             return
-        if ctx.pose_pitch_layer != "mid":
-            ok = self._pitch_drag_verified(
-                f"[{hid}] MANUAL 俯仰歸位",
-                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
-                                       cfg.sweep_pitch_center_back_px))
-            ctx.pose_pitch_layer = "mid"   # reset 至少跑過，保守記歸位（同 fire 路徑）
-            if not ok:
-                notify.send_message(token, ch, "❌ 俯仰歸位被吃，可再回 `手動` 重試或 `跳過`")
-                return
-        harvester.prepare_scan()
-        self._await_scan_ready("remote-aim-manual")
-        self._run_scan()           # 重按 D2：手動圖必須在掃描效果窗內拍
-        if not self._confirm_scan("remote-aim-manual"):
-            notify.send_message(token, ch, "❌ 掃描未生效，可再回 `手動` 重試或 `跳過`")
-            return
-        snaps = {}                          # {abs_dir: 原幀快照路徑}；被吃重拍同方位保留最新
-        web_frames = []                     # [(abs_dir, "mid", png)]（原幀、無格線）
+        extra = harvester.plan_pitch_layers(
+            True, cfg.sweep_pitch_step_px, cfg.sweep_pitch_center_back_px)
+        layers = [harvester.PitchLayer("mid", 0)] + list(extra)
+        if extra:
+            notify.send_message(
+                token, ch,
+                f"🧭 手動瞄準：改拍 {len(layers)} 層（平視＋抬頭＋低頭）共 {len(layers) * 8} 張，"
+                f"約需 2 分鐘——礦在上下層時平視那 8 張本來就照不到")
+        snaps = {}                          # {(layer, abs_dir): 原幀快照路徑}
+        web_frames = []                     # [(abs_dir, layer, png)]（原幀、無格線）
         want_web = self._web_thread is not None
-        for _ in range(8):
-            if time.time() > deadline:
-                self.logger.warning("[%s] MANUAL survey 預算用盡（拍到 %d 方位）",
-                                    hid, len(snaps))
+        for layer in layers:
+            # 每層絕對定位（reset→nudge）。mid 只做 reset＝冪等歸位，同舊行為。
+            if not self._pitch_goto_layer(f"[{hid}] MANUAL 俯仰層 {layer.name}",
+                                          layer.nudge_px):
+                if layer.name == "mid":
+                    notify.send_message(
+                        token, ch, "❌ 俯仰歸位被吃，可再回 `手動` 重試或 `跳過`")
+                    return
+                self.logger.warning("[%s] MANUAL 俯仰層 %s 拖曳兩輪皆疑似被吃 -> 跳過該層",
+                                    hid, layer.name)
+                continue
+            ctx.pose_pitch_layer = layer.name
+            if self._mine_resetting:
+                self.logger.info("[%s] MANUAL survey 途中礦坑重置 -> 停止掃層", hid)
                 break
-            abs_dir = ctx.pose_net_rotations % 8
-            frame = capture.grab()
-            path = self._hsnap(frame, f"manual_survey_dir{abs_dir}")
-            if path:
-                snaps[abs_dir] = path
-            if want_web:
-                # 就地編碼而不是事後讀檔：_hsnap 是非同步寫檔，推送當下可能還沒落盤
-                png = self._encode_png(frame)
-                if png is not None:
-                    web_frames.append((abs_dir, "mid", png))
-            if self._rotate_verified(1):
-                ctx.pose_net_rotations += 1
-        rendered = []
+            # 每層都重按一次 D2：手動圖必須在掃描效果窗內拍，而走完一層約 30s，
+            # tracker 會因掃描到期自行淡出（同失敗路徑 _pitch_layer_transition 的論證）。
+            where = f"remote-aim-manual-{layer.name}"
+            harvester.prepare_scan()
+            self._await_scan_ready(where)
+            self._run_scan()
+            if not self._confirm_scan(where) and layer.name == "mid":
+                notify.send_message(token, ch, "❌ 掃描未生效，可再回 `手動` 重試或 `跳過`")
+                return
+            # 每層獨立預算，從重掃**之後**才起算（同失敗路徑：放前面會被掃描內含的
+            # 等待與可能的冷卻等待吃掉）
+            deadline = time.time() + cfg.remote_aim_budget_s
+            for _ in range(8):
+                if time.time() > deadline:
+                    self.logger.warning("[%s] MANUAL survey %s 層預算用盡（拍到 %d 方位）",
+                                        hid, layer.name, len(snaps))
+                    break
+                abs_dir = ctx.pose_net_rotations % 8
+                frame = capture.grab()
+                path = self._hsnap(
+                    frame, f"manual_survey_{layer.name}_dir{abs_dir}")
+                if path:
+                    snaps[(layer.name, abs_dir)] = path
+                if want_web:
+                    # 就地編碼而不是事後讀檔：_hsnap 是非同步寫檔，推送當下可能還沒落盤
+                    png = self._encode_png(frame)
+                    if png is not None:
+                        web_frames.append((abs_dir, layer.name, png))
+                if self._rotate_verified(1):
+                    ctx.pose_net_rotations += 1
+        if len(layers) > 1:
+            # 收尾歸位：之後 _execute_remote_fire 的 plan_alignment 以 pose_pitch_layer
+            # 為起點，記錯就會朝錯的角度開火。reset 至少跑過 → 保守記 mid（同 fire 路徑）。
+            self._pitch_goto_layer(f"[{hid}] MANUAL 俯仰收尾歸位", 0)
+            ctx.pose_pitch_layer = "mid"
+        rendered = []                       # [(layer, abs_dir, 疊圖路徑)]
         wait_deadline = time.monotonic() + cfg.remote_aim_snapshot_wait_s
-        for abs_dir in sorted(snaps):
-            path = snaps[abs_dir]
+        for layer_name, abs_dir in sorted(snaps, key=lambda k: (
+                _MANUAL_LAYER_ORDER.get(k[0], 9), k[1])):
+            path = snaps[(layer_name, abs_dir)]
             remaining = max(0.0, wait_deadline - time.monotonic())
             if not self._wait_snapshot_ready(path, remaining):
                 self.logger.warning("MANUAL snapshot missing: %s", path)
@@ -5285,17 +5328,18 @@ class Bot:
                 continue
             remote_aim.draw_grid(image)
             self._draw_aim_header(
-                image, f"DIR {remote_aim.dir_label(abs_dir)} | MID")
+                image, f"DIR {remote_aim.dir_label(abs_dir)} | {layer_name.upper()}")
             out_path = os.path.splitext(path)[0] + "_manual.png"
             if not cv2.imwrite(out_path, image):
                 self.logger.warning("MANUAL overlay write failed: %s", out_path)
                 continue
             try:
                 diagnostics.append_snapshot_index(
-                    cfg.log_dir, f"{hid}_manual_survey_dir{abs_dir}", out_path)
+                    cfg.log_dir,
+                    f"{hid}_manual_survey_{layer_name}_dir{abs_dir}", out_path)
             except Exception as exc:
                 self.logger.warning("MANUAL overlay index failed (%s): %s", out_path, exc)
-            rendered.append(out_path)
+            rendered.append((layer_name, out_path))
         if not rendered and not web_frames:
             notify.send_message(token, ch, "❌ 全方位快照失敗，可再回 `手動` 重試或 `跳過`")
             return
@@ -5305,11 +5349,31 @@ class Bot:
         if not rendered:
             notify.send_message(token, ch, "❌ 全方位快照失敗，可再回 `手動` 重試或 `跳過`")
             return
-        for i in range(0, len(rendered), 4):
-            caption = (remote_aim.MANUAL_SURVEY_HELP if i == 0
-                       else "🧭 手動瞄準（續）")
-            notify.send_images_message(token, ch, caption, rendered[i:i + 4])
-        self.log_discord.info("MANUAL survey -> %d 方位圖已發", len(rendered))
+        self._send_manual_survey_discord(rendered)
+        self.log_discord.info("MANUAL survey -> %d 張方位圖已發（%d 層）",
+                              len(rendered), len({lay for lay, _ in rendered}))
+
+    def _send_manual_survey_discord(self, rendered) -> None:
+        """把手動瞄準的疊圖分層、每層 4 張/則發到 Discord。
+
+        分層發而不是一路 4 張切下去：`5U C3` 要玩家自己認出「這張是上層」，
+        混在一起的縮圖牆只靠標頭那行字太容易看錯（標頭已印 `| UP`，caption 再講一次）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        multi = len({lay for lay, _ in rendered}) > 1
+        first = True
+        for layer_name in sorted({lay for lay, _ in rendered},
+                                 key=lambda n: _MANUAL_LAYER_ORDER.get(n, 9)):
+            paths = [p for lay, p in rendered if lay == layer_name]
+            for i in range(0, len(paths), 4):
+                if first:
+                    caption = remote_aim.manual_survey_help(multi)
+                    first = False
+                else:
+                    caption = (f"🧭 手動瞄準｜{_MANUAL_LAYER_LABEL.get(layer_name, layer_name)}"
+                               f"（{remote_aim.LAYER_SUFFIX.get(layer_name, '')}）")
+                notify.send_images_message(token, ch, caption, paths[i:i + 4])
 
     def _await_manual_survey_web_click(self, ctx, routing_key: str,
                                        web_frames) -> bool:
@@ -5329,10 +5393,12 @@ class Bot:
                 ctx_summary=self._summarize_survey_ctx(ctx),
                 note="左右切方位 → 直接點目標位置；也可在 Discord 回 `方位 格子`／`跳過`"):
             return False
+        layers = len({lay for _d, lay, _p in web_frames})
         self._notify_web_intervention_pending(
             routing_key,
-            f"手動瞄準 [{ctx.harvest_id}] 已重掃 D2 並拍好 {len(web_frames)} 個方位",
-            "左右切方位 → 直接點目標位置（點完 bot 會自己對齊、重掃、開火）。")
+            f"手動瞄準 [{ctx.harvest_id}] 已重掃 D2 並拍好 {len(web_frames)} 張"
+            + (f"（{layers} 層 × 8 方位）" if layers > 1 else "（8 方位）"),
+            "左右切換 → 直接點目標位置（點完 bot 會自己對齊俯仰／方位、重掃、開火）。")
         self.log_discord.info(
             "[%s] MANUAL survey: 已推 %d 張到網頁；無限等，玩家按 %s 才改 Discord",
             ctx.harvest_id, len(web_frames), _WEB_ESCALATE_EMOJI)
@@ -8478,6 +8544,31 @@ class Bot:
         ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)
         ic.settle(cfg.sampler_pitch_focus_settle_s)
 
+    def _pitch_goto_layer(self, tag: str, nudge_px: int) -> bool:
+        """絕對定位到某俯仰層：pitch_reset 回標準角 → nudge；兩輪都被吃回 False。
+
+        `nudge_px=0` ＝回標準層（只做 reset）。整組（reset→nudge）一起重來——reset
+        冪等（飽和→回拉）使重試安全、nudge 單獨重送會過量（sampler 微調不重送的教訓）。
+
+        2026-07-31 從 `_pitch_layer_transition` 抽出來給手動瞄準三層掃描共用：
+        兩邊都要「絕對定位到某層、被吃就放棄該層」，各寫一份必然漂。
+        """
+        ok = False
+        for attempt in (1, 2):
+            ok = self._pitch_drag_verified(
+                f"{tag} 歸位(attempt {attempt})",
+                lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
+                                       cfg.sweep_pitch_center_back_px))
+            if ok and nudge_px:
+                ok = self._pitch_drag_verified(
+                    f"{tag} nudge {nudge_px}px(attempt {attempt})",
+                    lambda: ic.pitch_nudge(nudge_px))
+            if ok:
+                return True
+            self._focus_roblox()
+            ic.settle(cfg.sampler_pitch_focus_settle_s)
+        return ok
+
     def _pitch_layer_transition(self) -> bool:
         """失敗路徑俯仰層轉換：pitch_reset 絕對基準 → nudge 到下一層（2026-07-11 spec）。
 
@@ -8493,20 +8584,7 @@ class Bot:
                 return False
             layer = self.harvest.pitch_layers_left.pop(0)
             self.harvest.pitch_touched = True
-            for attempt in (1, 2):
-                ok = self._pitch_drag_verified(
-                    f"[{hid}] 俯仰層 {layer.name} 歸位(attempt {attempt})",
-                    lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
-                                           cfg.sweep_pitch_center_back_px))
-                if ok:
-                    ok = self._pitch_drag_verified(
-                        f"[{hid}] 俯仰層 {layer.name} nudge {layer.nudge_px}px(attempt {attempt})",
-                        lambda: ic.pitch_nudge(layer.nudge_px))
-                if ok:
-                    break
-                self._focus_roblox()
-                ic.settle(cfg.sampler_pitch_focus_settle_s)
-            if not ok:
+            if not self._pitch_goto_layer(f"[{hid}] 俯仰層 {layer.name}", layer.nudge_px):
                 self.logger.warning("[%s] 俯仰層 %s 拖曳兩輪皆疑似被吃 -> 跳過該層",
                                     hid, layer.name)
                 continue

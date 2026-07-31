@@ -1650,8 +1650,14 @@ function renderNav() {
   // 沒有預測（偵測回空／分數低於門檻）時面板與舊行為逐項一致：不畫圈、不加鍵。
   adoptBtn.hidden = !(currentEvent && currentEvent.flow === 'reentry'
                       && currentPrediction());
+  // 俯仰層前綴（2026-07-31）：手動瞄準改推 3 層 × 8 方位，只印「方位 3/24」的話
+  // 玩家分不出手上這張是平視還是抬頭——而那正是他要挑的東西。
+  const LAYER_TXT = {up: '抬頭層', mid: '平視層', down: '低頭層'};
+  const curLayer = frames[curFrame] && frames[curFrame].layer;
+  const layerTxt = (curLayer && LAYER_TXT[curLayer]) ? (LAYER_TXT[curLayer] + '・') : '';
   dirLabel.textContent = n
-    ? ('方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1)) + '/' + n)
+    ? (layerTxt + '方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1))
+       + '/' + n)
     : '\\u2014';
   dotsEl.innerHTML = '';
   for (let i = 0; i < n; i++) {
