@@ -376,6 +376,8 @@ class Config:
     panel_hue_tol_deg: float = 6.0
     panel_hue_sample_x: tuple = (120, 165)    # 取樣窗（crop 座標）：名字與數量之間的純底色帶。
                                               # ⚠ 別往左取，x<10 是面板邊框（深藍 H≈120，與列色無關）
+    annotate_undo_window_s: float = 900.0     # 標註 Ctrl+Z 還原限時（spec 05）：只救當下誤按，
+                                              # 不刪可能已進版控的舊素材。15 分鐘
 
     # 雙 chill 對帳（spec 2026-07-30-double-chill-reconciliation-design.md）
     # 兩個都預設關。chill_edge_release_s 的初值**必須**由實機上升緣／回落分布決定，

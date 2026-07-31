@@ -2719,6 +2719,7 @@ class Bot:
                         # 人確認過的真陰性全幀 → corpus/negatives/
                         # （retention-immune，與 reentry 語料同父層；不進 git）
                         negatives_dir=corpus.negatives_root(cfg.log_dir),
+                        undo_window_s=cfg.annotate_undo_window_s,
                         # 目標層與 Discord `層` 指令同步：設定頁顯示執行期有效層
                         # （sticky_layers[world] 優先），而不是 cfg 的 fallback 值。
                         layer_getter=self._effective_layer_info,

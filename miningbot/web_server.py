@@ -191,6 +191,7 @@ def create_app(
     snapshots_root: str | None = None,
     negatives_dir: str | None = None,
     ping_interval_s: float = 30.0,
+    undo_window_s: float = 900.0,       # Ctrl+Z 還原限時：只救當下誤按（spec 05）
     layer_getter: Callable[[], dict] | None = None,
     player_state_getter: Callable[[], dict] | None = None,
 ) -> FastAPI:
@@ -432,11 +433,13 @@ def create_app(
 
         玩家標錯的唯一補救：素材一落地就進了 `annotated_stems` 去重集合，那張圖
         從此不再排進佇列，錯的標註會被 tuning 迴圈當真。回 200 成功；404 找不到
-        （已經刪過／根本沒寫成功）；400 缺 image；503 目標目錄未配置。
+        （已經刪過／根本沒寫成功）；400 缺 image；409 超過可還原時間（spec 05：
+        只救當下誤按，不刪可能已進版控的舊素材）；503 目標目錄未配置。
 
         Security：只吃 basename，目錄一律自己推（`_derive_category` 同一份守門），
         絕不接受呼叫端給的路徑——不然這條 route 就是任意檔案刪除。
         """
+        import time as _time
         image = payload.get("image")
         stem = os.path.splitext(os.path.basename(image))[0] if isinstance(image, str) else ""
         if not stem:
@@ -450,6 +453,13 @@ def create_app(
                                       *_derive_category(payload).split("/"))
         if not target_dir:
             return _err(503, "negatives dir not configured")
+        json_path = os.path.join(target_dir, stem + ".json")
+        # 視窗閘（spec 05）：拿 json 的 mtime。玩家情境是「剛按錯要重送」，15 分鐘
+        # 剛好編碼那個情境；超時一律不刪（可能已 commit 進版控）。找不到檔仍走 404。
+        if os.path.isfile(json_path):
+            age = _time.time() - os.path.getmtime(json_path)
+            if age > undo_window_s:
+                return _err(409, f"超過可還原時間（{int(age)}s > {int(undo_window_s)}s）")
         removed = []
         for ext in (".json", ".png"):
             path = os.path.join(target_dir, stem + ext)

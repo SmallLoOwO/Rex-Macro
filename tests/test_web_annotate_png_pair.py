@@ -219,3 +219,43 @@ def test_undo_refuses_path_traversal(parts, tmp_path):
                     json={"image": "../../victim.png", "category": "aim"})
     assert r.status_code == 404
     assert victim.exists()
+
+
+def test_undo_refuses_when_json_is_older_than_window(parts):
+    """Ctrl+Z 只救當下誤按：json mtime 超過視窗就回 409，一個檔都不刪。
+
+    情境（2026-07-31 玩家）：素材已經 commit 進版控、頁面還開著，一個 Ctrl+Z 會變成
+    沒人注意的 repo 刪除。時間視窗剛好編碼「剛剛按錯要重送」這個情境。
+    """
+    import time
+    client, src, fixtures = parts
+    client.post("/api/annotate", json=_payload(src))
+    stem = os.path.splitext(os.path.basename(src))[0]
+    js = fixtures / "aim" / (stem + ".json")
+    png = fixtures / "aim" / (stem + ".png")
+    old = time.time() - 3600      # 一小時前，遠超過 15 分鐘視窗
+    os.utime(str(js), (old, old))
+    os.utime(str(png), (old, old))
+    r = client.post("/api/annotate/undo",
+                    json={"image": os.path.basename(src), "category": "aim"})
+    assert r.status_code == 409
+    assert "可還原" in r.json()["error"] or "時間" in r.json()["error"]
+    assert js.exists(), "超時不得刪任何檔"
+    assert png.exists()
+
+
+def test_undo_allows_within_window(parts):
+    """視窗內照樣刪——剛寫完立刻按 Ctrl+Z 是最常見的情形。"""
+    import time
+    client, src, fixtures = parts
+    client.post("/api/annotate", json=_payload(src))
+    stem = os.path.splitext(os.path.basename(src))[0]
+    js = fixtures / "aim" / (stem + ".json")
+    png = fixtures / "aim" / (stem + ".png")
+    recent = time.time() - 60      # 一分鐘前，在 15 分鐘視窗內
+    os.utime(str(js), (recent, recent))
+    os.utime(str(png), (recent, recent))
+    r = client.post("/api/annotate/undo",
+                    json={"image": os.path.basename(src), "category": "aim"})
+    assert r.status_code == 200
+    assert not js.exists() and not png.exists()
