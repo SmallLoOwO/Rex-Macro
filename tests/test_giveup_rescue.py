@@ -71,15 +71,13 @@ def test_prechill_sample_throttles_to_configured_interval(monkeypatch):
     assert len(bot._prechill) == 2
 
 
-def test_prechill_sample_stores_both_crops_at_configured_regions(monkeypatch):
+def test_prechill_sample_stores_chat_crop_at_configured_region(monkeypatch):
     bot = _cache_bot()
     monkeypatch.setattr(main.time, "time", lambda: 1000.0)
     bot._prechill_sample(_frame())
-    ts, chat, panel = bot._prechill[0]
+    ts, chat = bot._prechill[0]
     assert ts == 1000.0
     assert chat.shape[:2] == (cfg.chat_region.h, cfg.chat_region.w)
-    assert panel.shape[:2] == (cfg.backpack_review_region.h,
-                               cfg.backpack_review_region.w)
 
 
 def test_prechill_crops_are_copies_not_views(monkeypatch):
@@ -157,9 +155,7 @@ def test_record_chill_edge_never_touches_decisions():
 
 def _entry(ts):
     return (ts,
-            np.zeros((cfg.chat_region.h, cfg.chat_region.w, 3), np.uint8),
-            np.zeros((cfg.backpack_review_region.h,
-                      cfg.backpack_review_region.w, 3), np.uint8))
+            np.zeros((cfg.chat_region.h, cfg.chat_region.w, 3), np.uint8))
 
 
 def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None, **attrs):
@@ -170,12 +166,13 @@ def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None, **
         if cached:
             entries.append(_entry(1000.0))
     attrs.setdefault("_episode_chill_at", 1005.0)
+    attrs.setdefault("_panel_zeroed_at", 9999.0)   # 01 已歸零 → 路 B 可信任
     bot = make_fake_bot(
         bind=["_giveup_rescue", "_prechill_ref"],
         harvest=_harvest(), _prechill=entries, log_harvest=_Rec(),
         log=_FakeEventLog(), logger=_Rec(),
         _rescue_chat_ores=lambda *a: list(chat),
-        _panel_ore_gain=lambda *a: list(panel),
+        _panel_rare_ores=lambda *a: list(panel),
         _harvest_resume_mining=lambda: resumed.append(True),
         _enqueue_snapshot=lambda crop, label: f"/snap/{label}.png",
         _hlabel=lambda label: f"125_{label}",
@@ -233,12 +230,24 @@ def test_rescue_declines_when_no_evidence(monkeypatch):
     assert resumed == [] and bot.log.records == []
 
 
-def test_rescue_skipped_without_prechill_cache(monkeypatch):
-    """剛啟動／剛從別的狀態進 MINING → 整個救援跳過，回到今日行為。"""
+def test_rescue_path_a_skipped_without_prechill_cache_but_path_b_still_works(monkeypatch):
+    """路 A（聊天）沒有 chill 前快取 → 跳過；路 B（面板）若已歸零仍可命中。
+
+    新設計（spec 2026-07-31）：两條路獨立運作，路 B 不再依賴 prechill 緩衝。
+    """
     bot, resumed = _rescue_bot(monkeypatch, panel=["faedrine"], cached=False)
+    assert bot._giveup_rescue("x") is True     # 路 B 命中
+    assert resumed == [True]
+    assert any("路 A" in line and "跳過" in line for line in bot.log_harvest.lines)
+
+
+def test_rescue_skipped_when_both_paths_degraded(monkeypatch):
+    """路 A 無快取 + 路 B 面板未歸零 → 照舊交人工。"""
+    bot, resumed = _rescue_bot(monkeypatch, panel=["faedrine"], cached=False,
+                               _panel_zeroed_at=None)
     assert bot._giveup_rescue("x") is False
     assert resumed == []
-    assert any("沒有夠舊的 chill 前裁圖" in line for line in bot.log_harvest.lines)
+    assert any("路 B" in line and "跳過" in line for line in bot.log_harvest.lines)
 
 
 def test_rescue_disabled_by_config(monkeypatch):
@@ -254,7 +263,7 @@ def test_rescue_exception_falls_back_to_giveup(monkeypatch):
         raise RuntimeError("OCR 掛了")
 
     bot, resumed = _rescue_bot(monkeypatch, panel=["faedrine"])
-    bot._panel_ore_gain = _boom
+    bot._panel_rare_ores = _boom
     assert bot._giveup_rescue("x") is False
     assert resumed == []
     assert any("例外" in line for line in bot.log_harvest.lines)
@@ -306,11 +315,11 @@ def test_chat_path_ignores_lines_already_in_prechill(monkeypatch):
 
 def test_panel_path_skipped_without_rapidocr(monkeypatch):
     """read_text_boxes 只有 rapidocr 路徑、不做 tesseract 後備 → 整條跳過只跑路 A。"""
-    bot = make_fake_bot(bind=["_panel_ore_gain"], log_harvest=_Rec())
+    bot = make_fake_bot(bind=["_panel_rare_ores"], log_harvest=_Rec())
     monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: False)
     monkeypatch.setattr(main.ocr, "read_text_boxes",
                         lambda *a, **kw: pytest.fail("引擎不可用不得呼叫"))
-    assert bot._panel_ore_gain(None, None, "125", "救援路B") == []
+    assert bot._panel_rare_ores("125", "救援路B") == []
 
 
 # ── 05：雙 chill 對帳（出廠關閉）────────────────────────────────────────────
@@ -329,7 +338,7 @@ def _reconcile_bot(monkeypatch, *, edges, gains, enabled=True, release_s=2.0):
     entered = []
     return make_fake_bot(
         bind=["_chill_reconcile"], harvest=_harvest(), state=State.HARVESTING,
-        _chill_edges=edges, _sweep_shots=[], _episode_panel_pre=None,
+        _chill_edges=edges, _sweep_shots=[],
         _episode_panel_gains=lambda: list(gains), _rotate_verified=lambda d: True,
         _enqueue_snapshot=lambda crop, label: None,
         _snapshot_crop=lambda f, r, label: None, _hlabel=lambda label: label,

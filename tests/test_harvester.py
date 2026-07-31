@@ -593,65 +593,50 @@ def test_parse_panel_dedupes_preserving_order():
     assert parse_panel_ore_names(boxes, **_GATES) == ["faedrine"]
 
 
-# ── 面板名字差分 ────────────────────────────────────────────────────────────
+# ── 面板白名單存在性檢查（spec 2026-07-31）─────────────────────────────────
 
-def test_new_rare_panel_ores_reports_new_rare():
-    from miningbot.harvester import new_rare_panel_ores
-    pre = ["leprechaun", "cleavelite", "siogyne"]
-    assert new_rare_panel_ores(pre, pre + ["faedrine"]) == ["faedrine"]
-
-
-def test_new_rare_panel_ores_ignores_new_common():
-    """只新增低稀有度礦＝一般挖礦，不是本 episode 的稀有礦進帳。"""
-    from miningbot.harvester import new_rare_panel_ores
-    pre = ["leprechaun", "faedrine"]
-    assert new_rare_panel_ores(pre, pre + ["weevil", "siogyne"]) == []
+def test_rare_panel_ores_reports_whitelist_names():
+    from miningbot.harvester import rare_panel_ores
+    assert rare_panel_ores(["leprechaun", "faedrine"]) == ["leprechaun", "faedrine"]
 
 
-def test_new_rare_panel_ores_unchanged_is_empty():
-    from miningbot.harvester import new_rare_panel_ores
-    names = ["leprechaun", "faedrine", "cleavelite"]
-    assert new_rare_panel_ores(names, list(names)) == []
+def test_rare_panel_ores_filters_common():
+    """common（Surreal/Mythic）不在白名單上 → 濾掉。"""
+    from miningbot.harvester import rare_panel_ores
+    assert rare_panel_ores(["weevil", "siogyne", "faedrine"]) == ["faedrine"]
 
 
-def test_new_rare_panel_ores_empty_pre_is_blind():
-    """pre 為空（快取剛建立／OCR 全滅）→ 一律回 []，不可把整個面板當本次新增。"""
-    from miningbot.harvester import new_rare_panel_ores
-    assert new_rare_panel_ores([], ["faedrine", "leprechaun"]) == []
-    assert new_rare_panel_ores(None, ["faedrine"]) == []
-
-
-def test_new_rare_panel_ores_ignores_unknown():
-    """H069：unknown 不算進帳。
-
-    面板列的是整個背包，低階礦（Cloverstone／Sugarmuck／Imbollyx…）兩張表都沒有 →
-    unknown。舊版把 unknown 當「非-common＝進帳」，於是鎬子挖兩分鐘就必然生出新名字，
-    救援對任何 giveup 都命中。
-    """
-    from miningbot.harvester import new_rare_panel_ores
+def test_rare_panel_ores_filters_unknown():
+    """H069：unknown（低階礦兩張表都沒有）不算進帳。"""
+    from miningbot.harvester import rare_panel_ores
     from miningbot import game_data
     game_data.set_world("Lucernia")
     try:
         assert game_data.classify_found_ore("cloverstone")[0] == "unknown"
-        assert new_rare_panel_ores(["faedrine"], ["faedrine", "cloverstone"]) == []
+        assert rare_panel_ores(["faedrine", "cloverstone"]) == ["faedrine"]
     finally:
         game_data.clear_world()
 
 
-def test_new_rare_panel_ores_h069_live_panel_names():
-    """H069 實錄（2026-07-31 harvest 145）：整排新增全是鎬子挖到的低階礦 → 不得救援。
+def test_rare_panel_ores_empty_is_empty():
+    from miningbot.harvester import rare_panel_ores
+    assert rare_panel_ores([]) == []
+    assert rare_panel_ores(None) == []
+
+
+def test_rare_panel_ores_h069_live_panel_names():
+    """H069 實錄（2026-07-31 harvest 145）：整排全是鎬子挖到的低階礦 → 回空。
 
     `egguinox` 是第二顆地雷：Lucernia 白名單真的有一顆叫 `Eg`，裸 startswith 讓它被判成
-    Transcendent。兩個根因任一沒修，這場就會假命中、靜默放生真稀有礦。
+    Transcendent。`_prefix_hit` 修復後 egguinox 落 unknown。
     """
-    from miningbot.harvester import new_rare_panel_ores
+    from miningbot.harvester import rare_panel_ores
     from miningbot import game_data
     game_data.set_world("Lucernia")
     try:
-        pre = ["imbollyx", "bonnite", "fortunatum", "celtisalt", "auriclase",
-               "gilded chocolatine", "vogel", "loinpire"]
-        cur = ["duskgravite", "siogyne", "sugarmuck", "egguinox", "cloverstone"] + pre[:3]
-        assert new_rare_panel_ores(pre, cur) == []
+        names = ["duskgravite", "siogyne", "sugarmuck", "egguinox", "cloverstone",
+                 "imbollyx", "bonnite", "fortunatum"]
+        assert rare_panel_ores(names) == []
     finally:
         game_data.clear_world()
 

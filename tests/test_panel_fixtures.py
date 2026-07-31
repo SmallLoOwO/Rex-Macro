@@ -70,30 +70,27 @@ def test_faedrine_is_the_rescue_signal(before_names):
     from miningbot import game_data
     assert "faedrine" in before_names
     assert game_data.classify_found_ore("faedrine")[0] == "rare"
-    assert harvester.new_rare_panel_ores(
-        [n for n in before_names if n != "faedrine"], before_names) == ["faedrine"]
+    assert harvester.rare_panel_ores(before_names) == ["leprechaun", "faedrine"]
 
 
-def test_identical_panels_report_no_gain(before_names):
-    """前後兩張內容相同 → 不得判定「有新的稀有礦進帳」（誤判＝靜默放生真稀有礦）。"""
+def test_after_panel_has_same_whitelist_ores(before_names):
+    """前後兩張內容相同 → 白名單存在性檢查照樣讀到 Faedrine。"""
     after = _names("125_giveup_after_backpack.png")
-    assert harvester.new_rare_panel_ores(before_names, after) == []
+    assert harvester.rare_panel_ores(after) == ["leprechaun", "faedrine"]
 
 
-def test_h069_live_panel_diff_must_not_rescue():
-    """H069 實錄（2026-07-31 harvest 145）：整場救援必須不命中。
+def test_h069_live_panel_has_no_whitelist_ores():
+    """H069 實錄（2026-07-31 harvest 145）：整排全是鎬子挖到的低階礦 → 白名單回空。
 
-    chill 前面板頂列是 Imbollyx，交人工前多了 Duskgravite／Siogyne／Sugarmuck／
-    Egguinox／Cloverstone——全是鎬子挖到的低階礦，把舊列擠出裁圖。舊版判準「非 common」
-    讓其中三個（unknown 兩個 ＋ 被 `Eg` 前綴誤配的 egguinox）算成進帳，bot 因此不交人工，
-    真稀有礦被放生。跑的是完整 OCR 管線：剖析或分類任一邊回歸都會讓它變紅。
+    舊版判準「非 common」讓 unknown（sugarmuck/cloverstone）＋被 `Eg` 前綴誤配的
+    egguinox 算成進帳，bot 不交人工，真稀有礦被放生。跑完整 OCR 管線：剖析或分類
+    任一邊回歸都會讓它變紅。
     """
     from miningbot import game_data
     game_data.set_world("Lucernia")
     try:
-        pre, cur = _names("145_rescue_pre_panel.png"), _names("145_rescue_cur_panel.png")
-        assert "imbollyx" in pre and "sugarmuck" in cur     # 素材沒讀歪才有資格斷言差分
-        assert set(cur) - set(pre)                          # 確實有新增列（不是空差分）
-        assert harvester.new_rare_panel_ores(pre, cur) == []
+        names = _names("145_rescue_cur_panel.png")
+        assert "sugarmuck" in names                        # 素材沒讀歪才有資格斷言
+        assert harvester.rare_panel_ores(names) == []
     finally:
         game_data.clear_world()
