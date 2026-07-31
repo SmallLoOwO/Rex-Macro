@@ -1539,7 +1539,7 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
 </div>
 <div id="note"></div>
-<div class="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</div>
+<div class="hint" id="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</div>
 <div id="container">
   <canvas id="canvas"></canvas>
 </div>
@@ -1561,6 +1561,7 @@ const confirmBtn = document.getElementById('confirm');
 const voidBtn = document.getElementById('void');
 const skipBtn = document.getElementById('skip');
 const statusLineEl = document.getElementById('status-line');
+const hintEl = document.getElementById('hint');
 const rcResumeBtn = document.getElementById('rc-resume');
 const rcPauseBtn = document.getElementById('rc-pause');
 const rcAbilityBtn = document.getElementById('rc-ability');
@@ -1581,6 +1582,12 @@ let pendingMeta = null;
 let curFrame = 0;
 let seen = new Set();
 let pendingFrameSnapshot = false;  // 📷 即時畫面：下一張 binary 是單張快照，不進 frames[]
+// 確認階段（回礦 awaiting_confirm）：畫面上是點擊處/落點證據圖，點它不會送出任何
+// 東西——bot 主迴圈此刻在等 好/重骰/作廢，沒有人在收 reentry_click。
+let confirmMode = false;
+
+const CLICK_HINT = '手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。直接點畫面上的傳送板送出位置；有綠圈＝bot 猜的位置，按 \\uD83C\\uDFAF 採用建議一鍵送出';
+const CONFIRM_HINT = '這兩張是證據圖（點擊處／落點），可放大檢查——此時點畫面不會送出座標。確認後按下面的按鈕。';
 
 const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
 function setStatus(text, kind) {
@@ -1738,9 +1745,13 @@ function renderNav() {
   const LAYER_TXT = {up: '抬頭層', mid: '平視層', down: '低頭層'};
   const curLayer = frames[curFrame] && frames[curFrame].layer;
   const layerTxt = (curLayer && LAYER_TXT[curLayer]) ? (LAYER_TXT[curLayer] + '・') : '';
+  // label（2026-08-01）：確認階段推的是「點擊處／落點」兩張證據圖，標成
+  // 「方位 1/2」玩家分不出哪張是哪張。有 label 就直接用它當標題。
+  const curLabel = frames[curFrame] && frames[curFrame].label;
   dirLabel.textContent = n
-    ? (layerTxt + '方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1))
-       + '/' + n)
+    ? (curLabel ? (curLabel + ' ' + (curFrame + 1) + '/' + n)
+       : (layerTxt + '方位 ' + ((frames[curFrame] && frames[curFrame].dir) || (curFrame + 1))
+          + '/' + n))
     : '\\u2014';
   dotsEl.innerHTML = '';
   for (let i = 0; i < n; i++) {
@@ -1796,7 +1807,7 @@ function connect() {
       if (pendingMeta) {
         const slot = pendingMeta.index;
         frames[slot] = { img: null, dir: pendingMeta.dir, layer: pendingMeta.layer,
-                         predict: pendingMeta.predict };
+                         predict: pendingMeta.predict, label: pendingMeta.label };
         loadImage(e.data, slot);
         pendingMeta = null;
       } else {
@@ -1817,17 +1828,23 @@ function connect() {
       // 套在下一輪還沒看過的第一張圖上，玩家每次都得先手動縮小才看得到全貌。
       if (p.index === 0) { frames = []; seen = new Set(); curFrame = 0; zoom = 1.0; pan = [0, 0]; }
       pendingMeta = { index: p.index, dir: p.dir, layer: p.layer, total: p.total,
-                      predict: p.predict };
+                      predict: p.predict, label: p.label };
     } else if (p.event === 'INTERVENTION_NEEDED') {
       currentEvent = p;
       const isReentry = p.flow === 'reentry';
-      setStatus('需要介入：' + (p.summary || p.flow), 'need');
+      // mode==='confirm'（2026-08-01）＝這批是 awaiting_confirm 的證據圖（點擊處／
+      // 落點），不是要玩家點位置的掃描圖。點畫面在這階段沒有消費端（主迴圈已離開
+      // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰/作廢。
+      confirmMode = p.mode === 'confirm';
+      setStatus((confirmMode ? '' : '需要介入：') + (p.summary || p.flow), 'need');
       noteEl.style.display = p.note ? 'block' : 'none';
       noteEl.textContent = p.note || '';
+      hintEl.textContent = confirmMode ? CONFIRM_HINT : CLICK_HINT;
       // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑。好/作廢只在
-      // awaiting_confirm 才出現（INTERVENTION_RESULT 那支再開）。
-      for (const b of [sweepBtn, rerollBtn, skipBtn]) b.hidden = !isReentry;
-      confirmBtn.hidden = true; voidBtn.hidden = true;
+      // awaiting_confirm 才出現（這裡的 confirm mode，或 INTERVENTION_RESULT 那支）。
+      for (const b of [rerollBtn, skipBtn]) b.hidden = !isReentry;
+      sweepBtn.hidden = !isReentry || confirmMode;
+      confirmBtn.hidden = !confirmMode; voidBtn.hidden = !confirmMode;
       curFrame = 0;
       zoom = 1.0; pan = [0, 0];  // 保底：萬一這裡才是這輪第一次拿到 frames
       renderNav();       // 採用建議鍵由 renderNav 依「這張有沒有預測」決定顯不顯示
@@ -1852,11 +1869,17 @@ function connect() {
       setStatus(p.summary || v, awaitingConfirm ? 'need' : (ok ? 'ok' : 'fail'));
       stopFlashing();
       if (awaitingConfirm) {
+        // 緊接著會來一批 mode='confirm' 的證據圖（點擊處／落點），那支會再設一次
+        // 同樣的按鈕組；這裡先切好，圖還在路上時面板就已經是可以回答的狀態。
+        confirmMode = true;
+        hintEl.textContent = CONFIRM_HINT;
         adoptBtn.hidden = true; sweepBtn.hidden = true;
         rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
         skipBtn.hidden = false;
       } else if (done) {
         currentEvent = null;
+        confirmMode = false;
+        hintEl.textContent = CLICK_HINT;
         for (const b of [adoptBtn, sweepBtn, rerollBtn, confirmBtn, voidBtn,
                          skipBtn]) b.hidden = true;
       }
@@ -1974,6 +1997,12 @@ function sendClickNative(nativeX, nativeY) {
     setStatus('尚無 INTERVENTION_NEEDED 事件，忽略點擊', 'idle');
     return;
   }
+  if (confirmMode) {
+    // 確認階段沒有人在收 reentry_click（主迴圈在等 好/重骰/作廢），送了只會靜靜
+    // 躺在 pending 裡等 TTL 過期——說清楚，別讓玩家以為自己已經重點了一次。
+    setStatus('這是證據圖，點畫面不會送出；請按 好／重骰／作廢', 'need');
+    return;
+  }
   const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
   const ep_id = {};
   // routing_key = "harvest:007" 或 "reentry:26"
@@ -2013,6 +2042,8 @@ sweepBtn.addEventListener('click', () => sendControl('sweep', '重掃'));
 rerollBtn.addEventListener('click', () => sendControl('reroll', '重骰'));
 confirmBtn.addEventListener('click', () => {
   sendControl('confirm', '好');
+  confirmMode = false;
+  hintEl.textContent = CLICK_HINT;
   for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
 });
 voidBtn.addEventListener('click', () => sendControl('void', '作廢'));

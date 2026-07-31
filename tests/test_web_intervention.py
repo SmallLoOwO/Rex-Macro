@@ -652,7 +652,7 @@ class _FakeRegistry:
         self.calls.append(msg)
 
     def broadcast_binary(self, data):
-        pass
+        self.calls.append(data)
 
     def begin_intervention_replay(self):
         pass
@@ -785,9 +785,10 @@ def test_reentry_await_player_click_retries_until_descended(monkeypatch):
     # descended 之前應該剛好一次 INTERVENTION_RESULT（still_surface 那次）
     assert len(results) == 1, f"應只廣播 1 次（descended 後不再 retry），實際：{len(results)}"
     assert results[0].payload["verdict"] == "still_surface"
-    # 應該重新 grab + 重發 INTERVENTION_NEEDED
+    # 應該重發 INTERVENTION_NEEDED（2026-08-01：畫面沒動時推的是同一批圖，
+    # 不重掃；重掃與否由 _rr_last_click_moved 決定，見下面兩個測試）
     assert len(bot._sent_intervention_events) >= 2, (
-        f"retry 前應重掃並重推八方位，實際 push 次數："
+        f"retry 前應重推八方位，實際 push 次數："
         f"{len(bot._sent_intervention_events)}")
 
 
@@ -2018,6 +2019,9 @@ class TestRrClickAndVerifyWebBroadcast:
         bot._rr_click_and_verify = types.MethodType(Bot._rr_click_and_verify, bot)
         bot._broadcast_intervention_result = types.MethodType(
             Bot._broadcast_intervention_result, bot)
+        bot._rr_ask_confirm_on_web = types.MethodType(Bot._rr_ask_confirm_on_web, bot)
+        bot._send_web_intervention_frames = types.MethodType(
+            Bot._send_web_intervention_frames, bot)
         return bot
 
     def test_descended_with_auto_resume_broadcasts_descended(self, monkeypatch):
@@ -2071,6 +2075,186 @@ class TestRrClickAndVerifyWebBroadcast:
 
         assert verdict == "moved_unconfirmed"
         assert results == [("awaiting_confirm", "reentry")]
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-01 使用者反映：網頁走到 awaiting_confirm 只有一行字、一張圖都沒有，
+# 「並不知道是不是真的下礦」。Discord 那條路一直有附「點擊處＋落點」兩張。
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitingConfirmEvidenceOnWeb:
+
+    def _bot_with_web(self, monkeypatch, tmp_path):
+        bot = TestRrClickAndVerifyWebBroadcast()._bot(monkeypatch)
+        bot._web_thread = _FakeWebThread()
+        bot._rr_snap_dir = lambda: str(tmp_path)
+        return bot
+
+    def _paths(self, tmp_path):
+        """marker 由 caller 傳進 `_rr_click_and_verify`；landing 是函式自己算的檔名
+        （`ep{episode_id}_click{len(clicks)-1}_landing{zs}.png`，ctx.clicks 空＝-1）。"""
+        mpath = tmp_path / "marker.png"
+        lpath = tmp_path / "ep27_click-1_landing.png"
+        mpath.write_bytes(b"marker-bytes")
+        lpath.write_bytes(b"landing-bytes")
+        return str(mpath), str(lpath)
+
+    def test_confirm_pushes_two_labelled_frames_in_confirm_mode(
+            self, monkeypatch, tmp_path):
+        """證據圖要真的送到網頁，而且帶得出「哪張是哪張」＋確認模式。"""
+        import miningbot.main as main_mod
+        from miningbot.web_protocol import WebMessage
+        from tests.fake_bot import FakeReentryCtx
+
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", False)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot_with_web(monkeypatch, tmp_path)
+        mpath, lpath = self._paths(tmp_path)
+        ctx = FakeReentryCtx(episode_id="27")
+
+        bot._rr_click_and_verify(ctx, (960, 540), None, "Shamrock", mpath, "")
+
+        calls = bot._web_thread.app.state.registry.calls
+        metas = [c.payload for c in calls if isinstance(c, WebMessage)
+                 and c.payload.get("event") == "INTERVENTION_FRAME"]
+        assert [m.get("label") for m in metas] == ["點擊處", "落點"], (
+            f"兩張證據圖要各自標名，實際：{metas}")
+        needed = [c.payload for c in calls if isinstance(c, WebMessage)
+                  and c.payload.get("event") == "INTERVENTION_NEEDED"]
+        assert needed and needed[-1]["mode"] == "confirm", (
+            "confirm 模式讓 client 顯示 好/重骰/作廢 而不是掃描那組鍵")
+        assert b"landing-bytes" in calls, "落點圖的位元組要真的送出去"
+
+    def test_result_broadcast_before_frames_push(self, monkeypatch, tmp_path):
+        """順序不可對調：`_broadcast_intervention_result` 內含
+        `end_intervention_replay()`，反過來寫會把剛推的證據圖清掉，晚到的連線
+        又只剩空白面板（RR#34 同型）。"""
+        import miningbot.main as main_mod
+        from miningbot.web_protocol import WebMessage
+        from tests.fake_bot import FakeReentryCtx
+
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", False)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot_with_web(monkeypatch, tmp_path)
+        mpath, lpath = self._paths(tmp_path)
+
+        bot._rr_click_and_verify(
+            FakeReentryCtx(episode_id="27"), (960, 540), None, "Shamrock", mpath, "")
+
+        events = [c.payload.get("event") for c in bot._web_thread.app.state.registry.calls
+                  if isinstance(c, WebMessage)]
+        assert events.index("INTERVENTION_RESULT") < events.index("INTERVENTION_FRAME")
+
+    def test_summary_carries_measured_depth_not_just_declared_layer(
+            self, monkeypatch, tmp_path):
+        """玩家要判斷的是「有沒有點錯層」，bot 早就量到 depth/layer_seen 卻沒給看。"""
+        import miningbot.main as main_mod
+        from tests.fake_bot import FakeReentryCtx
+
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", False)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot_with_web(monkeypatch, tmp_path)
+        mpath, _lpath = self._paths(tmp_path)
+        summaries = []
+        bot._broadcast_intervention_result = lambda ctx, verdict, summary, flow="reentry": (
+            summaries.append(summary))
+
+        bot._rr_click_and_verify(
+            FakeReentryCtx(episode_id="27"), (960, 540), None, "Shamrock", mpath, "")
+
+        assert summaries and "7100m" in summaries[0], summaries
+        assert "相符" in summaries[0]
+        # 不確定時的答案是「好」（原地不動），不是重骰
+        assert "不確定就按「好」" in summaries[0]
+
+    def test_missing_evidence_file_does_not_break_confirm(self, monkeypatch, tmp_path):
+        """證據圖是加值路徑：讀不到就只送文字，不能炸掉確認流程。"""
+        import miningbot.main as main_mod
+        from tests.fake_bot import FakeReentryCtx
+
+        monkeypatch.setattr(main_mod.cfg, "reentry_remote_auto_resume", False)
+        monkeypatch.setattr(main_mod.reentry_remote, "plan_click_verdict",
+                            lambda *a, **kw: "descended")
+        bot = self._bot_with_web(monkeypatch, tmp_path)
+        ctx = FakeReentryCtx(episode_id="27")
+
+        verdict = bot._rr_click_and_verify(
+            ctx, (960, 540), None, "Shamrock", str(tmp_path / "nope.png"), "")
+
+        assert verdict == "descended"
+        assert ctx.phase == "awaiting_confirm"
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-01 使用者反映：點歪／指令被吃時人根本沒離開原地，重掃一圈＝多轉 8 次
+# 45°、多花 ~25s，拍回來還是同一批畫面。「應該保持原地即可」。
+# ---------------------------------------------------------------------------
+
+
+def test_retry_reuses_frames_when_click_did_not_move_the_screen(monkeypatch):
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    replies = iter([{"x": 100, "y": 100}, {"x": 200, "y": 200}])
+    bot._await_web_reentry_action = lambda routing_key: ("click", next(replies))
+    verdicts = iter(["still_surface", "descended"])
+    bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: next(verdicts)
+    bot._rr_last_click_moved = False
+    swept = []
+    bot._rr_sweep_capture = lambda encode_for_web=False: (
+        swept.append(1) or ([], 0, _STUB_PNGS))
+
+    assert bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS) is True
+    assert swept == [], "畫面沒動就別重掃——舊圖仍然有效"
+    # 但還是要重推（清過重播緩衝，晚到的連線才補得到同一批圖）
+    assert len(bot._sent_intervention_events) >= 2
+    assert bot._sent_intervention_events[-1]["frames"] is _STUB_PNGS
+
+
+def test_retry_resweeps_when_click_moved_the_screen(monkeypatch):
+    """畫面有動＝可能被傳到別的重生點，舊圖作廢，那才非重掃不可。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    replies = iter([{"x": 100, "y": 100}, {"x": 200, "y": 200}])
+    bot._await_web_reentry_action = lambda routing_key: ("click", next(replies))
+    verdicts = iter(["still_surface", "descended"])
+    bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: next(verdicts)
+    bot._rr_last_click_moved = True
+    swept = []
+    bot._rr_sweep_capture = lambda encode_for_web=False: (
+        swept.append(1) or ([], 0, _STUB_PNGS))
+
+    assert bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS) is True
+    assert swept == [1]
+
+
+def test_moved_unconfirmed_hands_over_to_confirm_instead_of_retrying(monkeypatch):
+    """moved_unconfirmed 已經把 phase 設成 awaiting_confirm 並推了證據圖；
+    再 retry 等於當場把確認面板洗掉，還一邊問「再點一次」一邊等「好」。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    bot._await_web_reentry_action = lambda routing_key: ("click", {"x": 1, "y": 2})
+    bot._rr_click_from_web = lambda ctx, x, y, dir_idx=None: "moved_unconfirmed"
+    swept = []
+    bot._rr_sweep_capture = lambda encode_for_web=False: (
+        swept.append(1) or ([], 0, _STUB_PNGS))
+
+    assert bot._reentry_await_player_click(_FakeCtx(), _STUB_PNGS) is True
+    assert swept == []
+    assert len(bot._sent_intervention_events) == 1, "只有開場那次推送"
+
+
+def test_panel_confirm_mode_switches_buttons_and_blocks_clicks():
+    """mode='confirm' 的那批圖是證據，不是要玩家點位置的掃描圖。"""
+    html = _panel_html()
+    assert "confirmMode = p.mode === 'confirm'" in html
+    assert "sweepBtn.hidden = !isReentry || confirmMode" in html
+    assert "confirmBtn.hidden = !confirmMode" in html
+    # 點畫面在這階段沒有消費端，靜靜躺到 TTL 過期比直接說清楚更糟
+    assert "if (confirmMode) {" in html
+    assert "CONFIRM_HINT" in html
+    # 兩張證據圖各自標名（標「方位 1/2」玩家分不出哪張是哪張）
+    assert "frames[curFrame].label" in html
 
 
 def test_panel_centers_letterboxed_frame():

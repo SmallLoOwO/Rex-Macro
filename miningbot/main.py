@@ -84,6 +84,16 @@ _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；�
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
+# awaiting_confirm 的選項說明（2026-08-01 使用者反映）。舊寫法「點錯回 `重骰`」把
+# 重骰當成「有疑慮」的預設答案，但重骰＝回地表換重生點、整輪重來（開場閘＋八方位
+# 掃描 ~2 分鐘），而人此刻已經在礦裡——點歪或指令被吃都不會讓人跑到別的地方去。
+# 不確定時「保持原地」（按好）才是零成本的那一邊，只有實測層真的不對才值得重骰。
+_RR_CONFIRM_CHOICES_DISCORD = (
+    "沒問題回 `好` 開挖；**確定層不對**才回 `重骰`（回地表換重生點、整輪重來 ~2 分鐘）；"
+    "不確定就回 `好`——人已經在礦裡，原地開挖不吃虧。資料要作廢回 `作廢`")
+_RR_CONFIRM_CHOICES_WEB = (
+    "沒問題按「好」開挖；確定層不對才按「重骰」（回地表換重生點、整輪重來 ~2 分鐘）；"
+    "不確定就按「好」——人已經在礦裡，原地開挖不吃虧。資料有問題按「作廢」")
 # 手動瞄準三層掃描（2026-07-31）：顯示順序與人話層名。up 排最前——實機經驗礦多在
 # 壁上高處（同 harvester.plan_pitch_layers 的順序論證）。
 _MANUAL_LAYER_ORDER = {"up": 0, "mid": 1, "down": 2}
@@ -3782,7 +3792,8 @@ class Bot:
 
     def _send_web_intervention_frames(self, flow: str, routing_key: str,
                                       frames, ctx_summary: str,
-                                      note: str = "") -> bool:
+                                      note: str = "",
+                                      mode: str = "sweep") -> bool:
         """推**多張**幀 + INTERVENTION_NEEDED 給 web client（2026-07-26）。
 
         `frames`＝``[(dir_idx, png_bytes)]``，或 ``[(dir_idx, layer, png_bytes)]``
@@ -3794,6 +3805,11 @@ class Bot:
 
         為什麼要多張：回礦開場站在地表，傳送板九成不在當下視野內。舊版只推一幀，
         玩家看著一張沒有目標的圖無從點起，只能等 120s 逾時（07-26 18:32 實錄）。
+
+        `mode`（2026-08-01）："sweep"＝這批圖要玩家點位置（既有行為）；"confirm"
+        ＝回礦 awaiting_confirm 的證據圖（點擊處／落點），client 據此改顯示
+        好/重骰/作廢 並停掉點擊送出。dict 型 item 可多帶 `label` 當方位標籤——
+        兩張證據圖標「方位 1/2」沒有意義，玩家要知道哪張是哪張。
 
         回 True＝已推送；False＝沒有 web thread／一張都沒編碼成功。
         """
@@ -3812,6 +3828,8 @@ class Bot:
                     "total": total, "dir": int(dir_idx) + 1}
             if layer:
                 meta["layer"] = layer
+            if isinstance(item, dict) and item.get("label"):
+                meta["label"] = item["label"]
             if predict:
                 # 傳送板預測（2026-07-28）：圈由 client 畫在 canvas 上，**不動 PNG**
                 # ——推給網頁的那份跟原始快照是同一批位元組，語料不可污染。
@@ -3823,7 +3841,7 @@ class Bot:
             type="event",
             payload={"event": "INTERVENTION_NEEDED", "flow": flow,
                      "routing_key": routing_key, "summary": ctx_summary,
-                     "mode": "sweep", "frame_count": total, "note": note},
+                     "mode": mode, "frame_count": total, "note": note},
         ))
         return True
 
@@ -7806,6 +7824,10 @@ class Bot:
                 break
         self.logger.info("[RR#%s] 點擊驗證：%s（depth_surface=%s frame_changed=%s）",
                          ctx.episode_id, verdict, on_surface, frame_changed)
+        # 2026-08-01：畫面到底有沒有動，決定失敗後要不要重掃一圈（見
+        # `_reentry_await_player_click`）。verdict 字串吃不下這一位元，而改回傳
+        # tuple 會波及三處 caller 與一票測試 stub——記在物件上最短。
+        self._rr_last_click_moved = frame_changed
         if verdict == "still_surface":
             self._rr_notify(
                 "❌ 點了但 Depth 仍是 Surface＝沒下礦"
@@ -7833,6 +7855,7 @@ class Bot:
         reentry_remote.record_landing(ctx, depth_m, layer_seen)
         self.logger.info("[RR#%s] 落地實測：depth=%s 層=%s（宣告層=%s）",
                          ctx.episode_id, depth_m, layer_seen, layer)
+        evidence = reentry_remote.format_landing_evidence(layer, depth_m, layer_seen)
         if verdict == "moved_unconfirmed":
             # 降級路徑：Depth OCR 讀不到（區域被蓋/引擎故障）退回舊幀差訊號，
             # 一律交人工確認、不自動開挖（寧問勿假成功）；警告讓故障浮上來
@@ -7840,39 +7863,67 @@ class Bot:
                                 ctx.episode_id)
             ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（層標籤：{layer}）。"
-                f"左圖紅圈＝點擊處、右圖＝落點。沒問題回 `好` 開挖；點錯回 `重骰`；"
-                f"資料要作廢回 `作廢`",
+                f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（{evidence}）。"
+                f"左圖紅圈＝點擊處、右圖＝落點。{_RR_CONFIRM_CHOICES_DISCORD}",
                 image_paths=[mpath, lpath])
-            self._broadcast_intervention_result(
-                ctx, verdict="awaiting_confirm",
-                summary="❓ 畫面有變化但 Depth 讀不到，無法確認下礦。沒問題按「好」開挖；"
-                        "點錯「重骰」；資料有問題「作廢」",
-                flow="reentry")
+            self._rr_ask_confirm_on_web(
+                ctx, mpath, lpath,
+                f"❓ 畫面有變化但 Depth 讀不到，無法確認下礦（{evidence}）。"
+                f"{_RR_CONFIRM_CHOICES_WEB}")
             return verdict
         # verdict == "descended"：Depth=NNNm 已直接證明在礦內；礦內亮度檢查退役
         # （夜間暗景會騙亮度——H046(a) 同源誤判；狀態錨嚴格更強）
         if cfg.reentry_remote_auto_resume:
             self._rr_notify(
-                f"✅ 回礦 #{ctx.episode_id} 下礦成功（Depth 已離開 Surface；層：{layer}）。"
+                f"✅ 回礦 #{ctx.episode_id} 下礦成功（Depth 已離開 Surface；{evidence}）。"
                 f"紅圈＝點擊處；自動開挖",
                 image_paths=[mpath, lpath])
             self._broadcast_intervention_result(
                 ctx, verdict="descended",
-                summary=f"✅ 下礦成功（層：{layer}），自動開挖", flow="reentry")
+                summary=f"✅ 下礦成功（{evidence}），自動開挖", flow="reentry")
             self._rr_success(ctx, "success")
         else:
             ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"❓ 已下礦（層標籤：{layer}）。左圖紅圈＝點擊處、右圖＝落點。"
-                f"沒問題回 `好` 開挖；點錯回 `重骰`；資料要作廢回 `作廢`",
+                f"❓ 已下礦（{evidence}）。左圖紅圈＝點擊處、右圖＝落點。"
+                f"{_RR_CONFIRM_CHOICES_DISCORD}",
                 image_paths=[mpath, lpath])
-            self._broadcast_intervention_result(
-                ctx, verdict="awaiting_confirm",
-                summary=f"❓ 已下礦（層：{layer}）。沒問題按「好」開挖；點錯「重骰」；"
-                        "資料有問題「作廢」",
-                flow="reentry")
+            self._rr_ask_confirm_on_web(
+                ctx, mpath, lpath,
+                f"❓ 已下礦（{evidence}）。{_RR_CONFIRM_CHOICES_WEB}")
         return verdict
+
+    def _rr_ask_confirm_on_web(self, ctx, mpath, lpath, summary: str) -> None:
+        """awaiting_confirm：把 Discord 早就在附的那兩張證據圖也推給網頁面板。
+
+        2026-08-01 使用者反映：網頁面板走到這步只有一行字、**一張圖都沒有**，
+        「並不知道是不是真的下礦」。判斷材料（點擊處紅圈＋落點全幀）明明已經存在
+        磁碟上、Discord 那條路也一直有附，只有網頁這條沒接。
+
+        順序是先 `_broadcast_intervention_result` 再推圖，不可對調：前者內含
+        `end_intervention_replay()`（清掉上一輪掃描圖的重播緩衝），後者
+        `begin_intervention_replay()` 重新開一輪。反過來寫會把剛推的證據圖清掉，
+        晚到的連線又只剩空白面板（RR#34 同型）。
+
+        推送用 `mode="confirm"`：client 據此顯示 好/重骰/作廢 而不是掃描那組鍵，
+        並停掉點擊送出——這階段點畫面沒有任何消費端（主迴圈已離開等待迴圈）。
+        讀不到檔就只送文字，證據圖是加值路徑，不能炸掉確認流程。
+        """
+        self._broadcast_intervention_result(
+            ctx, verdict="awaiting_confirm", summary=summary, flow="reentry")
+        frames = []
+        for path, label in ((mpath, "點擊處"), (lpath, "落點")):
+            try:
+                with open(path, "rb") as fh:
+                    frames.append({"dir": len(frames), "png": fh.read(),
+                                   "label": label})
+            except OSError as e:
+                self.logger.warning("[RR#%s] 確認證據圖讀不到（%s）：%s",
+                                    ctx.episode_id, path, e)
+        if frames:
+            self._send_web_intervention_frames(
+                flow="reentry", routing_key=f"reentry:{ctx.episode_id}",
+                frames=frames, ctx_summary=summary, mode="confirm")
 
     def _rr_click_from_web(self, ctx, x: int, y: int, dir_idx=None):
         """從 web 介入面板的玩家 tap 直接點擊＋驗證（跳過 Discord 方位+格+連鎖放大）。
@@ -8100,25 +8151,39 @@ class Bot:
                 verdict = self._rr_click_from_web(
                     ctx, x=int(reply.get("x", 0)), y=int(reply.get("y", 0)),
                     dir_idx=dir_idx)
-                if verdict == "descended":
+                if verdict in ("descended", "moved_unconfirmed"):
+                    # moved_unconfirmed 也算 web 接手完畢：`_rr_click_and_verify`
+                    # 已經把 phase 設成 awaiting_confirm 並推了證據圖，這裡再 retry
+                    # 等於當場把那張確認面板洗掉、還一邊問「再點一次」一邊等「好」。
                     return True
                 # verdict 為 None（座標超界／聚焦失敗／轉向被吃）或 still_surface／
-                # no_change／moved_unconfirmed——都視為可 retry 的非 descended 結果
+                # no_change——都視為可 retry 的非 descended 結果
                 verdict_label = verdict if verdict else "硬失敗"
                 if attempt < max_attempts:
+                    # 2026-08-01 使用者反映：點歪／指令被吃時人根本沒動，重掃一圈
+                    # ＝多轉 8 次 45°、多花 ~25s，拍回來的還是同一批畫面。畫面沒動
+                    # 就原地再問一次（重推同一批圖，晚到的連線才補得到），要新圖
+                    # 玩家自己按 ⟳ 重掃。畫面有動＝可能被傳到別的重生點，舊圖作廢，
+                    # 那才非重掃不可。
+                    # 預設 False＝保守當成「人沒被傳走、舊圖仍有效」（點擊根本沒
+                    # 發生時——座標超界／聚焦失敗／轉向被吃——也是這個語意）。
+                    moved = getattr(self, "_rr_last_click_moved", False)
                     self._broadcast_intervention_result(
-                        ctx, verdict_label, "沒下去，重新掃一圈給你再點一次")
-                    # 點完面向已變、畫面也可能不同——重掃一圈再推，不要讓玩家對舊圖點
-                    captured = self._rr_sweep_capture(encode_for_web=True)
-                    if captured is None:
-                        return False
-                    _pairs, rot_missed, web_pngs = captured
-                    if not web_pngs:
-                        return False
+                        ctx, verdict_label,
+                        "沒下去，重新掃一圈給你再點一次" if moved else
+                        "沒下去、畫面也沒動＝人還在原地，直接再點一次（要重拍按 ⟳ 重掃）")
+                    if moved:
+                        captured = self._rr_sweep_capture(encode_for_web=True)
+                        if captured is None:
+                            return False
+                        _pairs, rot_missed, web_pngs = captured
+                        if not web_pngs:
+                            return False
                     self._send_web_intervention_frames(
                         flow="reentry", routing_key=routing_key, frames=web_pngs,
                         ctx_summary=f"{summary}｜第 {attempt + 1}/{max_attempts} 次",
-                        note="上一次沒下去，再挑一次")
+                        note="上一次沒下去，再挑一次" if moved else
+                             "上一次沒下去、畫面沒動——這是同一批圖，直接再點一次")
                     continue
                 # 3 次都未 descended：不要再獨佔玩家，退回 Discord 讓兩邊都能操作
                 self.log_discord.warning(

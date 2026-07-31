@@ -873,3 +873,32 @@ class TestStickyLayer:
         assert parse_sticky_layers(text) == m
         assert text.index('"Abyss"') < text.index('"Lucernia"')   # sort_keys
 
+
+
+# ===== 落地實測一行字（2026-08-01 使用者反映：確認訊息只印宣告層，等於把
+# 「有沒有點錯層」原封不動丟回去問人，而 bot 早就量到 depth/layer_seen）=====
+
+
+class TestFormatLandingEvidence:
+
+    def test_match(self):
+        from miningbot.reentry_remote import format_landing_evidence
+        s = format_landing_evidence("Shamrock", 7100, "Shamrock")
+        assert "7100m" in s and "相符" in s and "⚠" not in s
+
+    def test_mismatch_is_flagged(self):
+        from miningbot.reentry_remote import format_landing_evidence
+        s = format_landing_evidence("Shamrock", 4200, "Mantle Layer")
+        assert "⚠" in s and "不符" in s and "Mantle Layer" in s
+
+    def test_layer_unknown_is_not_called_mismatch(self):
+        """層反推不到（世界沒偵測到／深度落層表外，如 H043 虛空墜落）不足以斷定
+        點錯層——照實說反推不到，不可寫成「不符」誤導玩家去按重骰。"""
+        from miningbot.reentry_remote import format_landing_evidence
+        s = format_landing_evidence("Shamrock", 99999, None)
+        assert "99999m" in s and "不符" not in s
+
+    def test_depth_unreadable(self):
+        from miningbot.reentry_remote import format_landing_evidence
+        s = format_landing_evidence("Shamrock", None, None)
+        assert "讀不到" in s and "Shamrock" in s

@@ -567,6 +567,27 @@ def record_landing(ctx, depth_m, layer_seen) -> bool:
     return True
 
 
+def format_landing_evidence(declared_layer, depth_m, layer_seen) -> str:
+    """落地實測一行字（awaiting_confirm 通知用）。
+
+    為什麼要這行（2026-08-01 使用者反映）：確認訊息過去只印**使用者宣告**的
+    `sticky_layer`，等於把「有沒有點錯層」原封不動丟回去問人——但 bot 在
+    `record_landing` 當下已經量到 `depth_m` 與反推的 `layer_seen`，那正是玩家
+    要判斷的東西，卻只寫進 ledger 沒給人看。玩家因此只能猜，一猜錯就按 `重骰`
+    ＝回地表換重生點整輪重來。
+
+    `layer_seen is None` 的兩種成因（世界沒偵測到／深度落在層表外，如 H043 虛空
+    墜落）都不足以斷定「點錯層」——照實說反推不到，不寫成不符。
+    """
+    if depth_m is None:
+        return f"深度讀不到（目標層：{declared_layer}）"
+    if layer_seen is None:
+        return f"實測深度 {depth_m}m，反推不到層別（目標層：{declared_layer}）"
+    if layer_seen == declared_layer:
+        return f"實測 {depth_m}m＝{layer_seen}，與目標層相符"
+    return f"⚠ 實測 {depth_m}m＝{layer_seen}，與目標層 {declared_layer} 不符"
+
+
 def ledger_entry(ctx, outcome, world, duration_s):
     """episode 收尾行（append-only；快照路徑在 shots/clicks 內，離線可回放）。"""
     return {"episode": ctx.episode_id, "t": ctx.created_at, "world": world,

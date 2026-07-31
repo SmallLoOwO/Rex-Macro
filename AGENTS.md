@@ -188,6 +188,18 @@ conventions.
     saw a blank panel. Because it never times out, the abort conditions in
     `_await_web_action` are load-bearing: `_mine_resetting` (stale frames)
     and `_running`/`paused` (F12 must be able to stop the bot).
+    A non-`descended` click does **not** re-sweep unless the frame actually moved
+    (`_rr_last_click_moved`, 2026-08-01): a missed or eaten click leaves the player
+    standing in the same spot, so the previous eight frames are still valid and
+    re-sweeping only costs 8 rotations / ~25s. `moved_unconfirmed` hands over to
+    `awaiting_confirm` instead of retrying — that branch already pushed the confirm
+    panel. `awaiting_confirm` itself pushes the marker/landing evidence frames to the
+    web with `mode="confirm"`; its summary must quote the **measured**
+    `depth_m`/`layer_seen` (`reentry_remote.format_landing_evidence`), not the
+    declared `sticky_layer`, and must not offer `重骰` as the answer to doubt —
+    rerolling returns to the surface and restarts the whole episode while the player
+    is already inside the mine. Broadcast the result **before** pushing those frames:
+    `_broadcast_intervention_result` ends the replay buffer.
 15. The same shape now governs the two harvest intervention flows (2026-07-31):
     - **Giveup candidate list** — `_push_web_aim_candidates` pushes unconditionally;
       the Discord candidate overlays are **held** in `_web_held_aim` and only sent by
