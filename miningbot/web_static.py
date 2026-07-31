@@ -1454,7 +1454,7 @@ JSON：<a href="/api/stats">/api/stats</a></div>
 
 
 def render_intervention_html() -> str:
-    """P4 即時介入面板：pinch-zoom canvas + tap UI。
+    """P4 即時介入面板：pinch-zoom <img> + tap UI（與標註工具同渲染管線）。
 
     連 WebSocket → 收 INTERVENTION_NEEDED event → 顯示截圖 →
     玩家 pinch/scroll zoom + 點擊 → 送 fire_at / reentry_click 命令。
@@ -1505,8 +1505,25 @@ header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
              background: #555; display: block; }
 #dots span.on { background: #0084ff; }
 #dots span.seen { background: #888; }
-#container { flex: 1; position: relative; overflow: hidden; touch-action: none; }
-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+#container { flex: 1; position: relative; overflow: hidden; touch-action: none;
+             background: #000; }
+/* 與標註工具同一套渲染：原生 <img> + CSS transform，不做 canvas drawImage 重採樣 */
+#snapshot { transform-origin: 0 0; position: absolute; top: 0; left: 0;
+            max-width: none; user-select: none; -webkit-user-drag: none; }
+#predict-mark { position: absolute; display: none; pointer-events: none;
+                transform: translate(-50%, -50%);
+                width: 44px; height: 44px; border: 3px solid #57f287;
+                border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); }
+#predict-mark::before, #predict-mark::after {
+  content: ''; position: absolute; background: #57f287; }
+#predict-mark::before { width: 12px; height: 2px; top: 50%; left: 50%;
+                        transform: translate(-50%, -50%); }
+#predict-mark::after { width: 2px; height: 12px; top: 50%; left: 50%;
+                       transform: translate(-50%, -50%); }
+.pm-label { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.65); color: #57f287; font: bold 13px sans-serif;
+            padding: 2px 8px; white-space: nowrap; margin-bottom: 4px;
+            border-radius: 3px; }
 .hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
 #note { padding: 0.3rem 1rem; background: #5a4a1e; font-size: 0.8rem;
         color: #ffe9b0; display: none; }
@@ -1541,12 +1558,14 @@ canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 <div id="note"></div>
 <div class="hint" id="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</div>
 <div id="container">
-  <canvas id="canvas"></canvas>
+  <img id="snapshot" alt="">
+  <div id="predict-mark"><span class="pm-label"></span></div>
 </div>
 
 <script>
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+const snapshotImg = document.getElementById('snapshot');
+const predictMark = document.getElementById('predict-mark');
+const predictLabel = predictMark.querySelector('.pm-label');
 const container = document.getElementById('container');
 const statusEl = document.getElementById('status');
 const noteEl = document.getElementById('note');
@@ -1568,10 +1587,8 @@ const rcAbilityBtn = document.getElementById('rc-ability');
 const rcFrameBtn = document.getElementById('rc-frame');
 const rcReenterBtn = document.getElementById('rc-reenter');
 
-const CANVAS_NATIVE = [1920, 1080];
-let scale = 1;          // fit-to-container 初始 scale
-let zoom = 1.0;         // pinch/scroll zoom（疊加在 scale 之上）
-let pan = [0, 0];       // 拖曳 pan（native 座標）
+let zoom = 1.0;         // 縮放倍率（fit-to-container 初始值 + 使用者 pinch/wheel）
+let pan = [0, 0];       // 拖曳 pan（螢幕像素，與標註工具同模型）
 let currentEvent = null;  // {flow, routing_key, summary, mode, frame_count}
 let ws = null;
 
@@ -1667,64 +1684,42 @@ function _unlockAudio() {
 document.addEventListener('pointerdown', _unlockAudio);
 document.addEventListener('keydown', _unlockAudio);
 
-function fitCanvas() {
-  const cw = container.clientWidth;
-  const ch = container.clientHeight;
-  scale = Math.min(cw / CANVAS_NATIVE[0], ch / CANVAS_NATIVE[1]);
-  redraw();
+// 與標註工具同一套：img + CSS transform。瀏覽器原生解碼 PNG、單次縮放，
+// 不像 canvas drawImage 會先重採樣到 backing store 再 CSS 縮放（兩次，手機糊）。
+function applyTransform() {
+  snapshotImg.style.transform = `translate(${pan[0]}px, ${pan[1]}px) scale(${zoom})`;
+  positionPredictMark();
 }
 
-function redraw() {
-  const totalScale = scale * zoom;
-  const dispW = CANVAS_NATIVE[0] * totalScale;
-  const dispH = CANVAS_NATIVE[1] * totalScale;
-  canvas.style.width = dispW + 'px';
-  canvas.style.height = dispH + 'px';
-  // 置中留白（2026-07-27 瀏覽器實測）：16:9 的畫面塞進非 16:9 的容器一定會留邊，
-  // 舊版靠左上貼齊，寬螢幕上整塊黑邊集中在右側，看起來像圖沒載完。
-  // 只在「比容器小」時置中；放大到超出容器時 offset 為 0，拖曳範圍不受影響。
-  // 用 transform 而非 margin：getBoundingClientRect 會反映 transform，
-  // sendClick 的座標換算因此自動跟著對，不必另外補償。
-  const offX = Math.max(0, (container.clientWidth - dispW) / 2);
-  const offY = Math.max(0, (container.clientHeight - dispH) / 2);
-  canvas.style.transform =
-    `translate(${offX - pan[0] * totalScale}px, ${offY - pan[1] * totalScale}px)`;
+// 預設縮到整張塞進容器——1920×1080 全幀 zoom=1 只看得到一角（同標註工具）
+function fitToView() {
+  if (!snapshotImg.naturalWidth || !snapshotImg.naturalHeight) return;
+  const cw = container.clientWidth, ch = container.clientHeight;
+  if (!cw || !ch) return;
+  zoom = Math.min(cw / snapshotImg.naturalWidth, ch / snapshotImg.naturalHeight);
+  // 置中（同 2026-07-27 letterbox 修正的精神：靠左貼齊在寬螢幕上黑邊全擠一邊）
+  pan = [(cw - snapshotImg.naturalWidth * zoom) / 2,
+         (ch - snapshotImg.naturalHeight * zoom) / 2];
+  applyTransform();
 }
 
-// bot 猜的傳送板位置：圈畫在 canvas 上，**不動 PNG**——推給網頁的那份跟原始
-// 快照是同一批位元組，語料不可被疊圖污染。沒有預測就什麼都不畫。
-function drawPrediction(p) {
-  if (!p) return;
-  ctx.save();
-  ctx.strokeStyle = '#57f287';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 46, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();          // 中心十字，圈太大時仍看得出確切座標
-  ctx.moveTo(p.x - 12, p.y); ctx.lineTo(p.x + 12, p.y);
-  ctx.moveTo(p.x, p.y - 12); ctx.lineTo(p.x, p.y + 12);
-  ctx.stroke();
-  const label = 'bot 猜這裡 ' + (p.score != null ? p.score.toFixed(2) : '');
-  ctx.font = 'bold 26px sans-serif';
-  const w = ctx.measureText(label).width;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillRect(p.x - w / 2 - 8, p.y - 92, w + 16, 36);
-  ctx.fillStyle = '#57f287';
-  ctx.fillText(label, p.x - w / 2, p.y - 66);
-  ctx.restore();
+// bot 猜的傳送板位置：固定大小的圓圈 overlay，不畫在圖上——推給網頁的那份跟原始
+// 快照是同一批位元組，語料不可被疊圖污染。沒有預測就隱藏。
+function positionPredictMark() {
+  const p = currentPrediction();
+  if (!p) { predictMark.style.display = 'none'; return; }
+  predictMark.style.left = (pan[0] + p.x * zoom) + 'px';
+  predictMark.style.top = (pan[1] + p.y * zoom) + 'px';
+  predictMark.style.display = '';
+  predictLabel.textContent = 'bot 猜這裡 ' + (p.score != null ? p.score.toFixed(2) : '');
 }
 
-function drawFrame(i) {
+function showCurrentFrame(i) {
   const f = frames[i];
-  if (!f || !f.img) return;
-  canvas.width = CANVAS_NATIVE[0];
-  canvas.height = CANVAS_NATIVE[1];
-  ctx.drawImage(f.img, 0, 0, CANVAS_NATIVE[0], CANVAS_NATIVE[1]);
-  drawPrediction(f.predict);
+  if (!f || !f.url) return;
+  snapshotImg.src = f.url;      // load 事件 → fitToView + positionPredictMark
   seen.add(i);
   renderNav();
-  redraw();
 }
 
 function currentPrediction() {
@@ -1765,22 +1760,25 @@ function renderNav() {
 function showFrame(i) {
   if (!frames.length) return;
   curFrame = (i + frames.length) % frames.length;
-  // 換方位時把縮放/平移歸位——放大看完某一角再切張，維持舊視窗只會看到一片放大的地面
+  // 換方位時把縮放/平移歸位——fitToView 在 img load 後重設
   zoom = 1.0; pan = [0, 0];
-  drawFrame(curFrame);
+  showCurrentFrame(curFrame);
 }
 
 function loadImage(bytes, slot) {
   const blob = new Blob([bytes], { type: 'image/png' });
   const url = URL.createObjectURL(blob);
-  const img = new Image();
-  img.onload = () => {
-    if (frames[slot]) frames[slot].img = img;
-    URL.revokeObjectURL(url);
-    if (slot === curFrame) drawFrame(slot);
+  // 預解碼：naturalWidth/Height 在 onload 後才有，fitToView 靠它算初始 zoom
+  const pre = new Image();
+  pre.onload = () => {
+    if (!frames[slot]) return;
+    frames[slot].url = url;
+    frames[slot].natW = pre.naturalWidth;
+    frames[slot].natH = pre.naturalHeight;
+    if (slot === curFrame) showCurrentFrame(slot);
     renderNav();
   };
-  img.src = url;
+  pre.src = url;
 }
 
 function connect() {
@@ -1848,7 +1846,7 @@ function connect() {
       curFrame = 0;
       zoom = 1.0; pan = [0, 0];  // 保底：萬一這裡才是這輪第一次拿到 frames
       renderNav();       // 採用建議鍵由 renderNav 依「這張有沒有預測」決定顯不顯示
-      if (frames.length) drawFrame(0);
+      if (frames.length) { curFrame = 0; showCurrentFrame(0); }
       startFlashing(p.summary || '需要介入');
       beep();
     } else if (p.event === 'INTERVENTION_RESULT') {
@@ -1925,10 +1923,9 @@ container.addEventListener('pointermove', (e) => {
     if (Math.abs(dx) + Math.abs(dy) > 5) didDrag = true;
   }
   if (pointerDownPos && didDrag && e.buttons > 0) {
-    const totalScale = scale * zoom;
-    pan[0] -= (e.movementX || 0) / totalScale;
-    pan[1] -= (e.movementY || 0) / totalScale;
-    redraw();
+    pan[0] += (e.movementX || 0);
+    pan[1] += (e.movementY || 0);
+    applyTransform();
   }
 });
 container.addEventListener('pointerup', (e) => {
@@ -1947,8 +1944,8 @@ container.addEventListener('pointercancel', () => {
 container.addEventListener('wheel', (e) => {
   e.preventDefault();
   const factor = e.deltaY > 0 ? 0.9 : 1.1;
-  zoom = Math.max(0.5, Math.min(8.0, zoom * factor));
-  redraw();
+  zoom = Math.max(0.2, Math.min(8.0, zoom * factor));
+  applyTransform();
 }, { passive: false });
 
 // 雙指 pinch（手機）— 簡化版，只認兩指距離變化
@@ -1970,8 +1967,8 @@ container.addEventListener('touchmove', (e) => {
       e.touches[0].clientX - e.touches[1].clientX,
       e.touches[0].clientY - e.touches[1].clientY,
     );
-    zoom = Math.max(0.5, Math.min(8.0, pinchInitialZoom * (dist / pinchInitialDist)));
-    redraw();
+    zoom = Math.max(0.2, Math.min(8.0, pinchInitialZoom * (dist / pinchInitialDist)));
+    applyTransform();
   }
 }, { passive: false });
 container.addEventListener('touchend', () => {
@@ -1984,10 +1981,11 @@ function sendClick(clientX, clientY) {
     setStatus('尚無 INTERVENTION_NEEDED 事件，忽略點擊', 'idle');
     return;
   }
-  // client 端直接算原生座標（避免 server 處理 zoom/pan 座標空間 mismatch）
-  const rect = canvas.getBoundingClientRect();
-  const nativeX = Math.round((clientX - rect.left) * (canvas.width / rect.width));
-  const nativeY = Math.round((clientY - rect.top) * (canvas.height / rect.height));
+  // 與標註工具同一條座標換算：getBoundingClientRect 反映 CSS transform，
+  // rect.width = naturalWidth * zoom（顯示寬度），naturalWidth 是原圖解析度
+  const rect = snapshotImg.getBoundingClientRect();
+  const nativeX = Math.round((clientX - rect.left) * (snapshotImg.naturalWidth / rect.width));
+  const nativeY = Math.round((clientY - rect.top) * (snapshotImg.naturalHeight / rect.height));
   sendClickNative(nativeX, nativeY);
 }
 
@@ -2024,6 +2022,9 @@ function sendClickNative(nativeX, nativeY) {
   setStatus('已送出' + dirTxt + '(' + nativeX + ', ' + nativeY + ')，等待 bot 執行…', 'need');
   stopFlashing();
 }
+
+// img 載入完 → fitToView（zoom/pan 重設）+ 預測圈定位
+snapshotImg.addEventListener('load', () => { fitToView(); positionPredictMark(); });
 
 function sendControl(cmd, label) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -2065,9 +2066,9 @@ window.addEventListener('keydown', (e) => {
 });
 
 for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
-window.addEventListener('resize', fitCanvas);
+window.addEventListener('resize', () => { if (snapshotImg.naturalWidth) fitToView(); });
 renderNav();
-fitCanvas();
+// 容器還沒展開（naturalWidth=0）時 fitToView 是 no-op；圖到逹 load 事件會自動呼叫
 connect();
 </script>
 </body>

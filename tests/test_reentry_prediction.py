@@ -134,7 +134,7 @@ def test_frame_meta_omits_prediction_when_absent():
 
 
 def test_frames_bytes_are_pushed_unmodified():
-    """疊圈由 client 畫在 canvas 上；推出去的 PNG 與原始快照同一批位元組。"""
+    """預測圈由 client 畫在 overlay div 上；推出去的 PNG 與原始快照同一批位元組。"""
     bot, registry = _frames_bot()
     bot._send_web_intervention_frames(
         flow="reentry", routing_key="reentry:27",
@@ -217,7 +217,8 @@ def test_dataset_reads_legacy_pos_key():
 def test_panel_html_draws_prediction_and_offers_adopt():
     from miningbot.web_static import render_intervention_html
     html = render_intervention_html()
-    assert "drawPrediction" in html
+    # 2026-08-01：canvas drawPrediction → div overlay positionPredictMark（與標註工具同管線）
+    assert "positionPredictMark" in html
     assert 'id="adopt"' in html and "採用建議" in html
     # 採用建議與手動點擊共用同一條座標鏈（沒有第二套換算）
     assert "sendClickNative(p.x, p.y)" in html

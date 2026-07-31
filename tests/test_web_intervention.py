@@ -12,7 +12,7 @@ import pytest
 
 
 def test_get_intervention_returns_html():
-    """GET /intervention 回 HTML：含 canvas + fire_at/reentry_click + WebSocket。"""
+    """GET /intervention 回 HTML：含 <img>（與標註工具同管線）+ fire_at/reentry_click + WebSocket。"""
     from fastapi.testclient import TestClient
     from miningbot.web_ipc import PendingReplies, FallbackState
     from miningbot.web_server import create_app
@@ -24,8 +24,8 @@ def test_get_intervention_returns_html():
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
     body = r.text
-    # canvas + 點擊邏輯
-    assert "<canvas" in body.lower() or "canvas" in body
+    # <img> 渲染（2026-08-01：從 canvas 改成 img，與標註工具同管線，不壓縮）
+    assert '<img id="snapshot"' in body
     assert "fire_at" in body or "reentry_click" in body
     assert "WebSocket" in body or "websocket" in body.lower() or "ws://" in body or "/ws" in body
 
@@ -2260,13 +2260,16 @@ def test_panel_confirm_mode_switches_buttons_and_blocks_clicks():
 def test_panel_centers_letterboxed_frame():
     """2026-07-27 瀏覽器實測：畫面靠左上貼齊，寬螢幕黑邊全擠在右側像沒載完。
 
-    置中必須用 transform（不是 margin/left）——`sendClick` 靠
-    `canvas.getBoundingClientRect()` 換算原生座標，transform 會被 rect 反映，
-    座標自動跟著對；改用 margin 就得在點擊端另外補償。
+    2026-08-01：canvas 改 <img>（與標註工具同管線）。置中靠 fitToView 計算
+    pan = [(cw - natW * zoom) / 2, ...]——負值讓圖偏移到容器正中央。
+    `sendClick` 靠 `snapshotImg.getBoundingClientRect()` 換算原生座標，
+    transform 會被 rect 反映，座標自動跟著對。
     """
     html = _panel_html()
-    assert "container.clientWidth - dispW" in html
-    assert "container.clientHeight - dispH" in html
-    # 放大到超出容器時不可再偏移（否則拖曳範圍會少一截）
-    assert "Math.max(0, (container.clientWidth - dispW) / 2)" in html
-    assert "canvas.style.transform" in html
+    assert "naturalWidth" in html and "naturalHeight" in html
+    # 置中公式（fitToView）：cw/ch - naturalW/H * zoom → pan 偏移
+    assert "container.clientWidth" in html and "container.clientHeight" in html
+    # CSS transform 套在 <img> 上（不是 canvas）
+    assert "snapshotImg.style.transform" in html
+    # 點擊換算用 img 的 rect，不是 canvas
+    assert "snapshotImg.getBoundingClientRect()" in html
