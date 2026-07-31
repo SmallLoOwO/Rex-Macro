@@ -348,6 +348,11 @@ class Config:
 
     # 交人工前救援（spec 2026-07-30-giveup-rescue-already-mined-design.md）
     giveup_rescue_enabled: bool = True        # 關掉即完全回到 2026-07-30 之前的行為
+    # 觀察期（spec 03，2026-07-31）：命中時**照樣交人工**，只記帳與標註「本來會判已進帳」。
+    # 這條路今天抓到兩個 bug（回傳整份面板礦名、模糊配到 Lovessence），方向都是「多宣告
+    # 一次已進帳」＝靜默放生一顆真稀有礦，且兩個都躲過既有測試。先觀察再自動。
+    giveup_rescue_observe: bool = True        # True＝觀察中（不自動略過人工）
+    giveup_rescue_observe_target: int = 10    # 累積這麼多次判定後，由 agent session 主動問玩家
     # NORMAL 面板名字欄的兩道幾何閘（2026-07-30 實機量測，crop 座標＝相對
     # backpack_review_region）。靜態 UI（NORMAL/www）本來就會在前後兩張裁圖互相抵銷，
     # 這兩道閘擋的是**會變動**的右側 craft 面板數字被 OCR 讀歪成假礦名。

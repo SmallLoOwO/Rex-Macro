@@ -344,6 +344,9 @@ class Bot:
         self._episode_chill_at = 0.0             # 本場 chill 時刻（救援取快取的錨點）
         self._panel_zeroed_at: float | None = None  # 面板歸零時刻（spec 2026-07-31）；None = 不信任面板
         self._episode_succeeded = False          # 本場已記過 HARVEST_SUCCESS（救援不得重複認領）
+        # 救援觀察期（spec 03）：命中照樣交人工，只記帳；跨 session 累計到目標次數後問玩家
+        self._rescue_observed: list = self._load_rescue_observed()
+        self._rescue_observe_note = ""           # 交人工訊息的觀察期註記（每次命中覆寫）
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
@@ -3196,6 +3199,35 @@ class Bot:
         except Exception as e:
             self.logger.error("harvest_seq 存檔失敗: %s", e)
 
+    def _rescue_observed_path(self) -> str:
+        """救援觀察期紀錄檔（spec 03）。放 log_dir——這是 runtime evidence，不是設定。"""
+        return os.path.join(cfg.log_dir, "rescue_observed.json")
+
+    def _load_rescue_observed(self) -> list:
+        """載入觀察期歷次判定（跨 session 累計）。壞檔／不存在 → 空清單、不丟例外。"""
+        import json
+        try:
+            with open(self._rescue_observed_path(), "r", encoding="utf-8") as f:
+                v = json.load(f)
+            if isinstance(v, list):
+                if v:
+                    self.logger.info("救援觀察期紀錄載入：已累積 %d 次判定（目標 %d）",
+                                     len(v), cfg.giveup_rescue_observe_target)
+                return v
+            self.logger.warning("rescue_observed.json 非清單 (%r)，從 0 重新起算", type(v))
+            return []
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return []
+
+    def _save_rescue_observed(self):
+        """把觀察期紀錄寫回檔案；失敗只記 log，絕不打斷 giveup 流程。"""
+        import json
+        try:
+            with open(self._rescue_observed_path(), "w", encoding="utf-8") as f:
+                json.dump(self._rescue_observed, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error("救援觀察期紀錄存檔失敗: %s", e)
+
     def _on_enter(self, s, frame) -> State | None:
         """進入狀態 s 的副作用（screenshot / log / 按鍵）。
 
@@ -5005,13 +5037,35 @@ class Bot:
         source = ("both" if (chat_names and panel_names)
                   else ("chat" if chat_names else "panel"))
         ore_names = list(dict.fromkeys(chat_names + panel_names))
+        observing = bool(cfg.giveup_rescue_observe)
+        self.log.log("HARVEST_RESCUED", harvest_id=hid, source=source,
+                     ore_names=ore_names, giveup_reason=reason, observed=observing,
+                     image_path=paths[-1] if paths else None, image_paths=paths)
+        if observing:
+            # 觀察期（spec 03）：判定照記、證據照留，但**不自己收尾**——玩家照樣被叫，
+            # 當場就能對照 bot 判得對不對。這條路的誤判是靜默放生一顆真稀有礦，且今天
+            # 抓到的兩個 bug 都躲過了既有測試，所以先讓人看幾次再交給它。
+            self._rescue_observed.append({
+                "harvest_id": hid, "source": source, "ore_names": ore_names,
+                "giveup_reason": reason, "at": time.time()})
+            self._save_rescue_observed()
+            n, target = len(self._rescue_observed), cfg.giveup_rescue_observe_target
+            self._rescue_observe_note = (
+                f"🔎 救援觀察中（第 {n}/{target} 次）：本來會判「{'、'.join(ore_names)} "
+                f"已進帳」而略過人工（來源 {source}）——請對照畫面確認它判得對不對")
+            self.logger.info(
+                "[%s] 交人工前救援命中（%s）：%s——觀察中（第 %d/%d 次），照舊交人工",
+                hid, source, "、".join(ore_names), n, target)
+            if n >= target:
+                self.logger.info(
+                    "救援觀察期已累積 %d 次判定（目標 %d）：請 agent session 攤開 "
+                    "%s 的紀錄與玩家確認是否切自動（cfg.giveup_rescue_observe=False）",
+                    n, target, self._rescue_observed_path())
+            return False
         self.logger.info(
             "[%s] 交人工前救援命中（%s）：%s 已進帳 → 不交人工，回 MINING"
             "（原因原本是：%s）",
             hid, source, "、".join(ore_names), reason)
-        self.log.log("HARVEST_RESCUED", harvest_id=hid, source=source,
-                     ore_names=ore_names, giveup_reason=reason,
-                     image_path=paths[-1] if paths else None, image_paths=paths)
         self._harvest_resume_mining()
         return True
 
@@ -5047,7 +5101,11 @@ class Bot:
                 harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
                 self.harvest.net_rotations = 0
 
-        self._human_reason = reason
+        # 觀察期註記（spec 03）：救援本來會判「已進帳」而略過人工，但觀察中照樣叫人。
+        # 把那句話帶進玩家看得到的原因裡，他才能當場對照 bot 判得對不對。
+        note = getattr(self, "_rescue_observe_note", "")
+        self._human_reason = f"{reason}\n{note}" if note else reason
+        self._rescue_observe_note = ""      # 一次性：下一場沒命中就不該還掛著上一場的字
         frame = capture.grab()              # 轉回後重抓（tracker_view 路徑沒轉回＝面對框現況）
 
         # 兩條路徑都附「聊天/背包前後對比」分組（H015：D3 超時只送框裁圖、而框已消失＝圖上

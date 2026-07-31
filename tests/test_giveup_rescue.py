@@ -158,8 +158,10 @@ def _entry(ts):
             np.zeros((cfg.chat_region.h, cfg.chat_region.w, 3), np.uint8))
 
 
-def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None, **attrs):
+def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None,
+                observe=False, **attrs):
     monkeypatch.setattr(main.capture, "grab", _frame)
+    monkeypatch.setattr(cfg, "giveup_rescue_observe", observe)
     resumed = []
     if entries is None:
         entries = collections.deque(maxlen=cfg.prechill_cache_depth)
@@ -167,6 +169,7 @@ def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None, **
             entries.append(_entry(1000.0))
     attrs.setdefault("_episode_chill_at", 1005.0)
     attrs.setdefault("_panel_zeroed_at", 9999.0)   # 01 已歸零 → 路 B 可信任
+    attrs.setdefault("_rescue_observed", [])       # 觀察期記帳（spec 03）
     bot = make_fake_bot(
         bind=["_giveup_rescue", "_prechill_ref"],
         harvest=_harvest(), _prechill=entries, log_harvest=_Rec(),
@@ -176,6 +179,7 @@ def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None, **
         _harvest_resume_mining=lambda: resumed.append(True),
         _enqueue_snapshot=lambda crop, label: f"/snap/{label}.png",
         _hlabel=lambda label: f"125_{label}",
+        _save_rescue_observed=lambda: None,        # 持久化另外測，這裡旁路
         **attrs)
     # giveup 發生在 chill 之後好幾分鐘——錨點若誤用「現在」，min_age 閘就完全失效
     monkeypatch.setattr(main.time, "time", lambda: 1200.0)
@@ -248,6 +252,101 @@ def test_rescue_skipped_when_both_paths_degraded(monkeypatch):
     assert bot._giveup_rescue("x") is False
     assert resumed == []
     assert any("路 B" in line and "跳過" in line for line in bot.log_harvest.lines)
+
+
+# ── 觀察期（spec 03）────────────────────────────────────────────────────────
+
+def test_observe_mode_hits_but_still_hands_to_human(monkeypatch):
+    """觀察中命中 → 回 False、不收尾。玩家照樣被叫，但當場對照得出 bot 判得對不對。
+
+    這條路今天抓到兩個 bug（回傳整份面板礦名、模糊配到 Lovessence），方向都是
+    「多宣告一次已進帳」＝靜默放生一顆真稀有礦。先觀察再自動。
+    """
+    bot, resumed = _rescue_bot(monkeypatch, panel=["faedrine"], observe=True)
+    assert bot._giveup_rescue("全方位掃描未找到追蹤框") is False
+    assert resumed == [], "觀察中不得自己收尾回 MINING"
+
+
+def test_observe_mode_still_records_evidence(monkeypatch):
+    """觀察期的價值在事後對得起帳：HARVEST_RESCUED 照記、截圖照帶。"""
+    bot, _ = _rescue_bot(monkeypatch, panel=["faedrine"], observe=True)
+    bot._giveup_rescue("x")
+    kind, meta = bot.log.records[0]
+    assert kind == "HARVEST_RESCUED"
+    assert meta["ore_names"] == ["faedrine"]
+    assert meta["observed"] is True          # 與自動路徑的紀錄分得開
+    assert meta["image_paths"], "證據截圖不可省"
+
+
+def test_observe_mode_counts_hits(monkeypatch):
+    """命中次數累計；滿門檻不自動切換，只記一行 log（由之後的 session 問玩家）。"""
+    bot, _ = _rescue_bot(monkeypatch, panel=["faedrine"], observe=True)
+    bot._giveup_rescue("x")
+    bot._giveup_rescue("y")
+    assert len(bot._rescue_observed) == 2
+    assert bot._rescue_observed[-1]["ore_names"] == ["faedrine"]
+    assert bot._rescue_observed[-1]["source"] == "panel"
+
+
+def test_observe_mode_notes_progress_in_human_message(monkeypatch):
+    """交人工訊息要帶上「本來會判已進帳」＋第幾次，玩家才對照得到。"""
+    bot, _ = _rescue_bot(monkeypatch, panel=["faedrine"], observe=True)
+    bot._giveup_rescue("x")
+    assert bot._rescue_observe_note, "交人工訊息要有觀察期註記"
+    assert "faedrine" in bot._rescue_observe_note
+    assert "1" in bot._rescue_observe_note      # 第 1 次
+
+
+def test_observe_off_behaves_like_today(monkeypatch):
+    """關掉觀察 → 完全是今天的自動行為（收尾、回 True、不記觀察帳）。"""
+    bot, resumed = _rescue_bot(monkeypatch, panel=["faedrine"], observe=False)
+    assert bot._giveup_rescue("x") is True
+    assert resumed == [True]
+    assert bot._rescue_observed == []
+
+
+def test_observe_mode_records_nothing_when_no_evidence(monkeypatch):
+    """兩路都沒命中 → 計數不變（否則門檻會被沒命中的場次灌水）。"""
+    bot, _ = _rescue_bot(monkeypatch, observe=True)
+    assert bot._giveup_rescue("x") is False
+    assert bot._rescue_observed == []
+
+
+def test_observe_note_reaches_the_player_reason_once(monkeypatch):
+    """註記要進 `_human_reason`（玩家看得到），而且只用一次不沾到下一場。"""
+    bot, _ = _rescue_bot(monkeypatch, panel=["faedrine"], observe=True)
+    bot._giveup_rescue("x")
+    note = bot._rescue_observe_note
+    # 模擬 _harvest_giveup 那兩行（不整支跑，避免拉進整條 giveup I/O）
+    reason = "全方位掃描未找到追蹤框"
+    bot._human_reason = f"{reason}\n{note}" if note else reason
+    bot._rescue_observe_note = ""
+    assert "faedrine" in bot._human_reason
+    assert bot._rescue_observe_note == "", "一次性：下一場沒命中不該還掛著"
+
+
+def test_rescue_observed_load_tolerates_missing_and_broken_file(tmp_path, monkeypatch):
+    """計數檔不存在／壞掉 → 從 0 起算，不丟例外（否則啟動就炸）。"""
+    monkeypatch.setattr(cfg, "log_dir", str(tmp_path))
+    bot = make_fake_bot(bind=["_load_rescue_observed", "_rescue_observed_path"],
+                        logger=_Rec())
+    assert bot._load_rescue_observed() == []          # 檔案不存在
+    (tmp_path / "rescue_observed.json").write_text("{not json", encoding="utf-8")
+    assert bot._load_rescue_observed() == []          # 壞檔
+    (tmp_path / "rescue_observed.json").write_text('{"a": 1}', encoding="utf-8")
+    assert bot._load_rescue_observed() == []          # 型別不對
+
+
+def test_rescue_observed_round_trips_through_disk(tmp_path, monkeypatch):
+    """存了要讀得回來——跨 session 累計靠這個。"""
+    monkeypatch.setattr(cfg, "log_dir", str(tmp_path))
+    bot = make_fake_bot(
+        bind=["_load_rescue_observed", "_save_rescue_observed", "_rescue_observed_path"],
+        logger=_Rec(),
+        _rescue_observed=[{"harvest_id": "125", "ore_names": ["faedrine"]}])
+    bot._save_rescue_observed()
+    assert bot._load_rescue_observed() == [
+        {"harvest_id": "125", "ore_names": ["faedrine"]}]
 
 
 def test_rescue_disabled_by_config(monkeypatch):
