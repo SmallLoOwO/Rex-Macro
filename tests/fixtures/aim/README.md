@@ -80,3 +80,21 @@ spec 的自動收集設計把 `auto_*` 直接寫進 `aim/`——**bot 不知道�
 
 現況維持平鋪，用檔名前綴區分（`101_core_green_*` / `101_terrain_fp_*` / `auto_*`）。
 要改結構前先解決 auto 檔的歸類問題。
+
+## 2026-07-31 玩家標註批次（`20260728_*`~`20260731_*`，15 組）
+
+玩家在標註頁對 sweep/D3 快照畫框的第一批成果，是 **H068 的證據來源**。判讀時注意
+這批的 `.png` 是粗格裁圖，**兩側夾要回全幀量**——`shape_roi_px=320` 在 320×270 的
+裁圖上會被裁掉一角，crop 上算出來的 `edge` 系統性偏低，拿它訂門檻會訂歪。全幀在
+MSIX LocalCache `snapshots/review/`，用 `matchTemplate` 把 crop 定位回去就有絕對座標。
+
+- `symptom="false_negative"`：玩家看得到框、bot 判空。10 張，全部是黃色尖刺太陽外框
+  ＋實心綠心，多半被角色或裝備擋掉外框一角 → H068 二維軟收（11/12 已救回）。
+- `symptom=None` + `observation="ore"`：對照組（bot 當時就收了），拿來確認調門檻沒把
+  原本收得到的弄丟。
+- `20260730_200052_..._128_sweep_accepted_dir7`：**唯一的淡薄荷色框**（核心 H=60
+  S=128 V=255）。`find_tracker` 收得到，但 `detect_tracker_core` 的
+  `tracker_core_profiles` 只有 S≥150 的飽和綠 → 這格回 None，手動瞄準退回放大手選。
+  見 `docs/open-detection-issues.md` D10。
+- `20260728_..._119_d3_miss_1`：藍菱星框，核心是**土黃色方塊**（H=14 S=160 V=147），
+  跟泥土地形同色帶。加 profile 前務必先收地形負樣本，D10 一併記著。

@@ -1,0 +1,18 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 135,
+    "size": 61,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260730_200745_094513300_000066_129_sweep_empty_dir4.png",
+  "mineral": null,
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": "false_negative",
+  "tier": null,
+  "variant": null
+}
