@@ -366,13 +366,16 @@ def test_panel_path_still_reports_whitelist_hit(monkeypatch):
 
 
 def test_panel_path_vetoed_when_row_colour_says_low_tier(monkeypatch):
-    """礦名說白名單、底色說低階 → 否決（照舊交人工）。
+    """礦名說白名單（exact）、底色說低階 → 否決（照舊交人工）。
 
-    實例：`essence of luck`（低階、底色 H=0）被 `classify_found_ore` 模糊配到
-    Lovessence（Transcendent、Aesteria）ratio 0.82。單靠礦名，這一列會讓每一次
-    giveup 都假命中——而假命中的代價是靜默放生一顆真稀有礦。
+    雙訊號 AND：礦名與底色都是獨立的 tier 證據，任一說「不是高階」就不算命中。
+    用 faedrine（exact rare）配上低階底色 H=0 演這條——例如面板重繪期間 OCR 讀到
+    上一幀的名字、或裁圖錯位讀到隔壁列的色。假命中的代價是靜默放生一顆真稀有礦。
+
+    （`essence of luck` 那個 fuzzy 假陽性的測試已由 spec 02 的
+    `test_rare_panel_ores_rejects_fuzzy_match` 接手——它在更上游就被擋掉了。）
     """
-    bot = _panel_bot(monkeypatch, ["essence of luck"], 0.0)
+    bot = _panel_bot(monkeypatch, ["faedrine"], 0.0)
     assert bot._panel_rare_ores("125", "救援路B") == []
     assert any("否決" in line for line in bot.log_harvest.lines)
 

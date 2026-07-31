@@ -624,6 +624,21 @@ def test_rare_panel_ores_empty_is_empty():
     assert rare_panel_ores(None) == []
 
 
+def test_rare_panel_ores_rejects_fuzzy_match():
+    """spec 02：面板只認 exact，不收 rare_fuzzy。
+
+    `essence of luck`（低階、底色 H=0）被模糊配到 Lovessence（Transcendent、Aesteria）
+    ratio 0.824 → 假陽性。238 幀 1909 列量測：320 列真陽性全是 exact（ratio None），
+    rare_fuzzy 在面板上的唯一貢獻就是這類假命中。聊天路徑不動（那邊真的需要模糊）。
+    """
+    from miningbot.harvester import rare_panel_ores
+    from miningbot import game_data
+    assert game_data.classify_found_ore("essence of luck")[0] == "rare_fuzzy"
+    assert rare_panel_ores(["essence of luck"]) == []
+    # exact 仍然收
+    assert rare_panel_ores(["faedrine", "essence of luck"]) == ["faedrine"]
+
+
 def test_rare_panel_ores_h069_live_panel_names():
     """H069 實錄（2026-07-31 harvest 145）：整排全是鎬子挖到的低階礦 → 回空。
 

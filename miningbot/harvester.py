@@ -653,17 +653,24 @@ def rare_panel_ores(names) -> list:
     所以「面板上有白名單礦」直接等於「這場採到了」。覆蓋率從 chill 前 3~6 秒
     變成整段 episode，是舊差分窗的嚴格超集。
 
-    ⚠ H069：判準是**在白名單上**的正面證據（`classify_found_ore` 回 `rare`／
-    `rare_fuzzy`），不是「不在排除清單上」。`common_ore_names()` 是聊天排除清單，
-    只收 Surreal+；面板列的是整個背包，低階礦全落 `unknown`。用「非 common」會讓
-    鎬子挖兩分鐘就命中任何 giveup（2026-07-31 harvest 145 假命中）。
+    ⚠ H069：判準是**在白名單上**的正面證據（`classify_found_ore` 回 `rare`），
+    不是「不在排除清單上」。`common_ore_names()` 是聊天排除清單，只收 Surreal+；
+    面板列的是整個背包，低階礦全落 `unknown`。用「非 common」會讓鎬子挖兩分鐘就
+    命中任何 giveup（2026-07-31 harvest 145 假命中）。
+
+    spec 02（2026-07-31）：**只認 exact**，不收 `rare_fuzzy`。依據 238 幀 1909 列
+    量測（以列底色 tier 當獨立 ground truth）：320 列真陽性全部是 exact（ratio None），
+    `rare_fuzzy` 的唯一貢獻是假陽性——`essence of luck`（低階、底色 H=0）被模糊配到
+    Lovessence（Transcendent、Aesteria）ratio 0.824。面板 OCR 信心 0.999+，從來沒有
+    需要模糊比對過。聊天路徑（`_rescue_chat_ores`／`ChatLedger`）不在此限——那邊的
+    輸入真的需要容忍變體前綴與尾端雜訊。
 
     分類走 `game_data.classify_found_ore`（不是 `fuzzy_match_ore`——那個只比對
     **事件**礦名），含變體前綴剝除、尾端雜訊容忍與模糊兜底。
     """
     from . import game_data              # 延後 import：game_data 載入資料檔，模組層會拖慢 import
     return [n for n in names or ()
-            if game_data.classify_found_ore(n)[0] in ("rare", "rare_fuzzy")]
+            if game_data.classify_found_ore(n)[0] == "rare"]
 
 
 def chill_reconcile_unbalanced(edge_count: int, gained_count: int) -> bool:
