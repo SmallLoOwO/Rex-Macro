@@ -481,6 +481,20 @@ def test_classify_unknown_ore():
     kind, info = gd.classify_found_ore("xyzzyplugh")
     assert kind == "unknown" and info is None
 
+def test_classify_short_whitelist_name_needs_word_boundary():
+    """H069：`Eg` 是 Lucernia 白名單上真實存在的兩字礦名（Brittlestone、Transcendent）。
+
+    裸 startswith 讓 `egguinox`（低階礦）被判成 Transcendent，交人工前救援因此假命中。
+    尾端多字母＝不同礦名；非英數尾巴（洞穴註記、OCR 雜訊）仍要放行。
+    """
+    gd.set_world("Lucernia")
+    try:
+        assert gd.classify_found_ore("eg")[0] == "rare"
+        assert gd.classify_found_ore("eg (eggshell cave)")[0] == "rare"
+        assert gd.classify_found_ore("egguinox")[0] == "unknown"
+    finally:
+        gd.clear_world()
+
 def test_classify_empty_is_unknown():
     assert gd.classify_found_ore("")[0] == "unknown"
 

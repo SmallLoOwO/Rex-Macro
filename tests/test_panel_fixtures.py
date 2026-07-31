@@ -66,15 +66,34 @@ def test_ui_chrome_and_craft_panel_never_become_ore_names(before_names):
 
 
 def test_faedrine_is_the_rescue_signal(before_names):
-    """125 的關鍵證據：Faedrine 在面板上、且分類為非-common。"""
+    """125 的關鍵證據：Faedrine 在面板上、且落在高階白名單（Exquisite）。"""
     from miningbot import game_data
     assert "faedrine" in before_names
-    assert game_data.classify_found_ore("faedrine")[0] != "common"
-    assert harvester.new_noncommon_panel_ores(
+    assert game_data.classify_found_ore("faedrine")[0] == "rare"
+    assert harvester.new_rare_panel_ores(
         [n for n in before_names if n != "faedrine"], before_names) == ["faedrine"]
 
 
 def test_identical_panels_report_no_gain(before_names):
-    """前後兩張內容相同 → 不得判定「有新的非-common 礦進帳」（誤判＝靜默放生真稀有礦）。"""
+    """前後兩張內容相同 → 不得判定「有新的稀有礦進帳」（誤判＝靜默放生真稀有礦）。"""
     after = _names("125_giveup_after_backpack.png")
-    assert harvester.new_noncommon_panel_ores(before_names, after) == []
+    assert harvester.new_rare_panel_ores(before_names, after) == []
+
+
+def test_h069_live_panel_diff_must_not_rescue():
+    """H069 實錄（2026-07-31 harvest 145）：整場救援必須不命中。
+
+    chill 前面板頂列是 Imbollyx，交人工前多了 Duskgravite／Siogyne／Sugarmuck／
+    Egguinox／Cloverstone——全是鎬子挖到的低階礦，把舊列擠出裁圖。舊版判準「非 common」
+    讓其中三個（unknown 兩個 ＋ 被 `Eg` 前綴誤配的 egguinox）算成進帳，bot 因此不交人工，
+    真稀有礦被放生。跑的是完整 OCR 管線：剖析或分類任一邊回歸都會讓它變紅。
+    """
+    from miningbot import game_data
+    game_data.set_world("Lucernia")
+    try:
+        pre, cur = _names("145_rescue_pre_panel.png"), _names("145_rescue_cur_panel.png")
+        assert "imbollyx" in pre and "sugarmuck" in cur     # 素材沒讀歪才有資格斷言差分
+        assert set(cur) - set(pre)                          # 確實有新增列（不是空差分）
+        assert harvester.new_rare_panel_ores(pre, cur) == []
+    finally:
+        game_data.clear_world()

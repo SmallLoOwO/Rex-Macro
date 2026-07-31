@@ -1661,10 +1661,27 @@ def rare_ore_names() -> tuple[str, ...]:
 CLASSIFY_FUZZY_RATIO = 0.80
 
 
+def _prefix_hit(base: str, name: str) -> bool:
+    """`base` 以礦名 `name` 開頭，**且結束在名字邊界上**（H069）。
+
+    裸 `startswith` 對短礦名是毒藥：Lucernia 白名單真的有一顆叫 `Eg`（Brittlestone、
+    Transcendent），所以 `egguinox`.startswith(`eg`) → 一顆低階礦被判成 Transcendent。
+    2026-07-31 harvest 145 實錄：交人工前救援因此假命中、靜默放生一顆真稀有礦。
+    同型地雷還有 `It.` / `Luna` / `Sol` / `Y` / `Bug` / `Vys` / `Lynx`。
+
+    尾端只放行**非英數**（OCR 雜訊 `bandeau!`、洞穴註記 ` (floral cave)`）——多一個
+    字母屬於拼字近失，交給下面的模糊兜底判，不走精確路徑。
+    """
+    if not base.startswith(name):
+        return False
+    rest = base[len(name):]
+    return not rest or not rest[0].isalnum()
+
+
 def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     """OCR 抽出的礦名（已小寫）→ ("common"|"rare"|"rare_fuzzy"|"unknown", 白名單 info 或 None)。
 
-    與排除比對同一套容忍：剝 Ionized/Spectral 變體前綴、startswith 容忍尾端雜訊
+    與排除比對同一套容忍：剝 Ionized/Spectral 變體前綴、`_prefix_hit` 容忍尾端雜訊
     （OCR 噪音、洞穴註記「(floral cave)」）。common 優先於 rare（守門員先判）；
     兩張表都隨 current_world 收斂（排除清單走 common_ore_names、白名單走 rare_ores）。
     精確都對不上 → 模糊最近鄰兜底（CLASSIFY_FUZZY_RATIO；rare 須嚴格贏過 common、
@@ -1675,11 +1692,11 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     if not ore_text:
         return "unknown", None
     base = _strip_variant(ore_text.strip().lower())
-    if any(base.startswith(c.lower()) for c in common_ore_names()):
+    if any(_prefix_hit(base, c.lower()) for c in common_ore_names()):
         return "common", None
     rare_table = rare_ores(current_world_name())
     for name, info in rare_table.items():
-        if base.startswith(name):
+        if _prefix_hit(base, name):
             return "rare", info
     # 模糊兜底：候選比照 ocr._fuzzy_rare_line 取「全部 / 前 1 / 前 2 個 token」
     # （容忍礦名後黏雜訊/洞穴註記，也涵蓋多字礦名），各表取最高分。

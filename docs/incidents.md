@@ -669,3 +669,22 @@ fixture 位置慣例：
 - **回歸**：`tests/fixtures/tracker/h068_avatar_occluded_tracker.png`（129 dir4，真框 0.36/0.86 vs 同幀 0.30/0.87）、`h068_panel_vs_tracker.png`（141 up dir6，真框 0.36/1.00 vs 裝備 0.36/0.56 vs 面板 0.33/0.86）；誤收側由既有 `test_find_tracker_bottom_edge_scene_h026_recovered_by_config_margin`（粉紅岩層 0.33）與 `test_h068_soft_path_does_not_admit_equipment_scene`（裝備 0.29）兩張實機幀夾住。紅綠自證：`shape_soft_edge=1.0`（等同修復前）時兩張新幀都回 `None`。
 - **整體命中率**：玩家標成真框的 12 張快照，修復前 6 命中，修復後 **11 命中**；唯一沒救回的是 `(979,550)` 的 0.33——與粉紅岩層同分，見 `docs/open-detection-issues.md` D09。
 - **下輪實機驗證預期**：`harvest.log` 的 `shape確認` 行開始出現 `-> OK(彩心)`，且該輪不再落 `sweep_empty`。反指標：出現 `OK(彩心)` 卻在開火後 verify 全空、快照裡是地形／UI → 誤收側被 0.02 的 margin 咬到，回頭看該候選的 colored 與座標再決定加排除區還是抬 `soft_edge`。
+
+## H069（2026-07-31 14:39:28，harvest 145；使用者回報「截圖提供的證據全部都是低階礦物，且表示已經挖到了，導致一個稀有礦物被捨棄」）：交人工前救援路 B 的稀有判準用「不在排除清單上」，而排除清單只收 Surreal+ → 鎬子挖兩分鐘就必然假命中
+
+- **症狀**：`🛟 交人工前救援命中：sugarmuck、egguinox、cloverstone（panel 證據）已在 chill 前進帳，不交人工、繼續挖礦`。三個名字全是低階礦，D3 打了 4 次全 miss（`rare [0]->[0] no-new`）、`D3 階段超時 -> 人工`，救援卻把它攔下來回 MINING——一顆真稀有礦被靜默放生，且不會有任何人工介入的機會。
+- **一句話根因**：`harvester.new_noncommon_panel_ores` 拿「`classify_found_ore != common`」當稀有判準，但 `common_ore_names()` 是**聊天排除清單**——它只收 Surreal/Mythic（＋會出變體的 Master 底名），因為只有那兩階會被動進聊天。NORMAL 面板列的卻是**整個背包**，絕大多數列（Sugarmuck／Cloverstone／Imbollyx／Bonnite／Fortunatum／Celtisalt／Auriclase…）階級遠低於 Surreal、兩張表都查不到 → 落 `unknown`，舊版一律當非-common。於是「bot 正常挖礦兩分鐘」本身就會生出新名字，救援對**任何** giveup 都會命中。
+- **第二個根因（同一場獨立成立）**：`classify_found_ore` 用裸 `startswith` 比對白名單。Lucernia 白名單真的有一顆叫 `Eg`（Brittlestone、Transcendent），所以 `egguinox`.startswith(`eg`) → 低階礦被判成 Transcendent。同型地雷還有 `It.`／`Luna`／`Sol`／`Y`／`Bug`／`Vys`／`Lynx`。只修第一個根因的話 `egguinox` 仍會單獨讓救援命中。
+- **量測**（`145_rescue_pre_panel.png` → `145_rescue_cur_panel.png`，相隔 130.4s，列數 9→8）：
+  | 新增列 | 舊版分類 | 實際 | 新版 |
+  |---|---|---|---|
+  | `duskgravite` | common（Umbragloom Cave Mythic） | 低階 | 濾掉 |
+  | `siogyne` | common（Shamrock Surreal） | 低階 | 濾掉 |
+  | `sugarmuck` | **unknown → 算進帳** | 低階，兩張表都沒有 | 濾掉 |
+  | `egguinox` | **rare（`Eg` 前綴誤配）** | 低階 | 濾掉 |
+  | `cloverstone` | **unknown → 算進帳** | 低階 | 濾掉 |
+  - 面板依稀有度排序，新列從頂端插入把舊列擠出 335px 裁圖 → 列數會**減少**卻同時有新名字，「列數沒增加所以沒挖到」這種守門也擋不住。
+- **對策**：(1) `new_noncommon_panel_ores` → `new_rare_panel_ores`，判準改成**要有正面證據**：`classify_found_ore` 回 `rare`/`rare_fuzzy` 才算進帳。白名單（`assets/rare_ores.json`）收的是 Exotic 以上，正是 chill 會響、D3 要採的那批；unknown 一律不算（寧漏勿誤——假命中的代價是靜默放生真稀有礦，漏判只是照舊交人工）。救援路 B 與雙 chill 對帳共用同一個函式，兩邊一起修正。(2) 新增 `game_data._prefix_hit`：前綴必須結束在**名字邊界**上（尾端只放行非英數，容忍 OCR 雜訊 `bandeau!` 與洞穴註記 ` (floral cave)`）；尾端多一個字母屬於拼字近失，交給既有的 `CLASSIFY_FUZZY_RATIO` 模糊兜底判。common 與 rare 兩張表同時套用。
+- **不動**：救援路 A（聊天）維持「非 common」判準。聊天只印 Surreal+，unknown 在那裡的意思是「白名單漂移或 OCR 讀歪的高階礦」，與面板的語意相反——`ocr._is_rare_ore` 的守門員規則在該路徑仍然正確。
+- **回歸**：`tests/fixtures/panel/145_rescue_{pre,cur}_panel.png` 兩張實機裁圖跑完整 RapidOCR 管線（`test_h069_live_panel_diff_must_not_rescue`：確認有新增列、且差分必須是空）＋`test_new_rare_panel_ores_h069_live_panel_names`（合成名字版）＋`test_new_rare_panel_ores_ignores_unknown`＋`test_classify_short_whitelist_name_needs_word_boundary`（`eg` 與 `eg (eggshell cave)` 仍是 rare、`egguinox` 落 unknown）。真陽性側由既有的 125 Faedrine 兩例夾住（`test_faedrine_is_the_rescue_signal` 已改成斷言 `== "rare"`）。
+- **下輪實機驗證預期**：`harvest.log` 的行改成 `面板差分（救援路B）：列數 X → Y，新增高階礦名 無`，giveup 照常交人工。反指標：若某場面板上肉眼看得到高階礦名、log 卻寫「無」→ 才是真漏判，照 `docs/data-collection-pipeline.md` 的分類表往 OCR／幾何閘查。救援的實機命中率統計要**從 H069 之後重新起算**：在此之前的每一筆 `HARVEST_RESCUED` 都可能是這型假命中。

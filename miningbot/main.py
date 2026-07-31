@@ -4844,11 +4844,15 @@ class Bot:
         return names
 
     def _panel_ore_gain(self, pre_crop, cur_crop, hid: str, why: str) -> list:
-        """兩張 NORMAL 面板裁圖 → 新增的非-common 礦名。救援路 B 與雙 chill 對帳共用。
+        """兩張 NORMAL 面板裁圖 → 新增的**高階白名單**礦名。救援路 B 與雙 chill 對帳共用。
 
         面板是**狀態不是訊息流**——不會淡出、不需要 hover、不受前景影響。這是聊天在
         前景失守時的唯一證據。天花板：同一 filter 零點之後第二次挖到**同一礦種**時全盲
         （名字已在、只有數量 +1）。
+
+        H069：判準是「在白名單上」而非「不在排除清單上」——面板列的是整個背包，
+        低階礦兩張表都沒有、會落 unknown，用非-common 當判準等於一路鎬子挖過去就命中。
+        細節見 `harvester.new_rare_panel_ores`。
 
         `read_text_boxes` 只有 rapidocr 路徑、不做 tesseract 後備 → 引擎不可用時整條跳過。
         """
@@ -4860,8 +4864,8 @@ class Bot:
                  cfg.panel_name_min_letters)
         pre_names = harvester.parse_panel_ore_names(ocr.read_text_boxes(pre_crop), *gates)
         cur_names = harvester.parse_panel_ore_names(ocr.read_text_boxes(cur_crop), *gates)
-        names = harvester.new_noncommon_panel_ores(pre_names, cur_names)
-        self.log_harvest.info("[%s] 面板差分（%s）：列數 %d → %d，新增非-common 礦名 %s",
+        names = harvester.new_rare_panel_ores(pre_names, cur_names)
+        self.log_harvest.info("[%s] 面板差分（%s）：列數 %d → %d，新增高階礦名 %s",
                               hid, why, len(pre_names), len(cur_names), names or "無")
         return names
 

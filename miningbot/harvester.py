@@ -546,23 +546,31 @@ def parse_panel_ore_names(boxes, max_x: int, min_y: int, min_letters: int = 3) -
     return out
 
 
-def new_noncommon_panel_ores(pre_names, cur_names) -> list:
-    """面板名字集合差分 → cur 新增、且**非 common** 的礦名（保序）。
+def new_rare_panel_ores(pre_names, cur_names) -> list:
+    """面板名字集合差分 → cur 新增、且**在高階白名單上**的礦名（保序）。
 
     pre 為空 → 一律回 []：快取剛建立／OCR 全滅時每個名字看起來都是新的，會把整個面板
     當成「這次挖到的」。寧漏勿誤（誤判的代價是靜默放生一顆真稀有礦）。
 
-    common 判定走 `game_data.classify_found_ore`（不是 `fuzzy_match_ore`——那個只比對
-    **事件**礦名，本面板的 Faedrine／Cloverstone 全數對不上）。它含變體前綴剝除、
-    startswith 尾端雜訊容忍與模糊兜底，正是「尾點之類雜訊不要漏配」要的東西。
-    分類 unknown 視為非-common，與採集確認鏈同一套「排除清單是守門員」的規則。
+    ⚠ H069：這裡**不可以**用「非 common」當稀有判準。`common_ore_names()` 是**聊天
+    排除清單**，只收 Surreal/Mythic（＋會出變體的 Master 底名）——因為只有那兩階會被動
+    進聊天。但 NORMAL 面板列的是**整個背包**，絕大多數列（Sugarmuck／Cloverstone／
+    Imbollyx／Bonnite…）階級遠低於 Surreal、兩張表都沒有 → 落 unknown。舊版把 unknown
+    當非-common，於是「鎬子挖了兩分鐘」必然生出新名字＝救援對任何 giveup 都命中
+    （2026-07-31 harvest 145：sugarmuck／egguinox／cloverstone 假命中，真稀有礦被放生）。
+
+    白名單（`rare_ores`）收的是 Exotic 以上，正是 chill 會響、D3 要採的那批 →
+    改成**要有正面證據**才算進帳。分類走 `game_data.classify_found_ore`（不是
+    `fuzzy_match_ore`——那個只比對**事件**礦名，本面板的 Faedrine 全數對不上），
+    它含變體前綴剝除、尾端雜訊容忍與模糊兜底，`rare_fuzzy` 一併採計。
     """
     from . import game_data              # 延後 import：game_data 載入資料檔，模組層會拖慢 import
     pre = {n.lower() for n in pre_names or ()}
     if not pre:
         return []
     return [n for n in cur_names or ()
-            if n.lower() not in pre and game_data.classify_found_ore(n)[0] != "common"]
+            if n.lower() not in pre
+            and game_data.classify_found_ore(n)[0] in ("rare", "rare_fuzzy")]
 
 
 def chill_reconcile_unbalanced(edge_count: int, gained_count: int) -> bool:
