@@ -70,13 +70,50 @@ def test_render_annotate_html_includes_tier_names_from_rarity_choices():
         assert t in html, f"tier {t!r} 應出現在 HTML"
 
 
-def test_render_annotate_html_includes_variant_names():
-    """變體按鈕須列出 rarity_choices[1]。"""
-    tiers = []
-    variants = ["原色", "Spectral", "Ionized"]
-    html = render_annotate_html("007", "/snap.png", (tiers, variants))
-    for v in variants:
-        assert v in html, f"variant {v!r} 應出現在 HTML"
+def test_render_annotate_html_has_no_variant_buttons():
+    """變體整區已移除（使用者 2026-07-31：「變體其實對外框的資訊不影響」）。
+
+    schema 仍留 `variant` 欄位（舊素材寫過），但 UI 不再問、payload 恆送 null。
+    """
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色", "Spectral"]))
+    assert 'id="variants"' not in html
+    assert "data-variant=" not in html
+    assert "<h2>變體</h2>" not in html
+    assert "variant: null" in html
+
+
+def test_render_annotate_html_tier_locked_unless_observation_is_ore():
+    """症狀互斥：選 2/3/4 時稀有度按鈕 disabled 並清空選擇（不只送出時丟掉）。"""
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
+    assert "function applyObsGating()" in html
+    gating = html.split("function applyObsGating()")[1].split("\n}")[0]
+    assert "activeObs === 'ore'" in gating
+    assert "b.disabled = !isOre" in gating
+    assert "activeTier = null" in gating
+
+
+def test_render_annotate_html_queue_exhausted_hides_image_and_submit():
+    """佇列走完＝顯示「沒有其他圖片了」並鎖住送出，不留最後一張在畫面上。
+
+    使用者 2026-07-31：「完全清完後會出現最後的圖片，我擔心會造成重複標注」。
+    """
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]),
+                                queue=[{"path": "/a.png", "label": "x"}])
+    assert "沒有其他圖片了" in html
+    assert "function setQueueDone(" in html
+    done = html.split("function setQueueDone(done)")[1].split("renderQueuePos();")[0]
+    assert "submitBtn.disabled = !!done" in done
+    assert "img.style.display = done ? 'none' : ''" in done
+
+
+def test_render_annotate_html_ctrl_z_undoes_last_submit():
+    """Ctrl+Z 打 /api/annotate/undo，並把該張插回佇列原位重標。"""
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]),
+                                queue=[{"path": "/a.png", "label": "x"}])
+    assert "/api/annotate/undo" in html
+    assert "e.ctrlKey || e.metaKey" in html
+    assert "undoStack.push(" in html
+    assert "queue.splice(at, 0, last.item)" in html
 
 
 def test_render_annotate_html_asks_what_you_see_not_which_symptom():

@@ -426,6 +426,47 @@ def create_app(
             content["verdict"] = verdict
         return JSONResponse(status_code=201, content=content)
 
+    @app.post("/api/annotate/undo")
+    def post_api_annotate_undo(payload: dict):
+        """刪掉剛寫下的標註素材（json + 配對 png），讓那張快照回到待標佇列。
+
+        玩家標錯的唯一補救：素材一落地就進了 `annotated_stems` 去重集合，那張圖
+        從此不再排進佇列，錯的標註會被 tuning 迴圈當真。回 200 成功；404 找不到
+        （已經刪過／根本沒寫成功）；400 缺 image；503 目標目錄未配置。
+
+        Security：只吃 basename，目錄一律自己推（`_derive_category` 同一份守門），
+        絕不接受呼叫端給的路徑——不然這條 route 就是任意檔案刪除。
+        """
+        image = payload.get("image")
+        stem = os.path.splitext(os.path.basename(image))[0] if isinstance(image, str) else ""
+        if not stem:
+            return _err(400, "image required")
+        if payload.get("symptom") == "no_target":
+            target_dir = negatives_dir          # 真陰性走 corpus/negatives/（全幀）
+        elif fixtures_dir is None:
+            return _err(503, "history not configured")
+        else:
+            target_dir = os.path.join(fixtures_dir,
+                                      *_derive_category(payload).split("/"))
+        if not target_dir:
+            return _err(503, "negatives dir not configured")
+        removed = []
+        for ext in (".json", ".png"):
+            path = os.path.join(target_dir, stem + ext)
+            try:
+                os.remove(path)
+                removed.append(path)
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                _log.warning("web: /api/annotate/undo 刪除失敗 (%s): %s", path, e)
+                return _err(500, f"delete failed: {e}")
+        if not removed:
+            return _err(404, "annotation not found")
+        _log.info("web: 標註已還原 %s（刪 %d 檔）", stem, len(removed))
+        return JSONResponse(status_code=200,
+                            content={"ok": True, "removed": removed})
+
     _FAILURES_DEFAULT_LIMIT = 50
 
     def _failure_items(limit: int):

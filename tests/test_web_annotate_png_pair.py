@@ -186,3 +186,36 @@ def test_annotate_html_sends_source_path():
     from miningbot.web_static import render_annotate_html
     html = render_annotate_html("113", r"C:\snaps\a.png", (["Mythic"], ["原色"]))
     assert "source_path:" in html
+
+
+# ── 還原（Ctrl+Z）───────────────────────────────────────────────────────────
+
+def test_undo_removes_both_files_so_the_shot_requeues(parts):
+    """標錯的補救：json + png 一起刪掉，那張快照才會重新排進佇列。"""
+    client, src, fixtures = parts
+    client.post("/api/annotate", json=_payload(src))
+    stem = os.path.splitext(os.path.basename(src))[0]
+    r = client.post("/api/annotate/undo",
+                    json={"image": os.path.basename(src), "category": "aim"})
+    assert r.status_code == 200
+    assert not (fixtures / "aim" / (stem + ".json")).exists()
+    assert not (fixtures / "aim" / (stem + ".png")).exists()
+
+
+def test_undo_is_404_when_nothing_was_written(parts):
+    """沒有東西可刪就說沒有——不假裝還原成功。"""
+    client, src, fixtures = parts
+    r = client.post("/api/annotate/undo",
+                    json={"image": "never_annotated.png", "category": "aim"})
+    assert r.status_code == 404
+
+
+def test_undo_refuses_path_traversal(parts, tmp_path):
+    """只吃 basename：`../` 不得跳出 fixtures_dir（否則是任意檔案刪除）。"""
+    client, src, fixtures = parts
+    victim = tmp_path / "victim.json"
+    victim.write_text("{}", encoding="utf-8")
+    r = client.post("/api/annotate/undo",
+                    json={"image": "../../victim.png", "category": "aim"})
+    assert r.status_code == 404
+    assert victim.exists()

@@ -439,11 +439,13 @@ def render_annotate_html(
     """P5 Task 7：標註工具 HTML（spec §5 C 區）。
 
     純函式：渲染單張 snapshot 的標註工具——pinch-zoom + 1:1 方形拖曳 +
-    Rarity 快選 toolbar（tier / variant）+ 症狀按鈕 + 礦物 / 事故欄位 +
+    稀有度快選 toolbar + 症狀按鈕 + 礦物 / 事故欄位 +
     Submit（POST /api/annotate，JSON body 符合 ``validate_annotation`` schema）。
 
     rarity_choices = (tiers, variants)——``web_annotation.rarity_choices_from_game_data``
-    撈出來的；tiers 動態生成、variants 固定 ``["原色", "Spectral", "Ionized"]``。
+    撈出來的。**variants 自 2026-07-31 起不再渲染**（使用者：變體是礦物本身的屬性，
+    對「外框長什麼樣」零資訊，每張多按一顆純粹罰站）；送出的 payload 固定
+    ``variant: null``。參數形狀維持二元組，schema 也仍留著這個欄位——舊素材寫過。
 
     snapshot_path=None/"" 時不渲染 ``<img>``（viewer 顯示佔位文字）；其他 UI 不變。
 
@@ -460,7 +462,7 @@ def render_annotate_html(
     from .web_annotation import SYMPTOM_BY_OBSERVATION
     from .web_history import label_verdict
 
-    tiers, variants = rarity_choices
+    tiers, _variants = rarity_choices   # 變體不再渲染（見 docstring）
     queue_mode = queue is not None       # []＝有進佇列模式但沒東西可標，要講清楚
     queue = list(queue or [])
     if queue and not snapshot_path:
@@ -468,10 +470,6 @@ def render_annotate_html(
     tier_btns = "".join(
         f'<button type="button" data-tier="{_esc(t)}">{_esc(t)}</button>'
         for t in tiers
-    )
-    variant_btns = "".join(
-        f'<button type="button" data-variant="{_esc(v)}">{_esc(v)}</button>'
-        for v in variants
     )
     # ⚠ src 必須走 `/snapshot?path=`，**不能直接塞 snapshot_path**。
     # 舊版寫 `src="{snapshot_path}"`，那是 `C:\\Users\\...\\x.png` 這種 Windows 絕對
@@ -497,7 +495,7 @@ def render_annotate_html(
     # 所以這裡送完整路徑是安全的——它本來就是 server 自己寫進 snapshot_index 的值。
     img_source_js = _js_str(snapshot_path or "")
     # 佇列每列附 bot 當下判定（verdict/mark_x/mark_y）——症狀就是靠它推的；
-    # episode 讓稀有度／變體在同一場內短暫固定（同一場多半是同一顆礦）。
+    # episode 讓稀有度在同一場內短暫固定（同一場多半是同一顆礦）。
     queue_js = json.dumps(
         [{"path": r.get("path", ""), "label": r.get("label", ""),
           "verdict": r.get("verdict"), "episode": r.get("episode"),
@@ -511,7 +509,8 @@ def render_annotate_html(
         queue_bar = ('<div id="queue-bar">佇列模式：<span id="queue-pos"></span>'
                      '　<code>j</code>/<code>k</code> 上下張・'
                      '<code>1</code>-<code>4</code> 選你看到什麼・'
-                     '<code>Enter</code> 送出並跳下一張</div>')
+                     '<code>Enter</code> 送出並跳下一張・'
+                     '<code>Ctrl</code>+<code>Z</code> 還原上一張</div>')
     elif queue_mode:
         queue_bar = ('<div id="queue-bar" class="empty">佇列是空的——目前沒有'
                      '待標註的快照（掃描全空／框被拒／瞄準失敗／已接受的候選），'
@@ -547,6 +546,12 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
                   color: white; border: 1px solid #555; border-radius: 3px;
                   cursor: pointer; font-size: 0.85rem; }}
 .toolbar button.active {{ background: #0084ff; border-color: #0084ff; }}
+/* 症狀互斥（2026-07-31 使用者要求）：只有「1 有礦框」才標得了稀有度，
+   其餘三個選項下整區鎖住並清空——先前只是送出時丟掉，畫面上還亮著，
+   玩家以為自己標了。 */
+.toolbar button:disabled {{ opacity: 0.35; cursor: not-allowed; }}
+#tiers-lock:empty {{ display: none; }}
+.submit:disabled {{ background: #444; cursor: not-allowed; }}
 /* 整句白話（FN/FP 這種術語玩家看不懂），一行一顆才放得下 */
 #observations button {{ display: block; width: 100%; margin: 0.2rem 0;
                         text-align: left; line-height: 1.35; }}
@@ -592,6 +597,9 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 <div id="main">
   <div id="viewer">
     {img_block}
+    <div class="placeholder" id="done-note" style="display:none">
+      沒有其他圖片了 ✓<br><span style="font-size:0.85em">標錯可按 Ctrl+Z 還原上一張</span>
+    </div>
     <div id="selection"></div>
     <div id="botmark"></div>
   </div>
@@ -612,16 +620,14 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
     </div>
     <p id="derived"></p>
 
-    <h2>稀有度（低 → 高）</h2>
+    <h2 id="tiers-head">稀有度（低 → 高）</h2>
+    <p id="tiers-lock" class="obs-hint"></p>
     <div id="tiers">{tier_btns or '<span class="hint">（game_data 無 tier）</span>'}</div>
-
-    <h2>變體</h2>
-    <div id="variants">{variant_btns}</div>
     <p id="sticky-note"></p>
 
     <button type="button" class="submit" id="submit">送出標註</button>
     <p class="hint">在快照上拖曳出方形（1:1）；Shift + 拖曳 = 平移；
-    滾輪 / 雙指 = 縮放；Esc 清除方形。</p>
+    滾輪 / 雙指 = 縮放；Esc 清除方形；Ctrl + Z 還原上一張。</p>
   </div>
 </div>
 <div id="status">提示：看 bot 判定 → 選你看到什麼 → 框出來 → 送出</div>
@@ -639,10 +645,9 @@ let zoom = 1.0;
 let pan = [0, 0];
 let selRect = null;       // {{ x, y, size }} in natural img coords
 let activeTier = null;
-let activeVariant = null;
 // 選擇跨張記憶（2026-07-30）：大多數待標快照是「什麼都沒有」，玩家選過一次後
 // 下一張直接帶上次的選擇，不必每張重選。localStorage 是瀏覽器原生、純前端、
-// 免改後端。tier/variant 不記——它們是「畫面裡那個礦」的屬性，每張不同，
+// 免改後端。tier 不記——它是「畫面裡那個礦」的屬性，每張不同，
 // 記了反而無聲套用錯誤稀有度。
 const OBS_KEY = 'annotate.observation';
 let activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
@@ -660,7 +665,7 @@ const SYMPTOM_LABELS = {{
 // bot 接受在哪但玩家沒框時的預設框大小（與 main._AUTO_FIXTURE_DEFAULT_SIZE 同值）
 const BOT_MARK_SIZE = 50;
 let bot = {init_verdict_js};   // {{ verdict: 'accepted'|'after'|'rejected'|null, x, y }}
-// 稀有度／變體短暫固定：同一場（episode）的連續幾張多半是同一顆礦，不必每張重選；
+// 稀有度短暫固定：同一場（episode）的連續幾張多半是同一顆礦，不必每張重選；
 // 換場自動清空——跨場硬記會無聲把上一顆礦的稀有度套到別的礦上。
 let curEpisode = null;
 const stickyEl = document.getElementById('sticky-note');
@@ -738,10 +743,30 @@ function showQueueItem(i) {{
   img.src = '/snapshot?path=' + encodeURIComponent(item.path);
   selRect = null; sel.style.display = 'none';
   bot = {{ verdict: item.verdict, x: item.x, y: item.y }};
-  resetToolbar(item.episode);  // 同一場沿用稀有度／變體，換場清空
+  resetToolbar(item.episode);  // 同一場沿用稀有度，換場清空
   renderBotLine();
   applyBotMark();
   renderQueuePos();
+  setQueueDone(false);
+}}
+
+// 佇列走完＝真的沒有下一張了：把圖收掉並鎖住送出鍵。先前只改一行文字、圖還留在
+// 畫面上，看起來跟「還有一張待標」一模一樣，再按一次 Enter 就是同一張重複標註
+// （使用者 2026-07-31 回報）。Ctrl+Z 還原時再叫 setQueueDone(false) 復原。
+function setQueueDone(done) {{
+  const submitBtn = document.getElementById('submit');
+  const doneNote = document.getElementById('done-note');
+  if (submitBtn) submitBtn.disabled = !!done;
+  if (img) img.style.display = done ? 'none' : '';
+  if (doneNote) doneNote.style.display = done ? 'block' : 'none';
+  if (done) {{
+    selRect = null;
+    sel.style.display = 'none';
+    if (botmark) botmark.style.display = 'none';
+    if (queuePosEl) queuePosEl.textContent = '已標完，沒有其他圖片了 ✓';
+    statusEl.textContent = '沒有其他圖片了——標錯了可按 Ctrl+Z 還原上一張，'
+      + '或重新整理看有沒有新快照';
+  }}
 }}
 renderQueuePos();
 
@@ -901,6 +926,12 @@ document.addEventListener('keydown', (e) => {{
     statusEl.textContent = '已清除方形';
     return;
   }}
+  // Ctrl+Z 在佇列空掉之後仍要能用——標完最後一張才發現標錯是最常見的情形。
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {{
+    undoLastSubmit();
+    e.preventDefault();
+    return;
+  }}
   if (!queue.length) return;
   if (e.key === 'j') {{ showQueueItem(qIndex + 1); e.preventDefault(); }}
   else if (e.key === 'k') {{ showQueueItem(qIndex - 1); e.preventDefault(); }}
@@ -912,8 +943,8 @@ document.addEventListener('keydown', (e) => {{
   }}
 }});
 
-// ── toolbar：tier / variant / symptom 單選切換 ──────────────────────
-// tier/variant 允許再點一次已選的按鈕取消（deselect）——先前點了就卡死選不掉，
+// ── toolbar：tier / observation 單選切換 ────────────────────────────
+// tier 允許再點一次已選的按鈕取消（deselect）——先前點了就卡死選不掉，
 // 玩家點錯稀有度或想改標「沒東西」都無法回到未選狀態。symptom 永遠要有現役值
 // （預設「不確定」），不開放取消到空，佇列/送出邏輯都假設它恆不為 null。
 function bindSingleSelect(containerId, setter, opts) {{
@@ -936,46 +967,56 @@ bindSingleSelect('tiers', (b) => {{
   activeTier = b ? (b.dataset.tier || null) : null;
   renderSticky();
 }}, {{ deselectable: true }});
-bindSingleSelect('variants', (b) => {{
-  const v = b && b.dataset.variant;
-  activeVariant = (!v || v === '原色') ? null : v;
-  renderSticky();
-}}, {{ deselectable: true }});
 bindSingleSelect('observations', (b) => {{
   activeObs = b.dataset.obs;
   localStorage.setItem(OBS_KEY, activeObs);  // 跨張記憶：下一張帶上來
   renderBotLine();                            // 推出來的症狀即時更新
+  applyObsGating();                           // 非「有礦框」→ 稀有度鎖住並清空
 }});
 
+// 症狀與稀有度互斥（使用者 2026-07-31）：稀有度是「畫面裡那顆礦」的屬性，
+// 玩家說看到的不是礦框（2/3/4）時它根本不成立。送出時本來就會丟掉，但畫面上
+// 還亮著＝玩家以為自己標了；直接鎖住整區並清空選擇。
+function applyObsGating() {{
+  const isOre = activeObs === 'ore';
+  document.querySelectorAll('#tiers button').forEach((b) => {{
+    b.disabled = !isOre;
+    if (!isOre) b.classList.remove('active');
+  }});
+  if (!isOre) activeTier = null;
+  const lock = document.getElementById('tiers-lock');
+  if (lock) lock.textContent = isOre ? '' : '（只有選「1 有礦框」時才標稀有度）';
+  renderSticky();
+}}
+
 // 佇列翻頁時把 toolbar 選擇歸位（見 showQueueItem）：「看到什麼」帶上次的記憶
-// （玩家選過 3「什麼都沒有」就固定住，不必每張重選）；稀有度／變體**同一場沿用**
+// （玩家選過 3「什麼都沒有」就固定住，不必每張重選）；稀有度**同一場沿用**
 // ——同一個 episode 的連續幾張多半是同一顆礦的不同方位/幀，每張重選純粹是罰站
 // （使用者 2026-07-31 要求）。換場（或單張模式）一律清空：跨場沿用會無聲把上一
 // 顆礦的稀有度套到別的礦上，那是污染語料而不是省事。
 function resetToolbar(episode) {{
   const ep = episode || null;
   if (ep === null || ep !== curEpisode) {{
-    activeTier = null; activeVariant = null;
-    document.querySelectorAll('#tiers button, #variants button')
+    activeTier = null;
+    document.querySelectorAll('#tiers button')
       .forEach((b) => b.classList.remove('active'));
   }}
   curEpisode = ep;
   activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
   document.querySelectorAll('#observations button')
     .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
-  renderSticky();
+  applyObsGating();
 }}
 
 function renderSticky() {{
   if (!stickyEl) return;
-  if (!activeTier && !activeVariant) {{
+  if (!activeTier) {{
     stickyEl.textContent = curEpisode
-      ? '選了稀有度／變體後，同一場（' + curEpisode + '）的下一張會自動沿用'
+      ? '選了稀有度後，同一場（' + curEpisode + '）的下一張會自動沿用'
       : '';
     return;
   }}
-  stickyEl.textContent = '📌 沿用中：' + (activeTier || '未選稀有度')
-    + (activeVariant ? '／' + activeVariant : '')
+  stickyEl.textContent = '📌 沿用中：' + activeTier
     + '——換場自動清空，點同一顆按鈕可取消';
 }}
 
@@ -985,7 +1026,7 @@ document.querySelectorAll('#observations button')
   .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
 renderBotLine();
 applyBotMark();
-renderSticky();
+applyObsGating();
 
 // ── 送出：POST /api/annotate（validate_annotation schema） ──────────
 document.getElementById('submit').addEventListener('click', submitAnnotation);
@@ -1020,14 +1061,15 @@ async function submitAnnotation() {{
     statusEl.textContent = '請先在快照上拖曳出方形（或選「什麼都沒有」）';
     return;
   }}
-  // 稀有度/變體是「畫面裡那個礦物」的屬性，只有玩家說看到礦框時才成立；
-  // 其餘情況就算他先前點過也不送出去，不然會是「沒有礦的圖」標著一個稀有度。
+  // 稀有度是「畫面裡那個礦物」的屬性，只有玩家說看到礦框時才成立；其餘情況
+  // 就算他先前點過也不送出去（applyObsGating 已經先清掉，這裡是第二道）。
+  // variant 恆為 null：變體對外框長相零資訊，UI 已移除（2026-07-31）。
   const isOre = activeObs === 'ore';
   const payload = {{
     image: imageName,
     source_path: sourcePath,
     tier: isOre ? activeTier : null,
-    variant: isOre ? activeVariant : null,
+    variant: null,
     mineral: null,
     source: {{ kind: 'manual' }},
     observation: activeObs,       // 玩家原話；症狀是它推出來的，推導不可逆
@@ -1051,17 +1093,58 @@ async function submitAnnotation() {{
     }}
     const data = await r.json().catch(() => ({{}}));
     statusEl.textContent = `已送出 ✓ ${{data.category || ''}}　` + verdictText(data.verdict);
-    if (queue.length) {{
-      // 標過的就從佇列拿掉——不然下一輪又從第一張重來
-      queue.splice(qIndex, 1);
+    // 標過的就從佇列拿掉——不然下一輪又從第一張重來。Ctrl+Z 用：記下這張是從哪個
+    // 位置拿掉的、後端把它寫去哪；單張模式（?snapshot=）沒有佇列列，item 記 null。
+    const removed = queue.length ? queue.splice(qIndex, 1)[0] : null;
+    undoStack.push({{ item: removed, index: qIndex, image: payload.image,
+                     category: payload.category || null,
+                     symptom: payload.symptom }});
+    if (queue.length || removed) {{
       if (!queue.length) {{
-        if (queuePosEl) queuePosEl.textContent = '佇列已清空 ✓';
+        setQueueDone(true);
         return;
       }}
       showQueueItem(qIndex);
     }}
   }} catch (err) {{
     statusEl.textContent = '送出失敗：' + err.message;
+  }}
+}}
+
+// ── Ctrl+Z：還原上一張標註（2026-07-31 使用者要求）──────────────────
+// 「送出並跳下一張」按太快就會標錯，而素材一旦落地就進了語料與去重集合，
+// 下次進佇列再也看不到那張圖。還原＝叫後端把 json/png 刪掉（去重集合跟著
+// 消失），前端把它插回原位再顯示一次。堆疊可以一路往回退，不只一層。
+const undoStack = [];
+async function undoLastSubmit() {{
+  const last = undoStack[undoStack.length - 1];
+  if (!last) {{
+    statusEl.textContent = '沒有可還原的標註';
+    return;
+  }}
+  statusEl.textContent = '還原中…';
+  try {{
+    const r = await fetch('/api/annotate/undo', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ image: last.image, category: last.category,
+                             symptom: last.symptom }}),
+    }});
+    if (!r.ok) {{
+      const err = await r.json().catch(() => ({{}}));
+      throw new Error(err.error || ('HTTP ' + r.status));
+    }}
+    undoStack.pop();
+    if (last.item) {{
+      const at = Math.min(last.index, queue.length);
+      queue.splice(at, 0, last.item);
+      showQueueItem(at);
+    }} else {{
+      setQueueDone(false);
+    }}
+    statusEl.textContent = '已還原 ↩ ' + last.image + '——重標一次';
+  }} catch (err) {{
+    statusEl.textContent = '還原失敗：' + err.message;
   }}
 }}
 
