@@ -708,3 +708,21 @@ fixture 位置慣例：
 - **對策**：(1) 清空前先 `_focus_roblox()`，拿不到焦點整條跳過並記 WARNING——盲送的代價不只清空失敗，那 8 個 `w` 若在焦點回來後才生效就是 8 次前進。(2) 打字前後比 `filter_box_ink(panel_filter_band)`，墨量沒變＝字沒進 TextBox，記 WARNING ＋ 存 `panel_zero_no_input` 裁圖，不記零點。兩道守門的失敗模式都是「路 B 下一場關掉」＝回到今日行為。
 - **回歸**：`test_clear_requires_foreground_before_touching_ui`（失焦時零點擊零打字）、`test_clear_focuses_before_clicking`（順序）、`test_clear_detects_input_never_reached_the_textbox`（墨量沒變 → 不記零點＋留裁圖）、`test_clear_ink_guard_does_not_block_the_happy_path`（兩側夾）、`test_filter_box_ink_changes_with_text`（純函式）。
 - **實機驗收（2026-07-31 當場跑過）**：情境 1 模擬失焦 → 點擊次數 0、`_panel_zeroed_at is None`；情境 2 正常路徑 → 自己聚焦、面板真的清空、零點成立。⚠ 未驗到的一段：「面板有礦時清得掉嗎」——驗收腳本想用 40 個 backspace 把篩選框清掉讓礦回來，但**backspace 沒生效**（框仍滿是 `w`），所以往返沒測成。下一場實機採集成功後看 log 是否出現「面板零點成立」即可補上。
+
+## H071（2026-08-01 02:17:29，harvest 151 之後按「繼續」回挖礦；使用者回報「NEEDS_HUMAN 按繼續讓腳本繼續跑，但不會照挖到稀有礦之後的模式走，背包沒有清空」）：篩選框的字是**附加**、backspace 進不去，框滿了之後面板再也清不掉
+
+- **先排除的假設**：「繼續」那條路沒接上清空。實際上 `_on_enter(MINING)` 早就呼叫 `_clear_panel_filter()`（commit 28ba7d6），log 也證明它跑了——02:17:12 `STATE_CHANGE NEEDS_HUMAN -> MINING`、02:17:29 清空失敗。缺的不是呼叫，是那次呼叫做不到事。
+- **症狀**：`面板歸零：篩選框墨量沒變（494）→ 字沒進 TextBox`，接著提早 `return`，面板留著整場的礦（`panel_zero_no_input` 裁圖看得到 Clovara 14 排在最上面）。同一天 00:19（ink 257）、01:04（ink 769）也各掛一次，成功與失敗交錯出現，看起來像隨機掉鍵。
+- **根因（量測序列）**：篩選框的字只增不減，`typewrite` 是**附加**，框滿了就再也改不動。
+  | 時間 | 框內容 | ink | 字寬 |
+  |---|---|---|---|
+  | 07-31 23:55 打字前 | 5 個 `w` | 257 | 57px |
+  | 07-31 23:55 打字後 | 13 個 `w` | 769 | 169px |
+  | 07-31 23:56 **送 40 個 backspace 後** | 沒變 | 769 | 169px |
+  | 07-31 23:56 再清一次 | 滿框 | 500 | 180px |
+  | 08-01 02:15／02:17 前後 | 滿框 | 494／494 | — |
+  滿框後再打 `w` **一個像素都不變**，遊戲的篩選也不會重跑（新挖到的礦是直接 append 進清單、不受既有篩選字影響，所以面板照樣長回來）。於是每一次歸零都撞上 H070 那個「墨量沒變」硬閘，提早 return、連面板 OCR 都不跑——面板從此永遠是滿的。
+- **⚠ backspace 走不進這個 TextBox**：H070 的驗收腳本送過 40 個（`ic.key_press("backspace")`），前後 ink/字寬 769/169 分毫不差。當時只在 H070 條目結尾記成「backspace 沒生效」的旁註，沒有人追下去——那正是本事故的鑰匙。`w` 進得去、backspace 進不去，所以唯一能縮短內容的手段是**全選取代**。
+- **對策**：(1) 打字前送 `panel_clear_select_all_rounds`（預設 2）輪 Ctrl+A，讓 8 個 `w` 取代原有內容而不是接在後面；全選是冪等的，兩輪把 ~25% 掉鍵壓到 ~6%。(2) 墨量比對**降級成診斷**、不再提早 return：全選取代後穩態就是「每次都 8 個 `w`」，墨量本來就可能與上一輪相同，拿它當硬閘會把成功的一輪判成失敗。改成先跑面板 OCR（真正的判準），失敗時才用墨量分辨「輸入全滅」與「面板真的還有礦」——H070 要的那個分辨完整保留。
+- **回歸**：`test_clear_selects_all_before_typing_h071`（點框 → 全選 N 輪 → 打字 → Enter 的順序與輪數）、`test_clear_ink_unchanged_but_panel_empty_still_counts_h071`（墨量沒變但面板是空的 → 零點照樣成立）、`test_clear_detects_input_never_reached_the_textbox`（改成「面板沒歸零**且**墨量沒變」才記那個原因）。
+- **⚠ 待實機驗證**：Ctrl+A 在這個 Roblox TextBox 上有沒有效**尚未實測**（backspace 就是敗在這裡）。下一場實機看 log：出現「面板零點成立」＝有效；若仍是「字沒進 TextBox（…全選失敗導致滿框）」，就是 Ctrl+A 也進不去，改走滑鼠拖曳選取（點框右端拖到左端）再打字。`.scratch/probe_filter_clear.py` 是現成的三法比較腳本。

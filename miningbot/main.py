@@ -4882,8 +4882,13 @@ class Bot:
         """清空 NORMAL 面板篩選框，維持「進 MINING 時面板上沒有白名單礦」的不變式
         （spec 2026-07-31；判準 2026-07-31 實機放寬，見下）。
 
-        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → key_press("enter")。
-        驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，02 據此跳過路 B。
+        序列：click(篩選框) → Ctrl+A × N → typewrite("w" × N) → settle → OCR 驗 →
+        key_press("enter")。驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，
+        02 據此跳過路 B。
+
+        **必須先全選再打**（H071）：打字是附加，篩選框跨場只增不減，滿框後再打 w 一個
+        像素都不變、遊戲的篩選也不重跑 → 面板從此清不掉（玩家看到的「按繼續回挖礦後
+        背包沒清空」）。backspace 走不進這個 TextBox（實機 40 個全無效），只能靠全選取代。
 
         **驗的是「面板上沒有白名單（Exotic+）礦」，不是「面板全空」**（2026-07-31，
         使用者提出）：舊版「點畫面中央還焦點」是一次真的挖礦點擊，低階礦立刻回填面板，
@@ -4918,22 +4923,28 @@ class Bot:
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             import pydirectinput
+            # H071：打字前先 Ctrl+A 全選，讓 w **取代**框裡原有的字。舊版直接 typewrite
+            # 是「附加」，篩選框跨場只增不減（實機 07-31 23:55 的 5 個 w → 23:56 已滿框，
+            # 08-01 三次歸零全掛在同一個滿框值 ink=494）。滿框後再打 w 不改變任何一個
+            # 像素，遊戲的篩選也不會重跑（新挖到的礦是直接 append 進清單、不受舊篩選字
+            # 影響）→ 面板從此再也清不掉。⚠ backspace 走不進這個 TextBox：實機送 40 個
+            # 一個都沒生效（ink/字寬 769/169 前後完全相同），所以只能靠全選取代。
+            # 送 `panel_clear_select_all_rounds` 輪：按鍵掉 ~25%，單輪漏掉就整場白做；
+            # 全選是冪等的，多送一輪只花 ~0.15s。
+            for _ in range(cfg.panel_clear_select_all_rounds):
+                ic.key_down("ctrl")
+                ic.key_press("a")
+                ic.key_up("ctrl")
             pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
             time.sleep(cfg.panel_clear_settle_s)
-            # 字真的進 TextBox 了嗎？框裡的亮字量會變（w 越打越多；滿框後壓縮，
-            # 字形仍會變）。沒變＝點沒中或輸入被吃——實機 H070 就是整組被丟掉，
-            # 而那時面板「維持原樣」跟「面板本來就有礦」在 OCR 上完全同形。
+            # 字真的進 TextBox 了嗎？框裡的亮字量會變（全選取代後長度歸 8；沒全選到就
+            # 越打越多）。沒變＝點沒中或輸入被吃（H070 實機是整組被丟掉）。
+            # ⚠ 這只當**診斷**用，不再提早 return：全選取代後穩態就是「每次都 8 個 w」，
+            # 墨量本來就可能與上一輪相同，拿它當硬閘會把成功的一輪判成失敗（H071 前那個
+            # 硬閘就是這樣把滿框案例擋在 OCR 驗證之前）。面板 OCR 才是真正的判準。
             after = vision.filter_box_ink(
                 capture.crop(capture.grab(), cfg.panel_filter_band))
-            if after == before:
-                self._panel_zeroed_at = None
-                self.logger.warning(
-                    "面板歸零：篩選框墨量沒變（%d）→ 字沒進 TextBox（點沒中／輸入被吃）"
-                    "，路 B 將跳過下一場", before)
-                self._enqueue_snapshot(
-                    capture.crop(capture.grab(), cfg.backpack_review_region),
-                    "panel_zero_no_input")
-                return
+            input_landed = after != before
 
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None
@@ -4972,11 +4983,19 @@ class Bot:
                 # 至多兩讀（次數也是上界：時鐘停住時預算不會自己到期）
                 if reads >= 2 or time.time() >= deadline:
                     self._panel_zeroed_at = None
-                    self.logger.warning(
-                        "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次 → 路 B 將跳過下一場",
-                        header or "讀不到", len(names), "、".join(names) or "空", reads)
-                    # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
-                    self._enqueue_snapshot(crop, "panel_zero_failed")
+                    # 失敗時才分辨兩種同形的失敗（H070 的原始理由）：墨量沒變＝整組輸入
+                    # 沒進 TextBox（點沒中／被吃／框已滿）；有變＝字進去了但面板真的還有礦。
+                    if not input_landed:
+                        self.logger.warning(
+                            "面板歸零：篩選框墨量沒變（%d）→ 字沒進 TextBox"
+                            "（點沒中／輸入被吃／全選失敗導致滿框），路 B 將跳過下一場", before)
+                        self._enqueue_snapshot(crop, "panel_zero_no_input")
+                    else:
+                        self.logger.warning(
+                            "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次 → 路 B 將跳過下一場",
+                            header or "讀不到", len(names), "、".join(names) or "空", reads)
+                        # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
+                        self._enqueue_snapshot(crop, "panel_zero_failed")
                     break
         except Exception as e:
             self._panel_zeroed_at = None

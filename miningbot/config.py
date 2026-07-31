@@ -376,6 +376,10 @@ class Config:
     panel_filter_band: Region = field(
         default_factory=lambda: Region(0, 424, 226, 36))
     panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
+    panel_clear_select_all_rounds: int = 2    # 打字前送幾輪 Ctrl+A（H071）：打字是**附加**、
+                                              # 框滿了就再也清不掉，而 backspace 進不了這個
+                                              # TextBox（實機 40 個全無效）→ 只能全選取代。
+                                              # 冪等，兩輪把 ~25% 掉鍵壓到 ~6%（多花 ~0.15s）
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
