@@ -233,3 +233,49 @@ def test_panel_hides_adopt_button_without_prediction():
 
 if __name__ == "__main__":       # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- 傳送板偵測器：玩家標註素材回歸（2026-08-01）--------------------------
+
+def test_teleport_board_detector_hits_every_annotated_fixture():
+    """7 張玩家標註的實機幀，`teleport_board.detect` 必須全中且分數過門檻。
+
+    素材是玩家為了回礦本來就要點的那一下（`_save_auto_fixture` 自動收）＋網頁標註
+    補的板子座標，兩檔一組在 `tests/fixtures/reentry/teleport_board/`。2026-08-01
+    新收的 39/40/41 三組把樣本從 4 擴到 7，重放結果 7/7 命中、分數 0.84~0.97，
+    對 `reentry_predict_min_score=0.7` 兩側有 0.14 餘裕——這條測試守的是「下次動
+    HSV 百分位表或門檻時，別把已經全中的樣本弄丟」。
+
+    容許 60px：標註是玩家框的板子中心，偵測器回的是板面錨點，實測系統性偏上約 40px
+    （這條測試不管那個偏差，`_predict_teleport_board` 只做建議、不自動點）。
+    """
+    import glob
+    import json
+    import os
+
+    import cv2
+    import numpy as np
+
+    from miningbot import teleport_board
+    from miningbot.config import DEFAULT as cfg
+
+    here = os.path.dirname(__file__)
+    metas = sorted(glob.glob(os.path.join(here, "fixtures", "reentry",
+                                          "teleport_board", "*.json")))
+    assert len(metas) >= 7, "素材遺失（應有 auto_27/35/37/38/39/40/41 七組）"
+    misses = []
+    for meta in metas:
+        with open(meta, encoding="utf-8") as f:
+            ann = json.load(f).get("annotation") or {}
+        # cv2.imread 吃不了非 ASCII 路徑（專案資料夾是中文名）→ fromfile+imdecode
+        img = cv2.imdecode(np.fromfile(meta[:-5] + ".png", dtype=np.uint8),
+                           cv2.IMREAD_COLOR)
+        got = teleport_board.detect(img)
+        name = os.path.basename(meta)[:-5]
+        if got is None or got[2] < cfg.reentry_predict_min_score:
+            misses.append("%s -> %s" % (name, got))
+            continue
+        if abs(got[0] - ann["cx"]) >= 60 or abs(got[1] - ann["cy"]) >= 60:
+            misses.append("%s -> %s 偏離標註 (%d,%d)"
+                          % (name, got, ann["cx"], ann["cy"]))
+    assert not misses, "傳送板偵測退步：" + "；".join(misses)

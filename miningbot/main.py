@@ -3375,6 +3375,9 @@ class Bot:
             # 重拍 _pre_scan_ref——若 D3 其實已採到才 RESWEEP，重拍的已是「採完後」畫面
             # → 送人工的 before/after 兩張一模一樣、對比失去鑑別力）
             self._harvest_origin_ref = self._pre_scan_ref
+            # D06：轉一圈拍每個方位自己的 reference（必須在 _run_scan 之前——掃描後
+            # 追蹤框才出現，先拍才不會把活框寫進排除基準＝H026 自我致盲）。
+            self._capture_dir_references("進場")
             self._run_scan()            # 裝備 D2 + 點擊觸發掃描
             self._confirm_scan("enter")
             self._harvest_start = time.time()
@@ -4642,6 +4645,63 @@ class Bot:
             observation.pos, observation.score, observation.snapshot_path)
         return observation
 
+    def _capture_dir_references(self, why: str) -> bool:
+        """D06：掃描**前**先轉一圈，每個方位各拍一張 reference。回 True＝八張都拿到。
+
+        為什麼要這樣：`preexist` 差分是**逐像素同座標**比對，而舊版八個方位共用一張在
+        起始方位拍的 `_pre_scan_ref`。轉 45° 之後同一塊 bbox 對應到世界上完全不同的
+        地方，礦坑到處是綠牆 → `ref_fill > 0.15` 隨機成立、真框被判 `rej(preexist)`。
+        玩家標註的 11 張漏抓裡，9 張可測的有 **6 張**死在這裡（D06 2026-08-01 複驗）。
+
+        為什麼是「轉一圈拍」而不是別的便宜作法：另外三條路都已實機量測否決
+        （ref 加亮度閘／改比像素相似度／乾脆不套差分 → 192 幀多出 161 個假陽性，
+        全是地形與角色）——差分本身是**必要**的，錯的只是拿它跨方位比。細節見 D06。
+
+        時機必須在 `_run_scan()` **之前**：D2 掃描後追蹤框才出現，先拍才不會把活框寫進
+        排除基準（H026 自我致盲）。轉一圈是 8×45°＝360°，回到原方位，不動 net_rotations。
+        實機量測（ep133 兩次 sweep 同方位相位相關）轉完一圈位移 dx=dy=0.0px，所以
+        reference 與之後的偵測幀是對齊的。
+
+        任一次旋轉被吃 → 整組作廢、轉回原方位、回 False，呼叫端沿用單張 ref（今日行為）。
+        """
+        if not cfg.sweep_per_dir_reference:
+            return False
+        num_dirs = 8
+        refs = {}
+        start = self.harvest.net_rotations if self.harvest else 0
+        t0 = time.time()
+        for i in range(num_dirs):
+            refs[(start + i) % num_dirs] = capture.grab()
+            if not self._rotate_verified(1):
+                self.logger.warning(
+                    "方位 reference（%s）：第 %d/%d 次旋轉被吃 → 整組作廢，"
+                    "沿用單張 ref（D06 漏抓風險維持今日行為）", why, i + 1, num_dirs)
+                self._pre_scan_refs = {}
+                self._pre_scan_refs_layer = None
+                harvester.restore_view(i, rotate=self._rotate_verified)
+                return False
+        self._pre_scan_refs = refs
+        self._pre_scan_refs_layer = self.harvest.pitch_layer if self.harvest else None
+        self.log_harvest.info(
+            "[%s] 方位 reference（%s）：8 張已拍（layer=%s，耗時 %.1fs）",
+            self.harvest.harvest_id if self.harvest else "?", why,
+            self._pre_scan_refs_layer, time.time() - t0)
+        return True
+
+    def _dir_reference(self, abs_dir: int, fallback):
+        """取該方位的 reference；沒有（沒拍成／別的俯仰層）就退回單張 ref。
+
+        俯仰層要對得上：`_pre_scan_refs` 是在拍攝當下那一層拍的，拿 mid 的去比 up 層
+        等於重演 D06 本身。層不同一律退回單張 ref。
+        """
+        refs = getattr(self, "_pre_scan_refs", None)
+        if not refs:
+            return fallback
+        layer = self.harvest.pitch_layer if self.harvest else None
+        if getattr(self, "_pre_scan_refs_layer", None) != layer:
+            return fallback
+        return refs.get(abs_dir, fallback)
+
     def _sweep_for_tracker(self, excl, ref):
         """Scan eight directions while retaining absolute-direction target evidence.
 
@@ -4668,8 +4728,10 @@ class Bot:
                 frame = capture.grab()
                 self._sweep_fov_shifted = True
             rejects = [] if cfg.remote_aim_enabled else None
+            # D06：這個方位自己的 reference（拍不到／別的俯仰層 → 退回單張 ref）
+            dref = self._dir_reference(abs_dir, ref)
             first = self._find_tracker(
-                frame, excl, ref, log=self._tracker_log, with_score=True,
+                frame, excl, dref, log=self._tracker_log, with_score=True,
                 collect_rejects=rejects)
             if cfg.sweep_empty_snapshot:
                 sweep_frames.append((abs_dir, frame.copy(), rejects or []))
@@ -4678,7 +4740,7 @@ class Bot:
                 time.sleep(0.08)
                 second_frame = capture.grab()
                 second = self._find_tracker(
-                    second_frame, excl, ref, log=self._tracker_log, with_score=True)
+                    second_frame, excl, dref, log=self._tracker_log, with_score=True)
                 second_pos = (second[0], second[1]) if second else None
                 stable = (second_pos is not None
                           and abs(first_pos[0] - second_pos[0]) < 8
@@ -4882,13 +4944,11 @@ class Bot:
         """清空 NORMAL 面板篩選框，維持「進 MINING 時面板上沒有白名單礦」的不變式
         （spec 2026-07-31；判準 2026-07-31 實機放寬，見下）。
 
-        序列：click(篩選框) → Ctrl+A × N → typewrite("w" × N) → settle → OCR 驗 →
-        key_press("enter")。驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，
-        02 據此跳過路 B。
+        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → key_press("enter")。
+        驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，02 據此跳過路 B。
 
-        **必須先全選再打**（H071）：打字是附加，篩選框跨場只增不減，滿框後再打 w 一個
-        像素都不變、遊戲的篩選也不重跑 → 面板從此清不掉（玩家看到的「按繼續回挖礦後
-        背包沒清空」）。backspace 走不進這個 TextBox（實機 40 個全無效），只能靠全選取代。
+        **不必清空篩選框**（H071，使用者確認）：框吃得下無限長的字，打字永遠是附加、
+        文字永遠有變、遊戲的篩選也永遠會重跑。要清的是**面板**，不是那個框。
 
         **驗的是「面板上沒有白名單（Exotic+）礦」，不是「面板全空」**（2026-07-31，
         使用者提出）：舊版「點畫面中央還焦點」是一次真的挖礦點擊，低階礦立刻回填面板，
@@ -4918,33 +4978,34 @@ class Bot:
                 self._panel_zeroed_at = None
                 self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（路 B 將跳過下一場）")
                 return
-            before = vision.filter_box_ink(
-                capture.crop(capture.grab(), cfg.panel_filter_band))
+            band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
+            before = vision.filter_box_ink(band0)
+            before_w = vision.filter_box_text_width(band0)
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             import pydirectinput
-            # H071：打字前先 Ctrl+A 全選，讓 w **取代**框裡原有的字。舊版直接 typewrite
-            # 是「附加」，篩選框跨場只增不減（實機 07-31 23:55 的 5 個 w → 23:56 已滿框，
-            # 08-01 三次歸零全掛在同一個滿框值 ink=494）。滿框後再打 w 不改變任何一個
-            # 像素，遊戲的篩選也不會重跑（新挖到的礦是直接 append 進清單、不受舊篩選字
-            # 影響）→ 面板從此再也清不掉。⚠ backspace 走不進這個 TextBox：實機送 40 個
-            # 一個都沒生效（ink/字寬 769/169 前後完全相同），所以只能靠全選取代。
-            # 送 `panel_clear_select_all_rounds` 輪：按鍵掉 ~25%，單輪漏掉就整場白做；
-            # 全選是冪等的，多送一輪只花 ~0.15s。
-            for _ in range(cfg.panel_clear_select_all_rounds):
-                ic.key_down("ctrl")
-                ic.key_press("a")
-                ic.key_up("ctrl")
             pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
             time.sleep(cfg.panel_clear_settle_s)
-            # 字真的進 TextBox 了嗎？框裡的亮字量會變（全選取代後長度歸 8；沒全選到就
-            # 越打越多）。沒變＝點沒中或輸入被吃（H070 實機是整組被丟掉）。
-            # ⚠ 這只當**診斷**用，不再提早 return：全選取代後穩態就是「每次都 8 個 w」，
-            # 墨量本來就可能與上一輪相同，拿它當硬閘會把成功的一輪判成失敗（H071 前那個
-            # 硬閘就是這樣把滿框案例擋在 OCR 驗證之前）。面板 OCR 才是真正的判準。
-            after = vision.filter_box_ink(
-                capture.crop(capture.grab(), cfg.panel_filter_band))
-            input_landed = after != before
+            # H071：墨量**不再是硬閘**，只當診斷。篩選框吃得下無限長的字（使用者確認），
+            # 打字永遠是附加、文字永遠有變、遊戲的篩選也永遠會重跑——但框裡的字越積越多
+            # 之後**顯示會壓縮到飽和**，再多打幾個 w 一個像素都不變。實機字寬序列
+            # 07-31 23:55 五個 w=57px → 169px → 23:56 199px 之後就停在 199px／ink=494。
+            # 舊版把「墨量沒變」當成「字沒進 TextBox」直接 return，連面板 OCR 都不跑，
+            # 於是 08-01 三次歸零全被這道假閘擋掉、`_panel_zeroed_at` 一路是 None
+            # ——玩家看到的「NEEDS_HUMAN 按繼續回挖礦後背包沒清空」就是它。
+            # 面板 OCR（下面那個重讀迴圈）才是真正的判準，一律讓它跑完。
+            band1 = capture.crop(capture.grab(), cfg.panel_filter_band)
+            after = vision.filter_box_ink(band1)
+            after_w = vision.filter_box_text_width(band1)
+            # 篩選框現況一律入 log（不論成敗）：字寬是 H071 真正解開案情的量，
+            # 「還在長」與「已經飽和」只有它分得出來（墨量飽和後恆定會誤導）。
+            # 座標也記——「點沒中」要能拿它跟 panel_zero_failed 裁圖對照。
+            ink_changed = after != before
+            self.logger.info(
+                "面板歸零：點 (%d,%d) 打 %d 個 w｜篩選框 ink %d→%d、字寬 %d→%dpx（%s）",
+                cfg.panel_filter_xy[0], cfg.panel_filter_xy[1],
+                cfg.panel_clear_keystrokes, before, after, before_w, after_w,
+                "有變" if ink_changed else "沒變，多半是顯示已壓縮飽和")
 
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None
@@ -4983,19 +5044,15 @@ class Bot:
                 # 至多兩讀（次數也是上界：時鐘停住時預算不會自己到期）
                 if reads >= 2 or time.time() >= deadline:
                     self._panel_zeroed_at = None
-                    # 失敗時才分辨兩種同形的失敗（H070 的原始理由）：墨量沒變＝整組輸入
-                    # 沒進 TextBox（點沒中／被吃／框已滿）；有變＝字進去了但面板真的還有礦。
-                    if not input_landed:
-                        self.logger.warning(
-                            "面板歸零：篩選框墨量沒變（%d）→ 字沒進 TextBox"
-                            "（點沒中／輸入被吃／全選失敗導致滿框），路 B 將跳過下一場", before)
-                        self._enqueue_snapshot(crop, "panel_zero_no_input")
-                    else:
-                        self.logger.warning(
-                            "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次 → 路 B 將跳過下一場",
-                            header or "讀不到", len(names), "、".join(names) or "空", reads)
-                        # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
-                        self._enqueue_snapshot(crop, "panel_zero_failed")
+                    # 篩選框那組數字上面已經記過（不論成敗），這裡只補面板側的判讀依據：
+                    # 標頭／殘留礦名／讀了幾次，加上列底色訊號（hue_high 在迴圈裡另記）。
+                    self.logger.warning(
+                        "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次、篩選框墨量 %s"
+                        " → 路 B 將跳過下一場（下一場救援路 B 不可信任面板）",
+                        header or "讀不到", len(names), "、".join(names) or "空", reads,
+                        "有變" if ink_changed else "沒變")
+                    # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
+                    self._enqueue_snapshot(crop, "panel_zero_failed")
                     break
         except Exception as e:
             self._panel_zeroed_at = None
@@ -8569,8 +8626,12 @@ class Bot:
             if self._harvest_boost_guard(gf):
                 gf = capture.grab()             # 剛補 D5、FOV 已展開 → 必須重抓
             self._pre_scan_ref = gf             # H118：FOV 已變過，捨棄舊 ref 重拍
+            # 方位 reference 同樣是舊 FOV 下拍的 → 一起重拍（同樣在按 D2 之前）
+            self._capture_dir_references("重掃(FOV 已變)")
         elif getattr(self, "_pre_scan_ref", None) is None:
             self._pre_scan_ref = capture.grab()  # 防禦：理論上進 HARVESTING 必已拍
+        # ★ 不重拍方位 reference（H026 對策同上）：重掃時框往往已在畫面上，
+        #   這裡沿用進場那組；FOV 變過的情況已在上面的 refresh_ref 分支處理。
         self._run_scan()
         self._confirm_scan("resweep")
         self._sweep_fov_shifted = False          # 這輪已處理，下次 sweep 重新判定

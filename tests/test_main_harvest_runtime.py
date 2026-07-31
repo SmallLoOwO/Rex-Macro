@@ -283,9 +283,17 @@ def test_sweep_for_tracker_no_flag_when_boost_guard_never_fires(monkeypatch):
 
 
 def test_reharvest_sweep_refresh_ref_recaptures_after_boost_settle(monkeypatch):
-    """refresh_ref=True：捨棄舊 ref，比照進場邏輯——先確認 FOV 展開，按 D2 之前重拍。"""
+    """refresh_ref=True：捨棄舊 ref，比照進場邏輯——先確認 FOV 展開，按 D2 之前重拍。
+
+    D06 的方位 reference 同樣是舊 FOV 下拍的 → 這條路要一起重拍（旋轉在這個 fake 下
+    直接成功，只驗「有去重拍」，八張的細節由 `_capture_dir_references` 自己的測試守）。
+    """
     bot = Bot.__new__(Bot)
-    bot.harvest = types.SimpleNamespace(d3_attempts=3)
+    bot.harvest = types.SimpleNamespace(d3_attempts=3, net_rotations=0,
+                                        pitch_layer="mid", harvest_id="118")
+    bot.log_harvest = _LogRecorder()
+    bot.logger = _LogRecorder()
+    bot._rotate_verified = lambda step: True
     bot._pre_scan_ref = "舊的、FOV 已經對不上的 ref"
     bot._sweep_fov_shifted = True
     bot._await_scan_ready = lambda where: True
@@ -303,6 +311,7 @@ def test_reharvest_sweep_refresh_ref_recaptures_after_boost_settle(monkeypatch):
     assert bot._pre_scan_ref == fresh_frame
     assert bot._sweep_fov_shifted is False
     assert scan_calls == ["run_scan"]
+    assert sorted(bot._pre_scan_refs) == list(range(8)), "方位 ref 也要一起重拍"
 
 
 def test_reharvest_sweep_default_keeps_existing_ref(monkeypatch):
@@ -325,3 +334,101 @@ def test_reharvest_sweep_default_keeps_existing_ref(monkeypatch):
 
     assert bot._pre_scan_ref == "既有 ref（框可能已在畫面上，不能重拍）"
     assert bot._sweep_fov_shifted is False
+
+
+# --- D06（2026-08-01）：每個方位各拍一張 preexist reference ---------------------
+#
+# 舊版八方位共用「起始方位」那一張，而 preexist 差分是逐像素同座標比對 → 轉 45° 之後
+# 比的是世界上完全不同的地方。玩家標註的 11 張漏抓裡，9 張可測的有 6 張死在
+# `ref_fill`（1.00/0.78/0.70/0.22/0.16），量測與被否決的三條便宜路見
+# docs/open-detection-issues.md D06。
+
+
+def _ref_bot(monkeypatch, *, rotate_ok=True, frames=None):
+    bot = Bot.__new__(Bot)
+    bot.harvest = _harvest_state()
+    bot.log_harvest = _LogRecorder()
+    bot.logger = _LogRecorder()
+    seq = iter(frames) if frames is not None else None
+    monkeypatch.setattr(main.capture, "grab",
+                        (lambda: next(seq)) if seq else
+                        (lambda: np.zeros((4, 4, 3), np.uint8)))
+    monkeypatch.setattr(main.cfg, "sweep_per_dir_reference", True)
+    rotations = []
+
+    def rotate(step):
+        rotations.append(step)
+        return rotate_ok or len(rotations) < 3       # 第 3 次被吃
+    bot._rotate_verified = rotate
+    return bot, rotations
+
+
+def test_capture_dir_references_shoots_one_per_direction_and_returns_to_start(monkeypatch):
+    """八張、鍵是絕對方位、轉滿一圈（8×45°＝360°）回到原方位。"""
+    frames = [np.full((4, 4, 3), i, np.uint8) for i in range(8)]
+    bot, rotations = _ref_bot(monkeypatch, frames=frames)
+    assert bot._capture_dir_references("test") is True
+    assert sorted(bot._pre_scan_refs) == list(range(8))
+    assert [int(bot._pre_scan_refs[d][0, 0, 0]) for d in range(8)] == list(range(8))
+    assert rotations == [1] * 8, "轉滿一圈才回得到原方位"
+    assert bot._pre_scan_refs_layer == "mid"
+
+
+def test_capture_dir_references_aborts_and_restores_when_rotation_eaten(monkeypatch):
+    """旋轉被吃 → 整組作廢、轉回原方位、回 False（呼叫端沿用單張 ref＝今日行為）。
+
+    半套的方位 reference 比沒有更糟：鍵值與實際朝向錯開一格，等於把 D06 換個方位重演。
+    """
+    bot, rotations = _ref_bot(monkeypatch, rotate_ok=False)
+    assert bot._capture_dir_references("test") is False
+    assert bot._pre_scan_refs == {}
+    assert bot._pre_scan_refs_layer is None
+    # 前 2 次成功、第 3 次被吃 → 要往回轉 2 步（restore_view 會送 2 個反向鍵）
+    assert rotations[:3] == [1, 1, 1]
+    assert rotations[3:] == [-1, -1], "轉回去的步數要等於已成功轉出去的步數"
+
+
+def test_capture_dir_references_is_off_when_flag_is_off(monkeypatch):
+    bot, rotations = _ref_bot(monkeypatch)
+    monkeypatch.setattr(main.cfg, "sweep_per_dir_reference", False)
+    assert bot._capture_dir_references("test") is False
+    assert rotations == [], "關掉就一步都不轉"
+
+
+def test_sweep_uses_the_reference_shot_at_that_direction(monkeypatch):
+    """sweep 每個方位要拿**自己**那張 reference 去比，不是起始方位那張。"""
+    bot, _ = _ref_bot(monkeypatch)
+    bot._pre_scan_refs = {d: np.full((4, 4, 3), d, np.uint8) for d in range(8)}
+    bot._pre_scan_refs_layer = "mid"
+    bot._tracker_log = None
+    bot._harvest_boost_guard = lambda frame: False
+    monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
+    monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
+    seen = []
+
+    def find(frame, excl, ref, **kw):
+        seen.append(int(ref[0, 0, 0]))
+        return None
+    bot._find_tracker = find
+    bot._sweep_for_tracker([], np.full((4, 4, 3), 99, np.uint8))
+    assert seen == list(range(8)), "每個方位都要用該方位的 ref，不得是 fallback 99"
+
+
+def test_sweep_falls_back_to_single_reference_on_a_different_pitch_layer(monkeypatch):
+    """reference 是在拍攝當下那一層拍的；拿 mid 的去比 up 層等於重演 D06 本身。"""
+    bot, _ = _ref_bot(monkeypatch)
+    bot._pre_scan_refs = {d: np.full((4, 4, 3), d, np.uint8) for d in range(8)}
+    bot._pre_scan_refs_layer = "mid"
+    bot.harvest.pitch_layer = "up"
+    bot._tracker_log = None
+    bot._harvest_boost_guard = lambda frame: False
+    monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
+    monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
+    seen = []
+
+    def find(frame, excl, ref, **kw):
+        seen.append(int(ref[0, 0, 0]))
+        return None
+    bot._find_tracker = find
+    bot._sweep_for_tracker([], np.full((4, 4, 3), 99, np.uint8))
+    assert seen == [99] * 8, "層對不上就要退回單張 ref"

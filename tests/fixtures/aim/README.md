@@ -98,3 +98,46 @@ MSIX LocalCache `snapshots/review/`，用 `matchTemplate` 把 crop 定位回去�
   見 `docs/open-detection-issues.md` D10。
 - `20260728_..._119_d3_miss_1`：藍菱星框，核心是**土黃色方塊**（H=14 S=160 V=147），
   跟泥土地形同色帶。加 profile 前務必先收地形負樣本，D10 一併記著。
+
+## 2026-08-01 玩家標註批次（`20260730_*`~`20260801_*`，58 組）
+
+第二批，涵蓋 episode 131~150。判讀時同樣注意「`.png` 是粗格裁圖，兩側夾要回全幀量」
+（全幀在 MSIX LocalCache `snapshots/review/`，**同檔名**，用 `matchTemplate` 定位）。
+
+分佈（`.json` 的 `symptom` / `observation`）：
+
+| 組別 | 張數 | 是什麼 |
+|---|---|---|
+| `symptom=null` + `observation="ore"` | 51 | 對照組（bot 當時就收了） |
+| `symptom="false_negative"` | 11 | 玩家看得到框、bot 判空 |
+| `symptom="should_reject_failed"` + `observation="decoy"` | 12 | bot 收了，玩家說那不是礦 |
+| `symptom="false_positive"` + `observation="empty"` | 4 | bot 收了，那格其實空的 |
+
+### 收側 11 張的量測結論：**根因是 D06，不是門檻**
+
+11 張全部是同一種框（綠色四角凹星外框＋實心淡薄荷心，核心 HSV 恆為 **H=60 S=128
+V=255**），其中 1 張是 Exotic 黃橘框。逐關拆解（`find_tracker`，production 參數）：
+
+- 形狀 `edge` 在標註處全部是 **1.000**（模板配得極準），門檻完全沒問題；
+- 7/11 的核心與同色地形黏成超大輪廓（最大 949×444），走 H057 救援，
+  子分割後 blob 是乾淨的 25×25 / area 576，**全過救援子閘**；
+- 真正殺掉它們的是 **`ref_fill > 0.15` 的 preexist 差分**：拿同場 `dir0` 幀當
+  reference 代理重放，9 張可測的有 **6 張**被判 preexist（`ref_fill` = 1.00／0.78／
+  0.70／0.22／0.16／1.00），而參考幀那塊 bbox 只是**別的方位的暗綠牆**
+  （V 中位 53~134）。這正是 `docs/open-detection-issues.md` **D06**。
+
+⚠ **不要為這批調 `tracker_shape_*` 或 `tracker_rescue_*`**：那幾關本來就過了，
+動它們只會製造假陽性。D06 的三條路與各自的量測（含已被否決的兩條）記在該條目。
+
+### 誤收側 12 張其實只有 3 種東西
+
+| 群 | 座標 | 是什麼 |
+|---|---|---|
+| ep134（4 張） | (666,981)／(772,1015~1017) | **hotbar 的紫色圓角外框與 `[~]` 按鈕**——落在 Exclusive 暗紫色域，`d3_fire_dir2_772x1017` 是真的朝它開了一發 |
+| ep143／146（7 張） | (1020,595)／(1036,596) | 玩家自己的角色身體與背包（螢幕中央偏右） |
+| ep133（1 張） | (1354,533) | 綠色地形方塊 |
+
+hotbar 看似該進 `Bot._tracker_exclusions()`（比照 H068 的聊天／礦石面板），但**夾不出
+兩側**：hotbar 展開成 10 格時橫跨 x 628~1290、y 988~1065，而 H026 的真框就在
+(1288,1020)（`assets/bottom_edge_tracker_scene.png`，`tracker_margin_frac` 0.10→0.02
+正是為了收回它）——同一塊螢幕區域兩邊都要。維持現況，記在 D06 誤收側。

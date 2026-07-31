@@ -718,16 +718,16 @@ def test_clear_requires_foreground_before_touching_ui(monkeypatch):
     bot._clear_panel_filter()
     assert clicks == [], "沒有前景焦點就不該點 UI"
     assert typed == [], "沒有前景焦點就不該打字（w 會變成 8 次前進）"
-    assert keys == ["enter"], "連 Ctrl+A 都不該送（Enter 在 finally，照舊）"
+    assert keys == ["enter"], "連 backspace 都不該送（Enter 在 finally，照舊）"
     assert bot._panel_zeroed_at is None
     assert any("焦點" in line for line in bot.logger.lines)
 
 
-def test_clear_detects_input_never_reached_the_textbox(monkeypatch):
-    """H070：面板沒歸零**且**墨量沒變＝字沒進 TextBox → 記那個原因、留裁圖。
+def test_clear_failure_log_carries_the_ink_numbers(monkeypatch):
+    """失敗時墨量前後值要進 log（H070 的線索保留，但**降級成線索**）。
 
-    這是 `_focus_roblox()` 回 True 卻仍被吃時的第二道（實機那次就是「跑完了但面板
-    紋風不動」）。沒有這個分辨，「輸入全滅」與「面板本來就有礦」在 log 上完全同形。
+    H070 當初用它分辨「輸入全滅」與「面板本來就有礦」，兩者在 log 上同形。H071 之後
+    顯示飽和也會讓墨量不變，所以它不再是判斷、只是下一場查案的數字。
     """
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"],
                          ink_changes=False)
@@ -735,8 +735,8 @@ def test_clear_detects_input_never_reached_the_textbox(monkeypatch):
     bot._enqueue_snapshot = lambda crop, label: saved.append(label)
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at is None
-    assert any("字沒進" in line for line in bot.logger.lines)
-    assert saved == ["panel_zero_no_input"], "要留裁圖，下一場才查得動"
+    assert any("墨量" in line and "沒變" in line for line in bot.logger.lines)
+    assert saved == ["panel_zero_failed"], "要留裁圖，下一場才查得動"
 
 
 def test_clear_ink_guard_does_not_block_the_happy_path(monkeypatch):
@@ -747,30 +747,30 @@ def test_clear_ink_guard_does_not_block_the_happy_path(monkeypatch):
 
 
 def test_clear_ink_unchanged_but_panel_empty_still_counts_h071(monkeypatch):
-    """H071：墨量沒變不得再當硬閘——全選取代後穩態就是「每次都 8 個 w」。
+    """H071：墨量沒變不得再當硬閘——**這就是玩家回報的那個 bug**。
 
-    舊版墨量沒變就提早 return，連面板 OCR 都不跑。全選取代上線後兩輪墨量相同是
-    **正常**（框裡永遠是同樣那幾個 w），拿它當硬閘會把成功的一輪判成失敗。
-    面板 OCR 才是真正的判準。
+    篩選框的字越積越多之後顯示會壓縮到飽和，再多打幾個 w 一個像素都不變（實機字寬
+    07-31 23:55 五個 w=57px → 169px → 23:56 之後永遠停在 199px／ink=494）。但框吃得下
+    無限長的字，文字其實有變、遊戲的篩選照樣重跑、面板照樣清空——舊版卻把「墨量沒變」
+    當成「字沒進 TextBox」直接 return，連面板 OCR 都不跑，08-01 三次歸零全被這道假閘
+    擋掉。面板 OCR 才是真正的判準。
     """
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
 
 
-def test_clear_selects_all_before_typing_h071(monkeypatch):
-    """H071：打字是**附加**，不先全選取代，篩選框會滿到面板再也清不掉。
+def test_clear_never_tries_to_empty_the_filter_box_h071(monkeypatch):
+    """H071：篩選框吃得下無限長的字 → 只疊加，不做任何清空動作。
 
-    實機證據：07-31 23:55 框裡 5 個 w（ink 257／字寬 57）→ 23:56 已滿框（500／180）
-    → 08-01 三次歸零全掛在同一個滿框值 494。滿框後再打 w 一個像素都不變，遊戲的
-    篩選也不重跑（新挖到的礦是直接 append 進清單），面板從此清不掉——玩家回報的
-    「NEEDS_HUMAN 按繼續回挖礦後背包沒清空」就是這個。
-    backspace 走不進這個 TextBox（實機送 40 個，ink/字寬 769/169 前後分毫不差），
-    所以只能靠 Ctrl+A 全選取代。
+    使用者確認框沒有長度上限。所以打字永遠是附加、文字永遠有變、遊戲的篩選也永遠
+    會重跑——要清的是**面板**，不是那個框。實機三法對照（`.scratch/probe_filter_clear.py`）
+    另外量到 Ctrl+A 對這個 TextBox **無效**（199→199px 分毫不變），backspace 有效但
+    根本不需要。這條測試守的是「別再有人想去清那個框」。
     """
     import pydirectinput
     order = []
-    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
     monkeypatch.setattr(main.ic, "click_at", lambda *a, **kw: order.append("click"))
     monkeypatch.setattr(main.ic, "key_down", lambda k: order.append("+" + k))
     monkeypatch.setattr(main.ic, "key_up", lambda k: order.append("-" + k))
@@ -778,12 +778,7 @@ def test_clear_selects_all_before_typing_h071(monkeypatch):
     monkeypatch.setattr(pydirectinput, "typewrite",
                         lambda s, **kw: order.append("type:" + s))
     bot._clear_panel_filter()
-    typing = "type:" + "w" * cfg.panel_clear_keystrokes
-    assert order[:2] == ["click", "+ctrl"], "先點框再全選"
-    assert order.count("+ctrl") == cfg.panel_clear_select_all_rounds, "掉鍵要過量送"
-    assert order[:order.index(typing)].count("a") == cfg.panel_clear_select_all_rounds
-    assert order.index("-ctrl") < order.index(typing), "Ctrl 必須放開才打字"
-    assert order[-1] == "enter"
+    assert order == ["click", "type:" + "w" * cfg.panel_clear_keystrokes, "enter"]
 
 
 def test_filter_box_ink_changes_with_text():
@@ -798,6 +793,22 @@ def test_filter_box_ink_changes_with_text():
     assert filter_box_ink(two) != filter_box_ink(one)
 
 
+def test_filter_box_text_width_spans_the_bright_text():
+    """`filter_box_text_width`：字往右長，跨距就變大；沒有亮字回 0。
+
+    這是墨量分不出來的那一軸，也是 H071 真正解開案情的量——顯示壓縮飽和後墨量恆定，
+    字寬仍看得出「已經到底了」。只給 log 用，不參與判斷。
+    """
+    import numpy as np
+    from miningbot.vision import filter_box_text_width
+    blank = np.zeros((36, 226, 3), dtype=np.uint8)
+    one = blank.copy(); one[10:26, 100:108] = 255
+    two = one.copy(); two[10:26, 112:120] = 255
+    assert filter_box_text_width(blank) == 0
+    assert filter_box_text_width(one) == 8
+    assert filter_box_text_width(two) == 20      # 100..119 的跨距（含中間空白）
+
+
 def test_clear_focuses_before_clicking(monkeypatch):
     """有焦點才動：_focus_roblox 必須在第一次點擊之前被呼叫到。"""
     order = []
@@ -810,14 +821,27 @@ def test_clear_focuses_before_clicking(monkeypatch):
     assert order[:2] == ["focus", "click"]
 
 
+def test_clear_logs_the_filter_box_numbers_even_on_success(monkeypatch):
+    """排錯用：篩選框的座標／墨量／字寬**不論成敗**都要進 log（使用者 2026-08-01 要求）。
+
+    H071 查了半天才發現「墨量沒變是正常的」，就是因為成功那幾輪什麼都沒記，
+    只有失敗輪留下一個會誤導人的 WARNING。
+    """
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at == 9999.0
+    line = next((l for l in bot.logger.lines if "字寬" in l), None)
+    assert line is not None, "成功路徑也要記篩選框現況"
+    assert "%d,%d" % cfg.panel_filter_xy in line, "要記點了哪裡（對照 panel_zero_failed 裁圖）"
+
+
 def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
     bot, clicks, typed, keys, ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
     assert clicks == [(119, 441)]                           # 只點篩選框，不再點畫面中央
-    # H071：全選 N 輪取代原有內容，最後 Enter 脫離（spec 01）
-    assert keys == ["+ctrl", "a", "-ctrl"] * cfg.panel_clear_select_all_rounds + ["enter"]
+    assert keys == ["enter"]                                # spec 01：改按 Enter 脫離
     assert typed == ["w" * cfg.panel_clear_keystrokes]
 
 

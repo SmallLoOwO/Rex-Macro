@@ -1032,3 +1032,16 @@ def filter_box_ink(crop) -> int:
     """
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
     return int((gray > 170).sum())
+
+
+def filter_box_text_width(crop) -> int:
+    """篩選框裡亮字的橫向跨距（px；純函式）。沒有亮字回 0。
+
+    只給 log 用，不參與任何判斷。**但它是 H071 真正被解開的那個量**：墨量
+    （`filter_box_ink`）在顯示壓縮飽和後恆定，光看它只會得到「輸入沒進去」的錯誤
+    結論；字寬把「還在長」與「已經飽和」分得一清二楚——實機 07-31 23:55 五個 w=57px
+    → 169px → 23:56 之後永遠停在 199px。下一次查這條路先看字寬。
+    """
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    cols = np.where((gray > 170).any(axis=0))[0]
+    return int(cols.max() - cols.min() + 1) if cols.size else 0

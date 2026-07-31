@@ -238,6 +238,14 @@ class Config:
     tracker_rescue_area_min: int = 120           # 救援 blob 面積下限；真框亮芯碎片實測 area 552~600（V=150 時），120 擋掉更小的牆面亮點雜訊
     tracker_rescue_max_candidates: int = 12      # 每幀救援候選上限（依 area 大者優先）；控形狀確認開銷（實測正常場景救援候選 5~15、最多 65）
     tracker_rescue_dedup_px: int = 60            # 救援候選去重半徑（同一框的碎片合併；與 remote_aim_dedup_radius_px 同語意）
+    sweep_per_dir_reference: bool = True         # D06：掃描前先轉一圈，每個方位各拍一張 preexist reference。
+        # 舊版八方位共用起始方位那一張，而差分是逐像素同座標比 → 轉 45° 後比的是別的地方的牆，
+        # 玩家標註的漏抓 9 張可測有 6 張死在 ref_fill（1.00/0.78/0.70/0.22/0.16）。
+        # 代價＝每次 chill episode 多轉一圈（~19s，在 D2 掃描之前，不吃追蹤框壽命）。
+        # 三條便宜替代路都已實機否決（亮度閘/像素相似度/不套差分），見 docs/open-detection-issues.md D06。
+        # 轉一圈的重現性實測 dx=dy=0.0px（ep133 兩次 sweep 同方位相位相關）。
+        # 關掉＝回到今日行為（旋轉被吃時也會自動退回）。**待實機驗證**：離線無法驗——
+        # 語料裡沒有任何「掃描前的各方位幀」。
     tracker_margin_frac: float = 0.02            # find_tracker 邊緣排除帶（實戰值；vision 函式預設仍 0.10）。H019(1862,418)/H026(1288,1020) 兩次真框都被 0.10 的帶擋掉——D5 到期 FOV 收縮（以中心為錨 ~2.6x 縮放）把框推到邊緣，且 yaw 旋轉不改 y、底緣框 8 方位永遠在帶內。0.02 收得回兩顆（回歸 fixture：edge_clipped/bottom_edge_tracker_scene.png）且對全 fixture 集無新假陽性；邊緣雜訊由 preexist 差分/colored_frac/形狀確認擋
     boost_fov_settle_s: float = 1.5              # 採集中補 D5 後等 FOV 展開的時間（H026 boost 守門；補完必須重抓幀才能偵測/開火）
     aim_center_tolerance_px: int = 25            # 準心對準容差
@@ -376,10 +384,6 @@ class Config:
     panel_filter_band: Region = field(
         default_factory=lambda: Region(0, 424, 226, 36))
     panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
-    panel_clear_select_all_rounds: int = 2    # 打字前送幾輪 Ctrl+A（H071）：打字是**附加**、
-                                              # 框滿了就再也清不掉，而 backspace 進不了這個
-                                              # TextBox（實機 40 個全無效）→ 只能全選取代。
-                                              # 冪等，兩輪把 ~25% 掉鍵壓到 ~6%（多花 ~0.15s）
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
