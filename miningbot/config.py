@@ -389,7 +389,13 @@ class Config:
     teleport_board_hue_range: tuple = (126, 148)   # 紫羅蘭外框（板子中位 133）
     teleport_board_sat_range: tuple = (60, 200)    # 上界擋掉更飽和的夜空/UI（中位 157/121）
     teleport_board_val_range: tuple = (80, 200)    # 下界擋掉更暗的夜空/UI（中位 48/44；板子 115-127）
-    teleport_board_roi: tuple = (230, 150, 1500, 750)  # 只排掉螢幕空間 UI 邊緣，非板子位置假設
+    teleport_board_roi: tuple = (230, 150, 1600, 750)  # 只排掉螢幕空間 UI 邊緣，非板子位置假設
+        # 右緣 1730→1830（2026-07-31，ep35/37/38 標註）：ROI 是**遮罩裁切**，板子跨過右緣時
+        # 不是被拒而是被切一半 → 連通塊的 ar/fill/area 全歪（實測 ar 4.85／1.36、area 1930），
+        # 三場全 None。兩側夾：板子右緣實測 1696／1799／1809／**1816** → 1830 留 14px；
+        # 誤收側右側圖示欄 x 1740~1908、y 694~1068，整塊 ar=0.45、被 1830 裁後 ar≈0.24，
+        # 遠在 aspect_range (1.6,3.0) 之外——實測連完全不裁（右緣 1920）四張都仍命中板子。
+        # 取 1830 而非 1920 是留給別的世界可能存在的右側 UI。
     teleport_board_close_px: int = 11              # 形態學閉運算核；外框是細長條，不接起來會碎成多塊
     teleport_board_min_area: int = 2500            # 實測板子 3496~5945；小於此的是雜訊
     teleport_board_min_w: int = 40                 # bbox 最小寬高（實測板子 148~201 / 88~94）

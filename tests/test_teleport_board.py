@@ -74,6 +74,39 @@ def test_detects_board_in_tracked_real_frame():
     assert score >= cfg.reentry_predict_min_score, f"分數 {score:.3f} 低於畫圈門檻"
 
 
+@pytest.mark.parametrize("stem", ["auto_27_success", "auto_35_success",
+                                  "auto_37_success", "auto_38_fail"])
+def test_detects_board_across_tracked_corpus(stem):
+    """四張實機全幀（ep27/35/37/38）都要命中，且分數過畫圈門檻。
+
+    ep35/37/38 的板子右緣落在 1799~1816，舊 `teleport_board_roi` 右緣 1730 會把遮罩
+    **切一半**（不是拒絕）→ 連通塊 ar 變 4.85／1.36、area 掉到 1930，三場全 None。
+    ROI 右緣改 1830 後四張全中。誤收側：右側圖示欄（x 1740~1908、y 694~1068）整塊
+    ar=0.45、被裁後 ≈0.24，怎麼樣都進不了 aspect_range，所以放寬右緣不會換來假陽性。
+    """
+    png = os.path.join(_FIXTURE_DIR, stem + ".png")
+    meta_path = os.path.join(_FIXTURE_DIR, stem + ".json")
+    if not (os.path.exists(png) and os.path.exists(meta_path)):
+        pytest.skip("缺實機素材")
+    meta = json.load(open(meta_path, encoding="utf-8"))
+    frame = cv2.imdecode(np.fromfile(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+    got = teleport_board.detect(frame)
+    assert got is not None, f"{stem} 的傳送板沒被偵測到"
+    x, y, score = got
+    truth = (meta["annotation"]["cx"], meta["annotation"]["cy"])
+    dist = ((x - truth[0]) ** 2 + (y - truth[1]) ** 2) ** 0.5
+    assert dist <= cfg.reentry_dataset_hit_radius_px, f"{stem} 偏 {dist:.0f}px"
+    assert score >= cfg.reentry_predict_min_score, f"{stem} 分數 {score:.3f} 低於畫圈門檻"
+    assert not (x >= 1740 and y >= 694), f"{stem} 命中右側圖示欄 ({x},{y})"
+
+
+def test_board_roi_right_edge_clears_measured_boards():
+    """ROI 右緣的兩側夾：要蓋過實測板子最右緣 1816，又不能吃進右側圖示欄以外的東西。"""
+    rx, _ry, rw, _rh = cfg.teleport_board_roi
+    assert rx + rw >= 1816 + 10, "ROI 右緣要蓋過實測板子最右緣 1816 並留餘裕"
+    assert rx + rw <= 1920, "ROI 不得超出畫面"
+
+
 # ---- 合成正樣本 ------------------------------------------------------------
 
 def test_detects_synthetic_board_near_its_centre():

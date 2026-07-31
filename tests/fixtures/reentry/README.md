@@ -57,8 +57,16 @@ teleport_board/auto_<episode_id>_fail.png    / .json    verify 未通過（點�
 記回礦驗證結果。schema 與 `aim/` 共用 `miningbot.web_annotation.build_annotation`，
 玩家可在 `/annotate` 補標；`category` 欄要寫全 `reentry/teleport_board`。
 
-用途是「傳送板長什麼樣、玩家點哪裡會成功」的正樣本累積——**目前只有 success 側**，
-還不足以定任何門檻，先當語料存著（負樣本＝點歪那側要靠實機累積）。
+用途是「傳送板長什麼樣、玩家點哪裡會成功」的正樣本累積。負樣本（點歪那側）仍要靠
+實機累積；`auto_38_fail` 的 verify 失敗**不是點錯位置**（點在板上，與兩張 success
+同位置），所以它在偵測器眼中仍是正樣本。
+
+現有四張（27／35／37／38）是 `teleport_board_roi` 右緣 1730→1830 的兩側夾來源：
+板子右緣實測 1696／1799／1809／**1816**，ROI 是遮罩裁切而非拒收，跨過右緣的板子會被
+切一半（ar 4.85／1.36、area 1930）→ 三場全 None。誤收側是右側圖示欄
+（x 1740~1908、y 694~1068，整塊 ar=0.45、被裁後 ≈0.24），怎麼樣都進不了
+`teleport_board_aspect_range`。回歸在 `tests/test_teleport_board.py`
+（`test_detects_board_across_tracked_corpus` 四張全跑）。
 
 ## 相關事故
 
