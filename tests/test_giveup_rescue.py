@@ -322,6 +322,42 @@ def test_panel_path_skipped_without_rapidocr(monkeypatch):
     assert bot._panel_rare_ores("125", "救援路B") == []
 
 
+def _panel_boxes(names):
+    """偽 read_text_boxes：標頭 + 一列一個礦名（座標過 col_max_x / row_min_y 兩道閘）。"""
+    boxes = [{"text": "NORMAL", "score": 0.99, "center": (118, 14)}]
+    for i, n in enumerate(names):
+        boxes.append({"text": n, "score": 0.99, "center": (80, 78 + i * 36)})
+    return boxes
+
+
+def test_panel_path_returns_only_whitelist_ores(monkeypatch):
+    """只回白名單（Exotic+），不是面板上全部的礦名。
+
+    回全部的話：鎬子挖出來的低階礦永遠在面板上 → 路 B 每次 giveup 都命中 →
+    每顆真稀有礦都被判「已進帳」靜默放生（H069 那一型）。先前只因面板歸零驗證
+    實機必失敗、`_panel_zeroed_at` 恆 None 才沒爆出來。
+    """
+    bot = make_fake_bot(bind=["_panel_rare_ores"], log_harvest=_Rec())
+    monkeypatch.setattr(main.capture, "grab", _frame)
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+    monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
+    monkeypatch.setattr(main.ocr, "read_text_boxes",
+                        lambda *a, **kw: _panel_boxes(
+                            ["shamrock", "loinnire", "fortunatum"]))
+    assert bot._panel_rare_ores("125", "救援路B") == []
+
+
+def test_panel_path_still_reports_whitelist_hit(monkeypatch):
+    """有白名單礦時照樣回它（低階礦一起在場也不影響）。"""
+    bot = make_fake_bot(bind=["_panel_rare_ores"], log_harvest=_Rec())
+    monkeypatch.setattr(main.capture, "grab", _frame)
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: f[:r.h, :r.w].copy())
+    monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
+    monkeypatch.setattr(main.ocr, "read_text_boxes",
+                        lambda *a, **kw: _panel_boxes(["faedrine", "shamrock"]))
+    assert bot._panel_rare_ores("125", "救援路B") == ["faedrine"]
+
+
 # ── 05：雙 chill 對帳（出廠關閉）────────────────────────────────────────────
 
 def test_reconcile_is_off_by_default():

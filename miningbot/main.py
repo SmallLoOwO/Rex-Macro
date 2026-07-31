@@ -4902,7 +4902,11 @@ class Bot:
         ores = harvester.rare_panel_ores(names)
         self.log_harvest.info("[%s] 面板讀取（%s）：列數 %d，白名單礦名 %s",
                               hid, why, len(names), ores or "無")
-        return names
+        # ⚠ 一定要回 `ores`（白名單）而不是 `names`（面板上全部的礦名）。
+        # 回 names 的話：面板永遠有鎬子挖出來的低階礦 → 路 B 每次 giveup 都「命中」
+        # → 每顆真稀有礦都被判成「已進帳」而靜默放生，正是 H069 的災情。
+        # 先前只因 `_panel_zeroed_at` 恆為 None（歸零驗證實機必失敗）才沒爆。
+        return ores
 
     def _giveup_rescue(self, reason: str) -> bool:
         """交人工前救援：判「這顆礦其實在 chill 之前就被鎬子挖走了」（spec 2026-07-30）。
