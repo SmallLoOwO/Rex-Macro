@@ -1279,6 +1279,11 @@ class Bot:
                 allowed = (self.state is State.MINING
                            or (self._reentry_active()
                                and self.state is State.RESET_WAIT))
+                # 容量停滯計時（spec 04）**必須在 continue 之前重置**：這個 worker 在
+                # 採集／交人工／暫停期間整輪 continue，計時若只在下面重置就永遠凍著——
+                # 交人工等半小時後回 MINING，第一讀就 now-last_change > 門檻 = 假警報。
+                if self.paused or self.state is not State.MINING:
+                    self._capacity_stall = (None, time.time(), False)
                 if frame is None or self.paused or not allowed:
                     continue
                 now = time.time()
@@ -1316,10 +1321,13 @@ class Bot:
                                          cfg.capacity_reset_threshold)
                         self._capacity_full_logged = True
                     self._maybe_arm_chime(cap_pct_this)
-                    self._check_capacity_stall(cap_pct_this)
-                elif self.state is not State.MINING:
-                    # 飽和跳讀那條路也要能離開 MINING 時重置計時（見 _check_capacity_stall）
-                    self._capacity_stall = (None, time.time(), False)
+                else:
+                    # 飽和跳讀（streak>=2）：這輪沒有新讀數 → 傳 None，純函式維持狀態
+                    # 不報。容量 100% 時挖礦本來就不會漲，在那裡喊「鎬子可能沒在挖」
+                    # 是假警報；停滯偵測只對「容量未滿卻不動」負責。
+                    # （「飽和後重置橫幅永遠不來」是另一種卡死，不歸這個偵測管。）
+                    cap_pct_this = None
+                self._check_capacity_stall(cap_pct_this)
                 # 唯一停機信號是 reset 橫幅；cap_trigger 不再寫 _mine_resetting／_human_reason
                 # （2026-07-12 死鎖實錄：Capacity 假陽性 → 卡死 RESET_WAIT）。
                 resetting = banner_resetting
@@ -3223,14 +3231,14 @@ class Bot:
         if not alert:
             return
         mins = cfg.capacity_stall_alert_s / 60.0
-        msg = (f"⚠ 容量 {self._capacity_stall[0]:.0f}% 已經 {mins:.0f} 分鐘沒上升"
-               f"——鎬子可能沒真的在挖，請看一眼畫面（bot 繼續跑，沒有停機）")
-        self.logger.warning(msg)
-        try:
-            from . import notify
-            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, msg)
-        except Exception as e:                  # 通知失敗不得影響 banner worker
-            self.logger.warning("容量停滯警報送出失敗：%s", e)
+        self.logger.warning(
+            "容量 %.0f%% 已 %.0f 分鐘沒上升——鎬子可能沒真的在挖（不停機，只通知）",
+            self._capacity_stall[0], mins)
+        # Discord 走事件 sink，**不在這個 worker 執行緒直接打 HTTP**
+        # （miningbot/AGENTS.md THREADING：網路送出屬於 async sink；這裡阻塞會卡住
+        # 0.5s 節奏的重置橫幅偵測）。文案在 notify._FORMATTERS["CAPACITY_STALL"]。
+        self.log.log("CAPACITY_STALL",
+                     pct=round(self._capacity_stall[0]), minutes=round(mins))
 
     def _rescue_observed_path(self) -> str:
         """救援觀察期紀錄檔（spec 03）。放 log_dir——這是 runtime evidence，不是設定。"""
@@ -3249,7 +3257,9 @@ class Bot:
                 return v
             self.logger.warning("rescue_observed.json 非清單 (%r)，從 0 重新起算", type(v))
             return []
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except Exception:
+            # 這支跑在 __init__ 裡：任何壞檔（截斷、二進位 → UnicodeDecodeError）都不能
+            # 讓 bot 起不來。計數歸零的代價只是觀察期多跑幾場。
             return []
 
     def _save_rescue_observed(self):

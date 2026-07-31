@@ -213,7 +213,6 @@ conventions.
     Both use the routing key `harvest:<harvest_id>`, so a later push replaces the
     earlier panel — release the held images before pushing a new batch.
 
-
 ## DEVELOPMENT WORKFLOW
 
 - Start with `git status --short` and preserve unrelated user/tool changes.
@@ -291,9 +290,32 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `scan_confirm_mode` is still off. Its region was calibrated on 2026-07-25 to the
   bottom-right effect row (the earlier bottom-left value read the ore panel instead),
   but the mode has not yet run in `observe` against a live session.
+- **`giveup_rescue_observe` is on (observation mode) and needs a human decision to
+  leave it.** Path B of the give-up rescue judges "this ore was already banked" but
+  still hands over to the human; every hit is appended to
+  `<log_dir>/rescue_observed.json`. **When that file reaches
+  `giveup_rescue_observe_target` (10) entries, lay the records out for the user and
+  ask whether to switch to automatic** (`giveup_rescue_observe = False`). Two bugs
+  found on 2026-07-31 both pointed the same way — claiming "already banked" when it
+  was not, which silently abandons a real rare ore — and both slipped past the tests,
+  hence the observation period. Do not flip it without showing the evidence first;
+  `scan_confirm_mode` above is what happens when nobody is reminded.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.
 - Web UI pinch-zoom + tap and WebSocket half-open detection need live-game
   validation before being trusted on long unattended runs; the regression suite
   covers the wire protocol and pure logic, not real mobile-browser behavior.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/<feature-slug>/issues/`, matching the
+convention already in use. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root (neither created yet;
+`docs/incidents.md` is the existing decision record). See
+`docs/agents/domain.md`.

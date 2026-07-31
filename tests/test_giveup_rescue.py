@@ -720,10 +720,16 @@ def test_clear_sets_none_when_has_rows(monkeypatch):
 
 
 def test_clear_sets_none_on_exception(monkeypatch):
-    bot, *_ = _clear_bot(monkeypatch, exc="click boom")
+    """點篩選框丟例外 → 記 WARNING、旗標清成 None，**Enter 仍然送出**。
+
+    Enter 在 `finally`：脫離文字框沒做等於後續 W／D1／D3 全打進文字框，
+    比零點失敗嚴重得多。
+    """
+    bot, _clicks, _typed, keys, _ocr = _clear_bot(monkeypatch, exc="click boom")
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at is None
     assert any("click boom" in line for line in bot.logger.lines)
+    assert keys == ["enter"], "例外路徑也必須脫離文字框"
 
 
 def test_clear_accepts_low_tier_rows(monkeypatch):
@@ -856,12 +862,9 @@ def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
 
 # ── 容量停滯警報（spec 04）：只通知，絕不停機 ──────────────────────────────
 
-def _stall_bot(monkeypatch, state=None, stall=None, sent=None):
-    monkeypatch.setattr(cfg, "capacity_stall_alert_s", 900.0)
-    monkeypatch.setattr(main.notify, "send_message",
-                        lambda *a, **kw: (sent if sent is not None else []).append(a))
+def _stall_bot(monkeypatch, state=None, stall=None):
     return make_fake_bot(
-        bind=["_check_capacity_stall"], logger=_Rec(),
+        bind=["_check_capacity_stall"], logger=_Rec(), log=_FakeEventLog(),
         state=state or main.State.MINING,
         _capacity_stall=stall or (10.0, 0.0, False),
         _mine_resetting=False, _human_reason="")
@@ -872,35 +875,34 @@ def test_capacity_stall_alert_never_stops_the_bot(monkeypatch):
 
     唯一停機信號仍然是重置橫幅（2026-07-12 死鎖實錄：Capacity 假陽性卡死 RESET_WAIT）。
     """
-    sent = []
     monkeypatch.setattr(main.time, "time", lambda: 10_000.0)   # 距 last_change 遠超門檻
-    bot = _stall_bot(monkeypatch, sent=sent)
+    bot = _stall_bot(monkeypatch)
     bot._check_capacity_stall(10.0)
-    assert sent, "應該發了 Discord 通知"
+    assert [k for k, _m in bot.log.records] == ["CAPACITY_STALL"]
     assert bot.state is main.State.MINING
     assert bot._mine_resetting is False
     assert bot._human_reason == ""
 
 
+def test_capacity_stall_goes_through_the_event_sink_not_blocking_http(monkeypatch):
+    """通知走 EventLog（非同步 sink），不得在 banner worker 執行緒直接打 HTTP。
+
+    miningbot/AGENTS.md THREADING：「Discord/network sends belong behind the async
+    sink or poller」——這裡阻塞會卡住 0.5s 節奏的重置橫幅偵測。
+    """
+    monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
+    monkeypatch.setattr(main.notify, "send_message",
+                        lambda *a, **kw: pytest.fail("worker 執行緒不得直接送 Discord"))
+    bot = _stall_bot(monkeypatch)
+    bot._check_capacity_stall(10.0)
+    _kind, meta = bot.log.records[0]
+    assert meta["pct"] == 10 and meta["minutes"] == 15
+
+
 def test_capacity_stall_resets_outside_mining(monkeypatch):
     """離開 MINING 一律重置計時——交人工等半小時不是卡住。"""
-    sent = []
     monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
-    bot = _stall_bot(monkeypatch, state=main.State.NEEDS_HUMAN, sent=sent)
+    bot = _stall_bot(monkeypatch, state=main.State.NEEDS_HUMAN)
     bot._check_capacity_stall(10.0)
-    assert sent == [], "非 MINING 不得警報"
+    assert bot.log.records == [], "非 MINING 不得警報"
     assert bot._capacity_stall == (None, 10_000.0, False)
-
-
-def test_capacity_stall_notify_failure_does_not_break_worker(monkeypatch):
-    """通知送不出去只記 log——banner worker 不能因此掛掉。"""
-    monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
-
-    def boom(*a, **kw):
-        raise RuntimeError("discord down")
-    monkeypatch.setattr(main.notify, "send_message", boom)
-    bot = make_fake_bot(
-        bind=["_check_capacity_stall"], logger=_Rec(), state=main.State.MINING,
-        _capacity_stall=(10.0, 0.0, False), _mine_resetting=False, _human_reason="")
-    bot._check_capacity_stall(10.0)             # 不得丟出來
-    assert any("discord down" in line for line in bot.logger.lines)

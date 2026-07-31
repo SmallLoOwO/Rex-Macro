@@ -602,16 +602,22 @@ def whitelist_hue_hits(hues, whitelist_hues, tol_deg: float) -> list:
     用途是**保守方向**：命中就代表面板上有 Exotic+ 礦，因此「面板零點」不成立。
     反向（沒命中就宣告採到了）不在這裡做——那要先有實機對帳資料。
     """
-    hits = []
-    for h in hues or ():
-        if h is None:
-            continue
-        for target in whitelist_hues or ():
-            d = abs(float(h) - float(target)) % 360.0
-            if min(d, 360.0 - d) <= tol_deg:
-                hits.append(float(h))
-                break
-    return hits
+    return [h for h in _clean_hues(hues)
+            if _hue_in_any_band(h, whitelist_hues, tol_deg)]
+
+
+def _clean_hues(hues) -> list:
+    """濾掉讀不到的列（None）並轉 float。兩個色相閘共用。"""
+    return [float(h) for h in hues or () if h is not None]
+
+
+def _hue_in_any_band(hue: float, bands, tol_deg: float) -> bool:
+    """色相是否落在任一色帶的 ±tol 內（環狀：358 與 2 相差 4°，不是 356）。"""
+    for target in bands or ():
+        d = abs(hue - float(target)) % 360.0
+        if min(d, 360.0 - d) <= tol_deg:
+            return True
+    return False
 
 
 def non_low_tier_hues(hues, low_tier_hues, tol_deg: float) -> list:
@@ -630,20 +636,8 @@ def non_low_tier_hues(hues, low_tier_hues, tol_deg: float) -> list:
     低階色帶清單（`Config.panel_low_tier_hues`）來自 D11 量測：Mythic 304／
     Surreal 166／低階 0、30、280。色相是環狀的。
     """
-    out = []
-    for h in hues or ():
-        if h is None:
-            continue
-        h = float(h)
-        in_low = False
-        for target in low_tier_hues or ():
-            d = abs(h - float(target)) % 360.0
-            if min(d, 360.0 - d) <= tol_deg:
-                in_low = True
-                break
-        if not in_low:
-            out.append(h)
-    return out
+    return [h for h in _clean_hues(hues)
+            if not _hue_in_any_band(h, low_tier_hues, tol_deg)]
 
 
 def rare_panel_ores(names) -> list:

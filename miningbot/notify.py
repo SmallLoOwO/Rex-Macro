@@ -167,10 +167,15 @@ _TEMPLATES = {
                                     if m.get("new_found_lines") else ""),
     # 交人工前救援（spec 2026-07-30）：這是唯一「bot 決定不叫人」的路徑，誤判會靜默
     # 放生一顆真稀有礦。實機驗證期必須每次都看得到，才算得出命中率／誤判率。
+    # observed=True＝觀察期（spec 03）：判定照記但**照樣交人工**，訊息不可再說「繼續挖礦」
     "HARVEST_RESCUED": lambda m: ("🛟 交人工前救援命中："
                                   + "、".join(m.get("ore_names") or ["?"])
                                   + f"（{m.get('source', '?')} 證據）已在 chill 前進帳"
-                                    "，不交人工、繼續挖礦"),
+                                  + ("，觀察中 → 仍交人工，請對照確認"
+                                     if m.get("observed") else "，不交人工、繼續挖礦")),
+    "CAPACITY_STALL":  lambda m: (f"⚠️ 容量 {m.get('pct', '?')}% 已 {m.get('minutes', '?')} 分鐘"
+                                  "沒上升——鎬子可能沒真的在挖，請看一眼畫面"
+                                  "（bot 繼續跑，沒有停機）"),
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "SPAWN_CHILL":     lambda m: (f"💎 spawn chill！稀有礦可能生在 礦坑刷新的預設方塊，"
                                   f"bot 處於 {m.get('state', '?')} 挖不到，請手動處理"),
@@ -537,14 +542,17 @@ def add_reaction(token: str, channel_id: str, message_id: str,
         return False, f"{type(e).__name__}: {e}"
 
 
-def get_reactions(token: str, channel_id: str, message_id: str,
-                  emoji: str, limit: int = 100, timeout: float = 10.0) -> list[dict]:
-    """列出對此訊息此表情按過的使用者（含機器人自己）。GET /reactions/{emoji}。
+def _fetch_reaction_users(token: str, channel_id: str, message_id: str,
+                          emoji: str, limit: int = 100, timeout: float = 10.0):
+    """GET /reactions/{emoji} 的共用底層。回 (ok, users_or_detail)。
 
-    失敗回空 list（輪詢失敗不中斷主迴圈）。回傳元素含 "id"（使用者 snowflake）等欄位。
+    `get_reactions`／`remove_user_reactions` 對「GET 失敗」的容忍度不同（前者輪詢
+    用、失敗要吞掉不中斷主迴圈；後者要靠失敗判斷該不該降級），故底層一律回報真實
+    結果，吞不吞由呼叫端決定——不要在這裡就吞掉，否則權限/網路錯誤會被誤讀成
+    「沒有人反應」。
     """
     if not token or not channel_id or not message_id:
-        return []
+        return False, "缺少 token / channel_id / message_id"
     url = REACTIONS_API.format(
         channel_id=channel_id, message_id=message_id,
         emoji=urllib.parse.quote(emoji, safe=""))
@@ -557,9 +565,23 @@ def get_reactions(token: str, channel_id: str, message_id: str,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except Exception:
-        return []
+            return True, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def get_reactions(token: str, channel_id: str, message_id: str,
+                  emoji: str, limit: int = 100, timeout: float = 10.0) -> list[dict]:
+    """列出對此訊息此表情按過的使用者（含機器人自己）。GET /reactions/{emoji}。
+
+    失敗回空 list（輪詢失敗不中斷主迴圈）。回傳元素含 "id"（使用者 snowflake）等欄位。
+    """
+    ok, result = _fetch_reaction_users(
+        token, channel_id, message_id, emoji, limit=limit, timeout=timeout)
+    return result if ok else []
 
 
 def remove_reaction(token: str, channel_id: str, message_id: str,
@@ -593,46 +615,42 @@ def remove_reaction(token: str, channel_id: str, message_id: str,
         return False, f"{type(e).__name__}: {e}"
 
 
-def clear_reaction(token: str, channel_id: str, message_id: str,
-                   emoji: str, timeout: float = 10.0):
-    """清掉某個表情的**所有**反應（含機器人自己）。DELETE /reactions/{emoji}。回 (ok, detail)。
+def remove_user_reactions(token: str, channel_id: str, message_id: str,
+                          emoji: str, timeout: float = 10.0):
+    """移除按過此表情的**非機器人使用者**反應，機器人自己那顆保留原位不動。回 (ok, detail)。
 
-    2026-07-26 使用者要求「善用刪除反應的功能，不用一直把訊息與反應全部刪除」。
-    這是取代遙控器「刪舊訊息貼新的」的關鍵——按鈕按完把該表情清空、機器人重貼一次，
-    計數就回到基線 1，同一顆按鈕可以立刻再按，而訊息本身原地不動。
-    成本 2 次 API（clear + add）vs 舊做法 7 次（delete + post + 5 個 add_reaction），
-    而且頻道不會每按一次就多一則訊息。
-
-    **需要 Manage Messages**（本端點一律要，不分自己或他人的反應）。實測 2026-07-26：
-    頻道 type=0（guild text）、bot 在該頻道的 overwrite 有 MANAGE_MESSAGES——
-    也就是說程式碼裡「DM 不能移除他人表情（HTTP 403 code 50003）」那個前提早就
-    不成立了，遙控器設定從 DM 換到伺服器頻道之後沒有人回頭改。
+    2026-07-28 使用者指出：舊版 clear_reaction 把整組（含機器人自己）清光再重貼，
+    等同把機器人的反應重新插隊——Discord 依「首次被貼上」時間排序訊息上的表情列，
+    這會讓被按過的那顆表情跳到最後，跟大多數 reaction-role bot 的行為（只清點擊者
+    那一下，機器人反應從沒被動過）不同，順序會亂掉。
+    做法：先 GET 使用者清單（只需讀取權限，通常不會失敗），逐一 DELETE 非機器人
+    使用者的反應（**需要 Manage Messages**，同舊版 clear_reaction 的權限前提）。
+    沒有非機器人使用者時視為已清（no-op 成功），呼叫端才不會誤判成失敗而降級。
+    任一筆 DELETE 失敗即回 (False, 該筆 detail)，但仍會嘗試清完其餘使用者；
     缺權限時呼叫端要能降級（回 repost 舊路徑），故失敗只回 (False, detail) 不丟例外。
     """
     if not token or not channel_id or not message_id:
         return False, "缺少 token / channel_id / message_id"
-    url = REACTIONS_API.format(
-        channel_id=channel_id, message_id=message_id,
-        emoji=urllib.parse.quote(emoji, safe=""))
-    req = urllib.request.Request(
-        url, method="DELETE",
-        headers={
-            "Authorization": f"Bot {token}",
-            "User-Agent": "miningbot (local automation, 1.0)",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return True, f"HTTP {resp.status}"
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:300]
-        return False, f"HTTP {e.code}: {body}"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+    ok, users = _fetch_reaction_users(token, channel_id, message_id, emoji, timeout=timeout)
+    if not ok:
+        return False, users
+    ok_all = True
+    detail = "no-op"
+    for user in users:
+        if not isinstance(user, dict) or user.get("bot"):
+            continue
+        user_id = user.get("id")
+        if not user_id:
+            continue
+        ok, detail = remove_reaction(
+            token, channel_id, message_id, emoji, user_id, timeout=timeout)
+        if not ok:
+            ok_all = False
+    return ok_all, detail
 
 
 def reaction_clear_unsupported(detail: str) -> bool:
-    """clear_reaction 的失敗 detail 是否代表「這個頻道本來就做不到」（純函式）。
+    """remove_user_reactions 的失敗 detail 是否代表「這個頻道本來就做不到」（純函式）。
 
     True＝權限/頻道型別問題，重試永遠不會成功，呼叫端該永久降級回 repost；
     False＝暫時性失敗（網路、rate limit、5xx），下次照常再試。

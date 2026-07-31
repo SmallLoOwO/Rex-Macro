@@ -30,6 +30,12 @@ from miningbot.web_history import (
 
 _log = logging.getLogger(__name__)
 
+# Ctrl+Z 還原限時的**後備**值（spec 05）。真正的門檻是 `Config.annotate_undo_window_s`，
+# 由 main.py 一路透過 WebIPCThread 傳進來；這個常數只在「沒有 Config 可注入」的
+# 測試／standalone 呼叫下生效。web_server 不 import config（它是被注入的），所以
+# 這裡無法直接引用——一份常數比三處字面值好，改門檻請改 Config 那一個。
+_UNDO_WINDOW_FALLBACK_S = 900.0
+
 
 class ConnectionRegistry:
     """當下 WebSocket 連線池；thread-safe（WebIPC thread 跟事件 sink 都會呼叫）。
@@ -191,7 +197,7 @@ def create_app(
     snapshots_root: str | None = None,
     negatives_dir: str | None = None,
     ping_interval_s: float = 30.0,
-    undo_window_s: float = 900.0,       # Ctrl+Z 還原限時：只救當下誤按（spec 05）
+    undo_window_s: float = _UNDO_WINDOW_FALLBACK_S,   # Ctrl+Z 還原限時（spec 05）
     layer_getter: Callable[[], dict] | None = None,
     player_state_getter: Callable[[], dict] | None = None,
 ) -> FastAPI:
@@ -439,7 +445,6 @@ def create_app(
         Security：只吃 basename，目錄一律自己推（`_derive_category` 同一份守門），
         絕不接受呼叫端給的路徑——不然這條 route 就是任意檔案刪除。
         """
-        import time as _time
         image = payload.get("image")
         stem = os.path.splitext(os.path.basename(image))[0] if isinstance(image, str) else ""
         if not stem:
@@ -453,13 +458,20 @@ def create_app(
                                       *_derive_category(payload).split("/"))
         if not target_dir:
             return _err(503, "negatives dir not configured")
-        json_path = os.path.join(target_dir, stem + ".json")
-        # 視窗閘（spec 05）：拿 json 的 mtime。玩家情境是「剛按錯要重送」，15 分鐘
-        # 剛好編碼那個情境；超時一律不刪（可能已 commit 進版控）。找不到檔仍走 404。
-        if os.path.isfile(json_path):
-            age = _time.time() - os.path.getmtime(json_path)
+        # 視窗閘（spec 05）：玩家情境是「剛按錯要重送」，15 分鐘剛好編碼那個情境；
+        # 超時一律**一個檔都不刪**（可能已 commit 進版控）。找不到檔仍走 404。
+        # 兩個副檔名都要查：json 已被手動刪掉、png 還在時，不查 png 等於放行任何年紀
+        # 的孤兒圖。取最新的 mtime——只要其中一個是剛寫的，就還在「當下誤按」的情境裡。
+        newest = None
+        for ext in (".json", ".png"):
+            path = os.path.join(target_dir, stem + ext)
+            if os.path.isfile(path):
+                mtime = os.path.getmtime(path)
+                newest = mtime if newest is None else max(newest, mtime)
+        if newest is not None:
+            age = time.time() - newest
             if age > undo_window_s:
-                return _err(409, f"超過可還原時間（{int(age)}s > {int(undo_window_s)}s）")
+                return _err(409, "超過可還原時間——Ctrl+Z 只救剛剛的誤按")
         removed = []
         for ext in (".json", ".png"):
             path = os.path.join(target_dir, stem + ext)
@@ -1083,7 +1095,7 @@ class WebIPCThread:
         fixtures_dir: str | None = None,
         snapshots_root: str | None = None,
         negatives_dir: str | None = None,
-        undo_window_s: float = 900.0,
+        undo_window_s: float = _UNDO_WINDOW_FALLBACK_S,
         layer_getter: Callable[[], dict] | None = None,
         player_state_getter: Callable[[], dict] | None = None,
     ):

@@ -4,6 +4,7 @@ from miningbot.states import (State, Observation, decide_transition,
                               can_consume_ability, can_accept_manual_reentry,
                               should_notify_spawn_chill,
                               update_capacity_streak)
+from miningbot.config import DEFAULT
 
 def obs(**kw):
     base = dict(chill_audio=False, chill_text=False, harvest_done=False,
@@ -327,7 +328,7 @@ def test_can_accept_manual_reentry_matrix():
 # 掛容量而不是面板：面板判準只在進 MINING 時讀得到，而 bot 真的卡住時不會有 chill、
 # 不會有採集、根本不會再進 MINING 一次——掛那裡的偵測永遠不會觸發。容量 OCR 本來就
 # 每輪在跑（_banner_ocr_loop），拿它當計時器不用多跑任何 OCR。
-STALL = 900.0
+STALL = DEFAULT.capacity_stall_alert_s      # 不抄 production 預設（tests/AGENTS.md）
 
 def test_capacity_stall_rise_resets_the_timer():
     from miningbot.states import update_capacity_stall
