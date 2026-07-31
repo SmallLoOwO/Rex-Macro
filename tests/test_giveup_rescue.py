@@ -852,3 +852,55 @@ def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
 
     bot._resume_mining_tail(net_rots)
     assert order.index("clear") < order.index("init")
+
+
+# ── 容量停滯警報（spec 04）：只通知，絕不停機 ──────────────────────────────
+
+def _stall_bot(monkeypatch, state=None, stall=None, sent=None):
+    monkeypatch.setattr(cfg, "capacity_stall_alert_s", 900.0)
+    monkeypatch.setattr(main.notify, "send_message",
+                        lambda *a, **kw: (sent if sent is not None else []).append(a))
+    return make_fake_bot(
+        bind=["_check_capacity_stall"], logger=_Rec(),
+        state=state or main.State.MINING,
+        _capacity_stall=stall or (10.0, 0.0, False),
+        _mine_resetting=False, _human_reason="")
+
+
+def test_capacity_stall_alert_never_stops_the_bot(monkeypatch):
+    """觸發時只發通知：不得改 state、不得寫 _mine_resetting／_human_reason。
+
+    唯一停機信號仍然是重置橫幅（2026-07-12 死鎖實錄：Capacity 假陽性卡死 RESET_WAIT）。
+    """
+    sent = []
+    monkeypatch.setattr(main.time, "time", lambda: 10_000.0)   # 距 last_change 遠超門檻
+    bot = _stall_bot(monkeypatch, sent=sent)
+    bot._check_capacity_stall(10.0)
+    assert sent, "應該發了 Discord 通知"
+    assert bot.state is main.State.MINING
+    assert bot._mine_resetting is False
+    assert bot._human_reason == ""
+
+
+def test_capacity_stall_resets_outside_mining(monkeypatch):
+    """離開 MINING 一律重置計時——交人工等半小時不是卡住。"""
+    sent = []
+    monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
+    bot = _stall_bot(monkeypatch, state=main.State.NEEDS_HUMAN, sent=sent)
+    bot._check_capacity_stall(10.0)
+    assert sent == [], "非 MINING 不得警報"
+    assert bot._capacity_stall == (None, 10_000.0, False)
+
+
+def test_capacity_stall_notify_failure_does_not_break_worker(monkeypatch):
+    """通知送不出去只記 log——banner worker 不能因此掛掉。"""
+    monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
+
+    def boom(*a, **kw):
+        raise RuntimeError("discord down")
+    monkeypatch.setattr(main.notify, "send_message", boom)
+    bot = make_fake_bot(
+        bind=["_check_capacity_stall"], logger=_Rec(), state=main.State.MINING,
+        _capacity_stall=(10.0, 0.0, False), _mine_resetting=False, _human_reason="")
+    bot._check_capacity_stall(10.0)             # 不得丟出來
+    assert any("discord down" in line for line in bot.logger.lines)

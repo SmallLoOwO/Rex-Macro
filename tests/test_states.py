@@ -321,3 +321,69 @@ def test_can_accept_manual_reentry_matrix():
     assert not ok and "回礦" in reason
     ok, reason = can_accept_manual_reentry(State.MINING, False)
     assert not ok and "未啟用" in reason
+
+
+# ── update_capacity_stall：容量長時間不上升＝鎬子沒在挖（spec 04）────────────
+# 掛容量而不是面板：面板判準只在進 MINING 時讀得到，而 bot 真的卡住時不會有 chill、
+# 不會有採集、根本不會再進 MINING 一次——掛那裡的偵測永遠不會觸發。容量 OCR 本來就
+# 每輪在跑（_banner_ocr_loop），拿它當計時器不用多跑任何 OCR。
+STALL = 900.0
+
+def test_capacity_stall_rise_resets_the_timer():
+    from miningbot.states import update_capacity_stall
+    state, alert = update_capacity_stall(
+        (10.0, 1000.0, False), pct=12.0, now=1500.0, stall_s=STALL)
+    assert alert is False
+    assert state == (12.0, 1500.0, False)      # 上升 → 記新值、計時歸零
+
+
+def test_capacity_stall_flat_under_threshold_is_quiet():
+    from miningbot.states import update_capacity_stall
+    _state, alert = update_capacity_stall(
+        (10.0, 1000.0, False), pct=10.0, now=1300.0, stall_s=STALL)
+    assert alert is False                       # 才 300s，遠不到 15 分鐘
+
+
+def test_capacity_stall_flat_over_threshold_alerts_once():
+    from miningbot.states import update_capacity_stall
+    state, alert = update_capacity_stall(
+        (10.0, 1000.0, False), pct=10.0, now=1901.0, stall_s=STALL)
+    assert alert is True
+    assert state[2] is True                     # 已警報旗標
+    # 再持平 → 不重複報
+    _state2, alert2 = update_capacity_stall(state, pct=10.0, now=2500.0, stall_s=STALL)
+    assert alert2 is False
+
+
+def test_capacity_stall_rise_after_alert_rearms():
+    """上升清旗標，之後再停滯超過門檻要能再報一次（否則只會提醒你一次就啞了）。"""
+    from miningbot.states import update_capacity_stall
+    alerted = (10.0, 1000.0, True)
+    state, alert = update_capacity_stall(alerted, pct=11.0, now=2000.0, stall_s=STALL)
+    assert alert is False and state == (11.0, 2000.0, False)
+    _s2, alert2 = update_capacity_stall(state, pct=11.0, now=2901.0, stall_s=STALL)
+    assert alert2 is True
+
+
+def test_capacity_stall_none_is_neither_rise_nor_flat():
+    """本輪 OCR 讀失敗 → 狀態原樣、不報（單次讀失敗不該被算成停滯，也不該重計）。"""
+    from miningbot.states import update_capacity_stall
+    before = (10.0, 1000.0, False)
+    state, alert = update_capacity_stall(before, pct=None, now=9999.0, stall_s=STALL)
+    assert (state, alert) == (before, False)
+
+
+def test_capacity_stall_first_reading_starts_the_clock():
+    """沒有前值（None）→ 記下起點，不報。"""
+    from miningbot.states import update_capacity_stall
+    state, alert = update_capacity_stall(
+        (None, 0.0, False), pct=10.0, now=1000.0, stall_s=STALL)
+    assert alert is False and state == (10.0, 1000.0, False)
+
+
+def test_capacity_stall_drop_also_resets():
+    """容量下降（重置完成）也算「有在動」→ 計時歸零，不報。"""
+    from miningbot.states import update_capacity_stall
+    state, alert = update_capacity_stall(
+        (95.0, 1000.0, True), pct=0.0, now=1500.0, stall_s=STALL)
+    assert alert is False and state == (0.0, 1500.0, False)

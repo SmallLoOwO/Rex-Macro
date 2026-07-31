@@ -202,3 +202,32 @@ def update_capacity_streak(streak: int, pct: float | None,
         new_streak = streak + 1
         return new_streak, new_streak >= 2
     return 0, False
+
+def update_capacity_stall(state: tuple, pct: float | None, now: float,
+                          stall_s: float) -> tuple[tuple, bool]:
+    """容量長時間不上升＝鎬子沒真的在挖（純函式，spec 04）。
+
+    `state` = ``(last_pct, last_change_at, alerted)``；回 ``(新 state, 要不要警報)``。
+
+    - pct is None（本輪 OCR 讀失敗）→ 狀態原樣、不報。單次讀失敗既不算停滯也不重計。
+    - pct != last_pct（上升或下降都算「有在動」）→ 記新值、計時歸零、清警報旗標。
+      下降是重置完成，同樣證明畫面是活的。
+    - pct == last_pct 且已持平超過 `stall_s` 且尚未報過 → 報一次並立旗標。
+    - 已報過 → 不重複報，直到下一次容量真的變動才 re-arm。
+
+    掛容量而不是面板：面板判準（「這段 MINING 有沒有礦進帳」）只在進 MINING 時讀得到，
+    而 bot 真的卡住時不會有 chill、不會有採集、**根本不會再進 MINING 一次**——掛那裡的
+    偵測永遠不會觸發。容量 OCR 本來就每輪在跑，拿它當計時器不用多跑任何 OCR。
+
+    呼叫端只在 `State.MINING` 期間推進；離開 MINING（採集／重置／交人工／暫停）要重置，
+    否則交人工等半小時會誤報。觸發時**只發通知**，不得停機或改 state——唯一停機信號
+    仍然是重置橫幅（2026-07-12 死鎖實錄：Capacity 假陽性卡死 RESET_WAIT）。
+    """
+    last_pct, last_change_at, alerted = state
+    if pct is None:
+        return state, False
+    if last_pct is None or pct != last_pct:
+        return (pct, now, False), False
+    if not alerted and (now - last_change_at) > stall_s:
+        return (last_pct, last_change_at, True), True
+    return state, False

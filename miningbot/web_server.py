@@ -1083,6 +1083,7 @@ class WebIPCThread:
         fixtures_dir: str | None = None,
         snapshots_root: str | None = None,
         negatives_dir: str | None = None,
+        undo_window_s: float = 900.0,
         layer_getter: Callable[[], dict] | None = None,
         player_state_getter: Callable[[], dict] | None = None,
     ):
@@ -1111,6 +1112,7 @@ class WebIPCThread:
             fixtures_dir=fixtures_dir,
             snapshots_root=snapshots_root,
             negatives_dir=negatives_dir,
+            undo_window_s=undo_window_s,
             ping_interval_s=ping_interval_s,
             layer_getter=layer_getter,
             player_state_getter=player_state_getter,

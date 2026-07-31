@@ -334,6 +334,10 @@ class Config:
                                               # 升級下顯示 100% ≠ 重置臨近，提早停挖＝死鎖）
     capacity_fast_from: float = 99.0          # ≥此值 banner worker 輪詢加速（容量飽和期間高頻監看橫幅）
     capacity_fast_interval_s: float = 0.5     # 加速後間隔（平時沿用 reset_check_interval_s=2.0）
+    # 容量停滯警報（spec 04）：MINING 期間容量這麼久沒變動＝鎬子可能沒真的在挖。
+    # 只發 Discord、**不停機**（誤報一次的代價是白叫一聲，停機是整晚不挖礦）。
+    # 900s 遠大於一個採集週期（~6 分鐘），正常運作踩不到。
+    capacity_stall_alert_s: float = 900.0
 
     # chill 前證據快取（spec 2026-07-30-prechill-evidence-cache-design.md A 段）
     # 為什麼要：聊天基準到 _on_enter(HARVESTING) 才拍，那時礦已被鎬子挖掉、證據就在基準

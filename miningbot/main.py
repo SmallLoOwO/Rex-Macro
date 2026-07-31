@@ -18,6 +18,7 @@ from .events import EventLog, make_file_sink
 from .states import (State, Observation, decide_transition, resolve_state_transition,
                      toggle_pause_action, is_blocked_from_mining, can_consume_ability,
                      should_notify_spawn_chill, update_capacity_streak,
+                     update_capacity_stall,
                      can_accept_manual_reentry, can_consume_rotate)
 from . import capture, vision, ocr, audio, miner, harvester, diagnostics, window, game_data, metrics
 from . import sampler, reentry, roblox_menu, remote_aim, reentry_remote, discord_commands
@@ -347,6 +348,8 @@ class Bot:
         # 救援觀察期（spec 03）：命中照樣交人工，只記帳；跨 session 累計到目標次數後問玩家
         self._rescue_observed: list = self._load_rescue_observed()
         self._rescue_observe_note = ""           # 交人工訊息的觀察期註記（每次命中覆寫）
+        # 容量停滯偵測（spec 04）：(last_pct, last_change_at, alerted)；只在 MINING 期間推進
+        self._capacity_stall: tuple = (None, time.time(), False)
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
@@ -1313,6 +1316,10 @@ class Bot:
                                          cfg.capacity_reset_threshold)
                         self._capacity_full_logged = True
                     self._maybe_arm_chime(cap_pct_this)
+                    self._check_capacity_stall(cap_pct_this)
+                elif self.state is not State.MINING:
+                    # 飽和跳讀那條路也要能離開 MINING 時重置計時（見 _check_capacity_stall）
+                    self._capacity_stall = (None, time.time(), False)
                 # 唯一停機信號是 reset 橫幅；cap_trigger 不再寫 _mine_resetting／_human_reason
                 # （2026-07-12 死鎖實錄：Capacity 假陽性 → 卡死 RESET_WAIT）。
                 resetting = banner_resetting
@@ -3198,6 +3205,32 @@ class Bot:
                 json.dump(self._harvest_seq, f)
         except Exception as e:
             self.logger.error("harvest_seq 存檔失敗: %s", e)
+
+    def _check_capacity_stall(self, pct):
+        """容量長時間不上升 → 發 Discord 警報（spec 04）。**不停機、不改 state**。
+
+        只在 `State.MINING` 期間計時；離開 MINING（採集／重置／交人工／暫停）一律重置
+        ——交人工等半小時本來就不會挖礦，那不是卡住。
+
+        唯一停機信號仍然是重置橫幅（2026-07-12 死鎖實錄：Capacity 假陽性卡死
+        RESET_WAIT）。這裡誤報一次的代價只是白叫一聲，停機的代價是整晚不挖礦。
+        """
+        if self.state is not State.MINING:
+            self._capacity_stall = (None, time.time(), False)
+            return
+        self._capacity_stall, alert = update_capacity_stall(
+            self._capacity_stall, pct, time.time(), cfg.capacity_stall_alert_s)
+        if not alert:
+            return
+        mins = cfg.capacity_stall_alert_s / 60.0
+        msg = (f"⚠ 容量 {self._capacity_stall[0]:.0f}% 已經 {mins:.0f} 分鐘沒上升"
+               f"——鎬子可能沒真的在挖，請看一眼畫面（bot 繼續跑，沒有停機）")
+        self.logger.warning(msg)
+        try:
+            from . import notify
+            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, msg)
+        except Exception as e:                  # 通知失敗不得影響 banner worker
+            self.logger.warning("容量停滯警報送出失敗：%s", e)
 
     def _rescue_observed_path(self) -> str:
         """救援觀察期紀錄檔（spec 03）。放 log_dir——這是 runtime evidence，不是設定。"""
