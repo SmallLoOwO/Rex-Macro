@@ -471,3 +471,21 @@ def test_prefire_relocate_uses_per_direction_reference(monkeypatch):
     bot._tick_harvest(np.zeros((4, 4, 3), np.uint8))
     assert seen == [3], (
         "pre-fire 重定位必須用當下方位(dir=3)的 ref，不是全域 ref(99)；拿到 %r" % seen)
+
+
+# ── H072 classify 交叉驗證（harvest 162：Weevil→Weevi 假成功）──────────────
+
+def test_classify_confirms_new_rare_rejects_truncated_common():
+    """count_rare_found 說有新稀有（截斷假計數差）、classify_found_ore 說沒有 → 否決。"""
+    KW = ["has found", "found a"]
+    before = ["small_lo has found Weevil\nsmall_lo has found Siogyne"]
+    after  = ["small_lo has found Weevi\nsmall_lo has found Siogyne"]
+    assert main.classify_confirms_new_rare(before, after, KW) is False
+
+
+def test_classify_confirms_new_rare_accepts_real_rare():
+    """真稀有 礦入帳：classify 也確認有新稀有 → 不否決。"""
+    KW = ["has found", "found a"]
+    before = ["small_lo has found Weevil"]
+    after  = ["small_lo has found Weevil\nsmall_lo has found Clovara"]
+    assert main.classify_confirms_new_rare(before, after, KW) is True

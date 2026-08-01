@@ -118,6 +118,32 @@ _AUTO_FIXTURE_ROOT = os.path.join(
 _AUTO_FIXTURE_DEFAULT_SIZE = 50
 
 
+def _classify_rare_count(text: str, found_keywords) -> int:
+    """用 ``classify_found_ore``（``_prefix_hit``＋fuzzy 0.80 強匹配）計稀有 found 行數。
+
+    與 ``ocr.count_rare_found``（``_is_rare_ore`` startswith 弱匹配）對照——後者對尾端
+    截斷敏感（H072 harvest 162：Weevil→Weevi）。classify 有 fuzzy 兜底，截斷的 common
+    名仍正確判 common。ocr 不能 import game_data（循環），所以這個函式留在 main。
+    """
+    n = 0
+    for line in text.splitlines():
+        ore = ocr.found_ore_name(line, found_keywords)
+        if ore and game_data.classify_found_ore(ore)[0] in ("rare", "rare_fuzzy"):
+            n += 1
+    return n
+
+
+def classify_confirms_new_rare(before_texts, after_texts, found_keywords) -> bool:
+    """classify 交叉驗證：after 的稀有計數是否多於 before（H072）。
+
+    ``count_rare_found`` 用 ``_is_rare_ore``（弱），``_classify_rare_count`` 用
+    ``classify_found_ore``（強）。弱者說有新稀有、強者說沒有 → OCR 噪音假計數差 → 否決。
+    """
+    return any(
+        _classify_rare_count(a, found_keywords) > _classify_rare_count(b, found_keywords)
+        for b, a in zip(before_texts, after_texts))
+
+
 class _HotkeyController:
     """熱鍵邊緣觸發邏輯。down_fn 由外部注入（生產用 GetAsyncKeyState，測試用 mock）。"""
 
@@ -3361,6 +3387,15 @@ class Bot:
                 self.logger.error("chill 音訊存檔失敗: %s", e)
             self.log.log("RARE_FOUND", harvest_id=hid, image_path=chill_path)
             self.logger.info("進入採集 HARVESTING [%s]: D2 掃描，全方位搜尋追蹤框", hid)
+            # ★ 進場面板色檢（H072 觀察期）：chill 前鎬子可能已挖到稀有 礦——面板有
+            #   白名單 礦＝已進帳＝不需要 D3 採集的漫長流程。觀察期照舊交人工確認。
+            #   前提是 _panel_zeroed_at 有值（進 MINING 時面板已清空）；否則面板有舊 礦
+            #   不可信、整條跳過。要在 prepare_scan 之前——省下掃描等待＋D2 冷卻。
+            self._episode_succeeded = False
+            self._episode_chill_at = time.time()
+            self._harvest_origin_ref = frame
+            if self._harvest_entry_panel_check(hid):
+                return                          # 已交人工，不進入採集流程
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
             #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
@@ -6622,6 +6657,29 @@ class Bot:
         hid = self.harvest.harvest_id if self.harvest else "?"
         return self._panel_rare_ores(hid, "對帳")
 
+    def _harvest_entry_panel_check(self, hid: str) -> bool:
+        """進場面板色檢（H072 觀察期）：chill 前鎬子可能已挖到稀有 礦。
+
+        面板（已歸零可信）有白名單（Exotic+）礦＝這場 MINING 期間已挖到→不需要 D3
+        採集的漫長流程（sweep ~19s＋多次 D3＋verify）。觀察期：照舊交人工確認，不自己
+        收尾——這條路的誤判代價是「白交一次人工」（安全方向），但命中時玩家的畫面上
+        礦可能已經被挖走、D3 掃不到、照樣浪費一輪採集，所以提早交人工更省。
+
+        回 True＝已交人工（`_harvest_giveup`），呼叫端必須立刻 return。
+        """
+        if not cfg.harvest_entry_panel_check:
+            return False
+        gains = self._episode_panel_gains()
+        if not gains:
+            return False
+        self.log_harvest.warning(
+            "[%s] H072 進場面板色檢命中：面板已有白名單 礦 %s——"
+            "chill 前可能已被鎬子挖到，交人工確認（觀察期）",
+            hid, "、".join(gains))
+        self._harvest_giveup(
+            f"進場面板已有稀有 礦（{'、'.join(gains)}），可能 chill 前已挖到——請確認")
+        return True
+
     def _chill_reconcile(self, where: str, *, notify: bool = True) -> bool:
         """雙 chill 對帳（spec 2026-07-30）：響兩聲只進帳一顆就結案＝帳不平 → 交人工。
 
@@ -8775,6 +8833,17 @@ class Bot:
                     "→ 忽略計數差確認 rare=%s special=%s（不認定成功）",
                     hid, confirmed, special)
             confirmed = special = False
+        # ★ classify 交叉驗證（H072，harvest 162）：count_rare_found 用 _is_rare_ore
+        #   （startswith 弱匹配），classify_found_ore 用 _prefix_hit＋fuzzy（強匹配）。
+        #   弱者說有新稀有、強者說沒有 → OCR 噪音假計數差（Weevil→Weevi）→ 否決。
+        #   只否決計數差那份——帳本有自己的行級匹配（_lines_alike ratio 0.85）對截斷
+        #   免疫，照常 OR 上來（H032 晚到行仍救得回）。
+        if confirmed and not classify_confirms_new_rare(
+                chat_before, chat_after, cfg.found_keywords):
+            self.log_harvest.warning(
+                "[%s] H072 classify 交叉驗證否決：count_rare_found 說有新稀有、"
+                "classify_found_ore 說沒有 → OCR 噪音假計數差（不認定成功）", hid)
+            confirmed = False
         # episode 帳本（H032 延伸對策）：鏈式對齊累積新增行——基準底行已捲出裁圖時，
         # 上面的單次差分全滅，帳本以「上一次讀取」為錨仍接得住晚到/被推走的成功行。
         # confirmed 一旦入帳全 episode 有效（誤判失敗後的任何 OCR 都會把它撈回來）。

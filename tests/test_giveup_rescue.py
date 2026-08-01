@@ -1045,3 +1045,46 @@ def test_capacity_stall_resets_outside_mining(monkeypatch):
     bot._check_capacity_stall(10.0)
     assert bot.log.records == [], "非 MINING 不得警報"
     assert bot._capacity_stall == (None, 10_000.0, False)
+
+
+# ── H072 進場面板色檢（chill 前鎬子已挖到稀有 礦）─────────────────────────────
+
+def _entry_panel_bot(monkeypatch, *, panel=(), zeroed=True, enabled=True, **attrs):
+    monkeypatch.setattr(cfg, "harvest_entry_panel_check", enabled)
+    giveup_called = []
+    bot = make_fake_bot(
+        bind=["_harvest_entry_panel_check", "_episode_panel_gains"],
+        harvest=_harvest(), log_harvest=_Rec(),
+        _panel_zeroed_at=9999.0 if zeroed else None,
+        _panel_rare_ores=lambda *a, **kw: list(panel),
+        _harvest_giveup=lambda reason: giveup_called.append(reason),
+        **attrs)
+    return bot, giveup_called
+
+
+def test_entry_panel_check_calls_human_when_rare_in_panel(monkeypatch):
+    """面板已有白名單 礦（chill 前鎬子已挖到）→ 交人工確認（觀察期）。"""
+    bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"])
+    assert bot._harvest_entry_panel_check("162") is True
+    assert len(giveup) == 1
+    assert "faedrine" in giveup[0]
+
+
+def test_entry_panel_check_passes_when_panel_empty(monkeypatch):
+    """面板沒有白名單 礦 → 正常進入採集。"""
+    bot, giveup = _entry_panel_bot(monkeypatch, panel=[])
+    assert bot._harvest_entry_panel_check("162") is False
+    assert giveup == []
+
+
+def test_entry_panel_check_skips_when_panel_not_zeroed(monkeypatch):
+    """面板未歸零（_panel_zeroed_at is None）→ _episode_panel_gains 回 [] → 跳過。"""
+    bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"], zeroed=False)
+    assert bot._harvest_entry_panel_check("162") is False
+    assert giveup == []
+
+
+def test_entry_panel_check_disabled_by_config(monkeypatch):
+    bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"], enabled=False)
+    assert bot._harvest_entry_panel_check("162") is False
+    assert giveup == []

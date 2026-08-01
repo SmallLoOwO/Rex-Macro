@@ -410,6 +410,11 @@ class Config:
     chill_edge_release_s: float = 0.0         # 分數要回落多久才算下一聲；0 = 對帳停用
     chill_reconcile_enabled: bool = False     # 帳不平時交人工（需 chill_edge_release_s > 0 才生效）
 
+    # 進場面板色檢（H072，2026-08-01）：chill 觸發進 HARVESTING 時，若面板已有白名單
+    # （Exotic+）礦＝chill 前鎬子已挖到→不需要 D3 採集。觀察期一律交人工確認。
+    # 前提：_panel_zeroed_at 有值（進 MINING 時面板已清空驗證過）。
+    harvest_entry_panel_check: bool = True
+
     # 記錄 / 診斷
     log_dir: str = field(default_factory=default_log_dir)
     log_level: str = "INFO"                      # 改 "DEBUG" 可看每幀偵測細節（音訊分數、標記座標等）

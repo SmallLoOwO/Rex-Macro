@@ -200,11 +200,24 @@ def _is_rare_ore(ore: str | None, common_norm) -> bool:
     H041（2026-07-11）：連字號對稱正規化——白名單含 Anti-Shadow/X-Flare/Sub-Zero 等
     連字號礦名；比對前把 base 與清單項的 - 都換空格。安全方向：連字號差異絕不可造成
     「一般礦被誤判稀有」（OCR 把 "Sub-Zero" 讀成 "Sub Zero" 時仍須被排除清單擋下）。
+
+    H072（2026-08-01 harvest 162）：尾端**截斷**也要容忍——RapidOCR 把 ``Weevil``
+    讀成 ``Weevi``（少尾碼），``startswith`` 單向不成立 → 假稀有 → count 0→1 → 假成功。
+    反向 prefix（common 名以 base 開頭、base ≥ 4 字）→ 視為截斷 → common。
+    門檻 4：太短（如 ``w``）會把短首碼的稀有礦也吃掉——但方向安全（寧漏勿假成功）。
     """
     if not ore:
         return False
     base = _strip_variant(ore).replace("-", " ")
-    return not any(base.startswith(c.replace("-", " ")) for c in common_norm)
+    for c in common_norm:
+        cn = c.replace("-", " ")
+        if base.startswith(cn):           # 尾端加雜訊（weevil! → common）
+            return False
+    if len(base) >= 4:                    # 尾端截斷（weevi → common）
+        for c in common_norm:
+            if c.replace("-", " ").startswith(base):
+                return False
+    return True
 
 def found_ore_name(line: str, found_keywords) -> str | None:
     """公開版 _found_ore：從一行聊天抽礦名（正規化小寫）；非 found 行回 None。

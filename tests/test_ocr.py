@@ -131,6 +131,19 @@ def test_count_rare_found_tolerates_trailing_ocr_noise_on_common():
     text = "small_lo has found Bandeau!"
     assert count_rare_found(text, COMMON, KW) == 0
 
+def test_count_rare_found_tolerates_trailing_ocr_truncation_on_common():
+    # H072（harvest 162）：OCR 少讀尾碼（Weevil→Weevi），startswith 反向不成立
+    # → 假稀有 → count 0→1 → 假成功。反向 prefix（common 名以 base 開頭）→ 截斷 → common。
+    text = "small_lo has found Bandea"    # truncated "Bandeau"
+    assert count_rare_found(text, COMMON, KW) == 0
+
+def test_has_new_rare_found_false_when_common_ore_ocr_truncated():
+    # H072 核心場景：before/after 是同一行，after 被 OCR 截斷一個尾碼。
+    # 舊邏輯：before common(count 0) → after rare(count 1) → 假成功。
+    before = "small_lo has found Bandeau"
+    after  = "small_lo has found Bandea"  # 截斷，不是新行
+    assert has_new_rare_found(before, after, COMMON, KW) is False
+
 def test_has_new_rare_found_true_when_rare_count_increases():
     before = "small_lo has found Rosarium"
     after  = "small_lo has found Rosarium\nsmall_lo has found Lilaverine"

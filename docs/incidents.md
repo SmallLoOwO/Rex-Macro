@@ -754,3 +754,14 @@ fixture 位置慣例：
 - **對策**：`typewrite` → `ic.key_press("w")` 迴圈（90ms 間隔，與 codebase 一致）；`panel_clear_keystrokes` 8→4（90ms 間隔下按鍵幾乎不掉，不需要過量送）。
 - **回歸**：`test_clear_input_sequence_is_click_w_then_enter_h071c`（驗序列 click→w×4→enter）、更新 `test_clear_sets_timestamp_when_normal_and_empty`（keys 含 w×4+enter）、`test_clear_rereads_when_panel_redraw_lags`（keys.count("w")==4）。72 passed。
 - **⚠ 下一場實機驗證預期**：採集成功後 log 出現「面板零點成立」。墨量 before/after 在飽和時仍可能是噪訊——重點看面板 OCR 是否 0 列。反指標：仍出現「面板零點不成立」→ 90ms 還是不夠，考慮加長 click-to-type gap（目前 0.15s）。
+
+## H072（2026-08-01 18:39:07，harvest 162；使用者回報「跳過背包檢查，將低稀有 礦作為通過，稀有框沒被挖掘」）：RapidOCR 尾端截斷 common 礦名 Weevil→Weevi，_is_rare_ore 的單向 startswith 不成立 → 假稀有 → count 0→1 → 假成功
+
+- **症狀**：D3 命中真追蹤框（dir2 1458,497 score=0.622），verify 輪詢到窗口到期最終確認時，同一行 "has found Weevil" 被 OCR 截斷成 "has found Weevi"。baseline rare=0（Weevil 在排除清單）、final rare=1（Weevi 不在）→ count 差 0→1 → confirmed=True → SUCCESS。events.log：`tracker_gone=False rare_before=[0] rare_after=[1] new_found_lines=['small_lo has found Weevi']`。稀有 礦從未被採到。
+- **根因**：`ocr._is_rare_ore` 用 `base.startswith(c)` 單向——容忍尾端**加**雜訊（"weevil!" → common）但不容忍尾端**截斷**（"weevi" → 不 match "weevil" → rare）。同時 `game_data.classify_found_ore` 有 fuzzy 兜底（CLASSIFY_FUZZY_RATIO=0.80，SequenceMatcher("weevi","weevil")=0.909 ≥ 0.80 → common）——正確判 common，但只用在通知標注，沒回流到 verify 決策路徑。兩套分類各自獨立、用不同匹配邏輯；H033 加的 fuzzy 分類只進 game_data、沒回流 ocr。
+- **對策（三層）**：
+  1. `_is_rare_ore`（ocr.py）補反向 prefix：common 名以 base 開頭（base ≥ 4 字）→ 視為截斷 → common。方向安全（寧漏勿假成功）。count/last_line/tail 所有信號同時修好。
+  2. classify 交叉驗證（main.py `classify_confirms_new_rare`）：count_rare_found 說有新稀有但 classify_found_ore 說沒有 → 否決 confirmed。只否決計數差那份——帳本有行級匹配（`_lines_alike` ratio 0.85，對截斷免疫），照常 OR 上來（H032 晚到行仍救得回）。
+  3. 進場面板色檢（main.py `_harvest_entry_panel_check`）：chill 觸發進 HARVESTING 時，若面板（已歸零可信）已有白名單 礦＝chill 前鎬子已挖到→不需要 D3 採集。觀察期照舊交人工確認（同救援路 B）。
+- **回歸**：`test_count_rare_found_tolerates_trailing_ocr_truncation_on_common`、`test_has_new_rare_found_false_when_common_ore_ocr_truncated`、`test_classify_confirms_new_rare_rejects_truncated_common`、`test_classify_confirms_new_rare_accepts_real_rare`、`test_entry_panel_check_*` ×4。2297 passed。
+- **⚠ 下一場實機驗證預期**：log 不再出現 `H072 classify 交叉驗證否決`（代表截斷沒發生或被層 1 擋下）。若出現 `H072 進場面板色檢命中`→面板色檢偵測到 chill 前已挖到的 礦，攤開證據問使用者是否合理。反指標：真成功卻被層 1 或層 2 否決（rare 礦名也被截斷成 <4 字的前綴）→ 鬆門檻。
