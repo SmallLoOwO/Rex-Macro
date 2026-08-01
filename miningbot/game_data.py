@@ -1630,68 +1630,94 @@ TIER_HUES: dict[str, float] = {
     "Otherworldly": 334.0,  # 深紅   wiki 5E0E32 HSV 333°
 }
 
-_detection_min_tier: str | None = None   # None = 不過濾（預設）；測試不設 = 現行行為
+_detection_disabled_tiers: set[str] = set()   # 空 = 全偵測（預設）
 
 
-def set_detection_min_tier(tier: str | None) -> None:
-    """設定偵測系統的最低稀有階級。None 或 "Exotic" = 不過濾（現行行為）。
+def set_detection_disabled_tiers(tiers) -> None:
+    """設定偵測系統排除的階級。空集合 = 全偵測（現行行為）。
 
-    模組級變數，GIL 下原子讀寫——Discord 輪詢執行緒寫、主迴圈讀，同 current_world 模式。
+    支援非連續選擇（例如只關 Exquisite 但保留 Exotic + Transcendent+）。
+    模組級變數，GIL 下原子讀寫。
     """
-    global _detection_min_tier
-    _detection_min_tier = tier
+    global _detection_disabled_tiers
+    _detection_disabled_tiers = set(tiers or ())
 
 
-def get_detection_min_tier() -> str | None:
-    return _detection_min_tier
+def get_detection_disabled_tiers() -> set[str]:
+    return set(_detection_disabled_tiers)
 
 
-def _is_below_threshold(info: dict) -> bool:
-    """info 的 tier 是否低於偵測門檻。
+def _is_detection_disabled(info: dict) -> bool:
+    """info 的 tier 是否被手動排除。"""
+    return info.get("tier", "") in _detection_disabled_tiers
 
-    無門檻（None）→ False。門檻＝Exotic（最低有效值）→ False（不過濾＝現行行為，
-    含未知 tier）。門檻高於 Exotic → tier 未知（不在 _TIER_ORDER）也判 below
-    （安全方向：未知的當低階）。
+
+def format_detection_status(disabled: set[str] | None = None) -> str:
+    """格式化偵測階級狀態文字（Discord 啟動訊息 / 階級指令查詢用）。
+
+    回傳範例：
+    - 全開：「全部（Exotic+）」
+    - 連續關閉：「Exquisite 以上」
+    - 非連續：「Exotic、Transcendent 以上」
+    - 高階全關：「⚠️ …——Transcendent 以上全部關閉！」
     """
-    if _detection_min_tier is None:
-        return False
-    min_rank = _TIER_ORDER.get(_detection_min_tier, 0)
-    if min_rank == 0:           # Exotic＝最低 → 不過濾（等同 None）
-        return False
-    tier_rank = _TIER_ORDER.get(info.get("tier", ""), -1)
-    return tier_rank < min_rank
+    d = set(disabled) if disabled is not None else set(_detection_disabled_tiers)
+    if not d:
+        return "全部（Exotic+）"
+
+    # 將連續 enabled tier 合併為「X 以上」
+    groups: list[str] = []
+    tiers = list(_HIGH_TIERS)
+    i = 0
+    while i < len(tiers):
+        if tiers[i] in d:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(tiers) and tiers[j + 1] not in d:
+            j += 1
+        groups.append(f"{tiers[i]} 以上" if j > i else tiers[i])
+        i = j + 1
+
+    if not groups:
+        return "⚠️ 全部關閉——不會偵測任何稀有 礦！"
+
+    result = "、".join(groups)
+
+    # 警告：Transcendent（含）以上全部關閉
+    trans_rank = _TIER_ORDER["Transcendent"]
+    if all(t in d for t in _HIGH_TIERS if _TIER_ORDER.get(t, 0) >= trans_rank):
+        result = f"⚠️ {result}——Transcendent 以上全部關閉！"
+
+    return result
 
 
-def effective_whitelist_hues(min_tier: str | None,
+def effective_whitelist_hues(disabled_tiers,
                              base_whitelist: tuple) -> tuple:
-    """≥ min_tier 的量測色相（救援 whitelist_hue_hits 用）。
+    """未排除 tier 的量測色相（救援 whitelist_hue_hits 用）。
 
-    min_tier=None / Exotic → 回 base 不動（現行行為）。
-    門檻以上未量測的 tier 不在結果裡——那些靠名字閘分類，色相交叉驗無法確認（保守）。
-    base_whitelist 與 TIER_HUES 取交集後再過濾，確保 config 自訂值不被靜默丟棄。
+    disabled_tiers 為空 → 回 base 不動（現行行為）。
+    base_whitelist 與未排除 tier 的 TIER_HUES 取交集。
     """
-    if min_tier is None or _TIER_ORDER.get(min_tier, 0) == 0:
+    d = set(disabled_tiers or ())
+    if not d:
         return base_whitelist
-    min_rank = _TIER_ORDER.get(min_tier, 0)
-    # 只保留 base_whitelist 裡也出現在 TIER_HUES 且 ≥ min_rank 的色相
-    measured_above = {h for t, h in TIER_HUES.items()
-                      if _TIER_ORDER.get(t, 999) >= min_rank}
-    return tuple(h for h in base_whitelist if h in measured_above)
+    enabled_hues = {h for t, h in TIER_HUES.items() if t not in d}
+    return tuple(h for h in base_whitelist if h in enabled_hues)
 
 
-def effective_low_tier_hues(min_tier: str | None,
+def effective_low_tier_hues(disabled_tiers,
                             base_low_tier: tuple) -> tuple:
-    """base_low_tier ＋ < min_tier 的量測色相（零點 non_low_tier_hues 用）。
+    """base_low_tier ＋ 被排除 tier 的量測色相（零點 non_low_tier_hues 用）。
 
-    門檻以下的 tier 色相加入低階帶 → 零點閘不再為它們擋零點成立。
+    被排除的 tier 色相加入低階帶 → 零點閘不再為它們擋零點成立。
     去重保序（dict.fromkeys）。
     """
-    if min_tier is None:
+    d = set(disabled_tiers or ())
+    if not d:
         return base_low_tier
-    min_rank = _TIER_ORDER.get(min_tier, 0)
-    below = tuple(h for t, h in TIER_HUES.items()
-                  if _TIER_ORDER.get(t, 999) < min_rank)
-    return tuple(dict.fromkeys(tuple(base_low_tier) + below))
+    extra = tuple(h for t, h in TIER_HUES.items() if t in d)
+    return tuple(dict.fromkeys(tuple(base_low_tier) + extra))
 
 
 # ── 高階白名單（assets/rare_ores.json，fetch_ores 從 wiki 抓）＋三態分類 ─────────
@@ -1796,7 +1822,7 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     rare_table = rare_ores(current_world_name())
     for name, info in rare_table.items():
         if _prefix_hit(base, name):
-            if _is_below_threshold(info):
+            if _is_detection_disabled(info):
                 return "common", None
             return "rare", info
     # 模糊兜底：候選比照 ocr._fuzzy_rare_line 取「全部 / 前 1 / 前 2 個 token」
@@ -1812,7 +1838,7 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
         (_best_match(c, rare_pairs) for c in cands), key=lambda t: t[0])
     if best_rare >= CLASSIFY_FUZZY_RATIO and best_rare > best_common:
         best_info = rare_table[best_rare_name]
-        if _is_below_threshold(best_info):
+        if _is_detection_disabled(best_info):
             return "common", None
         return "rare_fuzzy", {**best_info, "fuzzy_ratio": best_rare}
     if best_common >= CLASSIFY_FUZZY_RATIO:

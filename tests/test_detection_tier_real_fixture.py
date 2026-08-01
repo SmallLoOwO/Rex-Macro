@@ -22,9 +22,9 @@ FIXTURE = os.path.join("tests", "fixtures", "panel",
 
 @pytest.fixture(autouse=True)
 def _reset_tier():
-    game_data.set_detection_min_tier(None)
+    game_data.set_detection_disabled_tiers(set())
     yield
-    game_data.set_detection_min_tier(None)
+    game_data.set_detection_disabled_tiers(set())
 
 
 def _read_panel():
@@ -43,7 +43,7 @@ def _read_panel():
 
 def test_exotic_threshold_detects_both_exquisite_and_exotic():
     """門檻 Exotic（預設）→ leprechaun(Exq) + clovara(Exo) 都判 rare。"""
-    game_data.set_detection_min_tier("Exotic")
+    game_data.set_detection_disabled_tiers(set())
     names, _ = _read_panel()
     rare = harvester.rare_panel_ores(names)
     assert "leprechaun" in rare, "leprechaun(Exquisite) 必須判 rare"
@@ -52,7 +52,7 @@ def test_exotic_threshold_detects_both_exquisite_and_exotic():
 
 def test_exquisite_threshold_excludes_exotic_ore():
     """門檻 Exquisite → clovara(Exotic) 不在 rare_panel_ores，leprechaun(Exq) 仍在。"""
-    game_data.set_detection_min_tier("Exquisite")
+    game_data.set_detection_disabled_tiers({"Exotic"})
     names, _ = _read_panel()
     rare = harvester.rare_panel_ores(names)
     assert "leprechaun" in rare, "leprechaun(Exquisite) 必須仍判 rare"
@@ -61,9 +61,9 @@ def test_exquisite_threshold_excludes_exotic_ore():
 
 def test_exquisite_threshold_excludes_exotic_hue_from_whitelist():
     """門檻 Exquisite → 46°(Exotic) 不在 whitelist_hue_hits，128°(Exquisite) 仍在。"""
-    game_data.set_detection_min_tier("Exquisite")
+    game_data.set_detection_disabled_tiers({"Exotic"})
     _, hues = _read_panel()
-    eff_wl = game_data.effective_whitelist_hues("Exquisite", cfg.panel_whitelist_hues)
+    eff_wl = game_data.effective_whitelist_hues({"Exotic"}, cfg.panel_whitelist_hues)
     hits = harvester.whitelist_hue_hits(hues, eff_wl, cfg.panel_hue_tol_deg)
     hit_set = {round(h) for h in hits}
     assert 128 in hit_set, "128°(Exquisite) 必須命中白名單色相"
@@ -72,9 +72,9 @@ def test_exquisite_threshold_excludes_exotic_hue_from_whitelist():
 
 def test_exotic_threshold_exotic_hue_still_in_whitelist():
     """門檻 Exotic（預設）→ 46°(Exotic) 仍在 whitelist_hue_hits。"""
-    game_data.set_detection_min_tier("Exotic")
+    game_data.set_detection_disabled_tiers(set())
     _, hues = _read_panel()
-    eff_wl = game_data.effective_whitelist_hues("Exotic", cfg.panel_whitelist_hues)
+    eff_wl = game_data.effective_whitelist_hues(set(), cfg.panel_whitelist_hues)
     hits = harvester.whitelist_hue_hits(hues, eff_wl, cfg.panel_hue_tol_deg)
     hit_set = {round(h) for h in hits}
     assert 46 in hit_set, "46°(Exotic) 必須命中（門檻 Exotic 不過濾）"
@@ -82,9 +82,9 @@ def test_exotic_threshold_exotic_hue_still_in_whitelist():
 
 def test_exquisite_threshold_exotic_hue_does_not_block_zero_point():
     """門檻 Exquisite → 46°(Exotic) 在低階帶裡，不擋零點；128°(Exq) 仍擋。"""
-    game_data.set_detection_min_tier("Exquisite")
+    game_data.set_detection_disabled_tiers({"Exotic"})
     _, hues = _read_panel()
-    eff_low = game_data.effective_low_tier_hues("Exquisite", cfg.panel_low_tier_hues)
+    eff_low = game_data.effective_low_tier_hues({"Exotic"}, cfg.panel_low_tier_hues)
     blocked = harvester.non_low_tier_hues(hues, eff_low, cfg.panel_hue_tol_deg)
     block_set = {round(h) for h in blocked}
     # 128°(Exquisite) 不在低階帶 → 仍擋零點（面板有 Exquisite 礦）

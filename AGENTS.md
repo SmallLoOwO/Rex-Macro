@@ -49,12 +49,12 @@ of runtime truth.
 ```text
 miningbot/
   main.py                   Bot orchestration and runtime state
-  config.py                 Config/Region and DEFAULT (incl. `detection_min_tier`, panel hues, all coordinates/thresholds)
+  config.py                 Config/Region and DEFAULT (incl. `detection_disabled_tiers`, panel hues, all coordinates/thresholds)
   states.py                 top-level FSM and transition policies
   harvester.py              harvest decisions and D2/D3 wrappers
   vision.py / ocr.py        detector and OCR logic plus adapters
   audio.py                  chill/reset scoring and loopback capture
-  game_data.py              active-world events/ores/classification, detection tier threshold (`TIER_HUES`, `set_detection_min_tier`, `classify_found_ore` tier gate)
+  game_data.py              active-world events/ores/classification, detection tier gate (`TIER_HUES`, `set_detection_disabled_tiers`, `classify_found_ore` per-tier gate, `format_detection_status`)
   reentry*.py               automatic and remote re-entry decisions
   teleport_board.py         re-entry teleport board detector (suggest only, never auto-click)
   corpus.py                 re-entry corpus folder outside snapshot retention
@@ -161,7 +161,7 @@ conventions.
 13. The web UI (`web_*` modules, `Bot._web_*` integration) exposes only the
     fields in `WEB_CONFIGURABLE_FIELDS` to players; thresholds, ROI, and detection
     params are AI-agent-only via direct `config.py` edits — **exception**:
-    `detection_min_tier` (2026-08-02, user-specified: changes frequently during
+    `detection_disabled_tiers` (2026-08-02, user-specified: changes frequently during
     play, controls which ore tiers count as "rare" for all detection systems). WebSocket IPC uses
     routing-key first-wins (`flow:episode_id`; second reply for the same key is
     dropped). **Connection count never gates a push** (2026-07-31, user-specified):

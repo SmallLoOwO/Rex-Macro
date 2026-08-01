@@ -189,7 +189,7 @@ tier0（掃描全空／框被拒／瞄準失敗）＋ tier2（bot 接受並開�
 ### 玩家設定：5 個 Config 欄位 + D2 開關
 
 `reentry_mode`（off／remote／auto）、`reentry_target_layer`、`reentry_yaw_sample_sweep`、
-`sweep_pitch_enabled`、`detection_min_tier`（偵測階級門檻，2026-08-02 新增——低於
+`sweep_pitch_enabled`、`detection_disabled_tiers`（偵測階級勾選，2026-08-02 新增——取消勾選的
 此階級的 礦不算稀有，與 Discord `階級` 指令共用同一份設定）。每個欄位在頁面上
 都有白話說明（做什麼用、代價是什麼）。
 

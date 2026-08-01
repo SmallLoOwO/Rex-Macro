@@ -1,6 +1,11 @@
 """網頁前端 HTML render（設定 / 介入 / 歷史 / episode 詳細 / 標註）。"""
 from .game_data import HIGH_TIER_NAMES
 
+
+def _tier_checked(tier: str, disabled_tiers) -> bool:
+    """網頁 checkbox 用：tier 是否未被排除（= 該打勾）。"""
+    return tier not in (disabled_tiers or ())
+
 import json
 
 
@@ -64,7 +69,7 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
     fallback_layer = getattr(config, "reentry_target_layer", "")
     yaw_sample = getattr(config, "reentry_yaw_sample_sweep", False)
     sweep_pitch = getattr(config, "sweep_pitch_enabled", False)
-    detection_tier = getattr(config, "detection_min_tier", "Exotic")
+    detection_tier = getattr(config, "detection_disabled_tiers", ())
 
     target_layer = fallback_layer
     layer_hint = ""
@@ -185,18 +190,19 @@ h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size
     被遊戲吃掉要重試再 +15 秒），但能少掉一些「明明有礦卻回報全空」。</p>
   {sweep_status}
 
-  <label for="detection_min_tier">偵測階級門檻</label>
-  <select id="detection_min_tier" name="detection_min_tier">{
+  <fieldset style="border:1px solid #ccc; padding:0.6rem; border-radius:4px;">
+    <legend style="font-weight:bold; padding:0 0.4rem;">偵測階級（打勾 = 會偵測）</legend>{
     chr(10).join(
-        f'    <option value="{t}" {"selected" if detection_tier == t else ""}>{t}</option>'
+        f'    <label class="check"><input type="checkbox" class="tier-cb" data-tier="{t}"'
+        f' {"checked" if _tier_checked(t, detection_tier) else ""}>'
+        f' <span>{t}</span></label>'
         for t in HIGH_TIER_NAMES
     )}
-  </select>
-  <p class="hint"><b>低於此階級的 礦不算「稀有」。</b>
-    例如設成 Exquisite → Exotic 被當普通 礦，不會因為鎬子挖到 Exotic 就誤判
-    「已採到稀有 礦」而跳過採集流程。<br>
-    設成 Exotic（預設）＝所有稀有 礦都算（現行行為）。
-    與 Discord <code>階級</code> 指令共用同一份設定。</p>
+    <p class="hint"><b>取消勾選的階級不會觸發採集偵測。</b>
+      通常從最下面（Exotic）開始關——Exotic 長期常見，關掉就不會因為鎬子
+      挖到而誤判「已採到稀有 礦」。<br>
+      與 Discord <code>階級</code> 指令共用同一份設定。</p>
+  </fieldset>
 
   <button type="submit">儲存</button>
 </form>
@@ -216,12 +222,15 @@ const status = document.getElementById('status');
 
 form.addEventListener('submit', async (e) => {{
   e.preventDefault();
+  // 偵測階級：未勾選的 tier = 被排除的
+  const tierCbs = document.querySelectorAll('.tier-cb');
+  const disabledTiers = Array.from(tierCbs).filter(cb => !cb.checked).map(cb => cb.dataset.tier);
   const payload = {{
     reentry_mode: document.getElementById('reentry_mode').value,
     reentry_target_layer: document.getElementById('reentry_target_layer').value,
     reentry_yaw_sample_sweep: document.getElementById('reentry_yaw_sample_sweep').checked,
     sweep_pitch_enabled: document.getElementById('sweep_pitch_enabled').checked,
-    detection_min_tier: document.getElementById('detection_min_tier').value,
+    detection_disabled_tiers: disabledTiers,
   }};
   status.className = 'status';
   status.style.display = 'block';

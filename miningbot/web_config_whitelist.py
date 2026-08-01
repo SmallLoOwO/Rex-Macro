@@ -11,7 +11,7 @@ WEB_CONFIGURABLE_FIELDS: frozenset[str] = frozenset({
     "reentry_target_layer",
     "reentry_yaw_sample_sweep",
     "sweep_pitch_enabled",
-    "detection_min_tier",
+    "detection_disabled_tiers",
 })
 
 _REENTRY_MODE_VALUES = frozenset({"off", "remote", "auto"})
@@ -41,8 +41,9 @@ def validate_value(field: str, value: Any) -> bool:
         return value in _REENTRY_MODE_VALUES
     if field == "reentry_target_layer":
         return isinstance(value, str)
-    if field == "detection_min_tier":
-        return value in _DETECTION_TIER_VALUES
+    if field == "detection_disabled_tiers":
+        return (isinstance(value, list)
+                and all(v in _DETECTION_TIER_VALUES for v in value))
     # 兩個 bool toggle
     # 注意：isinstance(True, int) 是 True，所以反過來要先檢查 bool
     return isinstance(value, bool)

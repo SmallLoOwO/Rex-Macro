@@ -85,6 +85,14 @@ _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯�
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
+
+
+def _tier_usage(bad_input: str, valid_tiers) -> str:
+    """階級指令看不懂時的回覆（純函式）。"""
+    return (f"❌ 看不懂「{bad_input}」。\n"
+            f"`階級 Exquisite` = 關 Exotic（常用）\n"
+            f"`階級 關 Exotic` / `階級 開 Exotic` = 個別開關\n"
+            f"可用階級：{' / '.join(valid_tiers)}")
 # awaiting_confirm 的選項說明（2026-08-01 使用者反映）。舊寫法「點錯回 `重骰`」把
 # 重骰當成「有疑慮」的預設答案，但重骰＝回地表換重生點、整輪重來（開場閘＋八方位
 # 掃描 ~2 分鐘），而人此刻已經在礦裡——點歪或指令被吃都不會讓人跑到別的地方去。
@@ -2532,31 +2540,55 @@ class Bot:
                                                 self._radar_ocr_ok))
 
         elif cmd in ("階級", "tier"):
-            # 偵測階級門檻（2026-08-02）：調高「什麼算稀有」的最低階級。
-            # 低於門檻的 礦（如 Exotic）在面板色檢/救援/採集驗證都不算稀有 →
-            # 避免鎬子被動挖到常見 礦被誤判為「已採到稀有 礦」而白交人工。
+            # 偵測階級（2026-08-02）：勾選式——打勾的階級才偵測。
+            # 階級 [tier]  → 關閉該階級以下全部（快速設門檻，常用）
+            # 階級 開 [tier] / 關 [tier] → 個別開關單一階級
+            # 階級  → 查詢
             _VALID_TIERS = game_data.HIGH_TIER_NAMES
-            cur = game_data.get_detection_min_tier() or "Exotic"
-            if not args.strip():
+            parts = args.strip().split()
+            disabled = game_data.get_detection_disabled_tiers()
+            if not parts:
                 notify.send_message(token, ch,
-                    f"📋 目前偵測階級門檻：**{cur}**\n"
-                    f"低於此階級的 礦不算稀有（不觸發面板色檢/救援）。\n"
-                    f"可用值（低→高）：{' / '.join(_VALID_TIERS)}")
-            else:
-                tier = args.strip()
-                if tier not in _VALID_TIERS:
-                    notify.send_message(token, ch,
-                        f"❌ 看不懂「{tier}」。可用值（低→高）：\n"
-                        f"{' / '.join(_VALID_TIERS)}")
+                    f"📋 偵測階級：**{game_data.format_detection_status()}**\n"
+                    f"打勾的階級會偵測，未打勾的忽略。\n"
+                    f"`階級 Exquisite` = 關 Exotic（常用）\n"
+                    f"`階級 關 Exotic` = 個別關／`階級 開 Exotic` = 個別開")
+            elif parts[0] in ("開", "on") and len(parts) == 2:
+                t = parts[1]
+                if t not in _VALID_TIERS:
+                    notify.send_message(token, ch, _tier_usage(t, _VALID_TIERS))
                 else:
-                    game_data.set_detection_min_tier(tier)
-                    cfg.detection_min_tier = tier
-                    self._save_detection_tier(tier)
+                    disabled.discard(t)
+                    game_data.set_detection_disabled_tiers(disabled)
+                    cfg.detection_disabled_tiers = tuple(disabled)
+                    self._save_detection_tier()
                     notify.send_message(token, ch,
-                        f"✅ 偵測階級門檻已設為 **{tier}**"
-                        + ("（現行行為，所有稀有 礦都算）" if tier == "Exotic"
-                           else f"（{tier} 以下的 礦不再算稀有）"))
-            self.log_discord.info("CMD 階級 -> tier=%s", args.strip() or "(query)")
+                        f"✅ 已開啟 {t}　偵測：{game_data.format_detection_status()}")
+            elif parts[0] in ("關", "off") and len(parts) == 2:
+                t = parts[1]
+                if t not in _VALID_TIERS:
+                    notify.send_message(token, ch, _tier_usage(t, _VALID_TIERS))
+                else:
+                    disabled.add(t)
+                    game_data.set_detection_disabled_tiers(disabled)
+                    cfg.detection_disabled_tiers = tuple(disabled)
+                    self._save_detection_tier()
+                    notify.send_message(token, ch,
+                        f"✅ 已關閉 {t}　偵測：{game_data.format_detection_status()}")
+            elif len(parts) == 1 and parts[0] in _VALID_TIERS:
+                # 階級 Exquisite → 關閉該階級以下全部
+                t = parts[0]
+                t_rank = game_data._TIER_ORDER[t]
+                disabled = {x for x in _VALID_TIERS
+                            if game_data._TIER_ORDER[x] < t_rank}
+                game_data.set_detection_disabled_tiers(disabled)
+                cfg.detection_disabled_tiers = tuple(disabled)
+                self._save_detection_tier()
+                notify.send_message(token, ch,
+                    f"✅ 偵測：{game_data.format_detection_status()}")
+            else:
+                notify.send_message(token, ch, _tier_usage(parts[0], _VALID_TIERS))
+            self.log_discord.info("CMD 階級 -> args=%r", args.strip())
 
         elif cmd == "help":
             notify.send_message(token, ch,
@@ -2571,8 +2603,8 @@ class Bot:
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
                 "`清空` — 手動清空背包面板篩選框（挖礦中會先放開挖礦鍵→清空→重接；"
                 "採集/回礦中不接受；同 `清背包`/`clearpanel`）\n"
-                "`階級 [Exotic|Exquisite|Transcendent|...]` — 偵測系統最低稀有階級"
-                "（低於此階級的 礦不算稀有，避免誤判；不帶參數＝查詢；同 `tier`）\n"
+                "`階級 [tier]` — 偵測階級開關（打勾=偵測）：`階級 Exquisite`=關 Exotic、"
+                "`階級 關/開 [tier]`=個別開關；不帶參數＝查詢；同 `tier`）\n"
                 "`削洞 [開|關]` — D2 的 Z（Cave Skim）連續使用：冷卻好就自動再按，"
                 "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
                 "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
@@ -2792,8 +2824,8 @@ class Bot:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
         overrides_path = self._apply_startup_overrides()
-        # 偵測階級門檻：啟動時同步到 game_data 模組級變數
-        game_data.set_detection_min_tier(getattr(cfg, "detection_min_tier", None))
+        # 偵測階級排除：啟動時同步到 game_data 模組級變數
+        game_data.set_detection_disabled_tiers(getattr(cfg, "detection_disabled_tiers", ()))
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -2936,6 +2968,7 @@ class Bot:
                 kept = game_data.format_keep_by_world(self._keep_ores)
                 text = (f"🤖 Bot 已啟動｜仰角：{self._startup_pitch_status}\n"
                         f"{harvester.format_radar_status(self._radar_toggle['scan'], self._radar_toggle['cave'], self._radar_ocr_ok)}\n"
+                        f"🎯 偵測階級：{game_data.format_detection_status()}\n"
                         f"{self._format_web_status()}\n"
                         f"目前保留事件：\n{kept}")
                 notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id, text)
@@ -3284,16 +3317,17 @@ class Bot:
         except Exception as e:
             self.logger.error("雷達連續使用開關存檔失敗: %s", e)
 
-    def _save_detection_tier(self, tier: str):
-        """偵測階級門檻持久化到 config_overrides.json（與網頁設定同一份）。"""
+    def _save_detection_tier(self):
+        """偵測階級排除清單持久化到 config_overrides.json（與網頁設定同一份）。"""
         overrides_path = getattr(self, "_overrides_path", None)
         if not overrides_path:
             return
         try:
             from .web_config_persistence import save_overrides
-            save_overrides(overrides_path, "detection_min_tier", tier)
+            save_overrides(overrides_path, "detection_disabled_tiers",
+                           list(game_data.get_detection_disabled_tiers()))
         except Exception as e:
-            self.logger.error("偵測階級門檻存檔失敗: %s", e)
+            self.logger.error("偵測階級存檔失敗: %s", e)
 
     def _harvest_seq_path(self) -> str:
         """harvest_seq.json 路徑（與 keep_ores.json 同目錄：專案根）。"""
@@ -5216,7 +5250,7 @@ class Bot:
                 # 偵測階級門檻（2026-08-02）：門檻以下的 tier 色相加入低階帶，
                 # 與名字閘（classify_found_ore）保持一致。
                 _eff_low = game_data.effective_low_tier_hues(
-                    cfg.detection_min_tier, cfg.panel_low_tier_hues)
+                    cfg.detection_disabled_tiers, cfg.panel_low_tier_hues)
                 hue_high = harvester.non_low_tier_hues(
                     vision.panel_row_hues(crop, [cy for _, cy in rows],
                                           *cfg.panel_hue_sample_x),
@@ -5313,7 +5347,7 @@ class Bot:
         # 偵測階級門檻（2026-08-02）：白名單色相只留 ≥ 門檻的 tier，
         # 與名字閘（classify_found_ore → rare_panel_ores）保持一致。
         _eff_wl = game_data.effective_whitelist_hues(
-            cfg.detection_min_tier, cfg.panel_whitelist_hues)
+            cfg.detection_disabled_tiers, cfg.panel_whitelist_hues)
         hue_hits = harvester.whitelist_hue_hits(
             vision.panel_row_hues(crop, [cy for _, cy in rows],
                                   *cfg.panel_hue_sample_x),

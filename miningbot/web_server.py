@@ -737,9 +737,9 @@ def create_app(
             # runtime 即時生效
             setattr(config, field, value)
             # 偵測階級門檻：同步到 game_data 模組級變數（同 config setattr，純賦值無 I/O）
-            if field == "detection_min_tier":
-                from ..game_data import set_detection_min_tier
-                set_detection_min_tier(value)
+            if field == "detection_disabled_tiers":
+                from ..game_data import set_detection_disabled_tiers
+                set_detection_disabled_tiers(value)
             # 持久化（若有指定路徑）——不帶 current_overrides，save_overrides 自會重讀檔
             if app.state.overrides_path:
                 save_overrides(app.state.overrides_path, field, value)
