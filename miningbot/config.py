@@ -416,6 +416,8 @@ class Config:
     harvest_entry_panel_check: bool = True
     panel_check_observe_target: int = 10    # 累積這麼多次進場面板判定後，由 agent session 主動問玩家
                                             # 是否切自動（不交人工、直接回 MINING）
+    detection_min_tier: str = "Exotic"      # 偵測系統最低稀有階級（classify_found_ore 閘）；
+                                            # Exotic = 不過濾（現行行為）；Exquisite+ = 排除 Exotic
 
     # 記錄 / 診斷
     log_dir: str = field(default_factory=default_log_dir)

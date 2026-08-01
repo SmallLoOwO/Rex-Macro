@@ -1595,6 +1595,75 @@ def common_ore_names() -> tuple[str, ...]:
     return tuple(dict.fromkeys(o["ore"] for o in ores))
 
 
+# ── 偵測階級門檻（2026-08-02）：可調高「什麼算稀有」的最低階級 ──────────────
+# 階級順序取自 fetch_ores.HIGH_TIERS（順序即高低）。
+# classify_found_ore 在命中 rare 礦後檢查 tier ≥ 門檻；低於 → 回 "common"。
+# 效果蔓延到面板色檢、救援路 A/B、採集驗證、通知標注——無需逐處改動。
+_TIER_ORDER: dict[str, int] = {
+    t: i for i, t in enumerate(
+        ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
+         "Unfathomable", "Otherworldly", "Imaginary", "Zenith"))}
+
+# 量測到的 tier→面板底色色相（2026-07-31 D11 量測；config.py:394 同源）。
+# Enigmatic 以上未量測——靠 non_low_tier_hues 反向閘兜住。
+# ⚠ 待 wiki {{Colour|tier}} 模板比對驗證（使用者 2026-08-02 要求）。
+TIER_HUES: dict[str, float] = {
+    "Exotic": 46.0, "Exquisite": 128.0, "Transcendent": 210.0}
+
+_detection_min_tier: str | None = None   # None = 不過濾（預設）；測試不設 = 現行行為
+
+
+def set_detection_min_tier(tier: str | None) -> None:
+    """設定偵測系統的最低稀有階級。None 或 "Exotic" = 不過濾（現行行為）。
+
+    模組級變數，GIL 下原子讀寫——Discord 輪詢執行緒寫、主迴圈讀，同 current_world 模式。
+    """
+    global _detection_min_tier
+    _detection_min_tier = tier
+
+
+def get_detection_min_tier() -> str | None:
+    return _detection_min_tier
+
+
+def _is_below_threshold(info: dict) -> bool:
+    """info 的 tier 是否低於偵測門檻。無門檻 / tier 未知 → False（不過濾）。"""
+    if _detection_min_tier is None:
+        return False
+    tier_rank = _TIER_ORDER.get(info.get("tier", ""), -1)
+    min_rank = _TIER_ORDER.get(_detection_min_tier, 0)
+    return tier_rank < min_rank
+
+
+def effective_whitelist_hues(min_tier: str | None,
+                             base_whitelist: tuple) -> tuple:
+    """≥ min_tier 的量測色相（救援 whitelist_hue_hits 用）。
+
+    min_tier=None → 回 base 不動（現行行為）。
+    門檻以上未量測的 tier 不在結果裡——那些靠名字閘分類，色相交叉驗無法確認（保守）。
+    """
+    if min_tier is None:
+        return base_whitelist
+    min_rank = _TIER_ORDER.get(min_tier, 0)
+    return tuple(h for t, h in TIER_HUES.items()
+                 if _TIER_ORDER.get(t, 999) >= min_rank)
+
+
+def effective_low_tier_hues(min_tier: str | None,
+                            base_low_tier: tuple) -> tuple:
+    """base_low_tier ＋ < min_tier 的量測色相（零點 non_low_tier_hues 用）。
+
+    門檻以下的 tier 色相加入低階帶 → 零點閘不再為它們擋零點成立。
+    去重保序（dict.fromkeys）。
+    """
+    if min_tier is None:
+        return base_low_tier
+    min_rank = _TIER_ORDER.get(min_tier, 0)
+    below = tuple(h for t, h in TIER_HUES.items()
+                  if _TIER_ORDER.get(t, 999) < min_rank)
+    return tuple(dict.fromkeys(tuple(base_low_tier) + below))
+
+
 # ── 高階白名單（assets/rare_ores.json，fetch_ores 從 wiki 抓）＋三態分類 ─────────
 # 排除清單仍是守門員（common→忽略）；白名單的角色是「分類器＋告警器」：
 # 在白名單 → SUCCESS 且通知標注階級；兩邊都不在（unknown）→ 仍算成功（安全方向：
@@ -1697,6 +1766,8 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     rare_table = rare_ores(current_world_name())
     for name, info in rare_table.items():
         if _prefix_hit(base, name):
+            if _is_below_threshold(info):
+                return "common", None
             return "rare", info
     # 模糊兜底：候選比照 ocr._fuzzy_rare_line 取「全部 / 前 1 / 前 2 個 token」
     # （容忍礦名後黏雜訊/洞穴註記，也涵蓋多字礦名），各表取最高分。
@@ -1710,7 +1781,10 @@ def classify_found_ore(ore_text: str) -> tuple[str, dict | None]:
     best_rare, best_rare_name = max(
         (_best_match(c, rare_pairs) for c in cands), key=lambda t: t[0])
     if best_rare >= CLASSIFY_FUZZY_RATIO and best_rare > best_common:
-        return "rare_fuzzy", {**rare_table[best_rare_name], "fuzzy_ratio": best_rare}
+        best_info = rare_table[best_rare_name]
+        if _is_below_threshold(best_info):
+            return "common", None
+        return "rare_fuzzy", {**best_info, "fuzzy_ratio": best_rare}
     if best_common >= CLASSIFY_FUZZY_RATIO:
         return "common", None
     return "unknown", None

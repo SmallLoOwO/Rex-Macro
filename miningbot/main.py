@@ -2531,6 +2531,34 @@ class Bot:
                                                 self._radar_toggle["cave"],
                                                 self._radar_ocr_ok))
 
+        elif cmd in ("階級", "tier"):
+            # 偵測階級門檻（2026-08-02）：調高「什麼算稀有」的最低階級。
+            # 低於門檻的 礦（如 Exotic）在面板色檢/救援/採集驗證都不算稀有 →
+            # 避免鎬子被動挖到常見 礦被誤判為「已採到稀有 礦」而白交人工。
+            _VALID_TIERS = ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
+                            "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
+            cur = game_data.get_detection_min_tier() or "Exotic"
+            if not args.strip():
+                notify.send_message(token, ch,
+                    f"📋 目前偵測階級門檻：**{cur}**\n"
+                    f"低於此階級的 礦不算稀有（不觸發面板色檢/救援）。\n"
+                    f"可用值（低→高）：{' / '.join(_VALID_TIERS)}")
+            else:
+                tier = args.strip()
+                if tier not in _VALID_TIERS:
+                    notify.send_message(token, ch,
+                        f"❌ 看不懂「{tier}」。可用值（低→高）：\n"
+                        f"{' / '.join(_VALID_TIERS)}")
+                else:
+                    game_data.set_detection_min_tier(tier)
+                    cfg.detection_min_tier = tier
+                    self._save_detection_tier(tier)
+                    notify.send_message(token, ch,
+                        f"✅ 偵測階級門檻已設為 **{tier}**"
+                        + ("（現行行為，所有稀有 礦都算）" if tier == "Exotic"
+                           else f"（{tier} 以下的 礦不再算稀有）"))
+            self.log_discord.info("CMD 階級 -> tier=%s", args.strip() or "(query)")
+
         elif cmd == "help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
@@ -2544,6 +2572,8 @@ class Bot:
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
                 "`清空` — 手動清空背包面板篩選框（挖礦中會先暫停→清空→恢復；"
                 "採集/回礦中不接受；同 `清背包`/`clearpanel`）\n"
+                "`階級 [Exotic|Exquisite|Transcendent|...]` — 偵測系統最低稀有階級"
+                "（低於此階級的 礦不算稀有，避免誤判；不帶參數＝查詢；同 `tier`）\n"
                 "`削洞 [開|關]` — D2 的 Z（Cave Skim）連續使用：冷卻好就自動再按，"
                 "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
                 "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
@@ -2763,6 +2793,8 @@ class Bot:
             threading.Thread(target=self._discord_poll_loop, daemon=True).start()
             self.logger.info("Discord 命令輪詢已啟用（每 %.0fs）", cfg.discord_poll_interval_s)
         overrides_path = self._apply_startup_overrides()
+        # 偵測階級門檻：啟動時同步到 game_data 模組級變數
+        game_data.set_detection_min_tier(getattr(cfg, "detection_min_tier", None))
         # WebIPC server（2026-07-26 P1 spec §8）：比照 Discord polling thread 啟動 daemon；
         # 綁 127.0.0.1（Tailscale Serve 出 HTTPS 在外層做，spec §2）。EventLog 註冊
         # WebEventSink 跟 DiscordSink 平行（同一份事件，兩 sink 各自消化，互不影響）。
@@ -3252,6 +3284,17 @@ class Bot:
                 json.dump(self._radar_toggle, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.logger.error("雷達連續使用開關存檔失敗: %s", e)
+
+    def _save_detection_tier(self, tier: str):
+        """偵測階級門檻持久化到 config_overrides.json（與網頁設定同一份）。"""
+        overrides_path = getattr(self, "_overrides_path", None)
+        if not overrides_path:
+            return
+        try:
+            from .web_config_persistence import save_overrides
+            save_overrides(overrides_path, "detection_min_tier", tier)
+        except Exception as e:
+            self.logger.error("偵測階級門檻存檔失敗: %s", e)
 
     def _harvest_seq_path(self) -> str:
         """harvest_seq.json 路徑（與 keep_ores.json 同目錄：專案根）。"""
@@ -5170,12 +5213,15 @@ class Bot:
                     cfg.panel_name_min_letters)
                 names = [n for n, _ in rows]
                 # 第二條 tier 訊號：列底色。礦名讀歪時名字閘會漏，色相不會（D11）。
-                # spec 01 反向閘：色相不落在已知低階帶（0/30/166/280/304）就當成高階
-                # → 零點不成立。未量到的新 tier 也擋得住。
+                # spec 01 反向閘：色相不落在已知低階帶就當成高階 → 零點不成立。
+                # 偵測階級門檻（2026-08-02）：門檻以下的 tier 色相加入低階帶，
+                # 與名字閘（classify_found_ore）保持一致。
+                _eff_low = game_data.effective_low_tier_hues(
+                    cfg.detection_min_tier, cfg.panel_low_tier_hues)
                 hue_high = harvester.non_low_tier_hues(
                     vision.panel_row_hues(crop, [cy for _, cy in rows],
                                           *cfg.panel_hue_sample_x),
-                    cfg.panel_low_tier_hues, cfg.panel_hue_tol_deg)
+                    _eff_low, cfg.panel_hue_tol_deg)
                 if hue_high:
                     self.logger.warning(
                         "面板列底色顯示還有高階礦（H=%s）→ 零點不成立",
@@ -5265,10 +5311,14 @@ class Bot:
         # 兩邊的失敗模式都是「多交一次人工」，絕不會多宣告一次「已進帳」。
         # 實例：`essence of luck`（低階、底色 H=0）被 classify 模糊配到 Lovessence
         # （Transcendent、Aesteria）ratio 0.82 → 礦名側假陽性，底色否決掉。
+        # 偵測階級門檻（2026-08-02）：白名單色相只留 ≥ 門檻的 tier，
+        # 與名字閘（classify_found_ore → rare_panel_ores）保持一致。
+        _eff_wl = game_data.effective_whitelist_hues(
+            cfg.detection_min_tier, cfg.panel_whitelist_hues)
         hue_hits = harvester.whitelist_hue_hits(
             vision.panel_row_hues(crop, [cy for _, cy in rows],
                                   *cfg.panel_hue_sample_x),
-            cfg.panel_whitelist_hues, cfg.panel_hue_tol_deg)
+            _eff_wl, cfg.panel_hue_tol_deg)
         self.log_harvest.info(
             "[%s] 面板讀取（%s）：列數 %d，白名單礦名 %s，底色白名單列 %s",
             hid, why, len(names), ores or "無",

@@ -63,6 +63,7 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
     fallback_layer = getattr(config, "reentry_target_layer", "")
     yaw_sample = getattr(config, "reentry_yaw_sample_sweep", False)
     sweep_pitch = getattr(config, "sweep_pitch_enabled", False)
+    detection_tier = getattr(config, "detection_min_tier", "Exotic")
 
     target_layer = fallback_layer
     layer_hint = ""
@@ -183,6 +184,20 @@ h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size
     被遊戲吃掉要重試再 +15 秒），但能少掉一些「明明有礦卻回報全空」。</p>
   {sweep_status}
 
+  <label for="detection_min_tier">偵測階級門檻</label>
+  <select id="detection_min_tier" name="detection_min_tier">{
+    chr(10).join(
+        f'    <option value="{t}" {"selected" if detection_tier == t else ""}>{t}</option>'
+        for t in ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
+                  "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
+    )}
+  </select>
+  <p class="hint"><b>低於此階級的 礦不算「稀有」。</b>
+    例如設成 Exquisite → Exotic 被當普通 礦，不會因為鎬子挖到 Exotic 就誤判
+    「已採到稀有 礦」而跳過採集流程。<br>
+    設成 Exotic（預設）＝所有稀有 礦都算（現行行為）。
+    與 Discord <code>階級</code> 指令共用同一份設定。</p>
+
   <button type="submit">儲存</button>
 </form>
 
@@ -206,6 +221,7 @@ form.addEventListener('submit', async (e) => {{
     reentry_target_layer: document.getElementById('reentry_target_layer').value,
     reentry_yaw_sample_sweep: document.getElementById('reentry_yaw_sample_sweep').checked,
     sweep_pitch_enabled: document.getElementById('sweep_pitch_enabled').checked,
+    detection_min_tier: document.getElementById('detection_min_tier').value,
   }};
   status.className = 'status';
   status.style.display = 'block';

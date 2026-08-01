@@ -11,9 +11,16 @@ WEB_CONFIGURABLE_FIELDS: frozenset[str] = frozenset({
     "reentry_target_layer",
     "reentry_yaw_sample_sweep",
     "sweep_pitch_enabled",
+    "detection_min_tier",
 })
 
 _REENTRY_MODE_VALUES = frozenset({"off", "remote", "auto"})
+
+# 偵測階級門檻的合法值（同 fetch_ores.HIGH_TIERS 順序）
+_DETECTION_TIER_VALUES = frozenset({
+    "Exotic", "Exquisite", "Transcendent", "Enigmatic",
+    "Unfathomable", "Otherworldly", "Imaginary", "Zenith",
+})
 
 
 def is_web_configurable(field: str) -> bool:
@@ -36,6 +43,8 @@ def validate_value(field: str, value: Any) -> bool:
         return value in _REENTRY_MODE_VALUES
     if field == "reentry_target_layer":
         return isinstance(value, str)
+    if field == "detection_min_tier":
+        return value in _DETECTION_TIER_VALUES
     # 兩個 bool toggle
     # 注意：isinstance(True, int) 是 True，所以反過來要先檢查 bool
     return isinstance(value, bool)
