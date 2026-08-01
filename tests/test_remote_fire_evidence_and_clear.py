@@ -409,3 +409,81 @@ def test_web_clearpanel_rejected_in_harvesting(monkeypatch):
 
     assert bot._pending_clear_panel is False, "HARVESTING 中不得設旗標"
     assert any("清空未接受" in n for n in notes), "必須回報拒絕原因"
+
+
+# ── 6. Discord 遙控器 🧹 反應鈕 ─────────────────────────────────────────────
+
+def _reaction_msg(**counts):
+    """假 Discord Message Object（dict，同 test_discord_responsiveness._reaction_message）。"""
+    return {
+        "reactions": [
+            {"emoji": {"name": e}, "count": c} for e, c in counts.items()
+        ]
+    }
+
+
+def _remote_bot(state=State.MINING):
+    """遙控器輪詢用最小 Bot（比照 test_discord_responsiveness 的 _bare_remote_bot）。"""
+    bot = Bot.__new__(Bot)
+    bot._remote_message_id = "mid"
+    bot._remote_reactions_seen = {
+        "▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 1,
+    }
+    bot.state = state
+    bot.paused = False
+    bot.human_cleared = False
+    bot._pending_ability = False
+    bot._pending_clear_panel = False
+    bot._manual_reentry = False
+    bot._calib_session = None
+    bot._reaction_clear_ok = True
+    bot._reentry_active = lambda: False
+    bot._repost_remote_control = lambda: None
+    bot._resume = lambda: None
+    bot._pause = lambda: None
+    bot._rr_skip_on_pause_resume = lambda *a, **k: None
+    import logging
+    bot.log_discord = logging.getLogger("test")
+    return bot
+
+
+def test_remote_clear_reaction_queues_pending(monkeypatch):
+    """遙控器 🧹＝手動清空：只寫旗標（主迴圈消費），MINING 中接受。"""
+    from miningbot import notify
+    bot = _remote_bot(state=State.MINING)
+    sent = []
+    monkeypatch.setattr(notify, "fetch_message",
+                        lambda *_a: _reaction_msg(
+                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 2}))
+    monkeypatch.setattr(notify, "send_message",
+                        lambda *a, **k: sent.append(a[2]) or (True, "OK"))
+    monkeypatch.setattr(notify, "remove_user_reactions",
+                        lambda *a, **k: (True, "OK"))
+    monkeypatch.setattr(main, "can_consume_ability", lambda s: False)
+    monkeypatch.setattr(main, "is_blocked_from_mining", lambda *a: False)
+
+    bot._poll_remote_reactions()
+
+    assert bot._pending_clear_panel is True, "🧹 必須設 _pending_clear_panel"
+    assert any("清空" in m and "排入" in m for m in sent), "必須回報排入訊息"
+
+
+def test_remote_clear_reaction_rejected_in_harvesting(monkeypatch):
+    """採集中 🧹 必須被拒絕（有輸入序列），旗標不可寫。"""
+    from miningbot import notify
+    bot = _remote_bot(state=State.HARVESTING)
+    sent = []
+    monkeypatch.setattr(notify, "fetch_message",
+                        lambda *_a: _reaction_msg(
+                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 2}))
+    monkeypatch.setattr(notify, "send_message",
+                        lambda *a, **k: sent.append(a[2]) or (True, "OK"))
+    monkeypatch.setattr(notify, "remove_user_reactions",
+                        lambda *a, **k: (True, "OK"))
+    monkeypatch.setattr(main, "can_consume_ability", lambda s: False)
+    monkeypatch.setattr(main, "is_blocked_from_mining", lambda *a: False)
+
+    bot._poll_remote_reactions()
+
+    assert bot._pending_clear_panel is False, "HARVESTING 中 🧹 不得設旗標"
+    assert any("未接受" in m for m in sent), "必須回報拒絕原因"

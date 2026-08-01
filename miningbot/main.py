@@ -83,6 +83,7 @@ _REMOTE_PAUSE_EMOJI = "⏸️"
 _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
+_REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
 # awaiting_confirm 的選項說明（2026-08-01 使用者反映）。舊寫法「點錯回 `重骰`」把
 # 重骰當成「有疑慮」的預設答案，但重骰＝回地表換重生點、整輪重來（開場閘＋八方位
@@ -1964,6 +1965,7 @@ class Bot:
                 f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內按一次 X；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
                 f" 點 **{_REMOTE_REENTER_EMOJI}** 回礦（等同 `回礦` 指令，重走回礦流程取回正確方位）\n"
+                f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先暫停→清空→恢復）\n"
                 f"\n"
                 f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
             ),
@@ -2009,7 +2011,7 @@ class Bot:
             return
         seen = {}
         for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
-                   _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI):
+                   _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI, _REMOTE_CLEAR_EMOJI):
             added, _ = notify.add_reaction(token, ch, mid, em)
             seen[em] = 1 if added else 0
         self._remote_message_id = mid
@@ -2172,10 +2174,10 @@ class Bot:
         if message is None:
             return
         emojis = (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
-                  _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI)
+                  _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI, _REMOTE_CLEAR_EMOJI)
         self._remote_reactions_seen, increments = notify.find_reaction_increments(
             message, self._remote_reactions_seen, emojis)
-        actions = dict(zip(emojis, ("resume", "pause", "ability", "snap", "reenter")))
+        actions = dict(zip(emojis, ("resume", "pause", "ability", "snap", "reenter", "clear")))
         action_taken = None
         for emoji, delta in increments:
             action = actions[emoji]
@@ -2237,6 +2239,17 @@ class Bot:
                         token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
                 self.log_discord.info("remote 🏠 reenter -> accepted=%s state=%s",
                                       ok_re, self.state.value)
+            elif action == "clear":
+                # 🧹 手動清空背包面板（2026-08-01）：等同 `清空` 指令——只寫旗標，
+                # 主迴圈 _tick 消費。採集/回礦中不接受（同 `回礦` 守門）。
+                if self.state in (State.HARVESTING, State.REENTRY):
+                    notify.send_message(
+                        token, ch, f"❌ 清空（🧹）未接受：{self.state.value} 中，等回 MINING 再試")
+                else:
+                    self._pending_clear_panel = True
+                    notify.send_message(
+                        token, ch, "🧹 已排入清空背包面板 → 主迴圈下個 tick 執行")
+                self.log_discord.info("remote 🧹 clear -> state=%s", self.state.value)
             else:  # pause
                 already = self.paused
                 self._pause()
