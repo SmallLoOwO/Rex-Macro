@@ -49,12 +49,12 @@ of runtime truth.
 ```text
 miningbot/
   main.py                   Bot orchestration and runtime state
-  config.py                 Config/Region and DEFAULT
+  config.py                 Config/Region and DEFAULT (incl. `detection_min_tier`, panel hues, all coordinates/thresholds)
   states.py                 top-level FSM and transition policies
   harvester.py              harvest decisions and D2/D3 wrappers
   vision.py / ocr.py        detector and OCR logic plus adapters
   audio.py                  chill/reset scoring and loopback capture
-  game_data.py              active-world events/ores/classification
+  game_data.py              active-world events/ores/classification, detection tier threshold (`TIER_HUES`, `set_detection_min_tier`, `classify_found_ore` tier gate)
   reentry*.py               automatic and remote re-entry decisions
   teleport_board.py         re-entry teleport board detector (suggest only, never auto-click)
   corpus.py                 re-entry corpus folder outside snapshot retention
