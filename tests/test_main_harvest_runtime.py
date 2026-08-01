@@ -432,3 +432,42 @@ def test_sweep_falls_back_to_single_reference_on_a_different_pitch_layer(monkeyp
     bot._find_tracker = find
     bot._sweep_for_tracker([], np.full((4, 4, 3), 99, np.uint8))
     assert seen == [99] * 8, "層對不上就要退回單張 ref"
+
+
+def test_prefire_relocate_uses_per_direction_reference(monkeypatch):
+    """開火前重定位也要用當下方位的 reference（D06 同步到 pre-fire）。
+
+    159（2026-08-01）：sweep 已修（D06 每方位 ref），但 pre-fire 仍用全域
+    _pre_scan_ref → dir=3 的框在初始方位 ref 下 rej(preexist) → 無效 RESWEEP 迴圈、
+    TRACKER_FOUND 連洗 5 次。
+    """
+    bot, _ = _ref_bot(monkeypatch)
+    bot._pre_scan_refs = {d: np.full((4, 4, 3), d, np.uint8) for d in range(8)}
+    bot._pre_scan_refs_layer = "mid"
+    bot._pre_scan_ref = np.full((4, 4, 3), 99, np.uint8)   # 全域（初始方位拍）
+    bot.harvest.net_rotations = 3                           # 面朝 dir=3
+    bot.harvest.pitch_layer = "mid"
+    bot.harvest.harvest_id = "159"
+    bot.harvest.d3_attempts = 0
+    bot._harvest_start = 0.0
+    bot._target_marker = (100, 100)                         # sweep 已完成 → 進 D3 階段
+    bot._chat_baseline_crop = np.zeros((4, 4, 3), np.uint8)
+    bot._chat_baseline = None
+    bot.last_action = ""
+    bot._harvest_boost_guard = lambda frame: False
+    bot._d3_cooldown_remaining = lambda: 0.0
+    bot._tracker_exclusions = lambda: []
+    bot._reharvest_sweep = lambda **kw: None                # 重定位失敗後不炸
+    monkeypatch.setattr(main.game_data, "common_ore_names", lambda: [])
+    monkeypatch.setattr(main.time, "time", lambda: 0.0)
+
+    seen = []
+
+    def find(frame, excl, reference_bgr=None, **kw):
+        seen.append(int(reference_bgr[0, 0, 0]) if reference_bgr is not None else None)
+        return None
+
+    bot._find_tracker = find
+    bot._tick_harvest(np.zeros((4, 4, 3), np.uint8))
+    assert seen == [3], (
+        "pre-fire 重定位必須用當下方位(dir=3)的 ref，不是全域 ref(99)；拿到 %r" % seen)

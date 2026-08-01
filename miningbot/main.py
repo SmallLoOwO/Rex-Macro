@@ -6321,8 +6321,15 @@ class Bot:
                                   hid, cooldown_left)
             return
         aim_frame = capture.grab()
+        # ★ D06 對策同步到 pre-fire（2026-08-01 harvest 159）：sweep 用每方位專屬
+        #   reference 過 preexist，但這裡仍用全域 _pre_scan_ref（初始方位拍的）。
+        #   機體面朝別的方位時，同一螢幕座標在全域 ref 對到不同世界區塊 → ref_fill
+        #   偶發 >0.15 → 真框 rej(preexist) → 重定位失敗 → _reharvest_sweep → sweep
+        #   又找到（用正確方位 ref）→ TRACKER_FOUND 再發一次 → 無效迴圈洗 Discord。
+        #   159 實錄：dir=3 (1351,590) 連洗 5 次 TRACKER_FOUND、每次只差 ~4s。
+        _refind_ref = self._dir_reference(self.harvest.net_rotations % 8, _ref)
         refind = self._find_tracker(
-            aim_frame, _excl, reference_bgr=_ref, with_score=True)
+            aim_frame, _excl, reference_bgr=_refind_ref, with_score=True)
         if refind is None:
             self.logger.info("[%s] 開火前重定位失敗（框已消失/FOV 變動）-> 重新 D2 掃描＋全方位重掃", hid)
             self._reharvest_sweep()
