@@ -239,16 +239,20 @@ if __name__ == "__main__":       # pragma: no cover
 # ---- 傳送板偵測器：玩家標註素材回歸（2026-08-01）--------------------------
 
 def test_teleport_board_detector_hits_every_annotated_fixture():
-    """7 張玩家標註的實機幀，`teleport_board.detect` 必須全中且分數過門檻。
+    """每張實機幀 `teleport_board.detect` 都要找到板子；座標只跟**成功**的那次點擊對。
 
-    素材是玩家為了回礦本來就要點的那一下（`_save_auto_fixture` 自動收）＋網頁標註
-    補的板子座標，兩檔一組在 `tests/fixtures/reentry/teleport_board/`。2026-08-01
-    新收的 39/40/41 三組把樣本從 4 擴到 7，重放結果 7/7 命中、分數 0.84~0.97，
-    對 `reentry_predict_min_score=0.7` 兩側有 0.14 餘裕——這條測試守的是「下次動
-    HSV 百分位表或門檻時，別把已經全中的樣本弄丟」。
+    素材是 `_save_auto_fixture` 自動收的，兩檔一組在
+    `tests/fixtures/reentry/teleport_board/`。⚠ **`annotation` 不是人標的板子位置，
+    是 bot 自己那一下點在哪**（`source.kind == "auto"`，`size` 恆為 BOT_MARK_SIZE=50）。
+    所以只有 `verify == "descended"`（真的降下去了）那幾筆的座標才是板子的 ground
+    truth；`verify == "failed"` 的座標正是「點歪了」本身，拿來當標準答案是把因果倒過來。
 
-    容許 60px：標註是玩家框的板子中心，偵測器回的是板面錨點，實測系統性偏上約 40px
-    （這條測試不管那個偏差，`_predict_teleport_board` 只做建議、不自動點）。
+    2026-08-01 auto_42_fail 就是這樣炸出來的：bot 點 (1786,456)（板子右邊的岩石）沒下去，
+    偵測器回 (1630,419) 正在板面上——**偵測器是對的、自動點擊路徑是錯的**（見
+    `docs/open-detection-issues.md` D13）。舊版斷言把這種幀判成「偵測退步」。
+
+    容許 60px：偵測器回的是板面錨點，實測系統性偏上約 40px
+    （`_predict_teleport_board` 只做建議、不自動點）。
     """
     import glob
     import json
@@ -267,7 +271,9 @@ def test_teleport_board_detector_hits_every_annotated_fixture():
     misses = []
     for meta in metas:
         with open(meta, encoding="utf-8") as f:
-            ann = json.load(f).get("annotation") or {}
+            doc = json.load(f)
+        ann = doc.get("annotation") or {}
+        source = doc.get("source") or {}
         # cv2.imread 吃不了非 ASCII 路徑（專案資料夾是中文名）→ fromfile+imdecode
         img = cv2.imdecode(np.fromfile(meta[:-5] + ".png", dtype=np.uint8),
                            cv2.IMREAD_COLOR)
@@ -276,7 +282,106 @@ def test_teleport_board_detector_hits_every_annotated_fixture():
         if got is None or got[2] < cfg.reentry_predict_min_score:
             misses.append("%s -> %s" % (name, got))
             continue
-        if abs(got[0] - ann["cx"]) >= 60 or abs(got[1] - ann["cy"]) >= 60:
-            misses.append("%s -> %s 偏離標註 (%d,%d)"
+        landed = (source.get("kind") != "auto"
+                  or source.get("verify") == "descended")
+        if landed and (abs(got[0] - ann["cx"]) >= 60
+                       or abs(got[1] - ann["cy"]) >= 60):
+            misses.append("%s -> %s 偏離成功點擊 (%d,%d)"
                           % (name, got, ann["cx"], ann["cy"]))
     assert not misses, "傳送板偵測退步：" + "；".join(misses)
+
+
+# ---- RR#42：點擊前吸附到當下這一幀的板子（2026-08-01）---------------------
+
+def _snap_bot():
+    """只綁 `_rr_snap_click_to_board` 的最小 Bot（不碰 __init__ 的裝置/執行緒）。"""
+    import logging
+
+    from miningbot.main import Bot
+
+    bot = Bot.__new__(Bot)
+    bot.logger = logging.getLogger("test_snap")
+    return bot
+
+
+class _SnapCtx:
+    episode_id = "42"
+
+
+def test_rr_click_snaps_when_player_tapped_off_the_board(monkeypatch):
+    """RR#42 重現：掃描幀過期 8 分鐘，玩家準確點在舊幀的板子上，當下卻落在雪地。"""
+    from miningbot import main, teleport_board
+    monkeypatch.setattr(teleport_board, "detect", lambda f: (1630, 419, 0.938))
+    monkeypatch.setattr(main, "teleport_board", teleport_board, raising=False)
+
+    got = _snap_bot()._rr_snap_click_to_board(_SnapCtx(), (1786, 456), object())
+
+    from miningbot.config import DEFAULT as cfg
+    assert got == (1630, 419 + cfg.reentry_click_anchor_dy_px)
+
+
+def test_rr_click_keeps_player_coord_when_tap_is_on_the_board(monkeypatch):
+    """六次 descended 離錨點 37~66px——點在板上的座標比錨點準，不得被吸走。"""
+    from miningbot import teleport_board
+    monkeypatch.setattr(teleport_board, "detect", lambda f: (1757, 399, 0.845))
+
+    got = _snap_bot()._rr_snap_click_to_board(_SnapCtx(), (1709, 444), object())
+
+    assert got == (1709, 444)
+
+
+def test_rr_click_never_snaps_on_low_confidence(monkeypatch):
+    """分數不過門檻／偵測不到 → 照玩家原意打，不拿低信心猜測覆蓋他。"""
+    from miningbot import teleport_board
+    from miningbot.config import DEFAULT as cfg
+    bot = _snap_bot()
+
+    monkeypatch.setattr(teleport_board, "detect",
+                        lambda f: (1630, 419, cfg.reentry_predict_min_score - 0.01))
+    assert bot._rr_snap_click_to_board(_SnapCtx(), (1786, 456), object()) == (1786, 456)
+
+    monkeypatch.setattr(teleport_board, "detect", lambda f: None)
+    assert bot._rr_snap_click_to_board(_SnapCtx(), (1786, 456), object()) == (1786, 456)
+
+
+def test_rr_click_snap_can_be_disabled(monkeypatch):
+    from miningbot import teleport_board
+    from miningbot.config import DEFAULT as cfg
+    monkeypatch.setattr(teleport_board, "detect", lambda f: (1630, 419, 0.938))
+    monkeypatch.setattr(cfg, "reentry_click_snap_px", 0)
+
+    assert _snap_bot()._rr_snap_click_to_board(
+        _SnapCtx(), (1786, 456), object()) == (1786, 456)
+
+
+def test_rr_click_snap_bracket_holds_on_real_fixtures():
+    """兩側夾回歸：descended 的點擊全在門檻內（不吸），auto_42 在門檻外（要吸）。"""
+    import glob
+    import json
+    import math
+    import os
+
+    import cv2
+    import numpy as np
+
+    from miningbot import teleport_board
+    from miningbot.config import DEFAULT as cfg
+
+    here = os.path.dirname(__file__)
+    landed, missed = [], []
+    for meta in sorted(glob.glob(os.path.join(
+            here, "fixtures", "reentry", "teleport_board", "*.json"))):
+        with open(meta, encoding="utf-8") as f:
+            doc = json.load(f)
+        ann, source = doc["annotation"], doc.get("source") or {}
+        img = cv2.imdecode(np.fromfile(meta[:-5] + ".png", dtype=np.uint8),
+                           cv2.IMREAD_COLOR)
+        got = teleport_board.detect(img)
+        assert got is not None
+        dist = math.hypot(got[0] - ann["cx"], got[1] - ann["cy"])
+        (landed if source.get("verify") == "descended" else missed).append(
+            (os.path.basename(meta)[:-5], dist))
+
+    assert all(d <= cfg.reentry_click_snap_px for _n, d in landed), landed
+    off_board = [(n, d) for n, d in missed if "42" in n]
+    assert off_board and all(d > cfg.reentry_click_snap_px for _n, d in off_board), missed

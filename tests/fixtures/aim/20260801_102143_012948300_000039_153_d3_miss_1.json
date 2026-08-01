@@ -1,0 +1,19 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 135,
+    "size": 81,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260801_102143_012948300_000039_153_d3_miss_1.png",
+  "mineral": null,
+  "observation": "ore",
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": null,
+  "tier": "Transcendent",
+  "variant": null
+}

@@ -5,8 +5,12 @@
 真追蹤框，離線用實機模板重跑 find_tracker 得 edge=0.586（>= confirmed 門檻
 0.42）——唯一漏掉它的原因是 ROI 半徑沒罩到（相距 580px）。
 
-兜底＝ROI 全滅後全畫面再找一次，只認 confirmed 門檻（不放寬、不吃 survivor），
-找不到才照舊盲開先驗點。
+兜底＝ROI 全滅後全畫面再找一次，只認 confirmed 門檻（不放寬、不吃 survivor）。
+
+2026-08-01（採 158）：兜底也沒有時**不再盲開先驗點**。玩家標註實證那一發打在
+自己角色身上（`152623_..._158_aim_fire_599x781` = empty/false_positive）——候選圖
+是幾分鐘前拍的，這段期間角色會走位、鏡頭會被自己的身體塞滿。改成回報失敗交回
+玩家重選，與 grid 路徑「抓不到不盲打」（harvest 101 病灶）一致。
 """
 import numpy as np
 
@@ -79,14 +83,15 @@ def test_h056_fullframe_fallback_recovers_confirmed_tracker(monkeypatch):
     assert not any("重找全滅" in r for r in bot.logger.records)
 
 
-def test_h056_blind_prior_fire_remains_when_fullframe_also_empty(monkeypatch):
-    # 全畫面也沒有 -> 維持既有行為（盲開先驗點），不得因兜底而改變
+def test_no_blind_prior_fire_when_fullframe_also_empty(monkeypatch):
+    # 採 158：全畫面也沒有 -> 一發都不打，回失敗交回玩家（舊行為是盲開先驗點）
     bot, fired = _aim_bot(monkeypatch, roi_hit=None, fullframe_hit=None)
 
-    bot._execute_remote_fire(_Ctx(), "mid", 0, (1120, 405))
+    ok, detail = bot._execute_remote_fire(_Ctx(), "mid", 0, (1120, 405))
 
-    assert fired["pos"] == (1120, 405)
-    assert any("重找全滅" in r for r in bot.logger.records)
+    assert "pos" not in fired                    # D3 冷卻不得被這一發吃掉
+    assert ok is False and "不盲打" in detail
+    assert any("不盲打先驗點" in r for r in bot.logger.records)
 
 
 def test_h056_roi_hit_still_wins_and_skips_fullframe(monkeypatch):
@@ -104,6 +109,7 @@ def test_h056_fallback_can_be_disabled(monkeypatch):
     bot, fired = _aim_bot(monkeypatch, roi_hit=None, fullframe_hit=(540, 481, 0.586))
     monkeypatch.setattr(cfg, "remote_aim_fullframe_fallback", False)
 
-    bot._execute_remote_fire(_Ctx(), "mid", 0, (1120, 405))
+    ok, _ = bot._execute_remote_fire(_Ctx(), "mid", 0, (1120, 405))
 
-    assert fired["pos"] == (1120, 405)
+    assert "pos" not in fired                    # 關掉兜底＝更沒有依據，同樣不盲打
+    assert ok is False

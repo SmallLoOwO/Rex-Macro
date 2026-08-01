@@ -5421,12 +5421,40 @@ class Bot:
         做的（`replay_to`），先推進去，人開頁面時補得到。
 
         回 True＝已推進緩衝（呼叫端據此把 Discord 候選疊圖扣住等 🔀）。
+
+        **2026-08-01（採 158）：推的是整輪 `ctx.shots`，不再只推 `rendered`。**
+        `_render_aim_shots` 只畫「有候選的方位」，158 只有一顆歷史復原候選 →
+        網頁只收到一張圖 → 方位切換列沒東西可切，玩家看不到其他七個方位，只能按 🔀
+        退回 Discord（實錄 15:24:51 連上、15:25:18 就 escalate）。Discord 那邊維持只發
+        `rendered`（4 張/組批次，發滿八張是洗版）；網頁是翻頁 UI，多幾張沒有成本。
+        沒有候選的方位就推原幀（玩家照樣看得到框、點得下去——點擊走
+        `_handle_web_aim_click` → `_execute_remote_fire` 完整重掃重找）。
         """
         if self._web_thread is None:
             return False
         import cv2
+        overlays = {path: (dir_idx, layer)
+                    for _numbers, dir_idx, layer, path in rendered}
+        # 疊圖檔名固定是 `<原幀>_aim.png`（見 _render_aim_shots）——據此回推每個 shot
+        # 該用疊圖還是原幀，沒有候選的方位也照樣進清單。
+        picks = []
+        for shot in ctx.shots:
+            if not shot.snapshot_path:
+                continue
+            overlay = os.path.splitext(shot.snapshot_path)[0] + "_aim.png"
+            picks.append((shot.layer, shot.dir_idx,
+                          overlay if overlay in overlays else shot.snapshot_path))
+        if not picks:
+            picks = [(layer, dir_idx, path)
+                     for _numbers, dir_idx, layer, path in rendered]
+        order = {"mid": 0, "up": 1, "down": 2}
+        picks.sort(key=lambda p: (order.get(p[0], 9), p[1]))
         web_frames = []
-        for _numbers, dir_idx, layer, path in rendered:
+        deadline = time.monotonic() + cfg.remote_aim_snapshot_wait_s
+        for layer, dir_idx, path in picks:
+            # 原幀是非同步落盤的（_render_aim_shots 對疊圖同樣要等）——不等就會靜靜
+            # 少掉幾個方位，那正是這次要修的病。
+            self._wait_snapshot_ready(path, max(0.0, deadline - time.monotonic()))
             img = cv2.imread(path)
             if img is None:
                 continue
@@ -5438,7 +5466,7 @@ class Bot:
         return self._send_web_intervention_frames(
             flow="harvest", routing_key=f"harvest:{ctx.harvest_id}",
             frames=web_frames, ctx_summary=summary,
-            note="點候選框位置開火；也可在 Discord 回編號/`跳過`/`手動`")
+            note="左右切方位，點框位置開火；也可在 Discord 回編號/`跳過`/`手動`")
 
     # ---- B3：遠端瞄準回覆消費 + fire 執行（主迴圈執行緒）-------------------
     def _tick_remote_aim(self, frame, reply):
@@ -5823,8 +5851,15 @@ class Bot:
             if detail:
                 return False, detail
             if pos is None:
-                pos = prior                    # candidate 路徑：直接朝先驗點開火（miss 代價＝一發）
-                self.logger.info("[%s] AIM 重找全滅 -> 直接朝先驗點開火 %s", hid, pos)
+                # 2026-08-01（採 158，玩家標註 152623_aim_fire_599x781 = empty/false_positive）：
+                # 舊版這裡 `pos = prior` 盲打先驗點，註解寫「miss 代價＝一發」。實際代價更高：
+                # 先驗點是玩家看圖那幾分鐘前的座標，這段期間角色會走位、鏡頭會被自己的身體
+                # 卡住（158 的八方位有四張整片被自己的角色塞滿）——那一發打在自己身上，
+                # 還吃掉 10s D3 冷卻並留下一筆假的 fired 觀測污染下一輪候選。
+                # 改成照 grid 路徑的慣例「抓不到不盲打」（harvest 101 病灶），交回玩家重選。
+                self.logger.info("[%s] AIM 重找全滅 -> 不盲打先驗點 %s，交回玩家重選",
+                                 hid, prior)
+                return False, "重掃後找不到追蹤框（不盲打先驗點），請看最新截圖重選"
         pos = (int(pos[0]), int(pos[1]))
         # 4-5. 開火＋驗證（grid 命中/candidate 共用尾段）
         return self._aim_fire_and_verify(
@@ -7866,6 +7901,35 @@ class Bot:
         reentry_remote.record_prediction(ctx, ctx.predictions.get(ctx.cur_dir % 8))
         self._rr_click_and_verify(ctx, pos, cur, layer, mpath, zs)
 
+    def _rr_snap_click_to_board(self, ctx, pos, frame):
+        """點擊前把座標吸附到**當下這一幀**的傳送板；沒把握就原封不動回傳（RR#42）。
+
+        病灶：玩家點的是八方位掃描那一輪的舊幀。RR#42 實錄掃描 14:44:07、玩家 14:51:57
+        才點，這 8 分鐘鏡頭與角色漂了約 156px——玩家在 dir1 圖上準確點在板子上
+        (1786,456)，bot 轉回 dir1 照打，而板子此刻在 (1630,419)，那一下落在板子右邊的
+        雪地，連點三次都 still_surface。這與採 158「候選圖過期就別盲打先驗點」同一類，
+        差別只在這裡有現成的偵測器可以就地校正，不必放棄這一次點擊。
+
+        只在**明顯點歪**時才動（> `reentry_click_snap_px`）：點在板上的座標比錨點更
+        接近成功點擊的位置，吸附反而會把它推走。分數不過 `reentry_predict_min_score`
+        或偵測不到就完全不介入——這條路寧可照玩家原意打，也不要拿低信心的猜測覆蓋他。
+        """
+        if not cfg.reentry_click_snap_px:
+            return pos
+        got = teleport_board.detect(frame)
+        if not got or got[2] < cfg.reentry_predict_min_score:
+            return pos
+        dist = math.hypot(got[0] - pos[0], got[1] - pos[1])
+        if dist <= cfg.reentry_click_snap_px:
+            return pos
+        snapped = (int(got[0]), int(got[1]) + cfg.reentry_click_anchor_dy_px)
+        self.logger.info(
+            "[RR#%s] 點擊吸附：玩家 %s 距當下板子 %.0fpx（> %dpx）-> 改點 %s"
+            "（score=%.3f；掃描幀已過期，鏡頭漂了）",
+            ctx.episode_id, tuple(pos), dist, cfg.reentry_click_snap_px,
+            snapped, got[2])
+        return snapped
+
     def _rr_click_and_verify(self, ctx, pos, cur, layer, mpath, zs):
         """點擊 pos + post-click 三態驗證（still_surface / no_change /
         moved_unconfirmed / descended）。
@@ -7886,6 +7950,7 @@ class Bot:
         _rr_click（Discord 路徑）忽略回傳值，沿用既有 awaiting_fine/awaiting_confirm 行為。
         """
         import cv2
+        pos = self._rr_snap_click_to_board(ctx, pos, cur)
         ic.click_at(int(pos[0]), int(pos[1]))
         deadline = time.time() + cfg.reentry_teleport_wait_s
         frame_changed = False

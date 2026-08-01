@@ -468,3 +468,107 @@ bbox (1032, 108,  6, 17) area  57.0
   Aesteria 的礦，當前世界 Lucernia 就不該配上。
 
 在那之前，零點閘會偏保守（多交人工），不會誤放生礦。
+
+## D12（2026-08-01，採 152/156/157/158 玩家標註）：自己的角色同時是最大遮擋源與最大誤收源，遠處小框夾不出兩側
+
+### 症狀
+
+採 158 全 8 方位皆空交人工。`sweep abs_dir=5` 明明在 15:19:16 以 edge=0.54 收下
+(598,781)，轉過去 verify 立刻 `lost target`，重掃 8 方位全空。**礦一直都在**：
+六分鐘後玩家回 `1`，重掃 D2 後 `_refind_tracker_near` 在 (599,781)（距先驗點 1px）
+以 edge=0.63 找回同一顆。
+
+### 量測
+
+重掃那輪的 8 張 `158_sweep_empty_dir*`，其中 **dir5/6/7/0 四張整片被自己的角色塞滿**
+（`snapshots/review`，boost 瓶子在場、計數 19→12 秒數正常遞減，不是 D5 到期的 FOV 收縮）。
+畫面上沒有框可偵測，偵測器沒有錯。
+
+同一批標註素材另有四顆「玩家看得到、偵測器判 None」的真框：
+
+| 幀 | 位置 | colored | edge | 判定 |
+|---|---|---|---|---|
+| 152 sweep_empty_dir4 | (1278,77) | 0.86 | 0.32 | hard_rej |
+| 156 sweep_empty_dir4 | (982,255) | 0.86 | 0.32 | hard_rej |
+| 156 sweep_empty_dir5 | (461,119) | 0.81 | 0.32 | hard_rej |
+| 157 sweep_empty_dir4 | (919,664) | 0.86 | 0.29 | hard_rej |
+
+重跑：`PYTHONPATH=. uv run python .scratch/ann_replay_full.py false_negative`
+（⚠ 模板要走 `vision.load_template_any` 再濾 3 通道；用 `cv2.IMREAD_COLOR` 讀會把
+wiki 透明圖也算進確認集，退化邊緣圖讓每個候選都拿 edge=1.00 並重錨到 ROI 角落，
+是 replay 的假結論。）
+
+### 兩側夾：**兩條軸都夾不出來，門檻不動**
+
+誤收側（`.scratch/ann_negside_0801.py`，逐格肉眼看過）在同一批幀裡撈到 18 個
+`edge∈[0.27,0.34] 且 colored≥0.80` 的候選，**全部是玩家自己的角色身體/披風與 hotbar 圖示**。
+真框最低 0.287，誤收最高 0.337 → 降 `tracker_shape_soft_edge` 必連角色一起收。
+
+尺度軸也試過（`.scratch/ann_scale_bracket.py`）：這四顆的 `exotic_tracker_real`
+連前三名都排不進（都是 `exquisite`/`transcendent` 借分），因為框在畫面上比 120px 模板小得多，
+而尺度網格 (0.7,1.0,1.4) 最小只到 84px。補小尺度**把誤收拉得比真框更高**：
+
+| 尺度網格 | 真框最低 | 誤收最高 | gap |
+|---|---|---|---|
+| (0.7,1.0,1.4)（現行） | 0.287 | 0.337 | −0.050 |
+| +0.45 | 0.323 | 0.474 | −0.150 |
+| +0.45,0.55 | 0.323 | 0.474 | −0.150 |
+| +0.35,0.45 | 0.456 | 0.586 | −0.130 |
+
+小輪廓在雜亂場景本來就假高分（`_best_edge_match_sized` 的 `min_px=12` 正是為此）。
+**結論：現有特徵分不開「遠處的小真框」與「自己的角色」，門檻與尺度網格都不動。**
+
+### 要往前推需要的東西
+
+1. **角色遮擋/貼臉的獨立訊號**。它同時解掉遮擋（掃不到）與誤收（角色被當候選）兩件事。
+   目前手上沒有「角色貼臉 vs 正常」的標註對，不能寫門檻。收法：每次 giveup 都已經留了
+   8 張 `sweep_empty_dir*`，請玩家標 `no_target` 即可攢負樣本。
+2. 遠處小框的正樣本要**加拍近距離同一顆**做尺度對照，才知道該補模板還是補尺度。
+
+已修的相鄰項（2026-08-01，同一批證據）：candidate 路徑重找全滅後**不再盲打先驗點**
+（採 158 第二發打在自己角色身上，玩家標註 `152623_..._aim_fire_599x781` = empty/false_positive），
+以及交人工候選清單改推整輪 8 個方位到網頁（原本只推有候選的方位，158 只有一張圖、
+方位切換列切不動，玩家 27 秒後就按 🔀 退回 Discord）。
+
+## D13（2026-08-01，RR#42）：玩家點的是八分鐘前那一幀——已修（點擊前吸附），但自動點擊路徑仍未用預測器
+
+### 症狀
+
+RR#42 玩家在網頁點了三次傳送板，三次都 `still_surface`。
+
+### 量測
+
+八方位掃描 14:44:07 拍完，玩家 14:51:57 才點——中間隔了 **7 分 50 秒**。
+比對三張幀（`corpus/reentry/ep42_attempt1/dir1.png`、`dir2.png`、
+`tests/fixtures/reentry/teleport_board/auto_42_fail.png`＝點擊瞬間全幀）：
+
+- 玩家看的 dir1 舊幀：板子在畫面最右，玩家點的 **(1786,456) 正中板面**。
+- 點擊瞬間的當下幀：同一個方位，但板子已經在 **(1630,419)**（`teleport_board.detect`
+  score=0.938）——鏡頭/角色在那 8 分鐘裡漂了約 156px。那一下落在板子右邊的雪地。
+
+兩側夾（八組 fixture 全跑，腳本內嵌在 `tests/test_reentry_prediction.py`
+`test_rr_click_snap_bracket_holds_on_real_fixtures`）：
+
+| 樣本 | verify | 點擊離偵測錨點 |
+|---|---|---|
+| auto_27/39/40/37/35/41 | descended | 37.5 / 41.4 / 45.2 / 43.9 / 56.9 / **65.8** |
+| auto_38 | failed（點在板上，敗因另有其他） | 47.5 |
+| **auto_42** | failed（**點在板外**） | **160.3** |
+
+66 與 160 之間乾淨分離 → `reentry_click_snap_px=110`（兩側各留 ~45px）。
+成功點擊一致落在錨點下方 +37~+45px → `reentry_click_anchor_dy_px=40`。
+
+### 已修
+
+`_rr_snap_click_to_board`（`_rr_click_and_verify` 的第一行，Discord/web 兩條點擊路徑
+共用）：偵測分數過 `reentry_predict_min_score` **且**玩家座標離板子 >110px 才吸附，
+否則原封不動照玩家原意打。低信心／偵測不到一律不介入。
+
+### 殘留
+
+1. `auto_38_fail` 點在板上（47.5px）卻仍 `still_surface`——**點擊落在正確位置也可能失敗**，
+   敗因不明，需要另一組證據（點擊瞬間的滑鼠位置？板子有無冷卻？）。
+2. 這批 fixture 的 `annotation` 是 **bot/玩家點了哪裡**，不是人標的板子位置
+   （`source.kind == "auto"`、`size` 恆為 50）。`verify != "descended"` 的座標**不是**
+   ground truth——曾有一版回歸測試把 `auto_42_fail` 的失敗點當標準答案，判成「偵測器退步」。
+   要真正的板子 ground truth，得請玩家在 `/annotate` 手動框（`source.kind == "manual"`）。

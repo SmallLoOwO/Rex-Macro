@@ -76,10 +76,12 @@ class FakeFallback:
 class FakeHarvestCtx:
     """harvest flow 的 _aim_context 替身（只帶受測路徑會讀的欄位）。"""
 
-    def __init__(self, harvest_id="007", pose_net_rotations=0, pose_pitch_layer="mid"):
+    def __init__(self, harvest_id="007", pose_net_rotations=0, pose_pitch_layer="mid",
+                 shots=()):
         self.harvest_id = harvest_id
         self.pose_net_rotations = pose_net_rotations
         self.pose_pitch_layer = pose_pitch_layer
+        self.shots = list(shots)     # _push_web_aim_candidates 推整輪方位用（採 158）
 
 
 class FakeReentryCtx:

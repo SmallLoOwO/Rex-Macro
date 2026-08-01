@@ -1817,6 +1817,35 @@ def test_push_web_aim_candidates_pushes_when_nobody_connected(monkeypatch):
     assert pushed == [("harvest:144", 2)]
 
 
+def test_push_web_aim_candidates_pushes_every_swept_direction(monkeypatch):
+    """採 158：整輪八個方位都要推，網頁才有方位切換列可以左右翻。
+
+    實錄只有一顆歷史復原候選 → `_render_aim_shots` 只畫一張 → 網頁面板只有一張圖、
+    切不到其他七個方位，玩家連上 27 秒後就按 🔀 退回 Discord。沒有候選的方位推原幀。
+    """
+    import numpy as np
+    from miningbot.remote_aim import SweepShot
+    from tests.fake_bot import make_fake_bot, FakeWebThread, FakeHarvestCtx
+    import cv2
+    monkeypatch.setattr(cv2, "imread", lambda p: np.zeros((8, 8, 3), np.uint8))
+    pushed = []
+    bot = make_fake_bot(
+        bind=["_push_web_aim_candidates"],
+        _web_thread=FakeWebThread(),
+        _encode_png=lambda img: b"png",
+        _wait_snapshot_ready=lambda path, budget: True,
+        _send_web_intervention_frames=lambda **kw: (
+            pushed.append(kw["frames"]) or True),
+    )
+    shots = [SweepShot("mid", d, "dir%d.png" % d, []) for d in range(8)]
+    rendered = [((1,), 5, "mid", "dir5_aim.png")]      # 只有 dir5 有候選
+
+    assert bot._push_web_aim_candidates(
+        FakeHarvestCtx(harvest_id="158", shots=shots), rendered, "summary") is True
+    frames = pushed[0]
+    assert [dir_idx for dir_idx, _layer, _png in frames] == list(range(8))
+
+
 def test_push_web_aim_candidates_returns_false_without_web_server():
     """沒有網頁伺服器 → 回 False，呼叫端照舊把候選疊圖發 Discord。"""
     from tests.fake_bot import make_fake_bot, FakeHarvestCtx
@@ -2017,6 +2046,9 @@ class TestRrClickAndVerifyWebBroadcast:
         bot._rr_notify = lambda *a, **kw: (True, "")
         bot._rr_snap_dir = lambda: "."
         bot._rr_click_and_verify = types.MethodType(Bot._rr_click_and_verify, bot)
+        # RR#42 點擊吸附走真實偵測器沒意義（fake_frame 是全黑）——這組測的是點擊後
+        # 的三態驗證與廣播，吸附本身在 test_reentry_prediction.py 有自己的兩側夾。
+        bot._rr_snap_click_to_board = lambda ctx, pos, frame: pos
         bot._broadcast_intervention_result = types.MethodType(
             Bot._broadcast_intervention_result, bot)
         bot._rr_ask_confirm_on_web = types.MethodType(Bot._rr_ask_confirm_on_web, bot)

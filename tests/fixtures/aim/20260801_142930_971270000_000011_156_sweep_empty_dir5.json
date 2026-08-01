@@ -1,0 +1,19 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 118,
+    "size": 64,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260801_142930_971270000_000011_156_sweep_empty_dir5.png",
+  "mineral": null,
+  "observation": "ore",
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": "false_negative",
+  "tier": "Exotic",
+  "variant": null
+}

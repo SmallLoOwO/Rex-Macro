@@ -1,0 +1,19 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 135,
+    "size": 80,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260801_102151_028168900_000043_153_harvest_success.png",
+  "mineral": null,
+  "observation": "ore",
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": "false_negative",
+  "tier": "Transcendent",
+  "variant": null
+}

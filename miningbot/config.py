@@ -464,6 +464,16 @@ class Config:
     # 閘**，所以這是「最弱一個真命中的下緣」而不是兩側夾出來的分離點。語料長大、
     # 真的出現非板子高分候選時要重新量。
     reentry_predict_min_score: float = 0.70
+    # 點擊前把玩家座標吸附到「當下這一幀」的板子（RR#42，2026-08-01）。玩家看的是
+    # 八方位掃描那一輪的舊幀，實錄隔了 8 分鐘才點——期間鏡頭/角色漂了 ~156px，
+    # 照打就落在板子右邊的雪地。0＝關閉。兩側夾（tests/fixtures/reentry/teleport_board
+    # 八組，量測腳本見 docs/open-detection-issues.md D13）：**點在板上**的六次
+    # descended 離錨點 37.5/41.4/43.9/45.2/56.9/65.8px（另 auto_38 點在板上但因別的
+    # 原因失敗，47.5px），**點在板外**的 auto_42 是 160.3px → 取中間值，兩側各留 ~45px。
+    reentry_click_snap_px: int = 110
+    # 錨點是板面上緣、系統性偏上：六次成功點擊的 y 一致落在錨點下方 +37~+45px。
+    # 吸附時補回這個偏移，才落在成功點擊的位置（x 的殘差 -6~-48px 太散，不補）。
+    reentry_click_anchor_dy_px: int = 40
     snapshot_queue_max: int = 16                  # 1080p BGR 約 6MB/張；限制最壞記憶體占用
     snapshot_queue_critical_reserve: int = 4      # 保留給 rare/review/reentry，trace 不得吃滿
     snapshot_shutdown_drain_s: float = 5.0        # Bounded shutdown wait for queued snapshot writes.

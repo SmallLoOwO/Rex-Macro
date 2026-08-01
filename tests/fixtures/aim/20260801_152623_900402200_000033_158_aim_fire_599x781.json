@@ -1,0 +1,19 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 135,
+    "size": 50,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260801_152623_900402200_000033_158_aim_fire_599x781.png",
+  "mineral": null,
+  "observation": "empty",
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": "false_positive",
+  "tier": null,
+  "variant": null
+}
