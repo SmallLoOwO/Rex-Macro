@@ -1968,7 +1968,7 @@ class Bot:
                 f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內按一次 X；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
                 f" 點 **{_REMOTE_REENTER_EMOJI}** 回礦（等同 `回礦` 指令，重走回礦流程取回正確方位）\n"
-                f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先暫停→清空→恢復）\n"
+                f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先放開挖礦鍵→清空→重接）\n"
                 f"\n"
                 f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
             ),
@@ -2535,8 +2535,7 @@ class Bot:
             # 偵測階級門檻（2026-08-02）：調高「什麼算稀有」的最低階級。
             # 低於門檻的 礦（如 Exotic）在面板色檢/救援/採集驗證都不算稀有 →
             # 避免鎬子被動挖到常見 礦被誤判為「已採到稀有 礦」而白交人工。
-            _VALID_TIERS = ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
-                            "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
+            _VALID_TIERS = game_data.HIGH_TIER_NAMES
             cur = game_data.get_detection_min_tier() or "Exotic"
             if not args.strip():
                 notify.send_message(token, ch,
@@ -2570,7 +2569,7 @@ class Bot:
                 "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
                 "採集/回礦中不接受，不排隊）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
-                "`清空` — 手動清空背包面板篩選框（挖礦中會先暫停→清空→恢復；"
+                "`清空` — 手動清空背包面板篩選框（挖礦中會先放開挖礦鍵→清空→重接；"
                 "採集/回礦中不接受；同 `清背包`/`clearpanel`）\n"
                 "`階級 [Exotic|Exquisite|Transcendent|...]` — 偵測系統最低稀有階級"
                 "（低於此階級的 礦不算稀有，避免誤判；不帶參數＝查詢；同 `tier`）\n"

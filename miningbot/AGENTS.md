@@ -23,7 +23,7 @@ change rules; repository-wide behavior belongs in the root contract.
 | `vision.py` | template/edge/color/frame-diff helpers and tracker detection |
 | `ocr.py` | text normalization/diff/fuzzy classification, `ChatLedger`, OCR adapters |
 | `audio.py` | correlation, edge/spike detection, reset recorder, chill listener, WASAPI capture |
-| `game_data.py` | active-world events/ores, world detection, keep matching, classification |
+| `game_data.py` | active-world events/ores, world detection, keep matching, classification, **detection tier threshold** (`set_detection_min_tier`, `_TIER_ORDER`, `TIER_HUES`, `effective_*_hues`) |
 | `fetch_ores.py` | MediaWiki synchronization and conflict reports |
 | `fetch_trackers.py` | wiki icon download; icons are not runtime real-crop templates |
 
@@ -55,7 +55,7 @@ change rules; repository-wide behavior belongs in the root contract.
 | `web_ipc.py` | `routing_key`, `PendingReplies` (first-wins), `FallbackState` (grace period) |
 | `web_server.py` | `create_app` (FastAPI + WS endpoint + HTTP routes), `WebIPCThread` (uvicorn daemon), `ConnectionRegistry` (cross-thread broadcast) |
 | `web_sink.py` | `WebEventSink` (EventLog → WS broadcast); parallel to `notify.make_discord_sink` |
-| `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (4 fields), `is_web_configurable`, `validate_value` |
+| `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (5 fields incl. `detection_min_tier`), `is_web_configurable`, `validate_value` |
 | `web_config_persistence.py` | `load/save/apply_overrides_to_config` (atomic JSON write; idempotent on restart) |
 | `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` (single or tier queue), `render_failures_html` / `render_stats_html` (agent-facing: ugly layout, complete data) |
 | `web_annotation.py` | `build_annotation`, `normalize_symptom`, `symptom_from_observation` (player states what he sees; symptom is derived), `rarity_choices_from_game_data`, `validate_annotation`, `verdict_agrees` + `NO_LABEL` sentinel |
@@ -135,7 +135,8 @@ Search symbols instead of line numbers:
    finalize or abort path.
 10. Tk UI text remains BMP-safe.
 11. Web UI surfaces only `WEB_CONFIGURABLE_FIELDS` to players; never expose
-    thresholds, ROI, detection params, or secrets through HTTP routes. Player
+    thresholds, ROI, detection params, or secrets through HTTP routes —
+    **exception**: `detection_min_tier` (player-adjustable tier gate, 2026-08-02). Player
     taps compute native coords client-side; the server is a thin validator.
     Auto-collected fixtures are best-effort and must not raise into the main
     loop on write failure.

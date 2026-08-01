@@ -10,7 +10,7 @@ from miningbot import game_data
 from miningbot.game_data import (
     classify_found_ore, set_detection_min_tier, get_detection_min_tier,
     effective_whitelist_hues, effective_low_tier_hues,
-    TIER_HUES, _TIER_ORDER, _is_below_threshold,
+    TIER_HUES, _TIER_ORDER, _is_below_threshold, HIGH_TIER_NAMES,
 )
 from miningbot.web_config_whitelist import is_web_configurable, validate_value
 
@@ -80,10 +80,15 @@ class TestIsBelowThreshold:
         set_detection_min_tier("Exquisite")
         assert not _is_below_threshold({"tier": "Transcendent"})
 
-    def test_unknown_tier_below(self):
-        """未知 tier（不在 _TIER_ORDER）→ rank -1 → 永遠 below（安全方向）。"""
-        set_detection_min_tier("Exotic")
+    def test_unknown_tier_below_when_threshold_above_exotic(self):
+        """門檻高於 Exotic 時，未知 tier → below（安全方向：當低階）。"""
+        set_detection_min_tier("Exquisite")
         assert _is_below_threshold({"tier": "Unknown"})
+
+    def test_unknown_tier_not_below_at_exotic_default(self):
+        """門檻 Exotic（預設）→ 不過濾，未知 tier 也不 below。"""
+        set_detection_min_tier("Exotic")
+        assert not _is_below_threshold({"tier": "Unknown"})
 
 
 # ── effective_whitelist_hues / effective_low_tier_hues ─────────────────────
@@ -144,3 +149,13 @@ class TestWebConfig:
         assert not validate_value("detection_min_tier", "Rare")
         assert not validate_value("detection_min_tier", "")
         assert not validate_value("detection_min_tier", 123)
+
+
+# ── Discord 階級指令 ────────────────────────────────────────────────────────
+
+class TestHighTierNamesSingleSource:
+    """HIGH_TIERS 來自唯一來源（fetch_ores），下游不得硬編碼。"""
+
+    def test_high_tier_names_matches_fetch_ores(self):
+        from miningbot.fetch_ores import HIGH_TIERS
+        assert HIGH_TIER_NAMES == HIGH_TIERS

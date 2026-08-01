@@ -158,9 +158,11 @@ conventions.
 12. `reentry_mode` is `off`, `remote`, or `auto`; the default comes from `Config`.
     Automatic mode is calibration gated. Every path is bounded, falls back to
     `NEEDS_HUMAN`, and restores pitch/zoom before finalization.
-13. The web UI (`web_*` modules, `Bot._web_*` integration) exposes only the four
+13. The web UI (`web_*` modules, `Bot._web_*` integration) exposes only the
     fields in `WEB_CONFIGURABLE_FIELDS` to players; thresholds, ROI, and detection
-    params are AI-agent-only via direct `config.py` edits. WebSocket IPC uses
+    params are AI-agent-only via direct `config.py` edits — **exception**:
+    `detection_min_tier` (2026-08-02, user-specified: changes frequently during
+    play, controls which ore tiers count as "rare" for all detection systems). WebSocket IPC uses
     routing-key first-wins (`flow:episode_id`; second reply for the same key is
     dropped). **Connection count never gates a push** (2026-07-31, user-specified):
     every intervention flow pushes its frames into the registry replay buffer
@@ -238,6 +240,12 @@ conventions.
 - Every completed task must end with a commit: run the full test suite green
   first, stage only the files the task touched, and write a Chinese commit
   message describing the change (cite the H incident id when applicable).
+- **Keep docs in sync.** When a task adds or changes a runtime rule, Discord
+  command, web-configurable field, config parameter, or detection/decision path,
+  update this file (`AGENTS.md`) in the same commit: the STRUCTURE map, the
+  NON-NEGOTIABLE RUNTIME RULES, the WHERE TO LOOK table, and CURRENT RISK AREAS.
+  Stale docs are worse than no docs — the next agent trusts them and builds on
+  wrong assumptions.
 - Do not push, switch branches, delete runtime evidence, or mutate
   Roblox/Discord unless the user explicitly requests it.
 - The primary agent owns integration, diff review, and verification. Delegate to a

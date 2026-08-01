@@ -16,11 +16,9 @@ WEB_CONFIGURABLE_FIELDS: frozenset[str] = frozenset({
 
 _REENTRY_MODE_VALUES = frozenset({"off", "remote", "auto"})
 
-# 偵測階級門檻的合法值（同 fetch_ores.HIGH_TIERS 順序）
-_DETECTION_TIER_VALUES = frozenset({
-    "Exotic", "Exquisite", "Transcendent", "Enigmatic",
-    "Unfathomable", "Otherworldly", "Imaginary", "Zenith",
-})
+# 偵測階級門檻的合法值（唯一來源 game_data.HIGH_TIER_NAMES ＝ fetch_ores.HIGH_TIERS）
+from .game_data import HIGH_TIER_NAMES
+_DETECTION_TIER_VALUES = frozenset(HIGH_TIER_NAMES)
 
 
 def is_web_configurable(field: str) -> bool:

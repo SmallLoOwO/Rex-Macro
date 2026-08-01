@@ -1596,13 +1596,12 @@ def common_ore_names() -> tuple[str, ...]:
 
 
 # ── 偵測階級門檻（2026-08-02）：可調高「什麼算稀有」的最低階級 ──────────────
-# 階級順序取自 fetch_ores.HIGH_TIERS（順序即高低）。
+# 階級順序＝fetch_ores.HIGH_TIERS（唯一來源；順序即高低）。
 # classify_found_ore 在命中 rare 礦後檢查 tier ≥ 門檻；低於 → 回 "common"。
 # 效果蔓延到面板色檢、救援路 A/B、採集驗證、通知標注——無需逐處改動。
-_TIER_ORDER: dict[str, int] = {
-    t: i for i, t in enumerate(
-        ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
-         "Unfathomable", "Otherworldly", "Imaginary", "Zenith"))}
+from .fetch_ores import HIGH_TIERS as _HIGH_TIERS
+_TIER_ORDER: dict[str, int] = {t: i for i, t in enumerate(_HIGH_TIERS)}
+HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一來源）
 
 # 量測到的 tier→面板底色色相（2026-07-31 D11 量測；config.py:394 同源）。
 # Enigmatic 以上未量測——靠 non_low_tier_hues 反向閘兜住。
@@ -1627,11 +1626,18 @@ def get_detection_min_tier() -> str | None:
 
 
 def _is_below_threshold(info: dict) -> bool:
-    """info 的 tier 是否低於偵測門檻。無門檻 / tier 未知 → False（不過濾）。"""
+    """info 的 tier 是否低於偵測門檻。
+
+    無門檻（None）→ False。門檻＝Exotic（最低有效值）→ False（不過濾＝現行行為，
+    含未知 tier）。門檻高於 Exotic → tier 未知（不在 _TIER_ORDER）也判 below
+    （安全方向：未知的當低階）。
+    """
     if _detection_min_tier is None:
         return False
-    tier_rank = _TIER_ORDER.get(info.get("tier", ""), -1)
     min_rank = _TIER_ORDER.get(_detection_min_tier, 0)
+    if min_rank == 0:           # Exotic＝最低 → 不過濾（等同 None）
+        return False
+    tier_rank = _TIER_ORDER.get(info.get("tier", ""), -1)
     return tier_rank < min_rank
 
 
@@ -1639,14 +1645,17 @@ def effective_whitelist_hues(min_tier: str | None,
                              base_whitelist: tuple) -> tuple:
     """≥ min_tier 的量測色相（救援 whitelist_hue_hits 用）。
 
-    min_tier=None → 回 base 不動（現行行為）。
+    min_tier=None / Exotic → 回 base 不動（現行行為）。
     門檻以上未量測的 tier 不在結果裡——那些靠名字閘分類，色相交叉驗無法確認（保守）。
+    base_whitelist 與 TIER_HUES 取交集後再過濾，確保 config 自訂值不被靜默丟棄。
     """
-    if min_tier is None:
+    if min_tier is None or _TIER_ORDER.get(min_tier, 0) == 0:
         return base_whitelist
     min_rank = _TIER_ORDER.get(min_tier, 0)
-    return tuple(h for t, h in TIER_HUES.items()
-                 if _TIER_ORDER.get(t, 999) >= min_rank)
+    # 只保留 base_whitelist 裡也出現在 TIER_HUES 且 ≥ min_rank 的色相
+    measured_above = {h for t, h in TIER_HUES.items()
+                      if _TIER_ORDER.get(t, 999) >= min_rank}
+    return tuple(h for h in base_whitelist if h in measured_above)
 
 
 def effective_low_tier_hues(min_tier: str | None,

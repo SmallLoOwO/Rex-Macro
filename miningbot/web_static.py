@@ -1,4 +1,5 @@
 """網頁前端 HTML render（設定 / 介入 / 歷史 / episode 詳細 / 標註）。"""
+from .game_data import HIGH_TIER_NAMES
 
 import json
 
@@ -188,8 +189,7 @@ h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size
   <select id="detection_min_tier" name="detection_min_tier">{
     chr(10).join(
         f'    <option value="{t}" {"selected" if detection_tier == t else ""}>{t}</option>'
-        for t in ("Exotic", "Exquisite", "Transcendent", "Enigmatic",
-                  "Unfathomable", "Otherworldly", "Imaginary", "Zenith")
+        for t in HIGH_TIER_NAMES
     )}
   </select>
   <p class="hint"><b>低於此階級的 礦不算「稀有」。</b>
