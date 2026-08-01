@@ -1889,11 +1889,17 @@ function connect() {
         rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
         skipBtn.hidden = false;
       } else if (done) {
+        // 2026-08-01：介入結束要清掉畫面上的證據圖，不然面板「不會消失」、
+        // 玩家以為還能點。清 frames + 空白 img + currentEvent=null（sendClick 擋）。
         currentEvent = null;
         confirmMode = false;
+        frames = []; seen = new Set(); curFrame = 0;
+        snapshotImg.removeAttribute('src');
+        zoom = 1.0; pan = [0, 0];
         hintEl.textContent = CLICK_HINT;
         for (const b of [adoptBtn, sweepBtn, rerollBtn, confirmBtn, voidBtn,
                          skipBtn]) b.hidden = true;
+        renderNav();
       }
     } else if (p.event === 'FRAME_SNAPSHOT') {
       pendingFrameSnapshot = true;   // 下一個 binary frame 是快照，見上面 ArrayBuffer 分支
@@ -2057,6 +2063,9 @@ sweepBtn.addEventListener('click', () => sendControl('sweep', '重掃'));
 rerollBtn.addEventListener('click', () => sendControl('reroll', '重骰'));
 confirmBtn.addEventListener('click', () => {
   sendControl('confirm', '好');
+  // 立刻清 currentEvent：送出與後端 descended 廣播之間若點畫面，sendClickNative
+  // 仍會通過 currentEvent+confirmMode 雙閘送出 reentry_click。清掉就擋住（2026-08-01）。
+  currentEvent = null;
   confirmMode = false;
   hintEl.textContent = CLICK_HINT;
   for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;

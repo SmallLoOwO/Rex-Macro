@@ -2109,6 +2109,34 @@ class TestRrClickAndVerifyWebBroadcast:
         assert results == [("awaiting_confirm", "reentry")]
 
 
+def test_rr_execute_confirm_broadcasts_descended(monkeypatch):
+    """awaiting_confirm 階段按「好」→ 廣播 descended，網頁面板才會收起。
+
+    2026-08-01 使用者反映：確認後面板「不會消失」、還是活躍狀態，擔心誤點。
+    根因＝_rr_execute 的 confirm 分支只呼叫 _rr_success、沒廣播 INTERVENTION_RESULT，
+    前端 done=true 分支不觸發 → currentEvent 不清 → 點畫面仍送 reentry_click。
+    """
+    from tests.fake_bot import make_fake_bot, FakeReentryCtx
+    import miningbot.reentry_remote as reentry_remote
+    bot = make_fake_bot(bind=["_rr_execute"])
+    ctx = FakeReentryCtx(episode_id="42")
+    ctx.phase = "awaiting_confirm"
+    bot._rr_ctx = ctx
+    bot._pending_reentry = None
+    bot._rr_embed_mid = None
+    results = []
+    bot._broadcast_intervention_result = lambda ctx, verdict, summary, flow="reentry": (
+        results.append((verdict, flow)))
+    bot._rr_success = lambda c, outcome: None
+    bot._rr_notify = lambda *a, **kw: None
+    bot._rr_edit_embed = lambda: None
+
+    bot._rr_execute(reentry_remote.RemoteReply("confirm"))
+
+    assert results == [("descended", "reentry")], (
+        "確認後必須廣播 descended 讓網頁面板收起（done=true）")
+
+
 # ---------------------------------------------------------------------------
 # 2026-08-01 使用者反映：網頁走到 awaiting_confirm 只有一行字、一張圖都沒有，
 # 「並不知道是不是真的下礦」。Discord 那條路一直有附「點擊處＋落點」兩張。
@@ -2201,7 +2229,7 @@ class TestAwaitingConfirmEvidenceOnWeb:
         assert summaries and "7100m" in summaries[0], summaries
         assert "相符" in summaries[0]
         # 不確定時的答案是「好」（原地不動），不是重骰
-        assert "不確定就按「好」" in summaries[0]
+        assert "不確定也按好" in summaries[0]
 
     def test_missing_evidence_file_does_not_break_confirm(self, monkeypatch, tmp_path):
         """證據圖是加值路徑：讀不到就只送文字，不能炸掉確認流程。"""
@@ -2287,6 +2315,18 @@ def test_panel_confirm_mode_switches_buttons_and_blocks_clicks():
     assert "CONFIRM_HINT" in html
     # 兩張證據圖各自標名（標「方位 1/2」玩家分不出哪張是哪張）
     assert "frames[curFrame].label" in html
+
+
+def test_panel_done_branch_clears_evidence_frames():
+    """介入結束（done=true）清掉證據圖，否則面板「不會消失」、玩家以為還能點。
+
+    2026-08-01 使用者反映：確認後訊息一直卡在頁面上、還是活躍狀態。
+    """
+    html = _panel_html()
+    done_block = html.split("else if (done)")[1].split("} else if")[0]
+    assert "currentEvent = null" in done_block
+    assert "frames = []" in done_block
+    assert "removeAttribute('src')" in done_block
 
 
 def test_panel_centers_letterboxed_frame():

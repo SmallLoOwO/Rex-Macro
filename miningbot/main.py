@@ -91,9 +91,9 @@ _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「
 _RR_CONFIRM_CHOICES_DISCORD = (
     "沒問題回 `好` 開挖；**確定層不對**才回 `重骰`（回地表換重生點、整輪重來 ~2 分鐘）；"
     "不確定就回 `好`——人已經在礦裡，原地開挖不吃虧。資料要作廢回 `作廢`")
+# 2026-08-01 使用者反映：手機面板塞不下了，縮短。Discord 版（上方）空間寬鬆保留原長文。
 _RR_CONFIRM_CHOICES_WEB = (
-    "沒問題按「好」開挖；確定層不對才按「重骰」（回地表換重生點、整輪重來 ~2 分鐘）；"
-    "不確定就按「好」——人已經在礦裡，原地開挖不吃虧。資料有問題按「作廢」")
+    "好＝開挖（不確定也按好，人已在礦）；重骰＝回地表重來 ~2 分鐘；作廢＝丟資料")
 # 手動瞄準三層掃描（2026-07-31）：顯示順序與人話層名。up 排最前——實機經驗礦多在
 # 壁上高處（同 harvester.plan_pitch_layers 的順序論證）。
 _MANUAL_LAYER_ORDER = {"up": 0, "mid": 1, "down": 2}
@@ -7623,6 +7623,14 @@ class Bot:
             if ctx.phase != "awaiting_confirm":
                 self._rr_notify("❓ 目前沒有待確認的點擊")
                 return
+            # 2026-08-01 使用者反映：確認後網頁面板「不會消失」、還是活躍狀態，擔心
+            # 誤點。根因＝這裡只呼叫 _rr_success、沒廣播 INTERVENTION_RESULT，前端
+            # done=true 分支不觸發 → currentEvent 不清 → 點畫面仍送 reentry_click。
+            # 與 auto-resume 路徑（_rr_click_and_verify verdict==descended）同型：
+            # 先廣播 descended（含 end_intervention_replay），再 _rr_success 收尾。
+            self._broadcast_intervention_result(
+                ctx, verdict="descended",
+                summary="✅ 確認下礦，開挖", flow="reentry")
             self._rr_success(ctx, "confirmed_by_user")
         # Task 4：每個指令執行完原地 edit embed（反映新 phase/attempt/分鐘數）。
         # skip/success 已 finalize（embed 刪除、_rr_embed_mid=None）→ _rr_edit_embed 會直接 return；
