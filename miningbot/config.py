@@ -390,11 +390,11 @@ class Config:
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
                                               # 只重讀不重打字：H047/H063 的「多試幾次會翻面」只針對點擊/按鍵
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
-    # 列底色 → tier（2026-07-31 量測 238 幀 1909 列，見 docs/open-detection-issues.md D11）：
-    #   Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
+    # 列底色 → tier（2026-07-31 D11 + 2026-08-02 實機全面板驗證）：
+    #   Enigmatic 70｜Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
     # 每階單一色相、零變異、零重疊。最近的兩帶是 Exotic 46 vs 低階 30（相隔 16°）→ tol 6
     # 兩側各留 10° 餘裕。用途只有保守方向：命中＝面板有 Exotic+ ⇒ 零點不成立。
-    panel_whitelist_hues: tuple = (46.0, 128.0, 210.0)
+    panel_whitelist_hues: tuple = (46.0, 70.0, 128.0, 210.0)
     # 已量到的非白名單色帶（D11）：Mythic 304｜Surreal 166｜低階 0/30/280。
     # 給 spec 01 反向閘用——色相不落在這些帶就當成高階、擋零點成立。
     panel_low_tier_hues: tuple = (0.0, 30.0, 166.0, 280.0, 304.0)

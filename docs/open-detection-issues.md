@@ -575,20 +575,23 @@ RR#42 玩家在網頁點了三次傳送板，三次都 `still_surface`。
 
 ---
 
-## D12（2026-08-02）：TIER_HUES Transcendent 210° 待驗證——實機量測不符
+## D12（2026-08-02）：~~TIER_HUES Transcendent 210° 待驗證~~ → **已解決**
 
-`game_data.TIER_HUES` 記錄了 3 個已量測的階級色相（Exotic 46 / Exquisite 128 /
-Transcendent 210）。2026-08-02 實機快照驗證結果：
+**原問題**：`essence of luck`（H167 快照）被 fuzzy matcher 判成 Transcendent 但
+實測色相 [27, 0] 與 210° 不符。
 
-- **Exotic 46°** ✅ 確認（clovara H160 [_,46]、astatine H168 [_,46]）
-- **Exquisite 128°** ✅ 確認（leprechaun H160 [127,128]、oviridis H167 [125,128]）
-- **Transcendent 210°** ❌ `essence of luck`（H167 唯一 Transcendent 礦）實測 [27, 0]，
-  完全不符。可能原因：多字 礦名、取樣窗打到底色以外的區域、或 210° 其實是
-  Enigmatic 的色相（`elvengreen` Enigmatic 實測首取樣 207° ≈ 210°）。
+**根因**（使用者澄清）：`essence of luck` 不是 Transcendent，是 **Enigmatic**
+（藍色階級 H=70）。fuzzy matcher 把它配到 rare_ores.json 裡同名但不同階級的條目。
 
-**影響**：`effective_whitelist_hues` / `effective_low_tier_hues` 在門檻 ≤ Exquisite
-時不受影響（210° 有沒有都在白名單裡，不影響 Exotic 排除）。門檻設 Transcendent+
-時，如果 210° 不是 Transcendent 的色相，白名單可能包含錯誤色相或漏掉正確色相。
+**解決**（2026-08-02 實機全面板截圖）：使用者在遊戲中同時擁有四階 礦，一次截圖
+量到全部四個色相——每階單一色相、零變異、零重疊：
 
-**待辦**：找一張含單字 Transcendent 礦的面板快照重新量測。使用者提到 wiki
-`{{Colour|tier}}` 模板也有各階級顏色，可比對驗證。
+| 階級 | 色相 | BGR |
+|---|---|---|
+| Enigmatic | **70°** | [0,128,106] 青藍 |
+| Transcendent | **210°** | [133,66,0] 紅橙 |
+| Exquisite | **128°** | [52,101,44] 綠 |
+| Exotic | **46°** | [33,104,128] 藍 |
+
+`TIER_HUES` 已補入 Enigmatic=70°。`panel_whitelist_hues` 同步加入 70°。
+Unfathomable 以上仍未量測——靠 `non_low_tier_hues` 反向閘兜住。

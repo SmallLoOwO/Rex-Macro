@@ -1000,7 +1000,7 @@ def panel_row_hues(crop, row_ys, x0: int, x1: int, half: int = 8) -> list:
     2026-07-31 量測（238 幀 1909 列，`docs/open-detection-issues.md` D11）：面板列底色
     是**每個 tier 一個色相**，不是每顆礦一色——
 
-        Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
+        Enigmatic 70｜Transcendent 210｜Exquisite 128｜Exotic 46｜Mythic 304｜Surreal 166｜低階 0/30/280
 
     每一階的色相在所有幀裡都是**單一值**（零變異），最近的兩帶是 Exotic 46 與低階 30，
     相隔 16°。所以色相是 OCR 之外的第二條 tier 訊號，礦名讀歪也還在。

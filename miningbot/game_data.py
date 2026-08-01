@@ -1603,11 +1603,11 @@ from .fetch_ores import HIGH_TIERS as _HIGH_TIERS
 _TIER_ORDER: dict[str, int] = {t: i for i, t in enumerate(_HIGH_TIERS)}
 HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一來源）
 
-# 量測到的 tier→面板底色色相（2026-07-31 D11 量測；config.py:394 同源）。
-# Enigmatic 以上未量測——靠 non_low_tier_hues 反向閘兜住。
-# ⚠ 待 wiki {{Colour|tier}} 模板比對驗證（使用者 2026-08-02 要求）。
+# 量測到的 tier→面板底色色相（2026-07-31 D11 + 2026-08-02 實機全面板截圖驗證）。
+# 四階色相均在單一面板上同時量到（H=46/70/128/210），每階單一色相、零變異。
+# Unfathomable 以上未量測——靠 non_low_tier_hues 反向閘兜住。
 TIER_HUES: dict[str, float] = {
-    "Exotic": 46.0, "Exquisite": 128.0, "Transcendent": 210.0}
+    "Exotic": 46.0, "Exquisite": 128.0, "Transcendent": 210.0, "Enigmatic": 70.0}
 
 _detection_min_tier: str | None = None   # None = 不過濾（預設）；測試不設 = 現行行為
 

@@ -619,7 +619,7 @@ def whitelist_hue_hits(hues, whitelist_hues, tol_deg: float) -> list:
     """列底色色相裡落在白名單（Exotic+）色帶內的那些（保序）。
 
     白名單色帶＝`Config.panel_whitelist_hues`（Exotic 46／Exquisite 128／
-    Transcendent 210，2026-07-31 量測）。色相是環狀的，比距離要繞回 360。
+    Transcendent 210／Enigmatic 70，2026-08-02 實機全面板驗證）。色相是環狀的。
 
     用途是**保守方向**：命中就代表面板上有 Exotic+ 礦，因此「面板零點」不成立。
     反向（沒命中就宣告採到了）不在這裡做——那要先有實機對帳資料。
