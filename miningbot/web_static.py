@@ -1473,40 +1473,47 @@ _INTERVENTION_HTML = """<!DOCTYPE html>
 <style>%(nav_css)s
 body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
        display: flex; flex-direction: column; height: 100vh; }
-header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
+header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444;
          display: flex; justify-content: space-between; align-items: center;
-         gap: 0.6rem; flex-wrap: wrap; }
-#status { font-size: 0.9rem; color: #888; flex: 1 1 100%; }
-/* 方位切換 + 動作鍵。回礦時傳送板通常不在當下視野內，所以面板必須讓玩家
-   在八個方位之間翻找——這一列就是整個回礦網頁流程可用與否的關鍵。 */
-#toolbar { display: flex; gap: 0.35rem; align-items: center; padding: 0.4rem 0.6rem;
-           background: #262626; border-bottom: 1px solid #444;
-           overflow-x: auto; }
-#toolbar button { flex: 0 0 auto; padding: 0.45rem 0.7rem; border: 0;
+         gap: 0.6rem; }
+#status { font-size: 0.85rem; color: #888; flex: 1; min-width: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 主體：左邊圖片全高、右邊側欄放所有按鍵——圖片不再被上方資訊列壓縮，
+   按鈕直排變大更好點（同標註工具的佈局） */
+#main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+#container { flex: 1; position: relative; overflow: hidden; touch-action: none;
+             background: #000; }
+#side { width: 210px; flex: 0 0 auto; background: #222; border-left: 1px solid #444;
+        overflow-y: auto; display: flex; flex-direction: column; gap: 0.35rem;
+        padding: 0.4rem; box-sizing: border-box; }
+#status-line { font-size: 0.72rem; color: #9ad; line-height: 1.4;
+               padding: 0.2rem 0.3rem; background: #1a1a1a; border-radius: 4px; }
+/* 遙控器：兩欄 grid，省垂直空間 */
+#remote-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; }
+#remote-bar button { padding: 0.4rem 0.2rem; border: 0; border-radius: 6px;
+                     background: #3a3a3a; color: #eee; font-size: 0.78rem;
+                     cursor: pointer; text-align: center; }
+/* 方位切換列（prev/dir/next/dots 一行） */
+#nav-row { display: flex; gap: 0.3rem; align-items: center; justify-content: center; }
+#dir-label { font-size: 0.85rem; font-weight: bold; min-width: 4rem; text-align: center; }
+#nav-row button { padding: 0.35rem 0.6rem; border: 0; border-radius: 6px;
+                  background: #3a3a3a; color: #eee; font-size: 0.85rem; cursor: pointer; }
+#nav-row button:disabled { opacity: 0.35; cursor: default; }
+/* 方位小圓點：置中、可換行 */
+#dots { display: flex; gap: 0.2rem; justify-content: center; flex-wrap: wrap; }
+#dots span { width: 0.5rem; height: 0.5rem; border-radius: 50%;
+             background: #555; display: block; }
+#dots span.on { background: #0084ff; }
+#dots span.seen { background: #888; }
+/* 動作鍵：全寬直排，比水平 scroll 列大得多 */
+#toolbar { display: flex; flex-direction: column; gap: 0.3rem; }
+#toolbar button { display: block; width: 100%; padding: 0.6rem; border: 0;
                   border-radius: 6px; background: #3a3a3a; color: #eee;
-                  font-size: 0.9rem; cursor: pointer; }
+                  font-size: 0.9rem; cursor: pointer; box-sizing: border-box; }
 #toolbar button:disabled { opacity: 0.35; cursor: default; }
 #toolbar button.act { background: #4a4a4a; }
 #toolbar button.skip { background: #6d6d6d; }
 #toolbar button.confirm { background: #1f7a3d; }
-/* 遙控器列（2026-07-28）：跟 Discord 遙控器（▶️⏸️⚡📷🏠）同一套動作，任何時候都在，
-   不像下面 #toolbar 那樣只在特定介入流程才出現——玩家隨時可能想暫停/看畫面。 */
-#remote-bar { display: flex; gap: 0.35rem; align-items: center; padding: 0.4rem 0.6rem;
-              background: #1f1f1f; border-bottom: 1px solid #444; overflow-x: auto; }
-#remote-bar button { flex: 0 0 auto; padding: 0.4rem 0.6rem; border: 0; border-radius: 6px;
-                     background: #3a3a3a; color: #eee; font-size: 0.85rem; cursor: pointer; }
-#status-line { padding: 0.3rem 1rem; background: #262626; font-size: 0.78rem;
-              color: #9ad; border-bottom: 1px solid #333; line-height: 1.5; }
-#dir-label { flex: 0 0 auto; font-size: 0.95rem; font-weight: bold;
-             min-width: 5.5rem; text-align: center; }
-/* 方位小圓點：一眼看出總共幾張、現在第幾張、哪些已經看過 */
-#dots { display: flex; gap: 0.25rem; flex: 0 0 auto; }
-#dots span { width: 0.55rem; height: 0.55rem; border-radius: 50%;
-             background: #555; display: block; }
-#dots span.on { background: #0084ff; }
-#dots span.seen { background: #888; }
-#container { flex: 1; position: relative; overflow: hidden; touch-action: none;
-             background: #000; }
 /* 與標註工具同一套渲染：原生 <img> + CSS transform，不做 canvas drawImage 重採樣 */
 #snapshot { transform-origin: 0 0; position: absolute; top: 0; left: 0;
             max-width: none; user-select: none; -webkit-user-drag: none; }
@@ -1535,31 +1542,37 @@ header { padding: 0.5rem 1rem; background: #222; border-bottom: 1px solid #444;
   <strong>MiningBot 介入面板</strong>
   <span id="status">等待 bot 事件…</span>
 </header>
-<div id="remote-bar">
-  <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
-  <button id="rc-pause" type="button" title="暫停（等同 Ctrl+Q）">&#9208;&#65039; 暫停</button>
-  <button id="rc-ability" type="button" title="遊戲內按一次 X">&#9889; 能力</button>
-  <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
-  <button id="rc-reenter" type="button" title="手動觸發回礦">&#127968; 手動回礦</button>
-</div>
-<div id="status-line">連線中…</div>
-<div id="toolbar">
-  <button id="prev" type="button" title="上一個方位">&#9664;</button>
-  <span id="dir-label">&#8212;</span>
-  <button id="next" type="button" title="下一個方位">&#9654;</button>
-  <span id="dots"></span>
-  <button id="adopt" class="confirm" type="button" hidden title="直接送出 bot 猜的位置">&#127919; 採用建議</button>
-  <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
-  <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
-  <button id="confirm" class="confirm" type="button" title="下礦沒問題，開挖">&#9989; 好</button>
-  <button id="void" class="skip" type="button" title="這筆點擊資料有問題，作廢">&#128465; 作廢</button>
-  <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
-</div>
-<div id="note"></div>
-<div class="hint" id="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</div>
-<div id="container">
-  <img id="snapshot" alt="">
-  <div id="predict-mark"><span class="pm-label"></span></div>
+<div id="main">
+  <div id="container">
+    <img id="snapshot" alt="">
+    <div id="predict-mark"><span class="pm-label"></span></div>
+  </div>
+  <div id="side">
+    <div id="status-line">連線中…</div>
+    <div id="remote-bar">
+      <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
+      <button id="rc-pause" type="button" title="暫停（等同 Ctrl+Q）">&#9208;&#65039; 暫停</button>
+      <button id="rc-ability" type="button" title="遊戲內按一次 X">&#9889; 能力</button>
+      <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
+      <button id="rc-reenter" type="button" title="手動觸發回礦">&#127968; 回礦</button>
+    </div>
+    <div id="toolbar">
+      <div id="nav-row">
+        <button id="prev" type="button" title="上一個方位">&#9664;</button>
+        <span id="dir-label">&#8212;</span>
+        <button id="next" type="button" title="下一個方位">&#9654;</button>
+      </div>
+      <span id="dots"></span>
+      <button id="adopt" class="confirm" type="button" hidden title="直接送出 bot 猜的位置">&#127919; 採用建議</button>
+      <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
+      <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
+      <button id="confirm" class="confirm" type="button" title="下礦沒問題，開挖">&#9989; 好</button>
+      <button id="void" class="skip" type="button" title="這筆點擊資料有問題，作廢">&#128465; 作廢</button>
+      <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
+    </div>
+    <div id="note"></div>
+    <p class="hint" id="hint">手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。<b>直接點畫面上的傳送板</b>送出位置；有綠圈＝bot 猜的位置，按 &#127919; 採用建議一鍵送出</p>
+  </div>
 </div>
 
 <script>
