@@ -401,6 +401,10 @@ class Bot:
         # Discord `ability` 指令／遙控器 ⚡（2026-07-12 spec）：輪詢執行緒寫旗標、
         # 主迴圈消費後按 X。布林於 GIL 下原子（同 human_cleared 跨執行緒寫入模式）。
         self._pending_ability = False
+        # Discord `清空` 指令（2026-08-01）：手動觸發 _clear_panel_filter。
+        # 自動清空在 _on_enter(MINING)/_resume_mining_tail 跑，但 H070/H071 證實
+        # 實機上會失敗（失焦/打字被吃），使用者需要手動重清以避免路 B 假陽性。
+        self._pending_clear_panel = False
         # Discord `轉` 指令（2026-07-21 H059）：遠端轉 45°，供使用者手動校正斜向面向
         # （回礦落地約一半機率對角，自動視覺判定已證實做不到——見 07-21 findings）。
         # 同上：輪詢執行緒只寫 ±1，輸入一律由主迴圈 _consume_pending_rotate 送。
@@ -2474,6 +2478,20 @@ class Bot:
                     f"⛏ 手動回礦已排入{unpause}（狀態: {self.state.value}）→ 下個 tick 進 REENTRY")
             self.log_discord.info("CMD 回礦 -> accepted=%s state=%s", ok, self.state.value)
 
+        elif cmd in ("清空", "清背包", "clearpanel"):
+            # 手動清空 NORMAL 面板篩選框（2026-08-01，使用者要求）：
+            # 自動清空在 _on_enter(MINING) 跑，但 H070/H071 證實實機上會失敗（失焦/
+            # 打字被吃），使用者需要手動重清以避免路 B 把上一場殘留當證據 → 假陽性。
+            # 採集/回礦中有視角記帳與輸入序列，不接受（同 `轉` 指令守門）。
+            if self.state in (State.HARVESTING, State.REENTRY):
+                notify.send_message(token, ch,
+                    f"❌ 清空未接受：{self.state.value} 中有輸入序列，等回 MINING 再試")
+            else:
+                self._pending_clear_panel = True
+                notify.send_message(token, ch,
+                    f"🧹 已排入清空背包面板（狀態: {self.state.value}）→ 主迴圈下個 tick 執行")
+            self.log_discord.info("CMD 清空 -> state=%s", self.state.value)
+
         elif cmd in discord_commands.RADAR_COMMAND_KIND:
             which = discord_commands.RADAR_COMMAND_KIND[cmd]
             label = "掃描(D2 左鍵)" if which == "scan" else "削洞(D2 Z)"
@@ -2508,6 +2526,8 @@ class Bot:
                 "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
                 "採集/回礦中不接受，不排隊）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
+                "`清空` — 手動清空背包面板篩選框（挖礦中會先暫停→清空→恢復；"
+                "採集/回礦中不接受；同 `清背包`/`clearpanel`）\n"
                 "`削洞 [開|關]` — D2 的 Z（Cave Skim）連續使用：冷卻好就自動再按，"
                 "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
                 "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
@@ -3649,6 +3669,15 @@ class Bot:
                 self._broadcast_status_note("⛏ 手動回礦已排入 → 下個 tick 進 REENTRY")
             self.log_discord.info("web 🏠 reenter -> accepted=%s state=%s",
                                   ok_re, self.state.value)
+        # 網頁 🧹 清空（2026-08-01）：與 Discord `清空` 指令同一條路徑——
+        # 設 _pending_clear_panel，主迴圈 _tick 消費。
+        if self._web_pending.pop("control:clearpanel") is not None:
+            if self.state in (State.HARVESTING, State.REENTRY):
+                self._broadcast_status_note(f"❌ 清空未接受：{self.state.value} 中")
+            else:
+                self._pending_clear_panel = True
+                self._broadcast_status_note("🧹 已排入清空背包面板")
+            self.log_discord.info("web 🧹 clearpanel（state=%s）", self.state.value)
         if self._web_pending.pop("control:request_frame") is not None:
             self._broadcast_frame_snapshot()
             self.log_discord.info("web 📷 request_frame")
@@ -4174,6 +4203,32 @@ class Bot:
             f"玩家點擊 ({x},{y}) verify={'通過' if ok else '失敗'}")
         return ok, verify_detail
 
+    def _consume_clear_panel(self):
+        """消費 `清空` 指令：手動觸發 _clear_panel_filter（2026-08-01，使用者要求）。
+
+        MINING 時 W/滑鼠按住中，先放開才能點 UI（篩選框）；清完重新 init_mining_sequence
+        接回挖礦。NEEDS_HUMAN/RESET_WAIT 沒按住輸入，直接清。
+
+        回報 Discord：清空成功（_panel_zeroed_at 非 None）→ 路 B 下一場可信任；
+        失敗 → 路 B 將跳過（同 _clear_panel_filter 的降級語意）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        was_mining = self.state is State.MINING
+        self.logger.info("清空背包面板指令（state=%s）", self.state.value)
+        if was_mining:
+            ic.key_up("w"); ic.mouse_up()
+            time.sleep(0.15)
+        self._clear_panel_filter()
+        zeroed = getattr(self, "_panel_zeroed_at", None) is not None
+        if was_mining:
+            miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
+            ic.key_down("w"); ic.mouse_down()
+        notify.send_message(
+            token, ch,
+            f"{'✅' if zeroed else '⚠️'} 背包面板{'已清空' if zeroed else '清空未確認'}"
+            f"（路 B {'可信任' if zeroed else '將跳過'}下一場）")
+
     def _summarize_survey_ctx(self, ctx) -> str:
         """給 web client 介入面板顯示的 context 摘要（純文字）。
 
@@ -4200,6 +4255,11 @@ class Bot:
             ic.key_press("x")
             self.last_action = "遠端能力：已按 X"
             self.log_discord.info("ability 已執行（state=%s）", self.state.value)
+        # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
+        # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。
+        if self._pending_clear_panel and self.state not in (State.HARVESTING, State.REENTRY):
+            self._pending_clear_panel = False
+            self._consume_clear_panel()
         if self.state is State.MINING:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
@@ -6213,17 +6273,67 @@ class Bot:
             [path] if path else [])
 
     def _remote_fire_success(self, ctx, hid):
-        """遠端開火確認成功：通知＋俯仰歸位＋視角回正＋回挖礦。
+        """遠端開火確認成功：證據通知＋等 pickup 動畫＋俯仰歸位＋視角回正＋回挖礦。
 
         與 _harvest_resume_mining 共用 _resume_mining_tail（yaw 回正+MINING+init+W/D1 保險段）；
         姿態來源是 ctx（不是 self.harvest.net_rotations——兩個記帳來源勿混）。
         俯仰歸位條件與正常路徑不同：遠端 fire 可能動過 ctx 的層，一律 reset 回置中標準角
         （center_back_px>0 才動；未校準=0 絕不動——同 _pitch_restore_if_touched 的守門）。
+
+        **pickup 動畫等待**（2026-08-01，使用者回報「背包沒刷新」）：採集後遊戲有 1-2s
+        pickup 動畫，期間所有按鍵/點擊被吃掉。_harvest_success 在進收尾前已 sleep(1.0)，
+        但本方法舊版直接調 _resume_mining_tail → 裡面的 _clear_panel_filter 全被動畫吞掉。
+        現在補上同一段等待，與正常採集成功路徑對齊。
+
+        **證據回饋**（2026-08-01，使用者回報「只跳已採集字樣沒有證據」）：附背包/聊天
+        前後對比裁圖（同 _harvest_giveup 的 image_groups 模式），讓玩家在 DC/網頁端
+        能確認礦確實進帳。另記 HARVEST_SUCCESS + _episode_succeeded + stats，與正常
+        採集成功路徑對齊（不記的話救援路 B 的閘門與 Discord 統計都是錯的）。
         """
         from . import notify
-        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
-                            f"🎉 [{hid}] 遠端瞄準採集成功！視角歸位、回挖礦")
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        after_frame = capture.grab()
+        self._hsnap(after_frame, "remote_fire_success")
+        # ── 證據裁圖：背包/聊天 前後對比（同 _harvest_giveup 的 region_map 模式）──
+        before_ref = getattr(self, "_harvest_origin_ref", None)
+        if before_ref is None:
+            before_ref = getattr(self, "_pre_scan_ref", None)
+        region_map = {"chat": cfg.chat_review_region, "backpack": cfg.backpack_review_region}
+        groups = []
+        for region in ("chat", "backpack"):
+            paths = []
+            if before_ref is not None:
+                p = self._hsnap_crop(before_ref, region_map[region],
+                                     f"remote_success_{region}_before")
+                if p:
+                    paths.append(p)
+            p = self._hsnap_crop(after_frame, region_map[region],
+                                 f"remote_success_{region}_after")
+            if p:
+                paths.append(p)
+            if paths:
+                groups.append((region, paths))
+        summary = f"🎉 [{hid}] 遠端瞄準採集成功！"
+        if groups:
+            for text, imgs in notify.format_group_messages(summary, groups):
+                notify.send_images_message(token, ch, text, imgs)
+        else:
+            notify.send_message(token, ch, summary)
+        # ── 成功記帳（與 _harvest_success 對齊）──
+        self._episode_succeeded = True
+        self.stats["rares"] += 1
+        self.last_action = "遠端採集成功！"
+        self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=True,
+                     tracker_gone=True, special=False, source="remote_fire",
+                     image_path=groups[-1][1][-1] if groups else None)
         self.logger.info("[%s] AIM 採集成功 -> 歸位回 MINING", hid)
+        # ── pickup 動畫等待（2026-08-01）：動畫期間送鍵被吃，_clear_panel_filter
+        #   的點擊也在其中 → 背包沒刷新。等動畫結束再進收尾。
+        if not self._focus_roblox():
+            self.logger.warning("[%s] 遠端採集成功但無法聚焦 -> 交人工（已採到）", hid)
+            self._harvest_giveup("遠端採集成功但無法重新聚焦 Roblox，請處理後按 Q")
+            return
+        time.sleep(1.0)
         if cfg.sweep_pitch_center_back_px > 0:   # 俯仰未校準（=0）絕不動；歸位冪等、多做無害
             self._pitch_drag_verified(
                 f"[{hid}] AIM 收尾俯仰歸位",

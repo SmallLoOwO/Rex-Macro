@@ -1556,6 +1556,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
       <button id="rc-ability" type="button" title="遊戲內按一次 X">&#9889; 能力</button>
       <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
       <button id="rc-reenter" type="button" title="手動觸發回礦">&#127968; 回礦</button>
+      <button id="rc-clear" type="button" title="清空背包面板篩選框（避免路 B 假陽性）">&#129529; 清空</button>
     </div>
     <div id="toolbar">
       <div id="nav-row">
@@ -1600,6 +1601,7 @@ const rcPauseBtn = document.getElementById('rc-pause');
 const rcAbilityBtn = document.getElementById('rc-ability');
 const rcFrameBtn = document.getElementById('rc-frame');
 const rcReenterBtn = document.getElementById('rc-reenter');
+const rcClearBtn = document.getElementById('rc-clear');
 
 let zoom = 1.0;         // 縮放倍率（fit-to-container 初始值 + 使用者 pinch/wheel）
 let pan = [0, 0];       // 拖曳 pan（螢幕像素，與標註工具同模型）
@@ -2082,6 +2084,7 @@ rcPauseBtn.addEventListener('click', () => sendControl('pause', '暫停'));
 rcAbilityBtn.addEventListener('click', () => sendControl('ability', '能力'));
 rcFrameBtn.addEventListener('click', () => sendControl('request_frame', '即時畫面'));
 rcReenterBtn.addEventListener('click', () => sendControl('reenter', '手動回礦'));
+rcClearBtn.addEventListener('click', () => sendControl('clearpanel', '清空背包面板'));
 // 鍵盤左右鍵切方位（桌機看八張圖時比點按鈕快）
 window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft') showFrame(curFrame - 1);
