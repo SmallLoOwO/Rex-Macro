@@ -29,7 +29,7 @@ Discord **沒有被取代**——見下面的分工表。
 | **手動瞄準（harvest awaiting_fine）** | 網頁沒人時才用 | ✅ 主用 |
 | **回礦點傳送板** | 網頁沒人時才用 | ✅ 主用 |
 | **看歷史紀錄、標註素材** | ❌ | ✅ 唯一 |
-| **改玩家設定（4 個欄位＋D2 開關）** | 部分（D2 開關可用文字指令） | ✅ 主用 |
+| **改玩家設定（5 個欄位＋D2 開關）** | 部分（D2 開關＋階級門檻可用文字指令） | ✅ 主用 |
 
 「網頁沒人時」= WebSocket 一個 client 都沒連著，且已過 `web_fallback_grace_s`
 （預設 30s）。grace 是為了讓你手機切背景／重新整理時不會立刻掉回 Discord。
@@ -75,7 +75,7 @@ tailscale serve status
 | 路徑 | 做什麼 |
 |---|---|
 | `/intervention` | **介入面板**——回礦時收到八方位整組截圖，左右切方位、雙指放大後直接點傳送板；另有 ⟳重掃／🎲重骰／⏭️跳過 |
-| `/` | 玩家設定（4 個欄位） |
+| `/` | 玩家設定（5 個欄位：回礦模式／目標層／yaw 取樣／俯仰掃描／偵測階級門檻） |
 | `/history` | 歷史紀錄：episode 列表（編號帶類型前綴 `採#114`／`回#26`），依類型／結果／**日期**／關鍵字篩選 |
 | `/episode?id=<key>` | **episode 詳細頁**：事件時間軸 + 快照縮圖（按標註優先序分組）+ 標註歷程。`key` 是 `harvest:114`／`reentry:26`；裸編號的舊網址仍相容 |
 | `/annotate?episode=<id>&snapshot=<path>` | 標註工具：拖方形、選稀有度與「你看到什麼」（症狀由 bot 判定推導）。`?queue=tier0,tier2` 進佇列模式 |
@@ -186,10 +186,12 @@ tier0（掃描全空／框被拒／瞄準失敗）＋ tier2（bot 接受並開�
 
 兩頁在索引檔不存在／讀不到時回 **503**（「還沒有資料」不是「伺服器壞了」）。
 
-### 玩家設定：4 個 Config 欄位 + D2 開關
+### 玩家設定：5 個 Config 欄位 + D2 開關
 
 `reentry_mode`（off／remote／auto）、`reentry_target_layer`、`reentry_yaw_sample_sweep`、
-`sweep_pitch_enabled`。每個欄位在頁面上都有白話說明（做什麼用、代價是什麼）。
+`sweep_pitch_enabled`、`detection_min_tier`（偵測階級門檻，2026-08-02 新增——低於
+此階級的 礦不算稀有，與 Discord `階級` 指令共用同一份設定）。每個欄位在頁面上
+都有白話說明（做什麼用、代價是什麼）。
 
 **D2 連續使用開關**（2026-07-28）：`_radar_toggle` 不是 Config 欄位（是 Bot
 執行期可變狀態），走獨立的 `/api/radar`（HTTP POST，異步排進主迴圈執行，跟
