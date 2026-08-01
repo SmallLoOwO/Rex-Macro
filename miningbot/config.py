@@ -384,6 +384,10 @@ class Config:
     panel_filter_band: Region = field(
         default_factory=lambda: Region(0, 424, 226, 36))
     panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
+    panel_clear_ctrl_a_rounds: int = 2         # 打 w 前先全選幾次（Ctrl+A）；過量彌補 ~25% 掉鍵。
+                                              # 篩選框只增不減、顯示壓縮飽和後再打 w 觸發不了
+                                              # 遊戲 filter 重評估（harvest 153 實機）。
+                                              # Ctrl+A + backspace 清空後新鮮 w 才生效。
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。

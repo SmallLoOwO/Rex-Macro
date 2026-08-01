@@ -4984,15 +4984,24 @@ class Bot:
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             import pydirectinput
+            # H071b：Ctrl+A + backspace 先清空累積文字，新鮮 w 才能觸發 filter 重評估。
+            # 篩選框只增不減，字越積越多後顯示壓縮飽和——再多打 w 遊戲也不重跑 filter
+            # （harvest 153：ink 921→921、面板仍 8 列）。Ctrl+A 實測有效（2026-08-01 實機
+            # 確認）；backspace 單獨發 60 次完全無效（pydirectinput 進不了這個 TextBox）。
+            for _ in range(cfg.panel_clear_ctrl_a_rounds):
+                ic.key_down("ctrl")
+                ic.key_press("a")
+                ic.key_up("ctrl")
+            time.sleep(0.1)
+            ic.key_press("backspace")
+            time.sleep(0.1)
             pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
             time.sleep(cfg.panel_clear_settle_s)
             # H071：墨量**不再是硬閘**，只當診斷。篩選框吃得下無限長的字（使用者確認），
-            # 打字永遠是附加、文字永遠有變、遊戲的篩選也永遠會重跑——但框裡的字越積越多
-            # 之後**顯示會壓縮到飽和**，再多打幾個 w 一個像素都不變。實機字寬序列
-            # 07-31 23:55 五個 w=57px → 169px → 23:56 199px 之後就停在 199px／ink=494。
-            # 舊版把「墨量沒變」當成「字沒進 TextBox」直接 return，連面板 OCR 都不跑，
-            # 於是 08-01 三次歸零全被這道假閘擋掉、`_panel_zeroed_at` 一路是 None
-            # ——玩家看到的「NEEDS_HUMAN 按繼續回挖礦後背包沒清空」就是它。
+            # 字越積越多後**顯示壓縮到飽和**——再多打 w 一個像素都不變，且遊戲 filter 不會
+            # 重跑（harvest 153：ink 921→921、面板仍 8 列）。H071b 的 Ctrl+A+backspace
+            # 在打字前清空累積文字，確保新鮮 w 觸發 filter 重評估。墨量在此之後只剩歷史
+            # 診斷——Ctrl+A 後框已空，ink 本來就會大幅下降，不需要它當閘。
             # 面板 OCR（下面那個重讀迴圈）才是真正的判準，一律讓它跑完。
             band1 = capture.crop(capture.grab(), cfg.panel_filter_band)
             after = vision.filter_box_ink(band1)

@@ -749,24 +749,24 @@ def test_clear_ink_guard_does_not_block_the_happy_path(monkeypatch):
 def test_clear_ink_unchanged_but_panel_empty_still_counts_h071(monkeypatch):
     """H071：墨量沒變不得再當硬閘——**這就是玩家回報的那個 bug**。
 
-    篩選框的字越積越多之後顯示會壓縮到飽和，再多打幾個 w 一個像素都不變（實機字寬
-    07-31 23:55 五個 w=57px → 169px → 23:56 之後永遠停在 199px／ink=494）。但框吃得下
-    無限長的字，文字其實有變、遊戲的篩選照樣重跑、面板照樣清空——舊版卻把「墨量沒變」
-    當成「字沒進 TextBox」直接 return，連面板 OCR 都不跑，08-01 三次歸零全被這道假閘
-    擋掉。面板 OCR 才是真正的判準。
+    篩選框的字越積越多之後顯示壓縮飽和，再多打 w 一個像素都不變。墨量在此狀態下
+    是噪訊（實機 ink 序列 933→216→741→535 亂跳，字寬恆 213px），不能當「字沒進去」
+    的閘。H071b 的 Ctrl+A+backspace 已在打字前清空累積文字，正常運作下 ink 本來就會
+    大幅下降；但墨量作為診斷值仍應留著（框飽和／Ctrl+A 沒生效時才看得出來）。
+    面板 OCR 才是真正的判準，一律跑完。
     """
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
 
 
-def test_clear_never_tries_to_empty_the_filter_box_h071(monkeypatch):
-    """H071：篩選框吃得下無限長的字 → 只疊加，不做任何清空動作。
+def test_clear_empties_filter_box_before_typing_h071b(monkeypatch):
+    """H071b：打 w 前先用 Ctrl+A + backspace 清空累積文字。
 
-    使用者確認框沒有長度上限。所以打字永遠是附加、文字永遠有變、遊戲的篩選也永遠
-    會重跑——要清的是**面板**，不是那個框。實機三法對照（`.scratch/probe_filter_clear.py`）
-    另外量到 Ctrl+A 對這個 TextBox **無效**（199→199px 分毫不變），backspace 有效但
-    根本不需要。這條測試守的是「別再有人想去清那個框」。
+    篩選框只增不減，字越積越多後顯示壓縮飽和——再多打 w 遊戲 filter 不會重跑
+    （harvest 153：ink 921→921、面板仍 8 列）。Ctrl+A + backspace 清空後
+    新鮮 w 才能觸發 filter 重評估。Ctrl+A 實測有效（2026-08-01 實機確認）；
+    backspace 單獨發 60 次完全無效（pydirectinput 進不了這個 TextBox）。
     """
     import pydirectinput
     order = []
@@ -778,7 +778,12 @@ def test_clear_never_tries_to_empty_the_filter_box_h071(monkeypatch):
     monkeypatch.setattr(pydirectinput, "typewrite",
                         lambda s, **kw: order.append("type:" + s))
     bot._clear_panel_filter()
-    assert order == ["click", "type:" + "w" * cfg.panel_clear_keystrokes, "enter"]
+    # 預期序列：click → (Ctrl+A)×N → backspace → type wwwwwwww → enter
+    expected = ["click"]
+    for _ in range(cfg.panel_clear_ctrl_a_rounds):
+        expected += ["+ctrl", "a", "-ctrl"]
+    expected += ["backspace", "type:" + "w" * cfg.panel_clear_keystrokes, "enter"]
+    assert order == expected
 
 
 def test_filter_box_ink_changes_with_text():
@@ -841,7 +846,12 @@ def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
     assert clicks == [(119, 441)]                           # 只點篩選框，不再點畫面中央
-    assert keys == ["enter"]                                # spec 01：改按 Enter 脫離
+    # H071b：(Ctrl+A)×N + backspace 清空累積文字，最後 Enter 脫離
+    expected_keys = []
+    for _ in range(cfg.panel_clear_ctrl_a_rounds):
+        expected_keys += ["+ctrl", "a", "-ctrl"]
+    expected_keys += ["backspace", "enter"]
+    assert keys == expected_keys
     assert typed == ["w" * cfg.panel_clear_keystrokes]
 
 

@@ -721,15 +721,30 @@ fixture 位置慣例：
   | 07-31 23:56 **送 40 個 backspace 後** | 沒變 | 769 | 169px |（見下方訂正）
   | 07-31 23:56 再清一次 | 滿框 | 500 | 180px |
   | 08-01 02:15／02:17 前後 | 滿框 | 494／494 | — |
-  飽和後再打 `w` **一個像素都不變**。⚠ **但框吃得下無限長的字**（使用者指正）——文字其實有變、遊戲的篩選照樣重跑、面板照樣會清空。壞掉的只有那道墨量硬閘：它把「墨量沒變」讀成「字沒進 TextBox」就提早 `return`，連面板 OCR 都不跑、`_panel_zeroed_at` 一路是 `None`。08-01 三次歸零（00:19 ink 257／01:04 ink 769／02:17 ink 494）全掛在這裡。
+  飽和後再打 `w` **一個像素都不變**。⚠ **但框吃得下無限長的字**（使用者指正）。~~文字其實有變、遊戲的篩選照樣重跑、面板照樣會清空~~（**H071b 訂正**：這句前提錯了——飽和後 append 同樣的 `w` 不觸發 filter 重評估，harvest 153 實機證實面板不會清空）。壞掉的確實有那道墨量硬閘：它把「墨量沒變」讀成「字沒進 TextBox」就提早 `return`，連面板 OCR 都不跑、`_panel_zeroed_at` 一路是 `None`。08-01 三次歸零（00:19 ink 257／01:04 ink 769／02:17 ink 494）全掛在這裡。
 - **手段是實機夾出來的**（`.scratch/probe_filter_clear.py`，08-01 03:5x 三法對照，起點是滿框 ink=494／字寬 199px）：
   | 手段 | 之後 | 判定 |
   |---|---|---|
   | Ctrl+A 全選 → 打 w | 494／**199px**（分毫不變） | ❌ 這個 TextBox 不吃全選 |
   | 滑鼠拖曳選取 → 打 w | 468／100px | ✅ |
   | backspace × 40 | 275／57px | ✅ |
-  **訂正 H070 的旁註**：那條寫「backspace 沒生效」是**誤判**——`verify_roundtrip.py` 那次是冷點擊沒真的聚焦到框（H070 自己列為假說 2 卻在暖狀態下測、因此重現不了），不是按鍵無效。這個誤判讓本事故的鑰匙躺了一整天沒人撿。
-- **對策**：**只拆掉那道硬閘**，輸入序列一個字都不改（使用者指定：照舊疊加、不必清空篩選框）。墨量從判準降級成 log 裡的線索，面板 OCR 的重讀迴圈一律跑完，由它決定零點成不成立。
-  ⚠ **走過的兩條冤枉路**（都已實機否決，別再試）：先想用 Ctrl+A 全選取代——實測對這個 TextBox **完全無效**（199→199px 分毫不變）；再想用 backspace 騰空間——有效（199→100→57px）但**根本不需要**，因為框沒有長度上限。兩者都是建立在「框滿了就改不動」這個錯誤前提上，而那個前提是我從「墨量不變」推出來的，正是本事故要拆掉的那個推論。
-- **回歸**：`test_clear_ink_unchanged_but_panel_empty_still_counts_h071`（墨量沒變但面板是空的 → 零點照樣成立；這條直接鎖住玩家回報的那個 bug）、`test_clear_never_tries_to_empty_the_filter_box_h071`（整條只有 click → 打字 → Enter，不得出現任何清空動作）、`test_clear_failure_log_carries_the_ink_numbers`（墨量前後值仍要進 log 當線索）。
+  **訂正 H070 的旁註**：那條寫「backspace 沒生效」是**誤判**——`verify_roundtrip.py` 那次是冷點擊沒真的聚焦到框（H070 自己列為假說 2 卻在暖狀態下測、因此重現不了），不是按鍵無效。⚠ **H071b 再次訂正**：backspace 單獨發 60 次經實機確認**確實無效**（pydirectinput 進不了這個 TextBox），H070 的旁註反而比較接近事實。
+- **對策**：**只拆掉那道硬閘**，輸入序列一個字都不改（使用者當時指定：照舊疊加、不必清空篩選框）。墨量從判準降級成 log 裡的線索，面板 OCR 的重讀迴圈一律跑完，由它決定零點成不成立。⚠ **H071b 訂正**：此對策只拆了硬閘但留了錯誤前提——飽和後 filter 不重跑、面板不會清空。H071b 補上 Ctrl+A+backspace 清空步驟。
+  ⚠ **走過的兩條冤枉路**（都已實機否決，別再試）：先想用 Ctrl+A 全選取代——實測對這個 TextBox **完全無效**（199→199px 分毫不變）；再想用 backspace 騰空間——有效（199→100→57px）但**根本不需要**，因為框沒有長度上限。⚠ **H071b 全部訂正**：兩條結論都反了——Ctrl+A + backspace 實測**有效**（2026-08-01 實機確認，面板 0→8 列）、backspace 單獨**無效**（60 次零效果）。H071 probe 的「Ctrl+A 無效」是測試方法不對：Ctrl+A → typewrite 沒有 backspace、沒有 sleep，選取可能在 typewrite 前就丟了。
+- **回歸**：`test_clear_ink_unchanged_but_panel_empty_still_counts_h071`（墨量沒變但面板是空的 → 零點照樣成立；這條直接鎖住玩家回報的那個 bug）、~~`test_clear_never_tries_to_empty_the_filter_box_h071`~~（H071b 改名為 `test_clear_empties_filter_box_before_typing_h071b`：序列 click → Ctrl+A×N → backspace → 打字 → Enter）、`test_clear_failure_log_carries_the_ink_numbers`（墨量前後值仍要進 log 當線索）。
 - **⚠ 下一場實機驗證預期**：不論篩選框墨量變不變，log 都要出現「面板零點成立（標頭 NORMAL、無白名單礦…）」＝修好了。反指標：出現「面板零點不成立：…篩選框墨量 X→Y(沒變…)」且裁圖上面板真的還有礦——那才是輸入真的沒進去，回頭查點擊座標與焦點（H070 那條路）。
+
+## H071b（2026-08-01 10:22:02，harvest 153 採集成功後背包沒清空；H071 拆了硬閘但留了錯誤前提——飽和後 filter 不重跑）：Ctrl+A + backspace 清空篩選框累積文字，新鮮 w 才能觸發 filter 重評估
+
+- **症狀**：harvest 153 採到 Coinstorm（Transcendent）後，`_clear_panel_filter` 執行歸零：ink 921->921（沒變），面板仍 8 列（coinstorm、halcylite 等，含 H=210 Transcendent 底色）。當天 7 次歸零唯一失敗的就是 ink 沒變的這次；其余 6 次 ink 有變的全成功。路 B 因此跳過下一場。
+- **一句話根因**：篩選框顯示飽和後，遊戲的 live filter **不會因為 append 同樣的 w 而重跑**——filter 只在文字實質變化時重評估。H071 拆了墨量硬閘（正確），但留下「文字有變 filter 就重跑」的前提（錯誤）。
+- **實機量測（2026-08-01，bot 暫停、Roblox 開著）**：
+  | 手段 | 結果 | 判定 |
+  |---|---|---|
+  | backspace x60（pydirectinput `key_press`） | ink 7405／字寬 213px，零效果 | ❌ 進不了這個 TextBox |
+  | Ctrl+A + backspace + type 8w | 面板 8 列->0 列 | ✅ |
+  | type 8w alone（從清空狀態） | 面板 8 列->0 列 | ✅ |
+  ink 在飽和狀態下是**純噪訊**（實機序列 933->216->741->535 亂跳，字寬恆 213px）——不是字沒進去，是量不出來（使用者：顯示壓縮到字太小，像素量測失效）。
+- **對策**：打 w 前加 `panel_clear_ctrl_a_rounds`（=2）輪 Ctrl+A + 1 個 backspace，清空累積文字。Ctrl+A 後加 `sleep(0.1)`、backspace 後加 `sleep(0.1)`——H071 probe 沒加 sleep 導致選取在 typewrite 前丟失、誤判「Ctrl+A 無效」。墨量維持 H071 的診斷角色（不當閘）。
+- **回歸**：`test_clear_empties_filter_box_before_typing_h071b`（驗完整序列 click->(Ctrl+A)x2->backspace->type 8w->enter）、更新 `test_clear_sets_timestamp_when_normal_and_empty`（keys 含 Ctrl+A+backspace）、`test_clear_ink_unchanged_but_panel_empty_still_counts_h071`（docstring 訂正、邏輯不變）。2272 passed。
+- **⚠ 下一場實機驗證預期**：採集成功後 log 出現「面板零點成立」。ink before 應大幅高於 after（Ctrl+A 清空了累積文字、after 只剩 8 個新鮮 w）。反指標：仍出現「面板零點不成立」——回頭查 Ctrl+A 有沒有生效（`key_down('ctrl')` 的 sleep 是否足夠）。
