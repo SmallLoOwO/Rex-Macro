@@ -391,10 +391,18 @@ class Config:
                                               # 只重讀不重打字：H047/H063 的「多試幾次會翻面」只針對點擊/按鍵
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
     # 列底色 → tier（wiki HSV 官方色碼 + 實機量測交叉驗證，2026-08-02）：
-    #   Otherworldly 334｜Unfathomable 219｜Enigmatic 70｜Transcendent 210｜Exquisite 128｜Exotic 46
-    #   ｜Mythic 304｜Surreal 166｜低階 0/30/280
-    # wiki HSV 全 6 階確認（Exquisite 56C365、Transcendent 0080FF、Unfathomable 032C79）。
+    # 全階級 wiki 色碼已收集（https://rex-reincarnated.fandom.com/wiki/Category:Tiers）
+    #
+    # 高階（panel_whitelist_hues）：
+    #   Otherworldly 334(5E0E32)｜Unfathomable 219(032C79)｜Enigmatic 70(CDF600)
+    #   ｜Transcendent 210(0080FF)｜Exquisite 128(56C365)｜Exotic 46(F6C940)
+    # 低階（panel_low_tier_hues，反向閘用）：
+    #   Mythic 305(FF00EB)｜Surreal 165(1DD7A9)｜Master 280(9A00E6)
+    #   ｜Rare 30(FF8001)｜Uncommon 0(FF2626)｜Common 0(C1C1C1,灰階S=0)
+    # ⚠ Rare wiki FF8001 HSV≈30°，Uncommon FF2626 HSV≈0°——兩階色相相近但 Rare 偏橙。
+    #   Common C1C1C1 是灰階（S=0），色相無意義，實機量到 H=0 與 Uncommon 同帶。
     panel_whitelist_hues: tuple = (46.0, 70.0, 128.0, 210.0, 219.0, 334.0)
+    panel_low_tier_hues: tuple = (0.0, 30.0, 165.0, 280.0, 305.0)
     # 已量到的非白名單色帶（D11）：Mythic 304｜Surreal 166｜低階 0/30/280。
     # 給 spec 01 反向閘用——色相不落在這些帶就當成高階、擋零點成立。
     panel_low_tier_hues: tuple = (0.0, 30.0, 166.0, 280.0, 304.0)

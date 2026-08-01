@@ -1604,22 +1604,23 @@ _TIER_ORDER: dict[str, int] = {t: i for i, t in enumerate(_HIGH_TIERS)}
 HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一來源）
 
 # 全階級色相參考表（wiki HSV 官方色碼 + 實機量測交叉驗證，2026-08-02）。
-# 全 8 階 HIGH_TIERS + 2 階 LOW_TIERS 誤差 ≤1°：
-#   https://rex-reincarnated.fandom.com/wiki/Category:Tiers
+# 全階級 wiki 色碼已收集（https://rex-reincarnated.fandom.com/wiki/Category:Tiers）
 #
-#   Tier          Wiki HSV  Wiki HEX    實機   Δ
-#   Surreal       165°      1DD7A9      166°   1°  LOW（排除清單）
-#   Mythic        305°      FF00EB      304°   1°  LOW（排除清單）
-#   Exotic         45°      F6C940       46°   1°
-#   Exquisite     128°      56C365      128°   0°
-#   Transcendent  210°      0080FF      210°   0°
-#   Enigmatic      70°      CDF600       70°   0°
-#   Unfathomable  219°      032C79      219°   0°
-#   Otherworldly  333°      5E0E32      334°   1°
-#   Imaginary    42°+201°  EEBA44+C9DEE9  —   雙色漸層，面板色相待量
-#   Zenith          ?          ?          —   未量測
-#
-# 低階（非 HIGH_TIERS）：Common 0°｜Uncommon 30°｜Rare 280°（量測值，wiki 頁面待查）
+#   Tier          Wiki HSV  Wiki HEX      實機   Δ
+#   Common          0°      C1C1C1 (灰)    0°    0°  S=0（灰階，H 無意義）
+#   Uncommon        0°      FF2626 (紅)    0°    0°  與 Common 同 H，靠 S 區分
+#   Rare           30°      FF8001 (橙)   30°    0°
+#   Master        280°      9A00E6 (紫)   280°   0°
+#   Surreal       165°      1DD7A9 (青)   166°   1°
+#   Mythic        305°      FF00EB (洋紅)  304°   1°
+#   Exotic         45°      F6C940 (黃)    46°   1°
+#   Exquisite     128°      56C365 (綠)   128°   0°
+#   Transcendent  210°      0080FF (藍)   210°   0°
+#   Enigmatic      70°      CDF600 (金)    70°   0°
+#   Unfathomable  219°      032C79 (深藍)  219°   0°
+#   Otherworldly  333°      5E0E32 (深紅)  334°   1°
+#   Imaginary    42°+201°  EEBA44+C9DEE9   —    雙色漸層，面板色相待量
+#   Zenith          ?          ?            —    未量測
 TIER_HUES: dict[str, float] = {
     "Exotic": 46.0,       # 黃     wiki F6C940 HSV 45°
     "Exquisite": 128.0,   # 綠     wiki 56C365 HSV 128°
