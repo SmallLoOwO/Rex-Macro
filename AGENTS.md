@@ -316,9 +316,13 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `main.py` remains the main complexity hotspot and has intentional direct state
   assignments outside the central transition path.
 - Remote aim/re-entry and zoom need more live-game evidence than pure tests provide.
-- `scan_confirm_mode` is still off. Its region was calibrated on 2026-07-25 to the
-  bottom-right effect row (the earlier bottom-left value read the ore panel instead),
-  but the mode has not yet run in `observe` against a live session.
+- `scan_confirm_mode` is now `enforce` (H073, 2026-08-02). harvest 168 實機：
+  進場 D2 click 被吃、掃描沒觸發，但 `scan_confirm_mode` 原為 `off` 使
+  `_confirm_scan` 永遠 return True → bot 無法分辨「沒稀有礦」與「掃描沒觸發」→
+  白掃 8 方位全空 → giveup。現改成 enforce + 呼叫端接住回傳值，掃描未生效時
+  abort（giveup／return False）不白掃。**需實機驗證**：下一輪 log 預期看到
+  `[scan-confirm] enter ok=True/False` 行；若 OCR 誤判（badge 在但讀不到），
+  會出現不必要的 NEEDS_HUMAN，屆時考慮降回 observe。
 - **`giveup_rescue_observe` is on (observation mode) and needs a human decision to
   leave it.** Path B of the give-up rescue judges "this ore was already banked" but
   still hands over to the human; every hit is appended to

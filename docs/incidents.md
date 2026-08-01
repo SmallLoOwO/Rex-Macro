@@ -765,3 +765,21 @@ fixture 位置慣例：
   3. 進場面板色檢（main.py `_harvest_entry_panel_check`）：chill 觸發進 HARVESTING 時，若面板（已歸零可信）已有白名單 礦＝chill 前鎬子已挖到→不需要 D3 採集。觀察期照舊交人工確認（同救援路 B）。
 - **回歸**：`test_count_rare_found_tolerates_trailing_ocr_truncation_on_common`、`test_has_new_rare_found_false_when_common_ore_ocr_truncated`、`test_classify_confirms_new_rare_rejects_truncated_common`、`test_classify_confirms_new_rare_accepts_real_rare`、`test_entry_panel_check_*` ×4。2297 passed。
 - **⚠ 下一場實機驗證預期**：log 不再出現 `H072 classify 交叉驗證否決`（代表截斷沒發生或被層 1 擋下）。若出現 `H072 進場面板色檢命中`→面板色檢偵測到 chill 前已挖到的 礦，攤開證據問使用者是否合理。反指標：真成功卻被層 1 或層 2 否決（rare 礦名也被截斷成 <4 字的前綴）→ 鬆門檻。
+
+## H073（2026-08-02 04:06:43，harvest 168；使用者發現「稀有挖礦工序沒有檢查 D2 效果是否使用」）：scan_confirm_mode="off" 使 _confirm_scan 永遠放行 → 進場 click 被吃／掃描沒觸發 → bot 無法分辨「沒稀有礦」與「掃描沒觸發」→ 白掃 8 方位全空 → giveup
+
+- **症狀**：harvest 168 進場 D2 掃描後，8 方位 sweep 全部 no tracker（所有候選 ring_ok=False、edge ≤0.33），俯仰層 up/down 全被吃，最終 NEEDS_HUMAN。連續 3 場（166/167/168）同樣模式。使用者實機觀察確認畫面上無 D2 掃描效果。
+- **實機量測（sweep_empty_dir0 幀）**：
+  | 項目 | 值 | 判定 |
+  |---|---|---|
+  | slot 2 greenness | 10.5（門檻 5.0） | D2 已裝備（slot_selected 通過） |
+  | 效果列 per-slot OCR | "Used tu"／"A" | **無 Local 徽章** → scan_succeeded=False |
+  | 8 方位候選 ring_ok | 全 False | 全是地形/UI 噪音，無真追蹤框 |
+- **一句話根因**：`execute_scan()` 的 `slot_selected` 只驗裝備（slot 亮綠）不驗效果（掃描是否觸發），click 被吃時裝備仍在但掃描沒生效；`_confirm_scan()` 的 OCR 徽章驗證寫好了但因 `scan_confirm_mode="off"` 永遠 return True，使這層保護形同虛設。
+- **三層修復**：
+  1. `_confirm_scan` enforce 模式重試後回傳實際結果（`return ok` 取代 `return True`）。
+  2. 五個呼叫端（進場／重掃／歷史復原／俯仰層／remote-aim）接住回傳值，False 時 abort——進場與重掃走 `_harvest_giveup("D2 掃描未生效")`，其餘 return False 讓呼叫端走既有 giveup。
+  3. `scan_confirm_mode` 預設從 `"off"` 改 `"enforce"`。
+- **安全方向**：enforce 重試仍 False 時 abort（giveup／return False）——寧可交人工（玩家手動掃描＋按 Q）也不白掃 19s 後用錯誤結論收場（可能放生真稀有礦）。enforce 模式已含一次 retry（refocus + 等冷卻 + 重掃），暫態 click 被吃能自動恢復。
+- **回歸**：`tests/test_scan_confirm_gate.py` 8 項——`_confirm_scan` 四種模式回傳值（off/observe/enforce-ok/enforce-fail/enforce-retry-succeed）、`_reharvest_sweep` 掃描未生效 giveup vs ok 正常、`_recover_historical_target` 掃描未生效跳過 find_tracker_near。全測試 2346 passed（4 項 pre-existing failure 與本修復無關）。
+- **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True`（掃描正常）或 `[scan-confirm] enter ok=False` → `[scan-confirm] enter-retry ok=True/False`（偵測到失敗→重試）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；ok=False 頻繁出現＝OCR 誤判，考慮降回 observe。3 場連續 ok=True 且正常採到 礦＝修復確認。

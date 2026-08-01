@@ -265,7 +265,7 @@ class Config:
     # D2 掃描成功確認（HANDOFF F）：掃描後 OCR 左下 Local 標籤。彈窗吃掉 click → 白掃
     # 8 方位 ~19s＋可能誤交人工。模式循 RapidOCR 觀察期慣例：
     #   off=不跑；observe=只記 log 收誤判數據（不重試）；enforce=失敗重聚焦重掃一次
-    scan_confirm_mode: str = "off"               # 先切 observe 收 2-3 天誤判數據再裁決 enforce
+    scan_confirm_mode: str = "enforce"           # harvest 168 實機驗證：off 使掃描被吃時全盲白掃 → 預設 enforce（重試後仍 False 則 abort，不白掃 8 方位）
     # 掃描成功＝右下角效果列出現雷達徽章「Local」（2026-07-25 實機校準，取代原先的左下估值——
     # 舊值 Region(20,850,200,60) 方位就錯，離線重放 22 幀 TP=0：它讀到的是左側常駐礦物面板
     # 文字 'Dyvantium 1 / Equalizosity 1'）。徽章 t+0.4s 出現、~30s 後消失（同冷卻）。
