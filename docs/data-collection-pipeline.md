@@ -21,10 +21,30 @@ spec／ticket／incident 細節。別從頭查 config 裡哪些欄位標了「�
   - 如果漏判多在「同礦種重複盲」（名字已在面板、只有數量 +1）→ 動手做 www 篩選框武裝。
   - 如果幾乎沒漏判 → 救援功能驗收通過，不用動。
 - **現在狀態**：`giveup_rescue_enabled=True`（已上線收資料，2026-07-30 `d0a004c`）。
-- **規格**：`docs/superpowers/specs/2026-07-30-giveup-rescue-already-mined-design.md`
-  「實機驗證方法」段。
-- **附帶校準**：`prechill_min_age_s = 3.0`（config.py，標「待實機修正」）——太新的參考
-  可能已含那次挖掘、太舊納入無關挖掘。用救援命中／漏判分布修正。
+  **觀察期中**：`giveup_rescue_observe=True`——命中照記 `HARVEST_RESCUED` 但照舊交人工，
+  不自己收尾。命中次數持久化在 `<log_dir>/rescue_observed.json`，滿
+  `giveup_rescue_observe_target`（10）次由 agent session 攤開證據問玩家要不要切自動。
+- **降級原因分類**（路 B 跳過時 log 可見）：
+  - **面板未歸零**（`_panel_zeroed_at is None`）：進 MINING 時清空未通過驗證（清空序列
+    失敗／面板重繪沒跟上／rapidocr 不可用）→ 路 B 整條跳過，只靠路 A（聊天）。log：
+    「路 B：面板未歸零 → 跳過」。
+  - **標頭非 NORMAL**：面板標頭讀到 IONIZED／SPECTRAL 或讀不到 → 路 B 跳過（白名單礦
+    排在 NORMAL 頁最上面，在其他頁看不到）。log：歸零驗證的 WARNING 帶實際標頭。
+  - **兩訊號不一致**： 礦名認出白名單但列底色說沒有 Exotic+（或反向）→ 否決命中、照舊
+    交人工。log：「面板兩訊號不一致」WARNING。
+  - **同 礦種重複盲**：兩顆同種 礦只算一顆（名字已在面板、只有數量 +1，數量欄被 craft
+    面板疊住讀不到）。這是漏判不是錯判，寧漏勿誤。
+- **規格**：`docs/superpowers/specs/2026-07-31-panel-zero-rescue-design.md`（存在性檢查
+  設計）、`docs/superpowers/specs/2026-07-31-rescue-trust-hardening-design.md`（實機
+  失效點修正＋觀察期）、`docs/superpowers/specs/2026-07-30-giveup-rescue-already-mined-design.md`
+  （原始設計，面板側已被 07-31 兩份 spec 取代）。
+- **附帶校準**：`prechill_min_age_s = 3.0`（config.py，標「待實機修正」）——只影響路 A
+  （聊天差分），路 B 已改成存在性檢查不需要 chill 前參考點。太新的參考可能已含那次挖掘、
+  太舊納入無關挖掘。用救援命中／漏判分布修正。
+- **⚠ H072（2026-08-01）相關**：成功驗證路徑（`_is_rare_ore` count 差）若誤判成功，
+  `_episode_succeeded=True` 會讓救援整條跳過——假成功等於靜默繞過救援。已三層修復
+  （截斷容忍＋classify 交叉驗證＋進場面板色檢），但救援命中率統計要看的是「救援被叫到
+  時判得對不對」，不含「根本沒輪到救援」的假成功。
 
 ## 2. chill 上升緣／回落時間戳 → 雙 chill 對帳門檻
 
