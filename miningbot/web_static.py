@@ -1511,6 +1511,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
                   border-radius: 6px; background: #3a3a3a; color: #eee;
                   font-size: 0.9rem; cursor: pointer; box-sizing: border-box; }
 #toolbar button:disabled { opacity: 0.35; cursor: default; }
+#toolbar button[hidden] { display: none; }
 #toolbar button.act { background: #4a4a4a; }
 #toolbar button.skip { background: #6d6d6d; }
 #toolbar button.confirm { background: #1f7a3d; }
@@ -1723,7 +1724,7 @@ function positionPredictMark() {
   if (!p) { predictMark.style.display = 'none'; return; }
   predictMark.style.left = (pan[0] + p.x * zoom) + 'px';
   predictMark.style.top = (pan[1] + p.y * zoom) + 'px';
-  predictMark.style.display = '';
+  predictMark.style.display = 'block';
   predictLabel.textContent = 'bot 猜這裡 ' + (p.score != null ? p.score.toFixed(2) : '');
 }
 
