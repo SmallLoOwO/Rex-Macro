@@ -6543,9 +6543,11 @@ class Bot:
         # 三態分類標注：白名單高階→附階級；未知→標注請人核對（OCR 誤讀或遊戲更新
         # 的清單漂移自己浮出來，不靜默失效）；common（低階被動 find 混入）→原樣。
         annotated, has_unknown = [], False
+        _cls_kinds = {}                        # H072 診斷：成功行的分類分佈
         for line in new_lines:
             kind, info = game_data.classify_found_ore(
                 ocr.found_ore_name(line, cfg.found_keywords) or "")
+            _cls_kinds[kind] = _cls_kinds.get(kind, 0) + 1
             if kind == "rare":
                 annotated.append(f"{line} 〔{info['tier']} 1/{info['rarity']:,}〕")
             elif kind == "rare_fuzzy":
@@ -6579,6 +6581,10 @@ class Bot:
         new_lines = annotated
         if new_lines:
             self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
+        # ★ 成功行分類分佈（H072 診斷）：rare=白名單高階、rare_fuzzy≈近失拼字、
+        #   common=低階被動 find（全部 common 代表可能假成功——已被 classify 交叉擋住，
+        #   但帳本晚到行仍可能帶 common 進來）、unknown=清單漂移。
+        self.log_harvest.info("[%s] 採集成功分類: %s", hid, dict(_cls_kinds))
         self.log.log("HARVEST_SUCCESS", harvest_id=hid, confirmed=confirmed, tracker_gone=gone,
                      special=special, rare_before=rare_before, rare_after=rare_after,
                      new_found_lines=new_lines, image_path=chat_after_path)
@@ -8860,6 +8866,16 @@ class Bot:
         counts = [ocr.count_rare_found(t, common, cfg.found_keywords) for t in chat_after]
         self.log_harvest.info("[%s] verify OCR(%s) %.1fs rare/pass=%s confirmed=%s special=%s",
                               hid, why, time.time() - t0, counts, confirmed, special)
+        # ★ confirmed 時加 classify 計數對比（H072 診斷需求）：count_rare_found 用
+        #   _is_rare_ore（弱）、classify 用 classify_found_ore（強）。兩者同意才有可信度。
+        #   下次再出現假成功，grep 這行即可看見兩套是否分歧。
+        if confirmed:
+            cls_counts = [_classify_rare_count(t, cfg.found_keywords) for t in chat_after]
+            agree = all(c == cc for c, cc in zip(counts, cls_counts))
+            self.log_harvest.info(
+                "[%s]   classify 交叉：%s rare=%s classify=%s %s",
+                hid, "同意" if agree else "分歧⚠", counts, cls_counts,
+                "（兩套一致→可信）" if agree else "（弱匹配多算→已否決或帳本覆蓋）")
         labels = ocr.pass_labels(chat_after)
         for i, t in enumerate(chat_after):
             last = t.strip().splitlines()[-1] if t.strip() else ""

@@ -876,3 +876,40 @@ def test_chill_reconcile_balanced_when_gains_match():
     from miningbot.harvester import chill_reconcile_unbalanced
     assert chill_reconcile_unbalanced(2, 2) is False
     assert chill_reconcile_unbalanced(2, 3) is False     # 進帳更多（續採）也算平
+
+
+# ── 紅綠自證（ticket 02 驗收）：判準退回舊值時必須能被抓到 ──────────────────
+
+def test_mutation_proof_rare_only_rejects_what_non_common_would_accept():
+    """rare_panel_ores 只認 classify == 'rare'。退回 != 'common' 會讓 unknown 低階 礦假命中。
+
+    H069 根因：面板列整個背包，低階 礦（不在 common_ore_names）落 unknown →
+    != 'common' 全收 → 每顆鎬子挖到的低階 礦都假命中 → 靜默放生真稀有 礦。
+    本測試鎖住 == 'rare' 比 != 'common' 嚴格——如果差異消失代表 礦名清單漂了。
+    """
+    from miningbot.harvester import rare_panel_ores
+    from miningbot import game_data
+    game_data.set_world("Lucernia")
+    try:
+        candidates = ["sugarmuck", "cloverstone", "plentium", "imbollyx"]
+        unknowns = [n for n in candidates
+                    if game_data.classify_found_ore(n)[0] == "unknown"]
+        assert unknowns, "找不到 unknown 礦名做反證—— 礦名清單可能已漂"
+        # 現行判準（== "rare"）：全部排除
+        assert rare_panel_ores(unknowns) == []
+        # 退回 != "common" 會收它們——這就是 H069 假命中的來源
+        assert all(game_data.classify_found_ore(n)[0] != "common" for n in unknowns)
+    finally:
+        game_data.clear_world()
+
+
+def test_mutation_proof_wrong_expected_header_rejects_clean_panel():
+    """panel_is_zeroed 的標頭閘是 load-bearing：expected_header 翻成別的值就擋。
+
+    ticket 02 紅綠自證：panel_expected_header 改成非 NORMAL → panel_is_zeroed 恆 False
+    → _panel_zeroed_at 恆 None → 路 B 整條跳過。
+    """
+    from miningbot.harvester import panel_is_zeroed
+    assert panel_is_zeroed("NORMAL", [], "NORMAL") is True
+    assert panel_is_zeroed("NORMAL", [], "SPECTRAL") is False
+    assert panel_is_zeroed("NORMAL", [], "IONIZED") is False

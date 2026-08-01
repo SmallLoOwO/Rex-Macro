@@ -94,3 +94,14 @@ def test_h069_live_panel_has_no_whitelist_ores():
         assert harvester.rare_panel_ores(names) == []
     finally:
         game_data.clear_world()
+
+
+def test_header_read_from_same_ocr_call_as_names():
+    """標頭必須從同一次 read_text_boxes 取（不新增 region）——ticket 02 驗收。
+
+    wiring 在 _clear_panel_filter（進 MINING 清空時）和 test_harvester.py:panel_header
+    單元測試有覆蓋；本測試在實機 fixture 上確認同一張裁圖同一次 OCR 同時取得到標頭與 礦名。
+    """
+    boxes = ocr.read_text_boxes(_load("125_giveup_before_backpack.png"))
+    header = harvester.panel_header(boxes, cfg.panel_row_min_y)
+    assert header == "NORMAL"
