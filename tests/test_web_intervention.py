@@ -1994,6 +1994,32 @@ def test_consume_web_pending_routes_void_to_reentry_queue():
     assert calls == [("作廢", "void", "web")]
 
 
+@pytest.mark.parametrize("cmd,raw,kind", [
+    ("reroll", "重骰", "reroll"),
+    ("sweep", "掃", "sweep"),
+])
+def test_consume_web_pending_routes_reroll_and_sweep(cmd, raw, kind):
+    """網頁「重骰」／「重掃」按鈕——前端有按鈕但後端原本沒接，按了靜默消失。
+
+    2026-08-01 使用者反映重骰沒作用；根因＝_consume_web_pending 只認
+    confirm/void/skip，不認 reroll/sweep。
+    """
+    from miningbot.web_ipc import PendingReplies
+    from tests.fake_bot import make_fake_bot
+
+    pending = PendingReplies()
+    pending.push(f"control:{cmd}", {"cmd": cmd})
+    calls = []
+    bot = make_fake_bot(
+        bind=["_consume_web_pending"],
+        _web_pending=pending,
+        _pending_reentry=None,
+        _queue_reentry_reply=lambda r, reply, source: calls.append((r, reply.kind, source)),
+    )
+    bot._consume_web_pending()
+    assert calls == [(raw, kind, "web")]
+
+
 def test_consume_web_pending_ignores_confirm_when_pending_reentry_busy():
     """上一則指令還沒被主迴圈消費——不搶隊，等下一輪（同 skip 既有慣例）。"""
     from miningbot.web_ipc import PendingReplies

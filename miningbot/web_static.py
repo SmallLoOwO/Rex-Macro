@@ -1474,10 +1474,10 @@ _INTERVENTION_HTML = """<!DOCTYPE html>
 body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif;
        display: flex; flex-direction: column; height: 100vh; }
 header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444;
-         display: flex; justify-content: space-between; align-items: center;
+         display: flex; justify-content: space-between; align-items: flex-start;
          gap: 0.6rem; }
 #status { font-size: 0.85rem; color: #888; flex: 1; min-width: 0;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          white-space: pre-line; line-height: 1.4; }
 /* 主體：左邊圖片全高、右邊側欄放所有按鍵——圖片不再被上方資訊列壓縮，
    按鈕直排變大更好點（同標註工具的佈局） */
 #main { flex: 1; display: flex; overflow: hidden; min-height: 0; }

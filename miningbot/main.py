@@ -89,11 +89,15 @@ _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「
 # 掃描 ~2 分鐘），而人此刻已經在礦裡——點歪或指令被吃都不會讓人跑到別的地方去。
 # 不確定時「保持原地」（按好）才是零成本的那一邊，只有實測層真的不對才值得重骰。
 _RR_CONFIRM_CHOICES_DISCORD = (
-    "沒問題回 `好` 開挖；**確定層不對**才回 `重骰`（回地表換重生點、整輪重來 ~2 分鐘）；"
-    "不確定就回 `好`——人已經在礦裡，原地開挖不吃虧。資料要作廢回 `作廢`")
-# 2026-08-01 使用者反映：手機面板塞不下了，縮短。Discord 版（上方）空間寬鬆保留原長文。
+    "沒問題回 `好` 開挖\n"
+    "**確定層不對**才回 `重骰`（回地表換重生點、整輪重來 ~2 分鐘）\n"
+    "不確定就回 `好`——人已經在礦裡，原地開挖不吃虧\n"
+    "資料要作廢回 `作廢`")
+# 2026-08-01 使用者反映：手機面板塞不下 + 語句沒有斷句。每個選項獨立一行。
 _RR_CONFIRM_CHOICES_WEB = (
-    "好＝開挖（不確定也按好，人已在礦）；重骰＝回地表重來 ~2 分鐘；作廢＝丟資料")
+    "好＝開挖（不確定也按好，人已在礦）\n"
+    "重骰＝回地表重來 ~2 分鐘\n"
+    "作廢＝丟資料")
 # 手動瞄準三層掃描（2026-07-31）：顯示順序與人話層名。up 排最前——實機經驗礦多在
 # 壁上高處（同 harvester.plan_pitch_layers 的順序論證）。
 _MANUAL_LAYER_ORDER = {"up": 0, "mid": 1, "down": 2}
@@ -3557,11 +3561,11 @@ class Bot:
                 self.logger.info("web: 跳過（排入 reentry pending）")
             else:
                 self.logger.info("web: 跳過被忽略（上一則指令還在執行或非回礦中）")
-        # 網頁「好」／「作廢」按鈕（2026-07-28）：awaiting_confirm 階段（Depth 已確認
-        # 下礦但 cfg.reentry_remote_auto_resume=False，安全預設一律等人工放行）原本
-        # 只能回 Discord 打字——玩家人在網頁面板上，這步驟卻要切回 Discord，體驗上
-        # 等於白做。同樣走既有 reentry 指令路徑，跟 `跳過` 那段一樣的接法。
-        for cmd, raw in (("confirm", "好"), ("void", "作廢")):
+        # 網頁 reentry 按鈕（好／作廢／重骰／重掃）：全部走既有 reentry 指令路徑，
+        # 跟 `跳過` 那段一樣的接法。重骰/重掃原本前端有按鈕但這裡沒接——按了靜默
+        # 消失（2026-08-01 使用者反映重骰沒作用）。
+        for cmd, raw in (("confirm", "好"), ("void", "作廢"),
+                         ("reroll", "重骰"), ("sweep", "掃")):
             if self._web_pending.pop(f"control:{cmd}") is not None:
                 reply = reentry_remote.parse_reply(raw)
                 if reply is not None and self._pending_reentry is None:
@@ -7595,8 +7599,9 @@ class Bot:
             if self._rr_ctx is not None and reentry_remote.should_warn_attempts(
                     self._rr_ctx.attempt, cfg.reentry_attempt_warn_every):
                 self._rr_notify(
-                    f"🎲 已重骰 {self._rr_ctx.attempt} 次——重生點一直不理想可 `跳過` "
-                    f"回挖礦，或先 `上|下 [px]`/`遠|近` 調視角再 📷 重掃")
+                    f"🎲 已重骰 {self._rr_ctx.attempt} 次\n"
+                    f"重生點一直不理想可 `跳過` 回挖礦\n"
+                    f"或先 `上|下 [px]`／`遠|近` 調視角再 📷 重掃")
         elif k == "sweep":
             self._rr_sweep_and_send(prefix_msg=f"🔁 回礦 #{ctx.episode_id} 重新八方位掃描")
         elif k == "pitch_save":
@@ -8022,12 +8027,12 @@ class Bot:
                                 ctx.episode_id)
             ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（{evidence}）。"
-                f"左圖紅圈＝點擊處、右圖＝落點。{_RR_CONFIRM_CHOICES_DISCORD}",
+                f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（{evidence}）。\n"
+                f"左圖紅圈＝點擊處、右圖＝落點。\n{_RR_CONFIRM_CHOICES_DISCORD}",
                 image_paths=[mpath, lpath])
             self._rr_ask_confirm_on_web(
                 ctx, mpath, lpath,
-                f"❓ 畫面有變化但 Depth 讀不到，無法確認下礦（{evidence}）。"
+                f"❓ 畫面有變化但 Depth 讀不到，無法確認下礦（{evidence}）。\n"
                 f"{_RR_CONFIRM_CHOICES_WEB}")
             return verdict
         # verdict == "descended"：Depth=NNNm 已直接證明在礦內；礦內亮度檢查退役
@@ -8044,12 +8049,11 @@ class Bot:
         else:
             ctx.phase = "awaiting_confirm"
             self._rr_notify(
-                f"❓ 已下礦（{evidence}）。左圖紅圈＝點擊處、右圖＝落點。"
-                f"{_RR_CONFIRM_CHOICES_DISCORD}",
+                f"❓ 已下礦（{evidence}）。\n左圖紅圈＝點擊處、右圖＝落點。\n{_RR_CONFIRM_CHOICES_DISCORD}",
                 image_paths=[mpath, lpath])
             self._rr_ask_confirm_on_web(
                 ctx, mpath, lpath,
-                f"❓ 已下礦（{evidence}）。{_RR_CONFIRM_CHOICES_WEB}")
+                f"❓ 已下礦（{evidence}）。\n{_RR_CONFIRM_CHOICES_WEB}")
         return verdict
 
     def _rr_ask_confirm_on_web(self, ctx, mpath, lpath, summary: str) -> None:
