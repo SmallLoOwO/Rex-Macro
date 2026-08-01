@@ -760,25 +760,22 @@ def test_clear_ink_unchanged_but_panel_empty_still_counts_h071(monkeypatch):
     assert bot._panel_zeroed_at == 9999.0
 
 
-def test_clear_never_tries_to_empty_the_filter_box_h071(monkeypatch):
-    """H071：篩選框吃得下無限長的字 → 只疊加，不做任何清空動作。
+def test_clear_input_sequence_is_click_w_then_enter_h071c(monkeypatch):
+    """H071c：輸入序列只有 click → key_press w × N → Enter，不做任何清空動作。
 
-    使用者確認框沒有長度上限。所以打字永遠是附加、文字永遠有變、遊戲的篩選也永遠
-    會重跑——要清的是**面板**，不是那個框。實機三法對照（`.scratch/probe_filter_clear.py`）
-    另外量到 Ctrl+A 對這個 TextBox **無效**（199→199px 分毫不變），backspace 有效但
-    根本不需要。這條測試守的是「別再有人想去清那個框」。
+    H071b 實機確認 typing alone 就能觸發 filter，不需要 Ctrl+A 或 backspace。
+    H071c 改用 key_press（90ms 間隔）取代 typewrite（40ms），解決 harvest 153
+    的 timing 問題（typewrite 太快、遊戲來不及讀）。這條測試守的是輸入序列。
     """
-    import pydirectinput
     order = []
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
     monkeypatch.setattr(main.ic, "click_at", lambda *a, **kw: order.append("click"))
     monkeypatch.setattr(main.ic, "key_down", lambda k: order.append("+" + k))
     monkeypatch.setattr(main.ic, "key_up", lambda k: order.append("-" + k))
     monkeypatch.setattr(main.ic, "key_press", lambda k, **kw: order.append(k))
-    monkeypatch.setattr(pydirectinput, "typewrite",
-                        lambda s, **kw: order.append("type:" + s))
     bot._clear_panel_filter()
-    assert order == ["click", "type:" + "w" * cfg.panel_clear_keystrokes, "enter"]
+    expected = ["click"] + ["w"] * cfg.panel_clear_keystrokes + ["enter"]
+    assert order == expected
 
 
 def test_filter_box_ink_changes_with_text():
@@ -841,8 +838,9 @@ def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
     assert clicks == [(119, 441)]                           # 只點篩選框，不再點畫面中央
-    assert keys == ["enter"]                                # spec 01：改按 Enter 脫離
-    assert typed == ["w" * cfg.panel_clear_keystrokes]
+    expected_keys = ["w"] * cfg.panel_clear_keystrokes + ["enter"]
+    assert keys == expected_keys                            # key_press w × N + Enter 脫離
+    assert typed == []                                      # H071c：不再用 typewrite
 
 
 def test_clear_sets_none_when_wrong_page(monkeypatch):
@@ -923,13 +921,13 @@ def test_clear_verifies_before_restoring_focus(monkeypatch):
 
 def test_clear_rereads_when_panel_redraw_lags(monkeypatch):
     """第一讀還是舊清單、第二讀才空 → 算歸零成功（只重讀，不重打字）。"""
-    bot, _clicks, typed, _keys, panel_ocr = _clear_bot(
+    bot, _clicks, _typed, keys, panel_ocr = _clear_bot(
         monkeypatch, header="NORMAL", names=["faedrine", "riches"],
         later=("NORMAL", []))
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
     assert panel_ocr.calls == 2
-    assert typed == ["w" * cfg.panel_clear_keystrokes], "重讀不得重打字（H047/H063）"
+    assert keys.count("w") == cfg.panel_clear_keystrokes, "重讀不得重打字（H047/H063）"
 
 
 def test_clear_failure_saves_snapshot_for_next_session(monkeypatch):

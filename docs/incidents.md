@@ -734,11 +734,11 @@ fixture 位置慣例：
 - **回歸**：`test_clear_ink_unchanged_but_panel_empty_still_counts_h071`（墨量沒變但面板是空的 → 零點照樣成立；這條直接鎖住玩家回報的那個 bug）、`test_clear_never_tries_to_empty_the_filter_box_h071`（整條只有 click → 打字 → Enter，不得出現任何清空動作）、`test_clear_failure_log_carries_the_ink_numbers`（墨量前後值仍要進 log 當線索）。
 - **⚠ 下一場實機驗證預期**：不論篩選框墨量變不變，log 都要出現「面板零點成立（標頭 NORMAL、無白名單礦…）」＝修好了。反指標：出現「面板零點不成立：…篩選框墨量 X→Y(沒變…)」且裁圖上面板真的還有礦——那才是輸入真的沒進去，回頭查點擊座標與焦點（H070 那條路）。
 
-## H071b（2026-08-01，harvest 153 調查結論：根因是 click 沒命中篩選框，不是 filter 飽和——H071 的做法正確，不需要 Ctrl+A+backspace）
+## H071b（2026-08-01，harvest 153 調查結論：typing alone 就夠、不需要 Ctrl+A+backspace；根因見 H071c）
 
 - **症狀**：harvest 153 採到 Coinstorm（Transcendent）後，`_clear_panel_filter` 執行歸零：ink 921→921（沒變），面板仍 8 列（coinstorm、halcylite 等）。當天 7 次歸零唯一失敗的就是這次。
 - **遊戲機制（使用者澄清）**：filter 一直在、從不關閉。挖到新 礦時遊戲把它加到面板上（bypass filter）。打 w 進篩選框會觸發 filter 重評估、面板清空。filter 不管框裡有幾個 w——8 個跟 80 個效果一樣。
-- **一句話根因**：harvest 153 的 click (119,441) **沒命中篩選框**——8 個 w 進了遊戲世界（=前進鍵）而非 TextBox，filter 沒被更新。最可能的原因：剛採完 礦、視角剛轉回來、UI 還在過渡狀態。
+- **一句話根因**：8 個 w 進了遊戲世界（=前進鍵）而非 TextBox，filter 沒被更新。最初判為 click 沒命中，H071c 訂正為 **typewrite 間隔太短（40ms）**——click 命中了但 TextBox 還沒準備好接收鍵盤輸入。
 - **實機量測（2026-08-01，bot 暫停、Roblox 開著）**：
   | 手段 | 結果 | 判定 |
   |---|---|---|
@@ -746,5 +746,11 @@ fixture 位置慣例：
   | Ctrl+A + backspace + type 8w | 面板 8→0 列 | ✅ 但多餘 |
   | backspace x60（pydirectinput） | ink 7405／字寬 213px，零效果 | ❌ 進不了 TextBox |
   ink 在飽和狀態下是純噪訊（933→216→741→535 亂跳，字寬恆 213px）——不是字沒進去，是量不出來（使用者：顯示壓縮到字太小，像素量測失效）。
-- **結論**：**H071 的做法（只拆硬閘、照舊疊加 w）正確，不需要改。** Ctrl+A+backspace 曾短暂上線（commit 6370580）但實機證明多餘後已 revert。ink 在飽和時是噪訊但維持 log 線索角色。harvest 153 的偶發 click miss 由 H071 的安全網接住（偵測到 → 關路 B → 交人工）。
-- **待解**：click 偶爾沒命中的根因未查（可能是 UI 過渡狀態）。現狀安全但每 N 場會丟一次路 B 機會。
+- **結論**：**H071 的做法（只拆硬閘、照舊疊加 w）正確，不需要 Ctrl+A+backspace。** 實機證明 typing alone 就能觸發 filter。Ctrl+A+backspace 曾短暂上線（commit 6370580）但已 revert。真正的根因（typewrite 太快）由 H071c 解決。
+
+## H071c（2026-08-01，harvest 153 根因訂正＋修復：typewrite 40ms 太快 → key_press 90ms；w 數 8→4）
+
+- **根因**：`_clear_panel_filter` 用 `pydirectinput.typewrite("w" * 8)` 打字，間隔只有 `PAUSE=0.04`（40ms）。codebase 其他所有按鍵都走 `ic.key_press`（90ms）。`input_control.py` 第一行就寫「之前輸入太快、遊戲來不及讀」——`typewrite` 恰恰繞過了這道保護。post-harvest 遊戲忙碌時 8 個 w 以 40ms 間隔打入，遊戲來不及聚焦 TextBox，w 進了遊戲世界（=前進鍵）而非 filter 輸入框。
+- **對策**：`typewrite` → `ic.key_press("w")` 迴圈（90ms 間隔，與 codebase 一致）；`panel_clear_keystrokes` 8→4（90ms 間隔下按鍵幾乎不掉，不需要過量送）。
+- **回歸**：`test_clear_input_sequence_is_click_w_then_enter_h071c`（驗序列 click→w×4→enter）、更新 `test_clear_sets_timestamp_when_normal_and_empty`（keys 含 w×4+enter）、`test_clear_rereads_when_panel_redraw_lags`（keys.count("w")==4）。72 passed。
+- **⚠ 下一場實機驗證預期**：採集成功後 log 出現「面板零點成立」。墨量 before/after 在飽和時仍可能是噪訊——重點看面板 OCR 是否 0 列。反指標：仍出現「面板零點不成立」→ 90ms 還是不夠，考慮加長 click-to-type gap（目前 0.15s）。

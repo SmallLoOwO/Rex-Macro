@@ -383,7 +383,8 @@ class Config:
     # 篩選框那一行（H070 輸入生效驗證用）：打字前後比這塊的墨量，沒變＝字沒進 TextBox。
     panel_filter_band: Region = field(
         default_factory=lambda: Region(0, 424, 226, 36))
-    panel_clear_keystrokes: int = 8           # 打幾個 w；實測按鍵掉 ~25%（送 4 進 3），要過量
+    panel_clear_keystrokes: int = 4           # 打幾個 w；改用 key_press（90ms 間隔）後遊戲來得及讀，
+                                              # 不需要像舊 typewrite（40ms）那樣過量送 8 個
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。

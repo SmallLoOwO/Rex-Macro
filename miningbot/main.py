@@ -4983,8 +4983,11 @@ class Bot:
             before_w = vision.filter_box_text_width(band0)
             ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
-            import pydirectinput
-            pydirectinput.typewrite("w" * cfg.panel_clear_keystrokes)
+            # H071c：用 key_press（90ms 間隔）取代 typewrite（40ms）。typewrite 太快，
+            # 遊戲在 post-harvest 忙碌時來不及讀，w 進了遊戲世界而非 TextBox
+            # （harvest 153 根因）。key_press 與 codebase 其他按鍵一致。
+            for _ in range(cfg.panel_clear_keystrokes):
+                ic.key_press("w")
             time.sleep(cfg.panel_clear_settle_s)
             # H071：墨量**不再是硬閘**，只當診斷。篩選框吃得下無限長的字（使用者確認），
             # 打字永遠是附加、文字永遠有變、遊戲的篩選也永遠會重跑——但框裡的字越積越多
