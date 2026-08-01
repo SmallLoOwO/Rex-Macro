@@ -258,6 +258,28 @@ def plan_return_rotations(from_dir: int, to_dir: int, dirs: int = 8) -> int:
     return normalize_rotations(to_dir - from_dir, dirs)
 
 
+def plan_web_click_rotations(cur_dir: int, tgt: int, sweep_start: int) -> int:
+    """sweep 後 web 點擊的旋轉步數——**恆往左拆**（undo sweep 的右轉）。
+
+    與 `plan_return_rotations` 的差異（RR#44 根因）：sweep 做 8 次右轉（轉滿一圈），
+    每步不是恰好 45°（~0.5° 誤差 ε）。8 步累積 **8ε ≈ 4°**，但 ``cur_dir % 8`` 消去
+    了這一圈——帳上以為回到了 dir0，實際角度偏了。``plan_return_rotations`` 在 mod 8
+    空間取最短路徑：dir1 回 0 步（不轉，殘留 8ε）、dir2 回 +1 步（再疊一步 = 9ε）⋯⋯
+    只有 dir6-dir5 恰好往左拆（誤差為零）。dir8 的 -1 步**正好抵消 sweep 的第 8 次右轉**，
+    落點與 sweep 拍 dir8 時完全一致——RR#44 已實證。
+
+    本函式把**所有**方向都改成往左拆：每一步左轉抵消 sweep 的一次右轉，落點 = sweep
+    拍該方位時的精確角度。代價是 dir1 要左轉 8 步（~2.8s），而非 0 步——但 0 步的結局
+    是板子偏了 100px、snap 改點到打不中的位置（RR#44 連兩次 still_surface）。
+
+    ``sweep_start``：sweep 對齊迴圈開始前的 ``cur_dir``（對齊到 0 後通常是 8 的倍數）。
+    ``cur_dir - sweep_start`` = sweep 實際完成的右轉次數（= 8 或更少，如果被吃）。
+    """
+    forward = cur_dir - sweep_start
+    undo = forward - tgt
+    return -undo
+
+
 def restore_actions(net_rotations: int) -> list:
     """挖完後要轉回原角度的動作序列（純函式）。
 

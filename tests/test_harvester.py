@@ -7,6 +7,7 @@ from miningbot.harvester import (next_harvest_step, HarvestState, restore_action
                                  format_rotation_hint,
                                  format_harvest_id,
                                  normalize_rotations, plan_return_rotations,
+                                 plan_web_click_rotations,
                                  plan_giveup, GiveupPlan, GiveupCrop,
                                  giveup_send_groups,
                                  rotation_looks_eaten, restore_view)
@@ -164,6 +165,40 @@ def test_plan_return_same_dir_is_noop():
 
 def test_plan_return_opposite_is_four_steps():
     assert abs(plan_return_rotations(7, 3)) == 4
+
+
+# --- plan_web_click_rotations：web 點擊恆往左拆 sweep 的右轉（RR#44 根因）---
+# sweep 做 8 次右轉，cur_dir%8 消去一圈但累積 ~4° 誤差。
+# plan_return_rotations 在 mod 8 取最短路徑——dir1 回 0 步（殘留誤差）；
+# 本函式一律往左拆，每步左轉抵消 sweep 的一次右轉 → 落點 = sweep 拍該方位的精確角度。
+def test_web_click_dir1_is_full_undo_not_zero():
+    """dir1：sweep 後 cur_dir%8=0 看似不用轉，但實際偏了 8ε。要左轉 8 步拆掉整圈。"""
+    assert plan_web_click_rotations(cur_dir=8, tgt=0, sweep_start=0) == -8
+
+def test_web_click_dir8_matches_old_behavior():
+    """dir8：左轉 1 步（拆掉 sweep 的最後一次右轉）——與 plan_return_rotations 一致。"""
+    assert plan_web_click_rotations(cur_dir=8, tgt=7, sweep_start=0) == -1
+
+def test_web_click_all_directions_backward():
+    """不論點哪個方位，步數恆 ≤ 0（左轉或零）——不往右疊。"""
+    for tgt in range(8):
+        result = plan_web_click_rotations(cur_dir=8, tgt=tgt, sweep_start=0)
+        assert result <= 0, f"tgt={tgt}: expected <= 0 (LEFT/zero), got {result}"
+
+def test_web_click_dir5_differs_from_shortest_path():
+    """dir5：最短路徑 +4（右轉疊誤差），往左拆 -4（抵消精確）。"""
+    assert plan_web_click_rotations(cur_dir=8, tgt=4, sweep_start=0) == -4
+    assert plan_return_rotations(0, 4) == 4            # 舊法往右——正是要修掉的
+
+def test_web_click_accounts_for_rot_missed():
+    """sweep 有 1 次旋轉被吃 → cur_dir=7（只轉了 7 次），undo 步數跟著少 1。"""
+    assert plan_web_click_rotations(cur_dir=7, tgt=0, sweep_start=0) == -7
+    assert plan_web_click_rotations(cur_dir=7, tgt=6, sweep_start=0) == -1
+
+def test_web_click_nonzero_sweep_start():
+    """sweep_start 非 0（第二輪 sweep 等）也能正確算 undo。"""
+    assert plan_web_click_rotations(cur_dir=16, tgt=0, sweep_start=8) == -8
+    assert plan_web_click_rotations(cur_dir=16, tgt=7, sweep_start=8) == -1
 
 
 # --- decide_harvest_result：成功判定（修「框消失≠我們採到」假成功）---

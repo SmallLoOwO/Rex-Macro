@@ -7505,6 +7505,7 @@ class Bot:
         if ctx.cur_dir % 8 != 0:
             self.logger.warning("[RR#%s] sweep 前對齊 dir0 未完成（cur_dir=%d）——方位標籤可能偏",
                                 ctx.episode_id, ctx.cur_dir)
+        sweep_start_dir = ctx.cur_dir          # 對齊後基準；web 點擊往左拆要靠它算步數
         ctx.shots = []
         ctx.predictions = {}                      # {dir_idx: (x, y, score)}（本輪 sweep）
         pairs = []                                # [(dir_idx, grid_path)]
@@ -7538,6 +7539,13 @@ class Bot:
         if rot_missed:
             self.logger.warning("[RR#%s] 八方位拍照有 %d 次旋轉重試用盡未生效——方位標籤已錯位",
                                 ctx.episode_id, rot_missed)
+        # 2026-08-01 RR#44：sweep 做 8 次右轉累積 ~4° 誤差（cur_dir%8 消去一圈看不
+        # 到）。web 點擊要往左拆掉這些右轉，否則 dir1 等方位板子偏 ~100px、snap 改點
+        # 打不中（連 still_surface）。_sweep_start_cur_dir 讓 plan_web_click_rotations
+        # 算出正確的 undo 步數（含 rot_missed 折扣）。
+        if encode_for_web:
+            ctx._post_web_sweep = True
+            ctx._sweep_start_cur_dir = sweep_start_dir
         return pairs, rot_missed, web_pngs
 
     def _predict_teleport_board(self, ctx, dir_idx: int, frame):
@@ -8156,7 +8164,20 @@ class Bot:
         # 讓 caller 重掃一圈重推——硬點的後果是點在地形上，白費一次 attempt。
         if dir_idx is not None:
             tgt = (int(dir_idx) - 1) % 8          # 介面 1-8 → 內部 0-7
-            steps = harvester.plan_return_rotations(ctx.cur_dir % 8, tgt)
+            if getattr(ctx, "_post_web_sweep", False):
+                # RR#44：sweep 的 8 次右轉累積 ~4° 誤差。plan_return_rotations 在
+                # mod 8 取最短路徑——dir1 回 0 步（殘留誤差）、dir2 回 +1 步（再疊），
+                # 只有 dir6-dir8 恰好往左拆。這裡一律往左拆：每步左轉抵消 sweep 的一
+                # 次右轉，落點 = sweep 拍該方位時的精確角度。dir1 要左轉 8 步（~2.8s）
+                # 取代 0 步——0 步的結局是板子偏 100px、snap 改點打不中（RR#44）。
+                steps = harvester.plan_web_click_rotations(
+                    ctx.cur_dir, tgt, ctx._sweep_start_cur_dir)
+                ctx._post_web_sweep = False       # 只拆第一下；後續 web 點擊正常走最短路徑
+                self.logger.info(
+                    "[RR#%s] web 點擊轉向：往左 %d 步拆 sweep 累積誤差（目標 dir%d）",
+                    ctx.episode_id, abs(steps), tgt + 1)
+            else:
+                steps = harvester.plan_return_rotations(ctx.cur_dir % 8, tgt)
             for _ in range(abs(steps)):
                 if self._rotate_verified(1 if steps > 0 else -1):
                     ctx.cur_dir += 1 if steps > 0 else -1
