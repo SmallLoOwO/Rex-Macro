@@ -32,12 +32,13 @@ _NAV_ITEMS = (
 )
 
 NAV_CSS = """
-.nav { display: flex; gap: 0.4rem; padding: 0.5rem; background: #1b1b1b;
-       overflow-x: auto; border-bottom: 1px solid #333; }
+.nav { display: flex; gap: 0.4rem; padding: 0.5rem 0.6rem; background: #15171c;
+       overflow-x: auto; border-bottom: 1px solid #2a2f38; }
 .nav a { flex: 0 0 auto; padding: 0.45rem 0.9rem; border-radius: 999px;
-         background: #2a2a2a; color: #ddd; text-decoration: none;
+         background: #21252e; color: #969ba6; text-decoration: none;
          font-size: 0.9rem; white-space: nowrap; }
-.nav a.current { background: #0084ff; color: #fff; }
+.nav a:hover { background: #2c313c; color: #e6e8ec; }
+.nav a.current { background: #4d9fff; color: #fff; }
 """
 
 
@@ -114,29 +115,42 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
 <meta charset="utf-8">
 <title>MiningBot 玩家設定</title>
 <style>{NAV_CSS}
-body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }}
-label {{ display: block; margin: 1rem 0 0.3rem; font-weight: bold; }}
-input, select {{ width: 100%; padding: 0.4rem; box-sizing: border-box; }}
+body {{ font-family: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei",
+              sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem;
+       background: #0f1115; color: #e6e8ec; color-scheme: dark; }}
+h1 {{ font-weight: 600; }}
+label {{ display: block; margin: 1rem 0 0.3rem; font-weight: 600;
+         color: #c8ccd4; }}
+input, select {{ width: 100%; padding: 0.5rem; box-sizing: border-box;
+                background: #21252e; color: #e6e8ec;
+                border: 1px solid #2a2f38; border-radius: 5px; }}
+input:focus, select:focus {{ outline: none; border-color: #4d9fff; }}
 /* checkbox 必須排除在 width:100% 之外（2026-07-26 實機回報）：被撐成整行寬之後，
    Chrome 把方塊畫在那一行的正中央，而 label 是 display:block，文字被擠到下一行
    ——視覺上變成「勾選方塊浮在自己的標籤文字上方置中」，看起來就是壞掉的版面。
    手機上更明顯。改成 inline-flex 讓方塊與文字同一行、點擊區維持整段文字。 */
 label.check {{ display: flex; align-items: center; gap: 0.5rem;
-              font-weight: bold; margin: 1rem 0 0.3rem; }}
+              font-weight: 600; margin: 1rem 0 0.3rem; }}
 label.check input[type="checkbox"] {{ width: auto; flex: 0 0 auto;
-              margin: 0; padding: 0; transform: scale(1.3); }}
-button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #0084ff; color: white;
-         border: none; border-radius: 4px; cursor: pointer; }}
-.status {{ margin-top: 1rem; padding: 0.6rem; background: #e6f4ff; border-radius: 4px;
-          display: none; }}
-.error {{ background: #ffe6e6; }}
-.hint {{ margin: 0.35rem 0 0; font-size: 0.8rem; color: #666; line-height: 1.5; }}
-.hint code {{ background: #eee; padding: 0 0.25rem; border-radius: 3px; }}
-.hint.warn {{ background: #fff6e0; border-left: 3px solid #e0a12c;
-             padding: 0.4rem 0.6rem; color: #6a4c00; }}
-.hint.ok {{ background: #eefaf0; border-left: 3px solid #3ba55d;
-           padding: 0.4rem 0.6rem; color: #1f6b38; }}
-h2 {{ margin-top: 2rem; border-top: 1px solid #ddd; padding-top: 1rem; font-size: 1.1rem; }}
+              margin: 0; padding: 0; transform: scale(1.3);
+              accent-color: #4d9fff; }}
+button {{ margin-top: 1.5rem; padding: 0.6rem 1.2rem; background: #4d9fff; color: #fff;
+         border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }}
+button:hover {{ background: #5fb0ff; }}
+.status {{ margin-top: 1rem; padding: 0.6rem; background: #13223a;
+          border: 1px solid #1e3a5f; border-radius: 5px; display: none; }}
+.error {{ background: #2a1414; border-color: #5c2424; }}
+.hint {{ margin: 0.35rem 0 0; font-size: 0.8rem; color: #969ba6; line-height: 1.5; }}
+.hint code {{ background: #21252e; padding: 0 0.25rem; border-radius: 3px;
+             color: #c8ccd4; }}
+.hint.warn {{ background: #2a2113; border-left: 3px solid #d9a441;
+             padding: 0.4rem 0.6rem; color: #e8c87a; }}
+.hint.ok {{ background: #13251a; border-left: 3px solid #3ba55d;
+           padding: 0.4rem 0.6rem; color: #6dba85; }}
+fieldset {{ border-color: #2a2f38; }}
+legend {{ color: #c8ccd4; }}
+h2 {{ margin-top: 2rem; border-top: 1px solid #2a2f38; padding-top: 1rem;
+     font-size: 1.1rem; color: #c8ccd4; }}
 </style>
 </head>
 <body>
@@ -352,21 +366,31 @@ def render_history_html(episodes: list[dict]) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiningBot 歷史紀錄</title>
 <style>{NAV_CSS}
-body {{ font-family: sans-serif; max-width: 900px; margin: 1rem auto;
-       padding: 0 0.5rem; }}
-h1 {{ font-size: 1.2rem; }}
+body {{ font-family: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei",
+              sans-serif; max-width: 900px; margin: 1rem auto;
+       padding: 0 0.5rem; background: #0f1115; color: #e6e8ec;
+       color-scheme: dark; }}
+h1 {{ font-size: 1.2rem; font-weight: 600; }}
 .filters {{ display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1rem 0;
             align-items: end; }}
 .filters label {{ display: flex; flex-direction: column; font-size: 0.8rem;
-                  color: #555; gap: 0.2rem; }}
-.filters select, .filters input {{ padding: 0.3rem; font-size: 0.9rem; }}
+                  color: #969ba6; gap: 0.2rem; }}
+.filters select, .filters input {{ padding: 0.35rem; font-size: 0.9rem;
+                  background: #21252e; color: #e6e8ec;
+                  border: 1px solid #2a2f38; border-radius: 4px; }}
+.filters button {{ padding: 0.35rem 0.7rem; background: #21252e; color: #c8ccd4;
+                  border: 1px solid #2a2f38; border-radius: 4px; cursor: pointer;
+                  font-size: 0.85rem; }}
+.filters button:hover {{ background: #2c313c; }}
 table {{ width: 100%; border-collapse: collapse; }}
-th, td {{ padding: 0.4rem 0.5rem; border-bottom: 1px solid #ddd;
+th, td {{ padding: 0.4rem 0.5rem; border-bottom: 1px solid #2a2f38;
          text-align: left; font-size: 0.9rem; }}
-th {{ background: #f5f5f5; }}
+th {{ background: #171a21; color: #969ba6; font-weight: 600; }}
+tbody tr:hover {{ background: #171a21; }}
 tr.hidden {{ display: none; }}
-a {{ color: #0084ff; text-decoration: none; }}
-.hint {{ color: #888; font-size: 0.75rem; margin-top: 0.5rem; }}
+a {{ color: #6ab7ff; text-decoration: none; }}
+a:hover {{ color: #8fc6ff; }}
+.hint {{ color: #6b7280; font-size: 0.75rem; margin-top: 0.5rem; }}
 </style>
 </head>
 <body>
@@ -570,7 +594,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
 .toolbar button {{ padding: 0.3rem 0.5rem; margin: 0.15rem 0.1rem; background: #333;
                   color: white; border: 1px solid #555; border-radius: 3px;
                   cursor: pointer; font-size: 0.85rem; }}
-.toolbar button.active {{ background: #0084ff; border-color: #0084ff; }}
+.toolbar button.active {{ background: #4d9fff; border-color: #4d9fff; }}
 /* 症狀互斥（2026-07-31 使用者要求）：只有「1 有礦框」才標得了稀有度，
    其餘三個選項下整區鎖住並清空——先前只是送出時丟掉，畫面上還亮著，
    玩家以為自己標了。 */
@@ -602,7 +626,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
                                border-radius: 3px; box-sizing: border-box;
                                font-size: 0.85rem; }}
 .submit {{ display: block; width: 100%; padding: 0.6rem; margin-top: 1rem;
-           background: #0084ff; color: white; border: none; border-radius: 4px;
+           background: #4d9fff; color: white; border: none; border-radius: 4px;
            font-size: 0.95rem; cursor: pointer; }}
 .hint {{ font-size: 0.75rem; color: #888; margin-top: 0.4rem; line-height: 1.4; }}
 #status {{ padding: 0.4rem 1rem; background: #333; font-size: 0.8rem;
@@ -1283,45 +1307,51 @@ def render_episode_html(detail: dict, annotations: list[dict]) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>episode {_esc(ep_label)}</title>
 <style>{NAV_CSS}
-body {{ font-family: sans-serif; max-width: 1000px; margin: 0 auto 3rem;
-       padding: 0 0.6rem; }}
-h1 {{ font-size: 1.15rem; margin: 0.8rem 0 0.2rem; }}
-h2 {{ font-size: 0.95rem; margin: 1.6rem 0 0.4rem; color: #444;
-     border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }}
-h3 {{ font-size: 0.85rem; margin: 0.8rem 0 0.3rem; color: #666; }}
-h3 .n {{ background: #eee; border-radius: 999px; padding: 0 0.45rem;
-        margin-left: 0.4rem; font-weight: normal; }}
+body {{ font-family: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei",
+              sans-serif; max-width: 1000px; margin: 0 auto 3rem;
+       padding: 0 0.6rem; background: #0f1115; color: #e6e8ec;
+       color-scheme: dark; }}
+h1 {{ font-size: 1.15rem; margin: 0.8rem 0 0.2rem; font-weight: 600; }}
+h2 {{ font-size: 0.95rem; margin: 1.6rem 0 0.4rem; color: #969ba6;
+     border-bottom: 1px solid #2a2f38; padding-bottom: 0.2rem; }}
+h3 {{ font-size: 0.85rem; margin: 0.8rem 0 0.3rem; color: #969ba6; }}
+h3 .n {{ background: #21252e; border-radius: 999px; padding: 0 0.45rem;
+        margin-left: 0.4rem; font-weight: normal; color: #969ba6; }}
 /* tier 標題：把「該標哪些」講白，玩家不必自己記哪些 label 是成熟的 */
 h3.tier {{ margin: 1.4rem 0 0.2rem; font-size: 0.9rem; font-weight: bold;
-          color: #222; border-bottom: 2px solid #ddd; padding-bottom: 0.25rem; }}
+          color: #c8ccd4; border-bottom: 2px solid #2a2f38; padding-bottom: 0.25rem; }}
 h3.tier.t0 {{ border-bottom-color: #e5534b; }}
 h3.tier.t1 {{ border-bottom-color: #e08c3b; }}
 h3.tier.t2 {{ border-bottom-color: #d9b02c; }}
-h3.tier.t3 {{ border-bottom-color: #ccc; color: #777; }}
-.meta {{ color: #777; font-size: 0.85rem; }}
+h3.tier.t3 {{ border-bottom-color: #2a2f38; color: #6b7280; }}
+.meta {{ color: #6b7280; font-size: 0.85rem; }}
 ul.timeline {{ list-style: none; padding: 0; margin: 0;
               max-height: 16rem; overflow-y: auto; }}
 ul.timeline li {{ display: flex; gap: 0.6rem; padding: 0.15rem 0;
-                 font-size: 0.82rem; border-bottom: 1px solid #f0f0f0; }}
-ul.timeline .t {{ color: #888; flex: 0 0 10.5rem; }}
+                 font-size: 0.82rem; border-bottom: 1px solid #1a1d24; }}
+ul.timeline .t {{ color: #6b7280; flex: 0 0 10.5rem; }}
+ul.timeline code {{ color: #b8bcc6; }}
 /* wrap 而不是單列橫捲：一集動輒 18~32 張，橫捲要一直拖才看得完下一張。 */
 .thumbs {{ display: flex; flex-wrap: wrap; gap: 0.6rem; padding-bottom: 0.3rem; }}
 .thumbs figure {{ margin: 0; flex: 0 0 auto; text-align: center; max-width: 320px; }}
 .thumbs figcaption .lb {{ display: block; font-family: monospace;
-              font-size: 0.68rem; color: #555; word-break: break-all; }}
+              font-size: 0.68rem; color: #6b7280; word-break: break-all; }}
 /* max-width 是必要的，不是美化：聊天裁圖是 1220×37 這種極端長寬比，只設
    height:110px 會把縮圖拉成 3629px 寬（2026-07-26 實測），一列要橫捲很久才看得完
    下一張。夾住寬度並 object-fit: contain 保持比例。 */
 .thumbs img {{ height: 110px; max-width: 320px; object-fit: contain;
-              border: 1px solid #ccc; border-radius: 4px;
-              display: block; background: #fafafa; }}
-.thumbs figcaption {{ font-size: 0.7rem; color: #888; margin-top: 0.15rem; }}
+              border: 1px solid #2a2f38; border-radius: 4px;
+              display: block; background: #171a21; }}
+.thumbs figure:hover img {{ border-color: #4d9fff; }}
+.thumbs figcaption {{ font-size: 0.7rem; color: #6b7280; margin-top: 0.15rem; }}
 table {{ width: 100%; border-collapse: collapse; }}
-th, td {{ padding: 0.35rem 0.4rem; border-bottom: 1px solid #ddd;
+th, td {{ padding: 0.35rem 0.4rem; border-bottom: 1px solid #2a2f38;
          text-align: left; font-size: 0.82rem; }}
-th {{ background: #f5f5f5; }}
-.empty {{ color: #999; }}
-a {{ color: #0084ff; text-decoration: none; }}
+th {{ background: #171a21; color: #969ba6; font-weight: 600; }}
+td code {{ color: #b8bcc6; }}
+.empty {{ color: #6b7280; }}
+a {{ color: #6ab7ff; text-decoration: none; }}
+a:hover {{ color: #8fc6ff; }}
 </style>
 </head>
 <body>
@@ -1528,7 +1558,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
 #dots { display: flex; gap: 0.2rem; justify-content: center; flex-wrap: wrap; }
 #dots span { width: 0.5rem; height: 0.5rem; border-radius: 50%;
              background: #555; display: block; }
-#dots span.on { background: #0084ff; }
+#dots span.on { background: #4d9fff; }
 #dots span.seen { background: #888; }
 /* 動作鍵：全寬直排，比水平 scroll 列大得多 */
 #toolbar { display: flex; flex-direction: column; gap: 0.3rem; }
