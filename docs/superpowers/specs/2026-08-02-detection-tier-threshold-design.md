@@ -83,18 +83,61 @@ if _detection_min_tier and _TIER_ORDER.get(info["tier"], -1) < _TIER_ORDER[_dete
 tier 不在 `_TIER_ORDER`（未知的 tier）的 礦：`get(tier, -1)` = -1，永遠
 < 門檻 → 回 common。安全方向（未知的當低階）。
 
-### 已知邊界
+### 色相閘也跟著門檻走（2026-08-02 使用者補充）
 
-面板底色閘（`panel_whitelist_hues`）仍涵蓋所有白名單階級色相。
-提高門檻後，清空面板時若畫面殘留 Exotic 礦列，底色閘仍會擋零點成立。
-這是保守方向（多擋一次清空、安全），名字閘已正確放行。日後若有量測
-能區分各階級色相，可再縮窄底色閘。
+面板偵測有兩條色相路，名字閘之外的第二訊號。提高門檻時兩條都要跟著
+縮窄，否則名字閘放行 Exotic、色相閘仍抓 Exotic → 永遠擋零點成立。
+
+**已知量測的 tier→hue 對應**（`config.py:394`、2026-07-31 D11 量測）：
+
+```
+Exotic 46｜Exquisite 128｜Transcendent 210｜Mythic 304｜Surreal 166｜低階 0/30/280
+```
+
+Enigmatic 以上未量測——靠 `non_low_tier_hues` 反向閘兜住（未知色相當高階）。
+
+**`game_data.py` 加 tier→hue 映射＋有效色相計算**：
+
+```python
+TIER_HUES = {"Exotic": 46.0, "Exquisite": 128.0, "Transcendent": 210.0}
+
+def effective_whitelist_hues(min_tier, base_whitelist) -> tuple:
+    '''回傳 ≥ min_tier 的量測色相（白名單用）。'''
+    min_rank = _TIER_ORDER.get(min_tier, 0)
+    return tuple(h for t, h in TIER_HUES.items()
+                 if _TIER_ORDER.get(t, 999) >= min_rank)
+
+def effective_low_tier_hues(min_tier, base_low_tier) -> tuple:
+    '''回傳 base_low_tier ＋ < min_tier 的量測色相（零點閘用）。'''
+    min_rank = _TIER_ORDER.get(min_tier, 0)
+    below = tuple(h for t, h in TIER_HUES.items()
+                  if _TIER_ORDER.get(t, 999) < min_rank)
+    return tuple(dict.fromkeys(base_low_tier + below))  # 去重保序
+```
+
+**呼叫端改動**（`main.py`，純函式簽名不動）：
+
+- `_clear_panel_filter` 的 `non_low_tier_hues`：原本傳 `cfg.panel_low_tier_hues`
+  → 改傳 `game_data.effective_low_tier_hues(cfg.detection_min_tier, cfg.panel_low_tier_hues)`
+- `_panel_rare_ores` 的 `whitelist_hue_hits`：原本傳 `cfg.panel_whitelist_hues`
+  → 改傳 `game_data.effective_whitelist_hues(cfg.detection_min_tier, cfg.panel_whitelist_hues)`
+
+**一致性保證**：兩條色相路＋名字閘三者門檻一致 → Exotic 在三條路同時降級、
+Exquisite+ 在三條路同時生效。交叉驗 `if ores and not hue_hits` 只在真正
+OCR 誤讀時否決，不會因門檻不一致而假性觸發。
+
+**門檻高於 Transcendent 時**：所有量測色相都降級，白名單色相為空。
+名字閘仍正確分類（Enigmatic+ 礦在 `rare_ores.json`，classify 判 rare），
+但色相交叉驗無法確認 → 救援被否決（保守方向：多交一次人工，安全）。
 
 ## 測試
 
 - `classify_found_ore`：門檻 Exotic（預設）→ Exotic 判 rare；門檻 Exquisite
   → Exotic 判 common、Exquisite 判 rare
 - 模糊路徑同理（Exotic 模糊命中 → 門檻以上 rare_fuzzy、以下 common）
+- `effective_whitelist_hues("Exquisite", ...)` → 不含 46（Exotic）
+- `effective_low_tier_hues("Exquisite", ...)` → 含 46（Exotic 降級）
+- 門檻 Exotic（預設）→ effective hues 與 base 相同（向後相容）
 - Discord `階級 Exquisite` 指令 → set_detection_min_tier 被呼叫＋持久化
 - 網頁 POST `detection_min_tier` → setattr + set_detection_min_tier + save_overrides
 - `validate_value`：合法 tier True、亂碼 False
