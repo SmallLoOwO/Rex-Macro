@@ -6559,7 +6559,8 @@ class Bot:
                 annotated.append(f"{line} 〔⚠ 未知礦名〕")
                 has_unknown = True
             else:
-                annotated.append(line)
+                # common：被動挖礦（鎬子），非 D3 採集證據。標出來以免誤導（H073）。
+                annotated.append(f"{line} 〔被動挖礦〕")
         # fuzzy 命中行（H020：關鍵字被 OCR 讀歪 → 精確抽取抓不到）另列，
         # 標注「≈匹配到的白名單礦名＋相似度」讓人工可核對是不是誤配
         seen = {l.lower() for l in new_lines}
@@ -6579,6 +6580,17 @@ class Bot:
             annotated.append("⚠ 有未知礦名：可能 OCR 誤讀或遊戲更新，"
                              "請核對；可跑 python -m miningbot.fetch_ores 同步清單")
         new_lines = annotated
+        # ★ 同 礦種重複偵測（H073，harvest 164）：rare 計數增加（1→2）但 extract_new_found_lines
+        #   抓不到新 rare 行——第二顆跟基準同名（同 礦種再挖一顆），文字差分抓不到。通知只顯示
+        #   common 行（Rotatrim）會誤導。加警語讓玩家知道 rare 確實增加、只是 礦名重複。
+        _rare_extracted = _cls_kinds.get("rare", 0) + _cls_kinds.get("rare_fuzzy", 0)
+        if _rare_extracted == 0 and any(
+                (a or 0) > (b or 0) for b, a in zip(rare_before, rare_after)):
+            annotated.append("⚠ rare 計數 "
+                             + "→".join(str(b) for b in rare_before) + "→"
+                             + "→".join(str(a) for a in rare_after)
+                             + " 但新增行無稀有 礦名——可能同 礦種重複（chat 第二行與基準同名）")
+            new_lines = annotated
         if new_lines:
             self.log_harvest.info("[%s] 採集新增聊天行: %s", hid, new_lines)
         # ★ 成功行分類分佈（H072 診斷）：rare=白名單高階、rare_fuzzy≈近失拼字、
