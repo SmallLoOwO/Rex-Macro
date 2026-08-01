@@ -390,12 +390,11 @@ class Config:
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
                                               # 只重讀不重打字：H047/H063 的「多試幾次會翻面」只針對點擊/按鍵
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
-    # 列底色 → tier（2026-07-31 D11 + 2026-08-02 實機全面板六階同時量測）：
-    #   Otherworldly 334｜Unfathomable 218｜Enigmatic 70｜Transcendent 210｜Exquisite 128｜Exotic 46
+    # 列底色 → tier（wiki HSV 官方色碼 + 實機量測交叉驗證，2026-08-02）：
+    #   Otherworldly 334｜Unfathomable 219｜Enigmatic 70｜Transcendent 210｜Exquisite 128｜Exotic 46
     #   ｜Mythic 304｜Surreal 166｜低階 0/30/280
-    # 每階單一色相、零變異。Transcendent 210 vs Unfathomable 218 僅差 8°（tol 6 帶邊重疊
-    # 212-216），但兩階都屬高階、對偵測無影響。
-    panel_whitelist_hues: tuple = (46.0, 70.0, 128.0, 210.0, 218.0, 334.0)
+    # wiki HSV 全 6 階確認（Exquisite 56C365、Transcendent 0080FF、Unfathomable 032C79）。
+    panel_whitelist_hues: tuple = (46.0, 70.0, 128.0, 210.0, 219.0, 334.0)
     # 已量到的非白名單色帶（D11）：Mythic 304｜Surreal 166｜低階 0/30/280。
     # 給 spec 01 反向閘用——色相不落在這些帶就當成高階、擋零點成立。
     panel_low_tier_hues: tuple = (0.0, 30.0, 166.0, 280.0, 304.0)
