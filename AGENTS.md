@@ -242,10 +242,19 @@ conventions.
   message describing the change (cite the H incident id when applicable).
 - **Keep docs in sync.** When a task adds or changes a runtime rule, Discord
   command, web-configurable field, config parameter, or detection/decision path,
-  update this file (`AGENTS.md`) in the same commit: the STRUCTURE map, the
-  NON-NEGOTIABLE RUNTIME RULES, the WHERE TO LOOK table, and CURRENT RISK AREAS.
-  Stale docs are worse than no docs — the next agent trusts them and builds on
-  wrong assumptions.
+  update the relevant doc files **in the same commit**. Stale docs are worse than
+  no docs — the next agent trusts them and builds on wrong assumptions. Checklist
+  by change type:
+
+  | Changed | Update these files |
+  |---|---|
+  | Discord command / remote button | `AGENTS.md` WHERE TO LOOK, `docs/web-ui-guide.md` command tables, `main.py` help text |
+  | Web-configurable field (WEB_CONFIGURABLE_FIELDS) | `AGENTS.md` rule 13 + STRUCTURE, `miningbot/AGENTS.md` invariant 11, `docs/web-ui-guide.md` settings section |
+  | Config parameter (config.py) | `AGENTS.md` WHERE TO LOOK "Coordinates/modes/hotkeys" row + STRUCTURE |
+  | Detection / classification logic | `AGENTS.md` WHERE TO LOOK + NON-NEGOTIABLE RULES, `miningbot/AGENTS.md`, `docs/game-mechanics.md` |
+  | Runtime rule (safety/correctness) | `AGENTS.md` NON-NEGOTIABLE RUNTIME RULES + CURRENT RISK AREAS |
+  | Incident / threshold tuning | `docs/incidents.md` (new H entry) or `docs/open-detection-issues.md` (new D entry) |
+  | Panel hue / tier data | `game_data.py` TIER_HUES comment table, `config.py` panel_*_hues, `harvester.py` + `vision.py` hue comments |
 - Do not push, switch branches, delete runtime evidence, or mutate
   Roblox/Discord unless the user explicitly requests it.
 - The primary agent owns integration, diff review, and verification. Delegate to a
