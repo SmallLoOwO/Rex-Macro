@@ -312,6 +312,15 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   was not, which silently abandons a real rare ore — and both slipped past the tests,
   hence the observation period. Do not flip it without showing the evidence first;
   `scan_confirm_mode` above is what happens when nobody is reminded.
+- **`harvest_entry_panel_check` is on and records to `panel_check_observed.json`.**
+  When chill triggers and the NORMAL panel already has a whitelisted (Exotic+) ore,
+  the bot skips the full harvest flow and immediately goes to NEEDS_HUMAN with
+  chat/backpack evidence. Each hit is appended to `<log_dir>/panel_check_observed.json`.
+  **When that file reaches `panel_check_observe_target` (10) entries, lay the records
+  out for the user and ask whether to switch to automatic** (skip NEEDS_HUMAN, resume
+  mining directly). Requires `_panel_zeroed_at` to be set — if the panel clear at MINING
+  entry failed (H070/H071), the check is bypassed entirely. The manual `清空` command
+  is the fallback for when the automatic clear fails.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.

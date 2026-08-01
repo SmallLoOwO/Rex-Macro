@@ -1058,6 +1058,9 @@ def _entry_panel_bot(monkeypatch, *, panel=(), zeroed=True, enabled=True, **attr
         _panel_zeroed_at=9999.0 if zeroed else None,
         _panel_rare_ores=lambda *a, **kw: list(panel),
         _harvest_giveup=lambda reason: giveup_called.append(reason),
+        _panel_check_observed=[],
+        _save_panel_check_observed=lambda: None,
+        _panel_check_observed_path=lambda: "/tmp/test_panel_check.json",
         **attrs)
     return bot, giveup_called
 
@@ -1088,3 +1091,17 @@ def test_entry_panel_check_disabled_by_config(monkeypatch):
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"], enabled=False)
     assert bot._harvest_entry_panel_check("162") is False
     assert giveup == []
+
+
+def test_entry_panel_check_records_observe_hit(monkeypatch):
+    """命中時記進 _panel_check_observed＋giveup reason 帶確認問題（觀察期）。"""
+    bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine", "hallonite"])
+    saved = []
+    bot._save_panel_check_observed = lambda: saved.append(True)
+    assert bot._harvest_entry_panel_check("162") is True
+    assert len(bot._panel_check_observed) == 1
+    rec = bot._panel_check_observed[0]
+    assert rec["harvest_id"] == "162"
+    assert "faedrine" in rec["ore_names"]
+    assert saved, "_save_panel_check_observed 必須被呼叫"
+    assert any("核對" in r or "確認" in r for r in giveup), "giveup reason 必須帶確認問題"

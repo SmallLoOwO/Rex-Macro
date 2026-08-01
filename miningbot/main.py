@@ -389,6 +389,9 @@ class Bot:
         # 救援觀察期（spec 03）：命中照樣交人工，只記帳；跨 session 累計到目標次數後問玩家
         self._rescue_observed: list = self._load_rescue_observed()
         self._rescue_observe_note = ""           # 交人工訊息的觀察期註記（每次命中覆寫）
+        # 進場面板色檢觀察期（H072，2026-08-02）：命中照樣交人工，只記帳；累計到目標次數後
+        # 問玩家是否切自動（不交人工、直接回 MINING）。比照 rescue observe 模式。
+        self._panel_check_observed: list = self._load_panel_check_observed()
         # 容量停滯偵測（spec 04）：(last_pct, last_change_at, alerted)；只在 MINING 期間推進
         self._capacity_stall: tuple = (None, time.time(), False)
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
@@ -3343,6 +3346,34 @@ class Bot:
                 json.dump(self._rescue_observed, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.logger.error("救援觀察期紀錄存檔失敗: %s", e)
+
+    def _panel_check_observed_path(self) -> str:
+        """進場面板色檢觀察期紀錄檔。放 log_dir——runtime evidence。"""
+        return os.path.join(cfg.log_dir, "panel_check_observed.json")
+
+    def _load_panel_check_observed(self) -> list:
+        """載入面板色檢歷次判定（跨 session 累計）。壞檔→空清單。"""
+        import json
+        try:
+            with open(self._panel_check_observed_path(), "r", encoding="utf-8") as f:
+                v = json.load(f)
+            if isinstance(v, list):
+                if v:
+                    self.logger.info("面板色檢觀察期紀錄載入：已累積 %d 次判定（目標 %d）",
+                                     len(v), cfg.panel_check_observe_target)
+                return v
+            return []
+        except Exception:
+            return []
+
+    def _save_panel_check_observed(self):
+        """把面板色檢紀錄寫回檔案；失敗只記 log。"""
+        import json
+        try:
+            with open(self._panel_check_observed_path(), "w", encoding="utf-8") as f:
+                json.dump(self._panel_check_observed, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error("面板色檢觀察期紀錄存檔失敗: %s", e)
 
     def _on_enter(self, s, frame) -> State | None:
         """進入狀態 s 的副作用（screenshot / log / 按鍵）。
@@ -6806,6 +6837,10 @@ class Bot:
         收尾——這條路的誤判代價是「白交一次人工」（安全方向），但命中時玩家的畫面上
         礦可能已經被挖走、D3 掃不到、照樣浪費一輪採集，所以提早交人工更省。
 
+        **觀察期記錄**（2026-08-02 使用者要求）：每次命中記進 panel_check_observed.json，
+        附確認問題讓玩家核對。累計到 panel_check_observe_target 次後，由 agent session
+        攤開證據問使用者是否切自動（不交人工、直接回 MINING）。
+
         回 True＝已交人工（`_harvest_giveup`），呼叫端必須立刻 return。
         """
         if not cfg.harvest_entry_panel_check:
@@ -6817,8 +6852,24 @@ class Bot:
             "[%s] H072 進場面板色檢命中：面板已有白名單 礦 %s——"
             "chill 前可能已被鎬子挖到，交人工確認（觀察期）",
             hid, "、".join(gains))
+        # ── 觀察期記帳（比照 rescue observe）──
+        self._panel_check_observed.append({
+            "harvest_id": hid, "ore_names": gains,
+            "panel_zeroed_at": getattr(self, "_panel_zeroed_at", None),
+            "at": time.time()})
+        self._save_panel_check_observed()
+        n = len(self._panel_check_observed)
+        target = cfg.panel_check_observe_target
+        confirm_note = (
+            f"🔎 面板判定「{'、'.join(gains)}」在 chill 前已被鎬子挖到（第 {n}/{target} 次）"
+            f"——請核對背包/聊天證據：如果確實是 chill 前就挖到了，直接按 Q 繼續即可")
+        if n >= target:
+            self.logger.info(
+                "面板色檢觀察期已累積 %d 次判定（目標 %d）：請 agent session 攤開 "
+                "%s 的紀錄與玩家確認是否切自動（不交人工、直接回 MINING）",
+                n, target, self._panel_check_observed_path())
         self._harvest_giveup(
-            f"進場面板已有稀有 礦（{'、'.join(gains)}），可能 chill 前已挖到——請確認")
+            f"進場面板已有稀有 礦（{'、'.join(gains)}），可能 chill 前已挖到\n{confirm_note}")
         return True
 
     def _chill_reconcile(self, where: str, *, notify: bool = True) -> bool:

@@ -414,6 +414,8 @@ class Config:
     # （Exotic+）礦＝chill 前鎬子已挖到→不需要 D3 採集。觀察期一律交人工確認。
     # 前提：_panel_zeroed_at 有值（進 MINING 時面板已清空驗證過）。
     harvest_entry_panel_check: bool = True
+    panel_check_observe_target: int = 10    # 累積這麼多次進場面板判定後，由 agent session 主動問玩家
+                                            # 是否切自動（不交人工、直接回 MINING）
 
     # 記錄 / 診斷
     log_dir: str = field(default_factory=default_log_dir)
