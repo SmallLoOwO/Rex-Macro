@@ -1604,10 +1604,20 @@ _TIER_ORDER: dict[str, int] = {t: i for i, t in enumerate(_HIGH_TIERS)}
 HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一來源）
 
 # 量測到的 tier→面板底色色相（2026-07-31 D11 + 2026-08-02 實機全面板截圖驗證）。
-# 四階色相均在單一面板上同時量到（H=46/70/128/210），每階單一色相、零變異。
-# Unfathomable 以上未量測——靠 non_low_tier_hues 反向閘兜住。
+# 六階色相在實機面板上量到，3/6 與 wiki 官方 HSV 比對誤差 ≤1°：
+#   Exotic wiki 45° vs 實機 46°｜Enigmatic wiki 70° vs 實機 70°｜Otherworldly wiki 333° vs 實機 334°
+#   Exquisite/Transcendent/Unfathomable 的 wiki 頁面無 HEX 欄位，靠實機量測。
+# Imaginary / Zenith 未量測——靠 non_low_tier_hues 反向閘兜住。
+# ⚠ Transcendent 210° 與 Unfathomable 218° 僅差 8°，tol=6 時帶邊重疊（212-216）；
+#   兩階都屬高階，對偵測無影響；門檻設在兩階之間時色相交叉驗有模糊空間。
 TIER_HUES: dict[str, float] = {
-    "Exotic": 46.0, "Exquisite": 128.0, "Transcendent": 210.0, "Enigmatic": 70.0}
+    "Exotic": 46.0,       # 黃     wiki F6C940 HSV 45°
+    "Exquisite": 128.0,   # 綠
+    "Transcendent": 210.0,  # 藍
+    "Enigmatic": 70.0,    # 亮綠/金 wiki CDF600 HSV 70°
+    "Unfathomable": 218.0,  # 深藍偏黑
+    "Otherworldly": 334.0,  # 深紅   wiki 5E0E32 HSV 333°
+}
 
 _detection_min_tier: str | None = None   # None = 不過濾（預設）；測試不設 = 現行行為
 
