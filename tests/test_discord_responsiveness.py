@@ -172,7 +172,7 @@ def _bare_remote_bot(state=State.MINING):
     """遙控器輪詢用最小 Bot（比照 test_remote_control_reactions_use_one_message_fetch）。"""
     bot = Bot.__new__(Bot)
     bot._remote_message_id = "remote-message"
-    bot._remote_reactions_seen = {"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1}
+    bot._remote_reactions_seen = {"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1}
     bot.state = state
     bot.paused = False
     bot.human_cleared = False
@@ -182,52 +182,6 @@ def _bare_remote_bot(state=State.MINING):
     bot._reaction_clear_ok = True
     bot.log_discord = _LogRecorder()
     return bot
-
-
-def test_remote_control_home_reaction_queues_manual_reentry(monkeypatch):
-    """遙控器 🏠＝手動回礦：只寫旗標（主迴圈消費），守門走 can_accept_manual_reentry。"""
-    bot = _bare_remote_bot()
-    sent, reposted = [], []
-    monkeypatch.setattr(
-        notify, "fetch_message",
-        lambda *_args: _reaction_message(**{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 2}))
-    monkeypatch.setattr(
-        notify, "send_message",
-        lambda token, channel_id, content: sent.append(content) or (True, "HTTP 200"))
-    monkeypatch.setattr("miningbot.main.cfg.discord_bot_token", "token")
-    monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
-    bot._reentry_active = lambda: True
-    bot._repost_remote_control = lambda: reposted.append(True)
-    cleared = _stub_reaction_clear(monkeypatch)
-
-    bot._poll_remote_reactions()
-
-    assert bot._manual_reentry is True
-    assert reposted == []
-    assert cleared == [("remote-message", "🏠")]
-    assert any("回礦已排入" in m for m in sent)
-
-
-def test_remote_control_home_reaction_rejected_in_harvesting(monkeypatch):
-    """採集中 🏠 必須被守門拒絕（插回礦會亂時序），旗標不可寫。"""
-    bot = _bare_remote_bot(state=State.HARVESTING)
-    sent, reposted = [], []
-    monkeypatch.setattr(
-        notify, "fetch_message",
-        lambda *_args: _reaction_message(**{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 2}))
-    monkeypatch.setattr(
-        notify, "send_message",
-        lambda token, channel_id, content: sent.append(content) or (True, "HTTP 200"))
-    monkeypatch.setattr("miningbot.main.cfg.discord_bot_token", "token")
-    monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
-    bot._reentry_active = lambda: True
-    bot._repost_remote_control = lambda: reposted.append(True)
-    _stub_reaction_clear(monkeypatch)
-
-    bot._poll_remote_reactions()
-
-    assert bot._manual_reentry is False
-    assert any("未接受" in m for m in sent)
 
 
 def test_remote_control_snap_reaction_sends_screenshot(monkeypatch):
@@ -249,7 +203,7 @@ def test_remote_control_snap_reaction_sends_screenshot(monkeypatch):
         lambda token, channel_id, content, paths: sent.append((content, paths)) or (True, "HTTP 200"))
     monkeypatch.setattr(
         notify, "fetch_message",
-        lambda *_args: _reaction_message(**{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 2, "🏠": 1}))
+        lambda *_args: _reaction_message(**{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 2}))
     monkeypatch.setattr("miningbot.main.cfg.discord_bot_token", "token")
     monkeypatch.setattr("miningbot.main.cfg.discord_channel_id", "channel")
     bot._repost_remote_control = lambda: reposted.append(True)
@@ -741,7 +695,7 @@ class TestRemoteControlFallsBackToRepost:
         monkeypatch.setattr(
             notify, "fetch_message",
             lambda *_args: _reaction_message(
-                **{"▶️": 1, "⏸️": 2, "⚡": 1, "📷": 1, "🏠": 1}))
+                **{"▶️": 1, "⏸️": 2, "⚡": 1, "📷": 1}))
         monkeypatch.setattr(
             notify, "clear_reaction",
             lambda *_a, **_k: (False, "HTTP 403: {\"code\": 50013}"))

@@ -385,59 +385,6 @@ def test_main_loop_consumes_web_ability(tmp_path):
     assert bot._pending_ability is True
 
 
-def test_main_loop_consumes_web_reenter_accepted(tmp_path):
-    """🏠 手動回礦：接受時排 _manual_reentry，暫停中順便解除。"""
-    from miningbot.states import State
-    from miningbot.web_ipc import PendingReplies
-    from tests.fake_bot import make_fake_bot
-
-    pending = PendingReplies()
-    pending.push("control:reenter", {"cmd": "reenter"})
-    notes = []
-    bot = make_fake_bot(
-        bind=["_consume_web_pending"],
-        _web_pending=pending,
-        _overrides_path=str(tmp_path / "config_overrides.json"),
-        state=State.MINING,
-        paused=True,
-        _manual_reentry=False,
-        _reentry_active=lambda: True,
-        _antiafk_last=123.0,
-        _broadcast_status_note=lambda text: notes.append(text),
-    )
-    bot._consume_web_pending()
-
-    assert bot._manual_reentry is True
-    assert bot.paused is False
-    assert bot._antiafk_last == 0.0
-    assert notes == ["⛏ 手動回礦已排入 → 下個 tick 進 REENTRY"]
-
-
-def test_main_loop_consumes_web_reenter_rejected(tmp_path):
-    """狀態不允許時（例如已在 REENTRY 中）——不排隊，只回一則拒絕說明。"""
-    from miningbot.states import State
-    from miningbot.web_ipc import PendingReplies
-    from tests.fake_bot import make_fake_bot
-
-    pending = PendingReplies()
-    pending.push("control:reenter", {"cmd": "reenter"})
-    notes = []
-    bot = make_fake_bot(
-        bind=["_consume_web_pending"],
-        _web_pending=pending,
-        _overrides_path=str(tmp_path / "config_overrides.json"),
-        state=State.REENTRY,
-        paused=False,
-        _manual_reentry=False,
-        _reentry_active=lambda: True,
-        _broadcast_status_note=lambda text: notes.append(text),
-    )
-    bot._consume_web_pending()
-
-    assert bot._manual_reentry is False
-    assert notes and notes[0].startswith("❌ 回礦未接受：")
-
-
 def test_main_loop_consumes_web_radar_toggle(tmp_path):
     from miningbot.web_ipc import PendingReplies
     from tests.fake_bot import make_fake_bot

@@ -1610,7 +1610,6 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
       <button id="rc-pause" type="button" title="暫停（等同 Ctrl+Q）">&#9208;&#65039; 暫停</button>
       <button id="rc-ability" type="button" title="遊戲內先按 F 再按 X">&#9889; 能力</button>
       <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
-      <button id="rc-reenter" type="button" title="手動觸發回礦">&#127968; 回礦</button>
       <button id="rc-clear" type="button" title="清空背包面板篩選框（避免路 B 假陽性）">&#129529; 清空</button>
     </div>
     <div id="toolbar">
@@ -1655,7 +1654,6 @@ const rcResumeBtn = document.getElementById('rc-resume');
 const rcPauseBtn = document.getElementById('rc-pause');
 const rcAbilityBtn = document.getElementById('rc-ability');
 const rcFrameBtn = document.getElementById('rc-frame');
-const rcReenterBtn = document.getElementById('rc-reenter');
 const rcClearBtn = document.getElementById('rc-clear');
 
 let zoom = 1.0;         // 縮放倍率（fit-to-container 初始值 + 使用者 pinch/wheel）
@@ -2132,13 +2130,12 @@ skipBtn.addEventListener('click', () => {
   sendControl('skip', '跳過');
   currentEvent = null;
 });
-// 遙控器列（2026-07-28）：跟 Discord ▶️⏸️⚡📷🏠 對應，任何時候都能按，
+// 遙控器列（2026-07-28）：跟 Discord ▶️⏸️⚡📷 對應，任何時候都能按，
 // 不像上面那排要等 INTERVENTION_NEEDED 才出現。
 rcResumeBtn.addEventListener('click', () => sendControl('resume', '繼續'));
 rcPauseBtn.addEventListener('click', () => sendControl('pause', '暫停'));
 rcAbilityBtn.addEventListener('click', () => sendControl('ability', '能力'));
 rcFrameBtn.addEventListener('click', () => sendControl('request_frame', '即時畫面'));
-rcReenterBtn.addEventListener('click', () => sendControl('reenter', '手動回礦'));
 rcClearBtn.addEventListener('click', () => sendControl('clearpanel', '清空背包面板'));
 // 鍵盤左右鍵切方位（桌機看八張圖時比點按鈕快）
 window.addEventListener('keydown', (e) => {

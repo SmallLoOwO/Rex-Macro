@@ -427,7 +427,7 @@ def _remote_bot(state=State.MINING):
     bot = Bot.__new__(Bot)
     bot._remote_message_id = "mid"
     bot._remote_reactions_seen = {
-        "▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 1,
+        "▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🧹": 1,
     }
     bot.state = state
     bot.paused = False
@@ -454,7 +454,7 @@ def test_remote_clear_reaction_queues_pending(monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "fetch_message",
                         lambda *_a: _reaction_msg(
-                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 2}))
+                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🧹": 2}))
     monkeypatch.setattr(notify, "send_message",
                         lambda *a, **k: sent.append(a[2]) or (True, "OK"))
     monkeypatch.setattr(notify, "remove_user_reactions",
@@ -475,7 +475,7 @@ def test_remote_clear_reaction_rejected_in_harvesting(monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "fetch_message",
                         lambda *_a: _reaction_msg(
-                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🏠": 1, "🧹": 2}))
+                            **{"▶️": 1, "⏸️": 1, "⚡": 1, "📷": 1, "🧹": 2}))
     monkeypatch.setattr(notify, "send_message",
                         lambda *a, **k: sent.append(a[2]) or (True, "OK"))
     monkeypatch.setattr(notify, "remove_user_reactions",

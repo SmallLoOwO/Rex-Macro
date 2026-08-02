@@ -6,6 +6,7 @@ COMMAND_NAMES = frozenset({
     "list", "keep", "unkeep", "clear", "pause", "resume", "status", "help", "shot",
     "ability", "回礦", "reenter", "校準", "calib", "轉", "rotate",
     "掃描", "scan", "削洞", "caveskim",
+    "階級", "tier", "清空", "清背包", "clearpanel",
 })
 
 _ROTATE_WORDS = {"右": 1, "right": 1, "r": 1, "左": -1, "left": -1, "l": -1}

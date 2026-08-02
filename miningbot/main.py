@@ -82,7 +82,6 @@ _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
 _REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內先按 F 再按 X；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
-_REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
 
@@ -2014,7 +2013,6 @@ class Bot:
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
                 f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內先按 F 再按 X；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
-                f" 點 **{_REMOTE_REENTER_EMOJI}** 回礦（等同 `回礦` 指令，重走回礦流程取回正確方位）\n"
                 f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先放開挖礦鍵→清空→重接）\n"
                 f"\n"
                 f"_狀態變更會直接更新此訊息；被其他通知擠上去時會重貼回頻道底_"
@@ -2061,7 +2059,7 @@ class Bot:
             return
         seen = {}
         for em in (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
-                   _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI, _REMOTE_CLEAR_EMOJI):
+                   _REMOTE_SNAP_EMOJI, _REMOTE_CLEAR_EMOJI):
             added, _ = notify.add_reaction(token, ch, mid, em)
             seen[em] = 1 if added else 0
         self._remote_message_id = mid
@@ -2224,16 +2222,16 @@ class Bot:
         if message is None:
             return
         emojis = (_REMOTE_RESUME_EMOJI, _REMOTE_PAUSE_EMOJI, _REMOTE_ABILITY_EMOJI,
-                  _REMOTE_SNAP_EMOJI, _REMOTE_REENTER_EMOJI, _REMOTE_CLEAR_EMOJI)
+                  _REMOTE_SNAP_EMOJI, _REMOTE_CLEAR_EMOJI)
         self._remote_reactions_seen, increments = notify.find_reaction_increments(
             message, self._remote_reactions_seen, emojis)
-        actions = dict(zip(emojis, ("resume", "pause", "ability", "snap", "reenter", "clear")))
+        actions = dict(zip(emojis, ("resume", "pause", "ability", "snap", "clear")))
         action_taken = None
         for emoji, delta in increments:
             action = actions[emoji]
             action_taken = action
             if self._calib_session is not None and action != "snap":
-                # 校準中：▶️/⏸️ 只記離場後意圖；⚡/🏠 拒絕。📷 唯讀照常（fall through）。
+                # 校準中：▶️/⏸️ 只記離場後意圖；⚡ 拒絕。📷 唯讀照常（fall through）。
                 if action in ("resume", "pause"):
                     self._calib_session.prev_paused = (action == "pause")
                     notify.send_message(token, ch,
@@ -2273,22 +2271,6 @@ class Bot:
                                f"{'，已暫停' if self.paused else ''}）", [path])
                 self.log_discord.info("remote 📷 screenshot #%s -> %s (%s)",
                                       stem, path, detail)
-            elif action == "reenter":
-                # 🏠 手動回礦（2026-07-17）：與 `回礦` 指令/STUCK 🏠 同一條路——守門
-                # 純函式＋只寫旗標，REENTRY 開場鏈由主迴圈跑（可取回正確方位）。
-                ok_re, reason = can_accept_manual_reentry(
-                    self.state, self._reentry_active())
-                if not ok_re:
-                    notify.send_message(token, ch, f"❌ 回礦（🏠）未接受：{reason}")
-                else:
-                    self._manual_reentry = True
-                    if self.paused:
-                        self.paused = False
-                        self._antiafk_last = 0.0
-                    notify.send_message(
-                        token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
-                self.log_discord.info("remote 🏠 reenter -> accepted=%s state=%s",
-                                      ok_re, self.state.value)
             elif action == "clear":
                 # 🧹 手動清空背包面板（2026-08-01）：等同 `清空` 指令——只寫旗標，
                 # 主迴圈 _tick 消費。採集/回礦中不接受（同 `回礦` 守門）。
@@ -2632,30 +2614,41 @@ class Bot:
         elif cmd == "help":
             notify.send_message(token, ch,
                 "**MiningBot 指令**（直接輸入即可，不需 `!` 前綴）\n"
+                "\n"
+                "**操控**\n"
                 "`pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `resume` 恢復）\n"
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
+                "`ability` — 遠端先按 F 再按 X（手動使用能力；採集/回礦中會等空檔執行）\n"
+                "\n"
+                "**查詢**\n"
                 "`status` — 查詢目前狀態、統計、保留清單\n"
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
-                "`ability` — 遠端先按 F 再按 X（手動使用能力；採集/回礦中會等空檔執行）\n"
-                "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
-                "採集/回礦中不接受，不排隊）\n"
-                "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
-                "`清空` — 手動清空背包面板篩選框（挖礦中會先放開挖礦鍵→清空→重接；"
-                "採集/回礦中不接受；同 `清背包`/`clearpanel`）\n"
-                "`階級 [tier]` — 偵測階級開關（打勾=偵測）：`階級 Exquisite`=關 Exotic、"
-                "`階級 關/開 [tier]`=個別開關；不帶參數＝查詢；同 `tier`）\n"
-                "`削洞 [開|關]` — D2 的 Z（Cave Skim）連續使用：冷卻好就自動再按，"
-                "削掉特殊洞穴的方塊（不帶參數＝查詢；同 `caveskim`）\n"
-                "`掃描 [開|關]` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦（同 `scan`）\n"
-                "   ↳ ⚠ 掃描與採集流程搶同一條 D2 冷卻，開著可能讓 chill 採集掃不出追蹤框\n"
-                "   ↳ 切換後會記住，下次啟動自動套用（刪 `radar_toggle.json` 才退回預設關）\n"
-                "`校準 [挖礦|回礦]`：進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
-                "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
-                "`list [世界]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
+                "`list [world]` — 列出事件 + keep 狀態（預設=偵測到的世界；可指定 `Aesteria`/`Lucernia`）\n"
                 "   ↳ 點訊息下的表情 🌍/🌙 可切換世界分頁\n"
-                "`keep <礦物名>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
-                "`unkeep <礦物名>` — 取消保留\n"
+                "\n"
+                "**保留清單**\n"
+                "`keep <name>` — 加入保留（可多個；支援部分名稱如 `hall`）\n"
+                "`unkeep <name>` — 取消保留\n"
                 "`clear` — 清空保留清單\n"
+                "\n"
+                "**採集設定**\n"
+                "`reenter (回礦)` — 手動觸發回礦（卡死自救/蒐集面板樣本）\n"
+                "`rotate [left|right] (轉)` — 遠端轉 45°（預設右轉；校正回礦落地後的斜向面向；"
+                "採集/回礦中不接受，不排隊）\n"
+                "`clearpanel (清空)` — 清空背包面板篩選框（挖礦中先放開挖礦鍵→清空→重接；"
+                "採集/回礦中不接受；同 `清背包`）\n"
+                "`tier [tier] (階級)` — 偵測階級開關（打勾=偵測）：`tier Exquisite`=關 Exotic 以上、"
+                "`tier off/on Exotic`=個別開關；不帶參數＝查詢\n"
+                "`caveskim [on|off] (削洞)` — D2 Z（Cave Skim）連續使用：冷卻好就自動再按，"
+                "削掉特殊洞穴方塊（不帶參數＝查詢）\n"
+                "`scan [on|off] (掃描)` — D2 左鍵（Cyberscan）連續使用：範圍自動採礦\n"
+                "   ↳ ⚠ 掃描與採集搶同一條 D2 冷卻，開著可能讓 chill 採集掃不出追蹤框\n"
+                "   ↳ 切換後會記住，下次啟動自動套用（刪 `radar_toggle.json` 才退回預設關）\n"
+                "\n"
+                "**校準**\n"
+                "`calib (校準)` — 進俯仰校準卡（⬆️⬇️ 調角、🔁 幅度 1/5/10/50、💾 寫回 config；"
+                "文字 `上|下 [px]`/`歸位`/`存檔`/`離開` 與反應等價）\n"
+                "\n"
                 "`help` — 顯示此說明")
             self.log_discord.info("CMD help -> sent")
 
@@ -3838,18 +3831,6 @@ class Bot:
         if self._web_pending.pop("control:ability") is not None:
             self._pending_ability = True
             self.log_discord.info("web ⚡ ability（queued state=%s）", self.state.value)
-        if self._web_pending.pop("control:reenter") is not None:
-            ok_re, reason = can_accept_manual_reentry(self.state, self._reentry_active())
-            if not ok_re:
-                self._broadcast_status_note(f"❌ 回礦未接受：{reason}")
-            else:
-                self._manual_reentry = True
-                if self.paused:
-                    self.paused = False
-                    self._antiafk_last = 0.0
-                self._broadcast_status_note("⛏ 手動回礦已排入 → 下個 tick 進 REENTRY")
-            self.log_discord.info("web 🏠 reenter -> accepted=%s state=%s",
-                                  ok_re, self.state.value)
         # 網頁 🧹 清空（2026-08-01）：與 Discord `清空` 指令同一條路徑——
         # 設 _pending_clear_panel，主迴圈 _tick 消費。
         if self._web_pending.pop("control:clearpanel") is not None:
