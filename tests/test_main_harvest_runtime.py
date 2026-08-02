@@ -1,4 +1,5 @@
 import types
+import time
 
 import cv2
 import numpy as np
@@ -346,11 +347,14 @@ def test_reharvest_sweep_default_keeps_existing_ref(monkeypatch):
 # docs/open-detection-issues.md D06。
 
 
-def _ref_bot(monkeypatch, *, rotate_ok=True, frames=None):
+def _ref_bot(monkeypatch, *, rotate_ok=True, frames=None, boost_present=True):
     bot = Bot.__new__(Bot)
     bot.harvest = _harvest_state()
     bot.log_harvest = _LogRecorder()
     bot.logger = _LogRecorder()
+    bot._boost_present = boost_present
+    bot._boost_uses = 1
+    bot._last_boost = time.time()
     seq = iter(frames) if frames is not None else None
     monkeypatch.setattr(main.capture, "grab",
                         (lambda: next(seq)) if seq else
@@ -395,6 +399,22 @@ def test_capture_dir_references_is_off_when_flag_is_off(monkeypatch):
     monkeypatch.setattr(main.cfg, "sweep_per_dir_reference", False)
     assert bot._capture_dir_references("test") is False
     assert rotations == [], "關掉就一步都不轉"
+
+
+def test_capture_dir_references_falls_back_when_boost_expired_mid_rotation(monkeypatch):
+    """旋轉途中 boost 到期 → 整組作廢、退回單張 ref。
+
+    FOV 在 boost 到期時瞬間收縮（~2.6x）→ 後半方位的 ref 處於窄 FOV，
+    跟前半的寬 FOV 混合 → diff 對不上（D06 同症狀不同成因）。
+    修法：拍完 8 張後查一次瓶子，不在就廢棄整組（不重啟、不重按）。
+    """
+    frames = [np.full((4, 4, 3), i, np.uint8) for i in range(8)]
+    bot, rotations = _ref_bot(monkeypatch, frames=frames, boost_present=False)
+    assert bot._capture_dir_references("test") is False
+    assert bot._pre_scan_refs == {}, "boost 到期 → 整組作廢"
+    assert bot._pre_scan_refs_layer is None
+    # 旋轉仍然跑完了一圈（不中途停止——停了也無法補救，按 D5 只會讓 FOV 更亂）
+    assert rotations == [1] * 8
 
 
 def test_sweep_uses_the_reference_shot_at_that_direction(monkeypatch):

@@ -431,6 +431,19 @@ def restore_view(net_rotations: int, rotate=None):
             ic.rotate_right()
 
 
+def boost_duration_s(usages: int) -> float:
+    """BOSW（D5）效果持續秒數。Wiki 公式：75 / (2 + 1.5^(-usages/5))。
+
+    usages=0（首次）→25.0s；usages→∞ 收斂 37.5s。指數衰減、數小時使用到頂。
+    usages 指的是「本次使用之前的累積次數」，即 _boost_uses - 1（_confirm_boost_use
+    遞增後的值減一）。
+
+    僅用於 log／預估——不當安全閘（旋轉實際耗時不可預估，見 _capture_dir_references）。
+    """
+    u = max(0, usages)
+    return 75.0 / (2.0 + 1.5 ** (-u / 5.0))
+
+
 def scan_succeeded(texts) -> bool:
     """D2 掃描成功確認：OCR 文字裡有 Local-ish token 即成功。
 

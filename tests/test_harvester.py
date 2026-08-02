@@ -10,7 +10,8 @@ from miningbot.harvester import (next_harvest_step, HarvestState, restore_action
                                  plan_web_click_rotations,
                                  plan_giveup, GiveupPlan, GiveupCrop,
                                  giveup_send_groups,
-                                 rotation_looks_eaten, restore_view)
+                                 rotation_looks_eaten, restore_view,
+                                 boost_duration_s)
 from miningbot.config import DEFAULT
 
 def test_no_marker_yet_waits():
@@ -913,3 +914,33 @@ def test_mutation_proof_wrong_expected_header_rejects_clean_panel():
     assert panel_is_zeroed("NORMAL", [], "NORMAL") is True
     assert panel_is_zeroed("NORMAL", [], "SPECTRAL") is False
     assert panel_is_zeroed("NORMAL", [], "IONIZED") is False
+
+
+# ---- boost_duration_s（BOSW 效果持續秒數 wiki 公式）----
+
+def test_boost_duration_first_use_is_25s():
+    """Wiki：首次使用持續 25 秒。"""
+    assert boost_duration_s(0) == 25.0
+
+def test_boost_duration_monotonic_increase():
+    """越多用越長——單調遞增。"""
+    prev = boost_duration_s(0)
+    for u in range(1, 60):
+        cur = boost_duration_s(u)
+        assert cur > prev, f"usage {u} duration {cur:.2f} 應大於 {prev:.2f}"
+        prev = cur
+
+def test_boost_duration_approaches_375_cap():
+    """Wiki：上限 37.5 秒——大量使用後逼近。"""
+    assert boost_duration_s(100) < 37.5
+    assert boost_duration_s(100) > 37.4   # 100 次已非常接近上限
+
+def test_boost_duration_known_checkpoints():
+    """幾個關鍵點的精確值——防止公式被誤改。"""
+    assert abs(boost_duration_s(0) - 25.0) < 0.01
+    assert abs(boost_duration_s(5) - 28.125) < 0.01   # 75/(2+2/3)=28.125
+    assert abs(boost_duration_s(10) - 30.682) < 0.01  # 75/(2+4/9)≈30.682
+
+def test_boost_duration_negative_usages_clamped():
+    """負值（意外）不應崩——clamp 到 0。"""
+    assert boost_duration_s(-5) == 25.0

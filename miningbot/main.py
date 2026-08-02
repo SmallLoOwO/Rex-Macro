@@ -4918,6 +4918,25 @@ class Bot:
         reference 與之後的偵測幀是對齊的。
 
         任一次旋轉被吃 → 整組作廢、轉回原方位、回 False，呼叫端沿用單張 ref（今日行為）。
+
+        ★ FOV 守門（2026-08-02，grilling 確認的 D5 boost 與 FOV 力學）：
+
+        D5（BOSW）的 FOV 有三層：(1) binary 狀態——boost 有效時寬（~2.6x）、到期時窄，
+        瞬間切換；(2) 連續漂移——buff 期間漸寬、downtime 期間漸窄，半永久（rejoin 歸零）；
+        (3) per-use 步進——每次按 D5 的瞬間疊加。
+
+        旋轉期間（~19s）如果 boost 到期，第 1 層瞬間收縮會讓後半方位的 ref 處於窄 FOV
+        → 跟前半的寬 FOV ref 混合 → diff 對不上 → 真框被 rej(preexist) 殺掉（跟 D06
+        同症狀、不同成因）。
+
+        修法＝**旋轉中完全不查、不按 D5**（一旦按了，usage 變化 + 漂移方向反轉 → FOV 跳變
+        → ref 全毀，不管按不按都是混合）。全部拍完後查一次瓶子：
+        - 還在 → 全程同一個 usage、FOV 一致（第 2 層漂移微小且單調，在 diff 0.15 容忍內）。
+        - 不在 → boost 在旋轉途中到期 → 整組作廢、退回單張 ref（D06 前行為，有漏抓風險
+          但不混合）。不重啟旋轉——重按 D5 會讓 FOV 處於新漂移狀態，跟退回單張無本質區別。
+
+        Duration 公式 75/(2+1.5^(-U/5)) 僅用於 log 預估——不當安全閘（旋轉實際耗時
+        不可預估：旋轉被吃 retry、幀擷取慢、遊戲 lag 都會拉長）。
         """
         if not cfg.sweep_per_dir_reference:
             return False
@@ -4925,6 +4944,18 @@ class Bot:
         refs = {}
         start = self.harvest.net_rotations if self.harvest else 0
         t0 = time.time()
+
+        # log 預估（僅資訊——公式見 harvester.boost_duration_s）
+        if self.harvest:
+            uses = getattr(self, "_boost_uses", 1)
+            last_boost = getattr(self, "_last_boost", time.time())
+            dur = harvester.boost_duration_s(max(0, uses - 1))
+            age = time.time() - last_boost
+            self.log_harvest.info("[%s] 方位 reference（%s）：boost 預估剩餘 %.1fs"
+                                  "（uses=%d, duration=%.1fs, age=%.1fs）",
+                                  self.harvest.harvest_id, why, dur - age,
+                                  uses, dur, age)
+
         for i in range(num_dirs):
             refs[(start + i) % num_dirs] = capture.grab()
             if not self._rotate_verified(1):
@@ -4935,6 +4966,20 @@ class Bot:
                 self._pre_scan_refs_layer = None
                 harvester.restore_view(i, rotate=self._rotate_verified)
                 return False
+
+        # ★ post-rotation FOV 守門：boost 到期 → 整組作廢（不重啟、不重按）
+        # 查 _boost_present 快取即可——_boost_needs_refresh 每 0.2s 更新它；
+        # 旋轉中無 tick 插隊（_on_enter 同步），快取值反映旋轉最後一刻的狀態。
+        # getattr 預設 True：測試用 Bot.__new__ 繞過 __init__ 時不誤殺（同 _await_scan_ready 慣例）。
+        if not getattr(self, "_boost_present", True):
+            self.logger.warning(
+                "方位 reference（%s）：旋轉途中 boost 到期（耗時 %.1fs）-> "
+                "整組作廢，退回單張 ref（FOV 混合：前半寬/後半窄）",
+                why, time.time() - t0)
+            self._pre_scan_refs = {}
+            self._pre_scan_refs_layer = None
+            return False
+
         self._pre_scan_refs = refs
         self._pre_scan_refs_layer = self.harvest.pitch_layer if self.harvest else None
         self.log_harvest.info(
