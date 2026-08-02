@@ -65,6 +65,46 @@ def test_post_api_config_persists_to_file(app_parts):
         assert json.load(f) == {"reentry_mode": "auto"}
 
 
+def test_post_api_config_detection_tier_updates_runtime_and_gamedata(app_parts):
+    """detection_disabled_tiers 透過網頁儲存時不得 500（import 路徑曾用 ..game_data
+    越過頂層套件 → ImportError → 500）。驗證：POST 200 + Config 即時生效 +
+    game_data 模組級變數同步。"""
+    from miningbot import game_data
+
+    client, cfg, _ = app_parts
+    try:
+        r = client.post("/api/config",
+                        json={"field": "detection_disabled_tiers", "value": ["Exotic"]})
+        assert r.status_code == 200, r.text
+        assert cfg.detection_disabled_tiers == ["Exotic"]
+        assert game_data.get_detection_disabled_tiers() == {"Exotic"}
+    finally:
+        game_data.set_detection_disabled_tiers(set())  # 避免污染其他測試
+
+
+def test_post_api_config_detection_tier_persists(app_parts):
+    """detection_disabled_tiers 持久化到 overrides JSON（與 reentry_mode 同路徑）。"""
+    from miningbot import game_data
+
+    client, _, overrides_path = app_parts
+    try:
+        r = client.post("/api/config",
+                        json={"field": "detection_disabled_tiers", "value": ["Exotic"]})
+        assert r.status_code == 200
+        with open(overrides_path) as f:
+            assert json.load(f) == {"detection_disabled_tiers": ["Exotic"]}
+    finally:
+        game_data.set_detection_disabled_tiers(set())
+
+
+def test_post_api_config_detection_tier_rejects_bad_tier(app_parts):
+    """非法 tier 名（不在 HIGH_TIER_NAMES）→ validate_value 擋下，400 非 500。"""
+    client, _, _ = app_parts
+    r = client.post("/api/config",
+                    json={"field": "detection_disabled_tiers", "value": ["NotATier"]})
+    assert r.status_code == 400
+
+
 def test_post_api_config_rejects_non_whitelisted(app_parts):
     client, cfg, _ = app_parts
     original = cfg.tracker_core_min_area
