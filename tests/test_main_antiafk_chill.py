@@ -51,6 +51,11 @@ def _observing_bot(score, pressed_at):
     bot._check_reset = lambda frame: False
     bot._update_reset_complete = lambda: False
     bot._reentry_active = lambda: False
+    # observe() 在 08-02 為 double-chill banner 偵測加了 `if self.state is State.MINING`
+    # 通往 _sample_banner_color(frame)。本檔只測 antiafk 靜音窗，banner 與之無關——
+    # 設 MINING 並 stub 掉取樣，免得 frame=None 炸掉（banner 偵測另由實機驗證）。
+    bot.state = main.State.MINING
+    bot._sample_banner_color = lambda frame: None
     return bot
 
 

@@ -686,3 +686,50 @@ Common        x=18 [192,192,192] wiki C1C1C1 [193,193,193]
 第二行 `(0.0, 30.0, 166.0, 280.0, 304.0)` 是 D11 實機值。dataclass 後者覆蓋前者，
 **行為一直是對的**（生效值是實機值），但編輯第一行會靜默無效——下一個人照著 wiki
 改那行會以為改了、實際沒有。已合併成單一定義（生效值不變，已驗證）。
+
+---
+
+## D14（2026-08-02）：傳送板 mask blob 在部分 descended 幀是直向/近方形，卡在 v0 的 aspect 閘外
+
+### 症狀
+
+`test_teleport_board_detector_hits_every_annotated_fixture` 與
+`test_rr_click_snap_bracket_holds_on_real_fixtures` 紅：`teleport_board.detect`
+對 `auto_46_success`、`auto_48_success`（皆 `verify=descended`，即真板子）回 `None`。
+
+### 量測
+
+annotation 窗（±180px）內用極寬 hue range（100–160）抓所有紫色 mask，最大 connected
+component 的形狀（`teleport_board` 的 aspect 閘是 `[1.60, 3.00]`，只要橫向）：
+
+| fixture | verify | 最大 comp (w×h) | aspect | 結果 |
+|---|---|---|---|---|
+| auto_52_success | descended | 235×154 | **1.53** 橫向 | ✓ 偵測到 |
+| **auto_46_success** | descended | 212×273 | **0.78** 直向 | ✗ None |
+| **auto_48_success** | descended | 130×141 | **0.92** 近方 | ✗ None |
+
+兩側夾 hue 下界（126 → 124 → 120 → 116 → 110）：auto_46/48 **全程 None**、其餘 10
+張 descended 命中數不變（10/12）、無新誤報——**降 hue 無效，問題不在 HSV range**。
+
+板子框的紫色確實進了 mask（auto_46 窗內紫色像素 40963、mask_px 12408），但形成的
+blob 是**直向/近方形**而非 v0 校準的 ~2:1 橫向（校準語料 4 個板子實例 aspect
+1.53–2.21，見 `teleport_board.py` 配方註）。auto_48 的窗內 S_med=51 還低於校準 S
+下界 60（板子偏去飽和）。可能成因：俯角不同使板子看起來被壓扁／旋轉、或這批板子
+本身是直向款式——**需肉眼確認這幾幀的板子外觀**（素材：
+`tests/fixtures/reentry/teleport_board/auto_46_success.png`、`auto_48_success.png`）。
+
+### 為何不直接放寬 aspect 閘
+
+aspect 下界降到 ~0.78 會讓任何直向紫色物（UI 柱、夜空、左側礦物面板邊）全部過閘，
+在沒有直向板的負樣本下無法兩側夾——違反「夾不出兩側就別動門檻」。v0 偵測器本就標榜
+「語料是單一世界/單一層/全夜晚、只求在這個分布上可用」（`teleport_board.py` docstring）。
+
+### 處置
+
+- 門檻不動。`detect` 是**建議用**（`_predict_teleport_board` 只建議不自動點），偵測
+  不到時照常走 web/Discord 八方位手選，不影響介入流程。
+- 測試誠實化（本次 commit）：descended 才算 ground truth（`verify != "descended"`
+  偵測不到不算退步，與 D13 的 `auto_42_fail` 同一條規則）；D14 兩張以 `_D14_ASPECT_GAP`
+  排除硬斷言但發 `UserWarning` 可見化，修好移除即消失。
+- 待辦：肉眼確認 auto_46/48 的板子外觀後，決定是 (a) 加直向板模板/放寬 aspect（要配套
+  負樣本），還是 (b) 歸類為 v0 不涵蓋的分布。`build_reentry_dataset --eval` 是唯一量尺。

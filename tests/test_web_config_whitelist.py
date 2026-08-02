@@ -11,18 +11,21 @@ from miningbot.web_config_whitelist import (
 
 
 class TestWhitelist:
-    def test_four_player_facing_fields_in_whitelist(self):
-        # spec §6：就這四個
+    def test_player_facing_fields_in_whitelist(self):
+        # spec §6 原四個 play-style 欄位 ＋ detection_disabled_tiers（08-02 例外：
+        # 玩家頻繁切換「哪些階級算稀有」，其他偵測門檻仍 AI-agent-only 不在此）
         assert WEB_CONFIGURABLE_FIELDS == frozenset({
             "reentry_mode",
             "reentry_target_layer",
             "reentry_yaw_sample_sweep",
             "sweep_pitch_enabled",
+            "detection_disabled_tiers",
         })
 
     @pytest.mark.parametrize("field", [
         "reentry_mode", "reentry_target_layer",
         "reentry_yaw_sample_sweep", "sweep_pitch_enabled",
+        "detection_disabled_tiers",
     ])
     def test_whitelisted_field_passes(self, field):
         assert is_web_configurable(field) is True
@@ -66,6 +69,19 @@ class TestValidateValue:
     def test_bool_fields_reject_non_bool(self, value):
         assert validate_value("reentry_yaw_sample_sweep", value) is False
         assert validate_value("sweep_pitch_enabled", value) is False
+
+    def test_detection_disabled_tiers_accepts_list_of_valid_tiers(self):
+        # 合法值＝game_data.HIGH_TIER_NAMES（Exotic+）的 list 子集；空 list＝全啟用
+        assert validate_value("detection_disabled_tiers", ["Exotic", "Zenith"]) is True
+        assert validate_value("detection_disabled_tiers", []) is True
+
+    @pytest.mark.parametrize("value", [
+        "Exotic",                    # 單一字串不是 list
+        ["Rare", "Common"],          # 不在 HIGH_TIER_NAMES（Exotic+）內
+        123, None, True, ("Exotic",),  # 非 list
+    ])
+    def test_detection_disabled_tiers_rejects_invalid(self, value):
+        assert validate_value("detection_disabled_tiers", value) is False
 
     def test_non_whitelisted_field_always_invalid(self):
         assert validate_value("tracker_core_min_area", 80) is False
