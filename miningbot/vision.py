@@ -1020,6 +1020,27 @@ def panel_row_hues(crop, row_ys, x0: int, x1: int, half: int = 8) -> list:
     return out
 
 
+def banner_text_hue(crop_bgr, sat_min: int = 60, val_min: int = 80,
+                    pixel_min: int = 20) -> float | None:
+    """chill banner 區域的有色文字主色相（OpenCV HSV H 值 0..179；None = 無足夠文字像素）。
+
+    banner 是暗底＋彩色文字（每則 spawn 訊息的 RGB 是 server 端隨機，16.7M 種）。
+    高飽和度＋高亮度 mask 濾出文字像素，median hue 抗鋸齒/抗單字 outlier。
+
+    **用途**（double-chill 偵測，2026-08-02）：兩顆稀有礦近同時重新整理時 banner 連續
+    刷新兩則——音訊「連音」無法分辨（1.5s 滾動窗合併），但文字色相不同（隨機 RGB）。
+    MINING 期間每 tick 取樣，色相跳變 ≥ 門檻 = 第二則 = double chill。
+
+    回傳值是 OpenCV 的 H channel（0..179，不是 0..360）；呼叫端做環形差時用
+    ``min(|a-b|, 180-|a-b|)``。
+    """
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    mask = (hsv[:, :, 1] >= sat_min) & (hsv[:, :, 2] >= val_min)
+    if int(mask.sum()) < pixel_min:
+        return None
+    return float(np.median(hsv[:, :, 0][mask]))
+
+
 def filter_box_ink(crop) -> int:
     """篩選框裡的「墨量」＝亮像素數（純函式；spec H070 的輸入生效驗證）。
 

@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 from miningbot.vision import (find_template, template_present, find_template_edges,
                               find_tracker, find_tracker_near, find_marker, best_outline_score,
-                              template_outline_edges, frames_differ, detect_tracker_core)
+                              template_outline_edges, frames_differ, detect_tracker_core,
+                              banner_text_hue)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -1265,3 +1266,44 @@ def test_h068_ore_panel_region_covers_panel_text_but_not_world():
         assert inside(p), f"面板文字候選 {p} 應被排除區蓋住"
     for p in [(1396, 815), (937, 458), (1433, 491)]:
         assert not inside(p), f"真框 {p} 不得落進排除區"
+
+
+# ── banner_text_hue：chill banner 色相取樣（double-chill 偵測，2026-08-02）─────
+
+def _banner_with_text(text_bgr, bg_bgr=(18, 18, 18), h=22, w=200):
+    """合成 banner 圖：暗底＋指定顏色的文字像素條。"""
+    img = np.full((h, w, 3), bg_bgr, np.uint8)
+    # 在中間畫一條「文字」色帶（模擬有色文字）
+    img[6:16, 40:160] = text_bgr
+    return img
+
+
+def test_banner_text_hue_returns_none_for_dark_background():
+    """純暗底（無高飽和文字）→ None。"""
+    img = np.full((22, 200, 3), (18, 18, 18), np.uint8)
+    assert banner_text_hue(img) is None
+
+
+def test_banner_text_hue_extracts_green_text_hue():
+    """綠色文字 (BGR 0,255,0 → OpenCV HSV H≈60) → 回傳 ≈60。"""
+    img = _banner_with_text((0, 255, 0))
+    hue = banner_text_hue(img)
+    assert hue is not None
+    assert 55 <= hue <= 65  # OpenCV H=60 ±容差
+
+
+def test_banner_text_hue_distinguishes_red_and_blue():
+    """紅色 (H≈0) vs 藍色 (H≈120) 文字色相不同——double chill 偵測的基礎。"""
+    red_hue = banner_text_hue(_banner_with_text((0, 0, 255)))    # BGR red
+    blue_hue = banner_text_hue(_banner_with_text((255, 0, 0)))   # BGR blue
+    assert red_hue is not None and blue_hue is not None
+    diff = abs(red_hue - blue_hue)
+    diff = min(diff, 180 - diff)
+    assert diff > 30, f"紅藍色相差應 >30°（OpenCV 制），實得 Δ{diff}"
+
+
+def test_banner_text_hue_few_pixels_returns_none():
+    """文字像素少於 pixel_min → None（避免雜訊偽陽性）。"""
+    img = np.full((22, 200, 3), (18, 18, 18), np.uint8)
+    img[10, 100] = (0, 255, 0)  # 只有一個像素
+    assert banner_text_hue(img, pixel_min=20) is None

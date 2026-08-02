@@ -800,3 +800,30 @@ fixture 位置慣例：
 - **回歸**：`tests/test_scan_confirm_gate.py` 11 項——`_confirm_scan` 五種模式回傳值、`_harvest_scan_guard` badge 在放行/缺了補掃/throttle 防spam/補掃後重置預算/harvest 為 None 不爆/`__init__` 有宣告。`tests/test_boost_fixtures.py` 6 項（含兩側夾）。`tests/test_main_harvest_runtime.py` 4 項 sweep 測試加 `_harvest_scan_guard` mock。
 - **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True/False`（進場驗證）及 `[168] scan guard: 無 Local 徽章 -> 補掃 D2`（sweep 中途補掃）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；scan guard 頻繁觸發＝掃描持續被吃或 OCR 假陰性。補掃後不該再看到緊接著的「sweep 超時」（那是上面第 2 點修掉的病徵）。
 - **⚠ 仍未補的證據缺口**：`scan_confirm_mode` 從 `off` 改 `enforce` 讓 `_scan_local_badge_present` 這條逐格 OCR 變成 load-bearing，但目前所有測試都是 `lambda: True/False` mock，**沒有一張真實效果列幀進 `tests/fixtures/`**（harvest 168 的實測文字 `"Used tu"`／`"A"` 只寫在本條目，幀還在 `.scratch/h168_*.png`）。依 AGENTS.md「Visual/OCR threshold changes require real fixtures」這是欠的——OCR 假陰性的代價現在是每方位多一次補掃＋等冷卻。下次實機取到有／無 Local 徽章的成對效果列幀時補進 `tests/fixtures/scan_confirm/`。
+
+---
+
+## H074（2026-08-02 16:25:41，harvest 171；state-commit bug＋double chill 放生風險）
+
+### 症狀
+進場面板色檢命中 astatine（chill 前鎬子已挖到）→ `_harvest_giveup` 送出 NEEDS_HUMAN alert → 但 bot 沒停在 NEEDS_HUMAN，繼續在 HARVESTING 跑 `_tick_harvest` → 用上一輪（episode 170）的殘值 `_target_marker`／`_chat_baseline` 跑到 D3-timeout 晚到確認 → 被動挖礦的 Astatine 剛好進聊天 → 轉成功 → 續採 bonus sweep。結果恰好正確（ore A 確實被挖到了），但全程是不可靠的殘值驅動。
+
+### 根因（兩層）
+1. **state-commit bug**：`_harvest_entry_panel_check` 在 `_on_enter(HARVESTING)` 內呼叫 `_harvest_giveup`（line 5611 直接寫 `self.state = NEEDS_HUMAN`）。但 `_on_enter` 回傳 None（line 3539 `return`）→ `resolve_state_transition(current=NEEDS_HUMAN, decided=HARVESTING, entered=None)` 回傳 HARVESTING（line 114 `return decided`）→ 主迴圈 `self.state = HARVESTING` 蓋回。對比 MINING 聚焦失敗路徑（line 3472）正確地 `return State.NEEDS_HUMAN` 當降級信號——panel check 路徑沒有。
+2. **殘值 state**：panel check 在 `_on_enter(HARVESTING)` line 3538 就 return，在它之前的 episode 狀態初始化（line 3568 `_target_marker = None`、line 3573 `_chat_baseline = None`、line 3567 `_harvest_start`）都沒跑到 → 保留 episode 170 的值。`_tick_harvest` 用殘值 `_target_marker=(1430,501)` 進 D3 階段 → `elapsed_s` 天文數字（`_harvest_start` 未設）→ D3 立刻超時 → 晚到確認用殘值 `_chat_baseline` 比對 → 命中被動挖礦行。
+
+### 同場發現的更大風險：double chill 放生
+使用者指出：兩顆稀有礦近同時重新整理時，音訊「連音」（1.5s 滾動窗合併為一聲）。若其中一顆被鎬子被動挖到（面板已有）→ panel check 舊版直接跳過 sweep → 第二顆追蹤框從未被掃過 → 靜默放生。
+
+**音訊無法計數**（`match_score` 回傳 peak，不計數；1.5s 窗合併兩聲）。**banner 文字可計數**：每則 spawn 訊息有唯一隨機 RGB（16.7M 種），色相跳變＝第二則。文字在音效前刷新（~0.4-0.6s gap），MINING 期間每 tick 取樣即可抓到。
+
+### 修復（三層）
+- **層 A — state-commit bug fix + panel check sweep**：`_harvest_entry_panel_check` 不再呼叫 `_harvest_giveup`，改成純檢查回傳 gains list。`_on_enter(HARVESTING)` 存 `_entry_panel_gains` 後照常跑 prepare_scan／sweep。sweep 全空才 giveup（reason 帶入面板 gains）。
+- **層 B — banner 色相 double-chill 偵測**：新增 `vision.banner_text_hue(crop)`（HSV mask → median hue，純像素 ~1ms）。`observe()` 在 MINING 每 tick 取樣 `chill_text_region`，色相跳變 ≥ `banner_hue_change_deg`(15°) → 記時戳到 `_banner_color_changes`。`_on_enter(HARVESTING)` 查近期跳變設 `_double_chill_detected`。
+- **層 C — flag 消費**：double chill 時採完第一顆仍強制 bonus sweep（即使無可見追蹤框）；bonus sweep 全空 → `decide_bonus_empty(True)` → 交人工不回 MINING。
+
+### 回歸
+- `tests/test_giveup_rescue.py`：panel check 5 項更新（回傳 list 不再 giveup）
+- `tests/test_vision.py`：`banner_text_hue` 4 項（暗底 None／綠色色相／紅藍區分／像素不足 None）
+- `tests/test_harvester.py`：`decide_bonus_empty` 2 項（False→RESUME／True→HUMAN）
+- ⚠ **待實機驗證**：panel check 命中後看到 sweep 跑（非直接 giveup）；double chill 場次看到 `banner 色相跳變` log + 強制 bonus sweep。低飽和隨機色（~5-10%）抓不到時退回層 A sweep 保護，不會更差。

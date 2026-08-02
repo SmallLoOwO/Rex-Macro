@@ -419,6 +419,16 @@ class Config:
     chill_edge_release_s: float = 0.0         # 分數要回落多久才算下一聲；0 = 對帳停用
     chill_reconcile_enabled: bool = False     # 帳不平時交人工（需 chill_edge_release_s > 0 才生效）
 
+    # Banner 色相 double-chill 偵測（2026-08-02）：音訊 1.5s 滾動窗無法分辨兩聲「連音」，
+    # 但 banner 文字是離散的——每則 spawn 訊息有唯一隨機 RGB（16.7M 種），色相跳變＝第二則。
+    # 文字在音效之前刷新（~0.4-0.6s），MINING 期間每 tick 取樣即可抓到（詳見 grill 結論）。
+    banner_color_sample_enabled: bool = True   # MINING 每 tick 取樣 banner 文字色相
+    banner_text_sat_min: int = 60              # HSV 飽和度下限：暗底上高飽和＝文字像素
+    banner_text_val_min: int = 80              # HSV 亮度下限
+    banner_text_pixel_min: int = 20            # 最少文字像素數；少於此＝無有意義文字
+    banner_hue_change_deg: float = 15.0        # 色相差門檻（0-360 制；內部 /2 轉 OpenCV 0-179）
+    double_chill_window_s: float = 3.0         # chill 觸發前往回看幾秒內的色相跳變
+
     # 進場面板色檢（H072，2026-08-01）：chill 觸發進 HARVESTING 時，若面板已有白名單
     # （Exotic+）礦＝chill 前鎬子已挖到→不需要 D3 採集。觀察期一律交人工確認。
     # 前提：_panel_zeroed_at 有值（進 MINING 時面板已清空驗證過）。

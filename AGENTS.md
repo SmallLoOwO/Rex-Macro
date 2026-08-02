@@ -342,13 +342,29 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   `scan_confirm_mode` above is what happens when nobody is reminded.
 - **`harvest_entry_panel_check` is on and records to `panel_check_observed.json`.**
   When chill triggers and the NORMAL panel already has a whitelisted (Exotic+) ore,
-  the bot skips the full harvest flow and immediately goes to NEEDS_HUMAN with
-  chat/backpack evidence. Each hit is appended to `<log_dir>/panel_check_observed.json`.
+  the bot **records the gains but no longer short-circuits** (2026-08-02): the sweep
+  runs normally — if a tracker is found it is harvested (possibly the second ore of a
+  double chill); if sweep is empty, `_harvest_giveup` fires with the panel-check reason.
+  The old short-circuit caused a state-commit bug (harvest 171: `_harvest_giveup` inside
+  `_on_enter(HARVESTING)` wrote NEEDS_HUMAN, but `resolve_state_transition` overrode it
+  back to HARVESTING → stale episode state → unpredictable behavior).
+  Each hit is appended to `<log_dir>/panel_check_observed.json`.
   **When that file reaches `panel_check_observe_target` (10) entries, lay the records
   out for the user and ask whether to switch to automatic** (skip NEEDS_HUMAN, resume
   mining directly). Requires `_panel_zeroed_at` to be set — if the panel clear at MINING
   entry failed (H070/H071), the check is bypassed entirely. The manual `清空` command
   is the fallback for when the automatic clear fails.
+- **Double-chill detection via banner color** (2026-08-02). Audio cannot count two
+  near-simultaneous chills (1.5s rolling window merges them), but the top banner text
+  is discrete with a unique random RGB per spawn message. During MINING, each tick
+  samples the banner text hue (`vision.banner_text_hue`); a hue jump ≥
+  `banner_hue_change_deg` sets `_double_chill_detected` at HARVESTING entry. When the
+  flag is set: (1) after harvesting the first ore, a bonus sweep is forced even with no
+  visible tracker, and (2) if the bonus sweep is empty, the bot hands to human instead
+  of resuming MINING. The flag is a safety enhancement — the base layer (panel-check
+  always sweeps) protects against double chill regardless. **Needs live-game validation**:
+  verify that banner text hue is sampled correctly and that double-chill episodes
+  trigger the expected bonus sweep + human handoff.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.

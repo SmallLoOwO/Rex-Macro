@@ -218,6 +218,16 @@ def decide_post_success(recheck_pos, fired_pos, extra_targets: int,
     return "CONTINUE"
 
 
+def decide_bonus_empty(double_chill: bool) -> str:
+    """續採 sweep 全空後的收尾決策（純函式）。回 "RESUME" / "HUMAN"。
+
+    - double_chill=True → "HUMAN"：banner 偵測到兩則 chill 訊息但只採到一顆，
+      第二顆追蹤框八方位都看不到（可能地形遮擋）→ 交人工確認，不回 MINING。
+    - 否則 → "RESUME"：bonus 框已淡出，episode 已有成功入帳，正常收尾（incident 072）。
+    """
+    return "HUMAN" if double_chill else "RESUME"
+
+
 def decide_verify_poll(gone: bool, confirmed: bool, elapsed_s: float, window_s: float) -> str:
     """D3 開火後「輪詢驗證」的單步決策（純函式，H015 對策）。
 

@@ -393,8 +393,14 @@ class Bot:
         self._chill_fell_at = None               # 上次回落時刻（去抖動的唯一依據）
         self._chill_edges: list = []             # [(時間戳, 分數, 距上次回落秒數)]；_on_enter(MINING) 清空
         self._episode_chill_at = 0.0             # 本場 chill 時刻（救援取快取的錨點）
+        # Banner 色相 double-chill 偵測（2026-08-02）：MINING 每 tick 取樣 banner 文字色相，
+        # 跳變＝第二則 spawn 訊息＝可能 double chill。chill 觸發時查近期跳變→設旗標。
+        self._banner_hue: float | None = None   # 上一幀的 banner 文字色相（OpenCV 0..179）
+        self._banner_color_changes: list = []   # [時間戳]：色相跳變的時刻（episode 級）
         self._panel_zeroed_at: float | None = None  # 面板歸零時刻（spec 2026-07-31）；None = 不信任面板
         self._episode_succeeded = False          # 本場已記過 HARVEST_SUCCESS（救援不得重複認領）
+        self._entry_panel_gains: list = []       # 進場面板色檢命中的 礦名（H072；sweep 後 giveup reason 用）
+        self._double_chill_detected: bool = False  # banner 色相偵測到兩則 chill（強制 bonus sweep + 全空交人工）
         # 救援觀察期（spec 03）：命中照樣交人工，只記帳；跨 session 累計到目標次數後問玩家
         self._rescue_observed: list = self._load_rescue_observed()
         self._rescue_observe_note = ""           # 交人工訊息的觀察期註記（每次命中覆寫）
@@ -1176,6 +1182,10 @@ class Bot:
                 self.logger.info("chill 靜音（音訊 %.2f）：防掛機 Space 後 %.0fs 內，"
                                  "判定為原地跳音效", score, cfg.antiafk_chill_mute_s)
         self._record_chill_edge(edge_score)
+        # banner 色相取樣（double-chill 偵測）：只在 MINING 跑。文字在音效前刷新，
+        # chill 觸發前的 MINING tick 已取到色相跳變——HARVESTING 後不再取樣。
+        if self.state is State.MINING:
+            self._sample_banner_color(frame)
         chill_text = False
         if chill_audio:
             if not cfg.chill_require_ocr:
@@ -1234,6 +1244,35 @@ class Bot:
         elif edge == "fall":
             self._chill_fell_at = now
             self.log_harvest.info("chill 回落（音訊 %.2f）", score)
+
+    def _sample_banner_color(self, frame):
+        """MINING 期間每 tick 取樣 chill banner 文字色相（double-chill 偵測，2026-08-02）。
+
+        banner 是暗底＋彩色文字（spawn 訊息 RGB 隨機）。文字在音效之前刷新——兩顆礦
+        近同時重新整理時 banner 連續刷新兩則不同色相的訊息，音訊「連音」分不出來但色相
+        跳變抓得到。chill 觸發時由 `_on_enter(HARVESTING)` 查 `_banner_color_changes`。
+
+        純像素操作（~1ms）：HSV mask → median hue，不需 OCR。低飽和隨機色（~5-10% 機率）
+        抓不到也不影響安全性——底層靠 panel check sweep（層 A）。
+        """
+        if not cfg.banner_color_sample_enabled:
+            return
+        crop = capture.crop(frame, cfg.chill_text_region)
+        hue = vision.banner_text_hue(
+            crop, cfg.banner_text_sat_min, cfg.banner_text_val_min,
+            cfg.banner_text_pixel_min)
+        if hue is None:
+            return
+        if self._banner_hue is not None:
+            diff = abs(hue - self._banner_hue)
+            diff = min(diff, 90.0 - diff)          # OpenCV H 0..179，環形半周=90
+            if diff >= cfg.banner_hue_change_deg / 2.0:
+                now = time.time()
+                self._banner_color_changes.append(now)
+                self.log_harvest.info(
+                    "banner 色相跳變：%.0f→%.0f (Δ%.0f°) → 可能 double chill",
+                    self._banner_hue * 2.0, hue * 2.0, diff * 2.0)
+        self._banner_hue = hue
 
     def _update_reset_complete(self) -> bool:
         """RESET_WAIT 中追蹤「banner reset 字樣已消失＋沉澱夠久」（REENTRY 觸發條件）。
@@ -3535,8 +3574,26 @@ class Bot:
             self._episode_succeeded = False
             self._episode_chill_at = time.time()
             self._harvest_origin_ref = frame
-            if self._harvest_entry_panel_check(hid):
-                return                          # 已交人工，不進入採集流程
+            # ★ 進場面板色檢（H072）：記 gains 但**不再短路 giveup**（2026-08-02）。
+            #   舊版直接呼叫 _harvest_giveup 寫 NEEDS_HUMAN，但 _on_enter 回傳 None →
+            #   resolve_state_transition 蓋回 HARVESTING → 殘值 state-commit bug（harvest 171）。
+            #   且 double chill 時第一顆可能已被動挖到、面板已有，但第二顆追蹤框還在——
+            #   直接交人工會放生。現在 sweep 照跑；全空才用 gains 當 giveup reason。
+            self._entry_panel_gains = self._harvest_entry_panel_check(hid)
+            # ★ double chill 偵測（banner 色相，2026-08-02）：chill 觸發前的 MINING tick
+            #   已取到 banner 色相跳變（兩則 spawn 訊息不同隨機色）。查近期跳變→設旗標，
+            #   之後重置（下一場重新累積）。旗標消費：採完第一顆強制 bonus sweep +
+            #   bonus sweep 全空交人工。
+            _now_dc = time.time()
+            self._double_chill_detected = any(
+                t >= _now_dc - cfg.double_chill_window_s
+                for t in self._banner_color_changes)
+            if self._double_chill_detected:
+                self.log_harvest.info(
+                    "[%s] double chill 偵測（banner 色相跳變 → 強制 bonus sweep + 全空交人工）",
+                    hid)
+            self._banner_color_changes = []
+            self._banner_hue = None
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
             #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
@@ -6623,9 +6680,19 @@ class Bot:
                     return
                 if verdict == "EXIT_SUCCESS":
                     # 續採途中 sweep 全空/預算用盡（incident 072）：bonus 框已淡出，
-                    # episode 已有成功入帳 → 正常收尾回 MINING，不交人工/換層
-                    self.logger.info("[%s] 續採 sweep 全空（bonus 框已淡出）-> 正常收尾回 MINING", hid)
-                    self._harvest_resume_mining()
+                    # episode 已有成功入帳 → 正常收尾回 MINING，不交人工/換層。
+                    # double chill 時例外：第二顆追蹤框可能被地形遮擋、八方位都看不到
+                    # → 不回 MINING，交人工讓玩家手動確認。
+                    if harvester.decide_bonus_empty(self._double_chill_detected) == "HUMAN":
+                        self.logger.info(
+                            "[%s] 續採 sweep 全空，但 double chill 偵測到 → 交人工（第二顆可能被遮擋）",
+                            hid)
+                        self._harvest_giveup(
+                            "double chill 偵測到，但第二顆追蹤框八方位未找到——請手動確認")
+                    else:
+                        self.logger.info(
+                            "[%s] 續採 sweep 全空（bonus 框已淡出）-> 正常收尾回 MINING", hid)
+                        self._harvest_resume_mining()
                     return
                 if verdict == "NEXT_LAYER":
                     # yaw 只改 x 不改 y（H026）：標準層看不到的框，換俯仰層才有機會。
@@ -6638,7 +6705,13 @@ class Bot:
                                  hid, len(self.harvest.pitch_layers_left))
                 if self._recover_historical_target(_excl):
                     return
-                self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
+                _gains = getattr(self, "_entry_panel_gains", [])
+                if _gains:
+                    self._harvest_giveup(
+                        f"進場面板已有稀有 礦（{'、'.join(_gains)}），全方位掃描確認無追蹤框——"
+                        "可能 chill 前已被鎬子挖到，請手動處理")
+                else:
+                    self._harvest_giveup("全方位掃描未找到追蹤框（礦可能已被挖走），請手動處理")
                 return
             # ★ 聊天基準是 episode 級（2026-07-04 起在進場時拍、RESWEEP 不作廢，見 _on_enter）：
             #   舊版在此每輪 sweep 重取——誤判失敗 RESWEEP 後重取會把晚到的成功行吃進新基準，
@@ -6984,6 +7057,23 @@ class Bot:
             self._chat_ledger = None   # 下次開火後的基準 OCR 會重建
             self._reharvest_sweep()    # 重新 D2 掃描（掃描可能將到期）；保 _pre_scan_ref、重置計時器
             return                     # 留在 HARVESTING；net_rotations 繼續累計，最後一次轉回
+        # ★ double chill（banner 色相偵測到兩則 spawn）：採到第一顆但畫面無可見第二顆框
+        #   → 強制重新 sweep（第二顆可能在別方位，當下視野看不到）。bonus sweep 全空時再由
+        #   EXIT_SUCCESS 路徑（decide_bonus_empty）交人工。只在首顆採完觸發一次（extra_targets==0）。
+        if self._double_chill_detected and self.harvest.extra_targets == 0:
+            self.harvest.extra_targets += 1
+            self.harvest.d3_attempts = 0
+            self.harvest.verify_fail_resweeps = 0
+            self.logger.info("[%s] double chill → 無可見追蹤框仍強制重新 sweep（第 %d 顆）",
+                             hid, self.harvest.extra_targets)
+            self.last_action = "double chill 強制續掃"
+            fresh = capture.grab()
+            self._chat_baseline = None
+            self._chat_baseline_crop = capture.crop(fresh, cfg.chat_region)
+            self._chat_last_crop = self._chat_baseline_crop
+            self._chat_ledger = None
+            self._reharvest_sweep()
+            return
         self._harvest_resume_mining()
 
     def _harvest_resume_mining(self):
@@ -7008,28 +7098,30 @@ class Bot:
         hid = self.harvest.harvest_id if self.harvest else "?"
         return self._panel_rare_ores(hid, "對帳")
 
-    def _harvest_entry_panel_check(self, hid: str) -> bool:
+    def _harvest_entry_panel_check(self, hid: str) -> list:
         """進場面板色檢（H072 觀察期）：chill 前鎬子可能已挖到稀有 礦。
 
-        面板（已歸零可信）有白名單（Exotic+）礦＝這場 MINING 期間已挖到→不需要 D3
-        採集的漫長流程（sweep ~19s＋多次 D3＋verify）。觀察期：照舊交人工確認，不自己
-        收尾——這條路的誤判代價是「白交一次人工」（安全方向），但命中時玩家的畫面上
-        礦可能已經被挖走、D3 掃不到、照樣浪費一輪採集，所以提早交人工更省。
+        面板（已歸零可信）有白名單（Exotic+）礦＝這場 MINING 期間已挖到。
 
-        **觀察期記錄**（2026-08-02 使用者要求）：每次命中記進 panel_check_observed.json，
-        附確認問題讓玩家核對。累計到 panel_check_observe_target 次後，由 agent session
-        攤開證據問使用者是否切自動（不交人工、直接回 MINING）。
+        **不再短路 giveup**（2026-08-02）：舊版直接呼叫 `_harvest_giveup` 在
+        `_on_enter(HARVESTING)` 裡寫 `NEEDS_HUMAN`，但 `_on_enter` 回傳 None →
+        `resolve_state_transition` 蓋回 HARVESTING → 殘值 state-commit bug（harvest 171）。
+        且 double chill 時第一顆可能已被動挖到、面板已有，但第二顆追蹤框還在等 D3——
+        直接交人工會放生。現在只記 gains；sweep 照跑，全空才由 `_tick_harvest` 用 gains
+        當 giveup reason。giveup 時 `_giveup_rescue` 路 B 仍會讀面板，自然接手。
 
-        回 True＝已交人工（`_harvest_giveup`），呼叫端必須立刻 return。
+        觀察期記錄照舊：每次命中記進 panel_check_observed.json，累計到目標次數後問玩家。
+
+        回傳 gains list（空 = 沒命中）。
         """
         if not cfg.harvest_entry_panel_check:
-            return False
+            return []
         gains = self._episode_panel_gains()
         if not gains:
-            return False
+            return []
         self.log_harvest.warning(
             "[%s] H072 進場面板色檢命中：面板已有白名單 礦 %s——"
-            "chill 前可能已被鎬子挖到，交人工確認（觀察期）",
+            "chill 前可能已被鎬子挖到（仍照常 sweep，全空才交人工）",
             hid, "、".join(gains))
         # ── 觀察期記帳（比照 rescue observe）──
         self._panel_check_observed.append({
@@ -7039,17 +7131,12 @@ class Bot:
         self._save_panel_check_observed()
         n = len(self._panel_check_observed)
         target = cfg.panel_check_observe_target
-        confirm_note = (
-            f"🔎 面板判定「{'、'.join(gains)}」在 chill 前已被鎬子挖到（第 {n}/{target} 次）"
-            f"——請核對背包/聊天證據：如果確實是 chill 前就挖到了，直接按 Q 繼續即可")
         if n >= target:
             self.logger.info(
                 "面板色檢觀察期已累積 %d 次判定（目標 %d）：請 agent session 攤開 "
                 "%s 的紀錄與玩家確認是否切自動（不交人工、直接回 MINING）",
                 n, target, self._panel_check_observed_path())
-        self._harvest_giveup(
-            f"進場面板已有稀有 礦（{'、'.join(gains)}），可能 chill 前已挖到\n{confirm_note}")
-        return True
+        return gains
 
     def _chill_reconcile(self, where: str, *, notify: bool = True) -> bool:
         """雙 chill 對帳（spec 2026-07-30）：響兩聲只進帳一顆就結案＝帳不平 → 交人工。

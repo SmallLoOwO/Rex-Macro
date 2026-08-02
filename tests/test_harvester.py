@@ -493,6 +493,19 @@ def test_sweep_failure_default_behavior_unchanged_without_extra_mode():
     assert decide_sweep_failure(had_candidates=False, resweeps_done=0,
                                 pitch_layers_left=2) == "NEXT_LAYER"
 
+
+# --- decide_bonus_empty：續採 sweep 全空後的收尾（double chill 偵測，2026-08-02）---
+
+def test_decide_bonus_empty_resume_when_no_double_chill():
+    """正常單 chill：bonus 框淡出 → 正常收尾回 MINING。"""
+    assert harvester.decide_bonus_empty(False) == "RESUME"
+
+
+def test_decide_bonus_empty_human_when_double_chill():
+    """double chill：第二顆追蹤框八方位未找到 → 交人工，不回 MINING。"""
+    assert harvester.decide_bonus_empty(True) == "HUMAN"
+
+
 def test_mining_pitch_home_enabled_requires_calibration():
     # <=0＝未校準＝停用（與 plan_pitch_layers 同慣例）；>0＝已校準
     assert harvester.mining_pitch_home_enabled(0) is False

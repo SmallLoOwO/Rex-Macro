@@ -1065,43 +1065,42 @@ def _entry_panel_bot(monkeypatch, *, panel=(), zeroed=True, enabled=True, **attr
     return bot, giveup_called
 
 
-def test_entry_panel_check_calls_human_when_rare_in_panel(monkeypatch):
-    """面板已有白名單 礦（chill 前鎬子已挖到）→ 交人工確認（觀察期）。"""
+def test_entry_panel_check_returns_gains_when_rare_in_panel(monkeypatch):
+    """面板已有白名單 礦（chill 前鎬子已挖到）→ 回傳 gains，不直接交人工（sweep 照跑）。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"])
-    assert bot._harvest_entry_panel_check("162") is True
-    assert len(giveup) == 1
-    assert "faedrine" in giveup[0]
+    assert bot._harvest_entry_panel_check("162") == ["faedrine"]
+    assert giveup == [], "不再短路 giveup——sweep 照跑，全空才由 _tick_harvest giveup"
 
 
 def test_entry_panel_check_passes_when_panel_empty(monkeypatch):
     """面板沒有白名單 礦 → 正常進入採集。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=[])
-    assert bot._harvest_entry_panel_check("162") is False
+    assert bot._harvest_entry_panel_check("162") == []
     assert giveup == []
 
 
 def test_entry_panel_check_skips_when_panel_not_zeroed(monkeypatch):
     """面板未歸零（_panel_zeroed_at is None）→ _episode_panel_gains 回 [] → 跳過。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"], zeroed=False)
-    assert bot._harvest_entry_panel_check("162") is False
+    assert bot._harvest_entry_panel_check("162") == []
     assert giveup == []
 
 
 def test_entry_panel_check_disabled_by_config(monkeypatch):
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"], enabled=False)
-    assert bot._harvest_entry_panel_check("162") is False
+    assert bot._harvest_entry_panel_check("162") == []
     assert giveup == []
 
 
 def test_entry_panel_check_records_observe_hit(monkeypatch):
-    """命中時記進 _panel_check_observed＋giveup reason 帶確認問題（觀察期）。"""
+    """命中時記進 _panel_check_observed（觀察期）；不再 giveup，只回傳 gains。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine", "hallonite"])
     saved = []
     bot._save_panel_check_observed = lambda: saved.append(True)
-    assert bot._harvest_entry_panel_check("162") is True
+    assert bot._harvest_entry_panel_check("162") == ["faedrine", "hallonite"]
     assert len(bot._panel_check_observed) == 1
     rec = bot._panel_check_observed[0]
     assert rec["harvest_id"] == "162"
     assert "faedrine" in rec["ore_names"]
     assert saved, "_save_panel_check_observed 必須被呼叫"
-    assert any("核對" in r or "確認" in r for r in giveup), "giveup reason 必須帶確認問題"
+    assert giveup == [], "不再直接 giveup"
