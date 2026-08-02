@@ -1,13 +1,13 @@
-"""D2 掃描效果驗證守門（scan_confirm_mode enforce）的回歸測試。
+"""D2 掃描效果驗證守門（scan_confirm_mode enforce + sweep guard）的回歸測試。
 
 背景（harvest 168, 2026-08-02）：進場 execute_scan 的 click 被吃掉／掃描沒觸發，
 但 scan_confirm_mode="off" 使 _confirm_scan 永遠 return True → bot 無法分辨
 「沒稀有礦」跟「掃描沒觸發」→ 白掃 8 方位全空 → giveup → 可能放生真稀有礦。
 
-修復三層：
+修復設計（比照 D5 boost guard 的 self-heal 模式，使用者指定）：
 1. _confirm_scan enforce 模式重試後回傳實際結果（不再永遠 True）
-2. 進場／重掃／歷史復原／俯仰層／remote-aim 呼叫端接住回傳值，False 時 abort
-3. scan_confirm_mode 預設從 "off" 改 "enforce"
+2. scan_confirm_mode 預設從 "off" 改 "enforce"
+3. _harvest_scan_guard：sweep 每方位檢查效果列 Local 徽章，缺了就補掃再繼續（不交人工）
 """
 import types
 
@@ -41,7 +41,7 @@ def _make_bot(**attrs):
     return bot
 
 
-# ---- _confirm_scan 回傳值（核心修復）-----------------------------------------
+# ---- _confirm_scan 回傳值 ---------------------------------------------------
 
 def test_confirm_scan_off_returns_true(monkeypatch):
     """off 模式：不檢查，永遠放行（向後相容）。"""
@@ -65,7 +65,7 @@ def test_confirm_scan_enforce_returns_true_when_badge_present(monkeypatch):
 
 
 def test_confirm_scan_enforce_returns_false_after_failed_retry(monkeypatch):
-    """enforce 模式：重試後 badge 仍 False → 回傳 False（修復重點：不再永遠 True）。"""
+    """enforce 模式：重試後 badge 仍 False → 回傳 False（不再永遠 True）。"""
     monkeypatch.setattr(main.cfg, "scan_confirm_mode", "enforce")
     bot = _make_bot(
         _scan_local_badge_present=lambda: False,
@@ -93,81 +93,45 @@ def test_confirm_scan_enforce_retries_then_succeeds(monkeypatch):
     assert "run_scan" in retried
 
 
-# ---- 呼叫端接住回傳值 --------------------------------------------------------
+# ---- _harvest_scan_guard（self-heal，比照 _harvest_boost_guard）---------------
 
-def test_reharvest_sweep_gives_up_when_scan_confirm_fails(monkeypatch):
-    """重掃後 _confirm_scan=False → 不繼續 sweep，交人工（不再白掃 8 方位）。"""
+def test_scan_guard_passes_when_badge_present(monkeypatch):
+    """效果列有 Local 徽章 → 守門放行（不補掃）。"""
     bot = _make_bot(
-        harvest=types.SimpleNamespace(
-            d3_attempts=3, net_rotations=0, pitch_layer="mid",
-            harvest_id="168"),
-        _pre_scan_ref="ref",
-        _sweep_fov_shifted=False,
-        _await_scan_ready=lambda where: True,
-        _confirm_scan=lambda where: False,   # 掃描未生效
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: True,
+    )
+    assert bot._harvest_scan_guard() is False
+
+
+def test_scan_guard_retriggers_when_badge_missing(monkeypatch):
+    """效果列無 Local 徽章 → 補掃 D2 再繼續（self-heal，不交人工）。"""
+    retriggered = []
+    bot = _make_bot(
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: False,
+        _await_scan_ready=lambda where: retriggered.append(where),
+        _run_scan=lambda: retriggered.append("run_scan"),
+    )
+    monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
+    assert bot._harvest_scan_guard() is True
+    assert "scan-guard" in retriggered
+    assert "run_scan" in retriggered
+
+
+def test_scan_guard_throttles_repeat_retrigger(monkeypatch):
+    """剛補過 → throttle 內不重複（防 OCR 假陰性 spam 冷卻等待）。"""
+    bot = _make_bot(
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: False,
+        _await_scan_ready=lambda where: None,
         _run_scan=lambda: None,
     )
-    monkeypatch.setattr(main.harvester, "prepare_scan", lambda: None)
-    giveup_calls = []
-    bot._harvest_giveup = lambda reason, **kw: giveup_calls.append(reason)
+    monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
+    monkeypatch.setattr(main.time, "time", lambda: 1000.0)
 
-    bot._reharvest_sweep()
-
-    assert len(giveup_calls) == 1, "掃描未生效應立刻交人工，不繼續 sweep"
-    assert "掃描" in giveup_calls[0] or "D2" in giveup_calls[0]
-
-
-def test_reharvest_sweep_proceeds_when_scan_confirm_ok(monkeypatch):
-    """掃確認 ok → 正常流程不變（不誤觸 giveup）。"""
-    bot = _make_bot(
-        harvest=types.SimpleNamespace(
-            d3_attempts=3, net_rotations=0, pitch_layer="mid",
-            harvest_id="168"),
-        _pre_scan_ref="ref",
-        _sweep_fov_shifted=True,
-        _await_scan_ready=lambda where: True,
-        _confirm_scan=lambda where: True,
-        _run_scan=lambda: None,
-    )
-    monkeypatch.setattr(main.harvester, "prepare_scan", lambda: None)
-    giveup_calls = []
-    bot._harvest_giveup = lambda reason, **kw: giveup_calls.append(reason)
-
-    bot._reharvest_sweep()
-
-    assert giveup_calls == [], "掃描 ok 不該 giveup"
-
-
-def test_recover_historical_target_skips_tracker_search_when_scan_confirm_fails(monkeypatch):
-    """歷史復原：掃描未生效 → 不呼叫 find_tracker_near（直接 return False）。"""
-    # 準備最小可到達 _confirm_scan 的 mock——旋轉/俯仰/聚焦全短路。
-    obs = types.SimpleNamespace(
-        status="accepted", layer="mid", dir_idx=0, pos=(960, 540), score=0.9)
-    monkeypatch.setattr(main.remote_aim, "pick_recovery_observation", lambda obs_list: obs)
-    find_calls = []
-    monkeypatch.setattr(main.vision, "find_tracker_near",
-                        lambda *a, **k: find_calls.append("called"))
-
-    bot = _make_bot(
-        harvest=types.SimpleNamespace(
-            d3_attempts=0, net_rotations=0, pitch_layer="mid",
-            harvest_id="168", pitch_touched=False),
-        _target_recovery_attempts=0,
-        _target_observations=[],
-        _pre_scan_ref=None,
-        _focus_roblox=lambda: True,
-        _mine_resetting=False,
-        _rotate_verified=lambda step: True,
-        _pitch_drag_verified=lambda tag, fn: True,
-        _await_scan_ready=lambda where: True,
-        _confirm_scan=lambda where: False,   # 掃描未生效
-        _run_scan=lambda: None,
-        _harvest_boost_guard=lambda frame: False,
-    )
-    monkeypatch.setattr(main.harvester, "prepare_scan", lambda: None)
-    monkeypatch.setattr(main.capture, "grab", lambda: None)
-
-    result = bot._recover_historical_target(None)
-
-    assert result is False, "掃描未生效應 return False"
-    assert find_calls == [], "掃描未生效不該浪費時間找 tracker"
+    assert bot._harvest_scan_guard() is True   # 第一次：補掃
+    monkeypatch.setattr(main.time, "time", lambda: 1001.0)
+    assert bot._harvest_scan_guard() is False  # 1s 後：throttle 擋住
+    monkeypatch.setattr(main.time, "time", lambda: 2000.0)
+    assert bot._harvest_scan_guard() is True   # 1000s 後：throttle 過 → 再補

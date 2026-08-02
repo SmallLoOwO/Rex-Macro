@@ -319,10 +319,14 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `scan_confirm_mode` is now `enforce` (H073, 2026-08-02). harvest 168 實機：
   進場 D2 click 被吃、掃描沒觸發，但 `scan_confirm_mode` 原為 `off` 使
   `_confirm_scan` 永遠 return True → bot 無法分辨「沒稀有礦」與「掃描沒觸發」→
-  白掃 8 方位全空 → giveup。現改成 enforce + 呼叫端接住回傳值，掃描未生效時
-  abort（giveup／return False）不白掃。**需實機驗證**：下一輪 log 預期看到
-  `[scan-confirm] enter ok=True/False` 行；若 OCR 誤判（badge 在但讀不到），
-  會出現不必要的 NEEDS_HUMAN，屆時考慮降回 observe。
+  白掃 8 方位全空 → giveup。現改成 enforce + `_harvest_scan_guard`（比照
+  `_harvest_boost_guard` 的 self-heal 模式）：進場 `_confirm_scan` 偵測 badge
+  缺失時自動 retry；sweep 每方位的 `_harvest_scan_guard` 持續檢查效果列 Local
+  徽章，缺了就補掃再繼續（不交人工）。**需實機驗證**：下一輪 log 預期看到
+  `[scan-confirm] enter ok=True/False` 及 `scan guard: 無 Local 徽章 -> 補掃 D2`。
+  另發現 `_boost_needs_refresh` 有偽陽性（matchTemplate score 0.337 但 edge
+  match 通過，命中 boost 使用次數 icon 而非 active buff）——D5 boost guard 的
+  獨立問題，另行追查。
 - **`giveup_rescue_observe` is on (observation mode) and needs a human decision to
   leave it.** Path B of the give-up rescue judges "this ore was already banked" but
   still hands over to the human; every hit is appended to

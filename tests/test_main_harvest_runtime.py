@@ -258,6 +258,7 @@ def test_sweep_for_tracker_flags_fov_shift_when_boost_guard_fires(monkeypatch):
         return len(guard_calls) == 3            # 第 3 個方位補 D5，其餘不用補
 
     bot._harvest_boost_guard = guard
+    bot._harvest_scan_guard = lambda: False
 
     pos, had = bot._sweep_for_tracker([], None)
 
@@ -273,6 +274,7 @@ def test_sweep_for_tracker_no_flag_when_boost_guard_never_fires(monkeypatch):
     bot._find_tracker = lambda *a, **kw: None
     bot._rotate_verified = lambda step: True
     bot._harvest_boost_guard = lambda frame: False
+    bot._harvest_scan_guard = lambda: False
     monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
     monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
     monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((4, 4, 3), np.uint8))
@@ -402,6 +404,7 @@ def test_sweep_uses_the_reference_shot_at_that_direction(monkeypatch):
     bot._pre_scan_refs_layer = "mid"
     bot._tracker_log = None
     bot._harvest_boost_guard = lambda frame: False
+    bot._harvest_scan_guard = lambda: False
     monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
     monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
     seen = []
@@ -422,6 +425,7 @@ def test_sweep_falls_back_to_single_reference_on_a_different_pitch_layer(monkeyp
     bot.harvest.pitch_layer = "up"
     bot._tracker_log = None
     bot._harvest_boost_guard = lambda frame: False
+    bot._harvest_scan_guard = lambda: False
     monkeypatch.setattr(main.cfg, "remote_aim_enabled", False)
     monkeypatch.setattr(main.cfg, "sweep_empty_snapshot", False)
     seen = []

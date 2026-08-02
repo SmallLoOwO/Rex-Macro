@@ -775,11 +775,12 @@ fixture 位置慣例：
   | slot 2 greenness | 10.5（門檻 5.0） | D2 已裝備（slot_selected 通過） |
   | 效果列 per-slot OCR | "Used tu"／"A" | **無 Local 徽章** → scan_succeeded=False |
   | 8 方位候選 ring_ok | 全 False | 全是地形/UI 噪音，無真追蹤框 |
+  | D5 boost bottle 偵測 | matchTemplate score 0.337 < 門檻 0.4 | **D5 也未生效**（使用者確認：成功觸發應出現兩個同樣圖示，只有一個＝使用次數非 boost） |
 - **一句話根因**：`execute_scan()` 的 `slot_selected` 只驗裝備（slot 亮綠）不驗效果（掃描是否觸發），click 被吃時裝備仍在但掃描沒生效；`_confirm_scan()` 的 OCR 徽章驗證寫好了但因 `scan_confirm_mode="off"` 永遠 return True，使這層保護形同虛設。
-- **三層修復**：
+- **修復（比照 D5 boost guard 的 self-heal 模式，使用者指定）**：
   1. `_confirm_scan` enforce 模式重試後回傳實際結果（`return ok` 取代 `return True`）。
-  2. 五個呼叫端（進場／重掃／歷史復原／俯仰層／remote-aim）接住回傳值，False 時 abort——進場與重掃走 `_harvest_giveup("D2 掃描未生效")`，其餘 return False 讓呼叫端走既有 giveup。
-  3. `scan_confirm_mode` 預設從 `"off"` 改 `"enforce"`。
-- **安全方向**：enforce 重試仍 False 時 abort（giveup／return False）——寧可交人工（玩家手動掃描＋按 Q）也不白掃 19s 後用錯誤結論收場（可能放生真稀有礦）。enforce 模式已含一次 retry（refocus + 等冷卻 + 重掃），暫態 click 被吃能自動恢復。
-- **回歸**：`tests/test_scan_confirm_gate.py` 8 項——`_confirm_scan` 四種模式回傳值（off/observe/enforce-ok/enforce-fail/enforce-retry-succeed）、`_reharvest_sweep` 掃描未生效 giveup vs ok 正常、`_recover_historical_target` 掃描未生效跳過 find_tracker_near。全測試 2346 passed（4 項 pre-existing failure 與本修復無關）。
-- **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True`（掃描正常）或 `[scan-confirm] enter ok=False` → `[scan-confirm] enter-retry ok=True/False`（偵測到失敗→重試）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；ok=False 頻繁出現＝OCR 誤判，考慮降回 observe。3 場連續 ok=True 且正常採到 礦＝修復確認。
+  2. `scan_confirm_mode` 預設從 `"off"` 改 `"enforce"`——進場 `_confirm_scan` 偵測到 badge 缺失時自動 refocus + 等冷卻 + 重掃一次（一次 retry）。
+  3. **`_harvest_scan_guard`（核心）**：比照 `_harvest_boost_guard`，在 `_sweep_for_tracker` 每方位檢查效果列 Local 徽章，缺了就 `_await_scan_ready` + `_run_scan` 補掃再繼續——**不交人工**（self-heal）。throttle（`_scan_guard_at`，`radar_repeat_interval_s`）防 OCR 假陰性 spam 冷卻。
+- **D5 boost 偽陽性（另行追查）**：`_boost_needs_refresh` 的 `find_template_edges` 在效果列 matchTemplate score 僅 0.337（< 門檻 0.4），但 edge-based 偵測通過——命中位置 (1705,1039) 與 boost 使用次數區 (1720,990,90,90) 重疊。使用者指出：D5 成功觸發時效果列會出現**兩個**幾乎同樣的瓶子圖示（一個 active buff、一個使用次數）；只有一個＝boost 未生效，那個是次數icon。現行偵測只找一個 match → 偽陽性，boost guard 以為 D5 還在、不補。屬 `_boost_needs_refresh` 的獨立問題，不在此修復範圍。
+- **回歸**：`tests/test_scan_confirm_gate.py` 8 項——`_confirm_scan` 四種模式回傳值（off/observe/enforce-ok/enforce-fail/enforce-retry-succeed）、`_harvest_scan_guard` badge 在放行/缺了補掃/throttle 防spam。`tests/test_main_harvest_runtime.py` 4 項 sweep 測試加 `_harvest_scan_guard` mock。全測試 2346 passed（4 項 pre-existing failure 與本修復無關）。
+- **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True/False`（進場驗證）及 `[168] scan guard: 無 Local 徽章 -> 補掃 D2`（sweep 中途補掃）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；scan guard 頻繁觸發＝掃描持續被吃或 OCR 假陰性。

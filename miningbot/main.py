@@ -3558,11 +3558,7 @@ class Bot:
             # 追蹤框才出現，先拍才不會把活框寫進排除基準＝H026 自我致盲）。
             self._capture_dir_references("進場")
             self._run_scan()            # 裝備 D2 + 點擊觸發掃描
-            if not self._confirm_scan("enter"):
-                # harvest 168：click 被吃／掃描沒觸發 → 不白掃 8 方位，直接交人工
-                self.logger.warning("[%s] D2 掃描未生效（重試後仍無 Local 徽章）-> 交人工", hid)
-                self._harvest_giveup("D2 掃描未生效，請手動掃描後按 Q 繼續")
-                return
+            self._confirm_scan("enter")  # enforce：badge 沒出現自動 refocus+重掃；sweep guard 持續守門
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
             # ★ 聊天基準提升到 episode 級（2026-07-04 H032 延伸對策）：進場拍一次、
@@ -4764,6 +4760,30 @@ class Bot:
             self._boost_fov_pair_save(frame, screen)
         return True
 
+    def _harvest_scan_guard(self) -> bool:
+        """採集 sweep 期間 D2 掃描守門（比照 _harvest_boost_guard 的 self-heal 模式）：
+
+        效果列無 Local 徽章 → 補掃 D2 再繼續（不交人工）。harvest 168 根因：
+        execute_scan click 被吃／掃描到期 → 追蹤框不出現 → 白掃 8 方位。
+        進場 _confirm_scan 做「觸發後立刻驗＋retry」；本守門在 sweep 每方位持續
+        補掃，確保掃描效果全程在線。
+
+        throttle（_scan_guard_at）：剛補過就不重複——D2 冷卻 ~30s，badge 若因
+        OCR 假陰性讀不到，連續補只在浪費冷卻等待時間。
+        回傳 True＝剛補掃（呼叫端重抓幀）。
+        """
+        if self._scan_local_badge_present():
+            return False
+        last = getattr(self, "_scan_guard_at", 0.0)
+        if time.time() - last < cfg.radar_repeat_interval_s:
+            return False
+        self._scan_guard_at = time.time()
+        hid = self.harvest.harvest_id if self.harvest else "?"
+        self.log_harvest.info("[%s] scan guard: 無 Local 徽章 -> 補掃 D2", hid)
+        self._await_scan_ready("scan-guard")
+        self._run_scan()
+        return True
+
     def _tracker_exclusions(self):
         """追蹤框偵測的螢幕排除區：左上聊天 + 左側 NORMAL 礦石面板（H068）。
 
@@ -4950,6 +4970,8 @@ class Bot:
             if self._harvest_boost_guard(frame):
                 frame = capture.grab()
                 self._sweep_fov_shifted = True
+            if self._harvest_scan_guard():
+                frame = capture.grab()
             rejects = [] if cfg.remote_aim_enabled else None
             # D06：這個方位自己的 reference（拍不到／別的俯仰層 → 退回單張 ref）
             dref = self._dir_reference(abs_dir, ref)
@@ -5124,9 +5146,7 @@ class Bot:
         if self._harvest_boost_guard(scan_reference):
             scan_reference = capture.grab()
         self._run_scan()
-        if not self._confirm_scan("historical-recovery"):
-            self.log_harvest.info("[%s] historical recovery D2 未生效 -> 放棄", hid)
-            return False
+        self._confirm_scan("historical-recovery")
         reference = getattr(self, "_pre_scan_ref", None)
         if reference is None:
             reference = scan_reference
@@ -6066,8 +6086,7 @@ class Bot:
             gf = capture.grab()
         ref = gf
         self._run_scan()
-        if not self._confirm_scan("remote-aim"):
-            return False, "D2 掃描未生效，可重試"
+        self._confirm_scan("remote-aim")
         # 3. 找框：grid 路徑走限縮偵測（harvest 101），candidate 路徑走既有 find_tracker_near
         if cell:
             pos, pos_score, detail = self._detect_core_in_cell(
@@ -9081,11 +9100,7 @@ class Bot:
         # ★ 不重拍方位 reference（H026 對策同上）：重掃時框往往已在畫面上，
         #   這裡沿用進場那組；FOV 變過的情況已在上面的 refresh_ref 分支處理。
         self._run_scan()
-        if not self._confirm_scan("resweep"):
-            hid = self.harvest.harvest_id
-            self.logger.warning("[%s] 重掃 D2 未生效 -> 交人工", hid)
-            self._harvest_giveup("D2 掃描未生效（重掃），請手動掃描後按 Q 繼續")
-            return
+        self._confirm_scan("resweep")
         self._sweep_fov_shifted = False          # 這輪已處理，下次 sweep 重新判定
         # 重掃 = 回到 sweep 階段，重置計時器讓 sweep_timeout_s 重新計算
         self._harvest_start = time.time()
@@ -9443,9 +9458,7 @@ class Bot:
                 "[%s] 俯仰層 %s 重掃 D2：距上次掃描 %s（< 30s 代表可能落在冷卻裡沒作用）",
                 hid, layer.name, since)
             self._run_scan()
-            if not self._confirm_scan(where):
-                self.logger.warning("[%s] 俯仰層 %s D2 未生效 -> 跳過該層", hid, layer.name)
-                return False
+            self._confirm_scan(where)
             # 每層獨立 sweep_timeout_s 預算，從重掃**完成之後**才起算——放在重掃之前的話，
             # execute_scan 內含的 1.8s 等待與可能的冷卻等待會先吃掉這層的預算。
             self._harvest_start = time.time()
