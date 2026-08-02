@@ -80,7 +80,7 @@ if cfg.web_server_enabled:
 # 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
-_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內先按 F 再按 X；等同 `ability` 指令）
+_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（.→F→X→,；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
@@ -1261,7 +1261,8 @@ class Bot:
             crop, cfg.banner_text_sat_min, cfg.banner_text_val_min,
             cfg.banner_text_pixel_min)
         if hue is None:
-            return
+            return    # 沒有 banner 文字（非 MINING 或無 chill 訊息）
+        self.logger.debug("banner hue sampled: %.0f", hue * 2.0)
         if self._banner_hue is not None:
             diff = vision.hue_circular_diff(hue, self._banner_hue)
             if diff >= cfg.banner_hue_change_deg / 2.0:
@@ -2011,7 +2012,7 @@ class Bot:
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
-                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內先按 F 再按 X；等同 `ability`）\n"
+                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（右轉45°→F→X→轉回正面；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
                 f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先放開挖礦鍵→清空→重接）\n"
                 f"\n"
@@ -2481,7 +2482,7 @@ class Bot:
             notify.send_message(token, ch,
                 f"⚡ 能力指令已排入（狀態: {self.state.value}"
                 + ("，暫停中——恢復後才會執行" if self.paused else "")
-                + "）→ 主迴圈將在遊戲內先按 F 再按 X")
+                + "）→ 主迴圈將右轉45°→F→X→轉回正面")
             self.log_discord.info("CMD ability -> queued state=%s paused=%s",
                                   self.state.value, self.paused)
 
@@ -2618,7 +2619,7 @@ class Bot:
                 "**操控**\n"
                 "`pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `resume` 恢復）\n"
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
-                "`ability` — 遠端先按 F 再按 X（手動使用能力；採集/回礦中會等空檔執行）\n"
+                "`ability` — 使用能力（右轉45°→F→X→轉回正面；採集/回礦中會等空檔執行）\n"
                 "\n"
                 "**查詢**\n"
                 "`status` — 查詢目前狀態、統計、保留清單\n"
@@ -4410,12 +4411,18 @@ class Bot:
         self._update_reset_chime_active()
         self._consume_pending_rotate()
         self._consume_web_pending()  # web client 命令（P1 Task 10）
-        # Discord `ability` 指令消費：可消費狀態才按 F→X（HARVESTING/REENTRY 插按鍵會
+        # Discord `ability` 指令消費：可消費狀態才按 .→F→X→,（HARVESTING/REENTRY 插按鍵會
         # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
+        # 使用者要求（2026-08-02）：右轉45°施放能力再轉回，最大化手動能力效果；
+        # 全程不放開 W／左鍵（key_press 只送按下+放開，不影響按住中的鍵）。
+        # 每鍵之間留延遲（預設 0.09s 太快會被遊戲吃鍵）：轉向 0.2s、能力各 0.15s。
         if self._pending_ability and can_consume_ability(self.state):
             self._pending_ability = False
-            ic.key_press("f"); ic.key_press("x")
-            self.last_action = "遠端能力：已按 F→X"
+            ic.key_press(".", delay=0.2)
+            ic.key_press("f", delay=0.15)
+            ic.key_press("x", delay=0.15)
+            ic.key_press(",", delay=0.15)
+            self.last_action = "遠端能力：右轉→F→X→轉回"
             self.log_discord.info("ability 已執行（state=%s）", self.state.value)
         # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
         # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。
@@ -7229,6 +7236,7 @@ class Bot:
             f"late@{why}")
         self._chat_last_crop = cur
         if not (confirmed or special):
+            self.logger.debug("[%s] late_chat_confirm(%s)：聊天有變但未確認稀有礦", hid, why)
             return False
         self.logger.info("[%s] 晚到確認（%s）：聊天確認已採到（誤判失敗轉成功）", hid, why)
         self._dump_chat_ocr(hid, self._chat_baseline, chat_after, "late-success")
@@ -8042,6 +8050,8 @@ class Bot:
         if encode_for_web:
             ctx._post_web_sweep = True
             ctx._sweep_start_cur_dir = sweep_start_dir
+        self.logger.info("[RR#%s] 八方位拍照完成：%d 張（rot_missed=%d, web_pngs=%d）",
+                         ctx.episode_id, len(pairs), rot_missed, len(web_pngs))
         return pairs, rot_missed, web_pngs
 
     def _predict_teleport_board(self, ctx, dir_idx: int, frame):
