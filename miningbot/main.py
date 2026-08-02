@@ -4441,9 +4441,9 @@ class Bot:
         self._update_reset_chime_active()
         self._consume_pending_rotate()
         self._consume_web_pending()  # web client 命令（P1 Task 10）
-        # Discord `ability` 指令消費：可消費狀態才按 .→X→,→等2s→F（HARVESTING/REENTRY
+        # Discord `ability` 指令消費：可消費狀態才按 .→X→,→等3s→F（HARVESTING/REENTRY
         # 插按鍵會干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
-        # 使用者要求（2026-08-03 實機確認）：正確順序是右轉→X→左轉→等2秒→F。
+        # 使用者要求（2026-08-03 實機確認）：正確順序是右轉→X→左轉→等3秒→F。
         # 舊順序 .→F→X→, 只有 F 生效、X 被跳過；改成此順序後能力可正常施放。
         # 全程不放開 W／左鍵（key_press 只送按下+放開，不影響按住中的鍵）。
         # F 後自動截圖回傳 Discord，確認能力真的施放過了（等同 📷 shot）。
@@ -4452,7 +4452,7 @@ class Bot:
             ic.key_press(".", delay=0.2)     # 右轉 45°
             ic.key_press("x", delay=0.15)    # X
             ic.key_press(",", delay=0.2)     # 左轉回正面
-            time.sleep(2.0)                  # 等待 2 秒（使用者確認的必要間隔）
+            time.sleep(3.0)                  # 等待 3 秒（使用者確認的必要間隔）
             ic.key_press("f")                # F（施放能力）
             time.sleep(0.3)                  # 等遊戲渲染能力效果再截圖
             frame = capture.grab()
@@ -4461,10 +4461,10 @@ class Bot:
             shot_path = os.path.join(cfg.manual_snapshot_dir, f"{stem}.png")
             notify.send_images_message(
                 cfg.discord_bot_token, cfg.discord_channel_id,
-                f"⚡ 能力已施放 .→X→,→等2s→F #{stem}（state={self.state.value}"
+                f"⚡ 能力已施放 .→X→,→等3s→F #{stem}（state={self.state.value}"
                 f"{'，已暫停' if self.paused else ''}）", [shot_path])
-            self.last_action = "遠端能力：右轉→X→左轉→等2s→F"
-            self.log_discord.info("ability 已執行 .→X→,→2s→F + 截圖 #%s（state=%s）",
+            self.last_action = "遠端能力：右轉→X→左轉→等3s→F"
+            self.log_discord.info("ability 已執行 .→X→,→3s→F + 截圖 #%s（state=%s）",
                                   stem, self.state.value)
         # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
         # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。
