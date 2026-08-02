@@ -1608,7 +1608,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     <div id="remote-bar">
       <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
       <button id="rc-pause" type="button" title="暫停（等同 Ctrl+Q）">&#9208;&#65039; 暫停</button>
-      <button id="rc-ability" type="button" title="右轉→X→左轉→等1秒→F">&#9889; 能力</button>
+      <button id="rc-ability" type="button" title="右轉→X→左轉→等2秒→F">&#9889; 能力</button>
       <button id="rc-frame" type="button" title="看目前畫面">&#128247; 即時畫面</button>
       <button id="rc-clear" type="button" title="清空背包面板篩選框（避免路 B 假陽性）">&#129529; 清空</button>
     </div>
