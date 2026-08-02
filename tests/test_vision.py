@@ -5,7 +5,7 @@ import pytest
 from miningbot.vision import (find_template, template_present, find_template_edges,
                               find_tracker, find_tracker_near, find_marker, best_outline_score,
                               template_outline_edges, frames_differ, detect_tracker_core,
-                              banner_text_hue)
+                              banner_text_hue, hue_circular_diff)
 
 def _scene_with_patch(patch, at):
     scene = np.zeros((300, 400, 3), np.uint8)
@@ -1307,3 +1307,26 @@ def test_banner_text_hue_few_pixels_returns_none():
     img = np.full((22, 200, 3), (18, 18, 18), np.uint8)
     img[10, 100] = (0, 255, 0)  # 只有一個像素
     assert banner_text_hue(img, pixel_min=20) is None
+
+
+# ── hue_circular_diff：OpenCV hue 環形距離（regression for 90-diff bug）──────────
+
+def test_hue_circular_diff_small():
+    assert hue_circular_diff(10, 20) == 10
+    assert hue_circular_diff(20, 10) == 10  # 對稱
+
+
+def test_hue_circular_diff_red_wraparound():
+    """紅色在 0 和 179 兩端相鄰——環形差只有 1，不是 179。"""
+    assert hue_circular_diff(0, 179) == 1
+    assert hue_circular_diff(179, 0) == 1
+
+
+def test_hue_circular_diff_max_distance():
+    """0 vs 90（紅 vs 青）是最遠的——環形差 90。"""
+    assert hue_circular_diff(0, 90) == 90
+
+
+def test_hue_circular_diff_large_jump_detected():
+    """大角度跳變（0→100）的環形差是 80——舊 bug 算成 min(100, 90-100)=-10。"""
+    assert hue_circular_diff(0, 100) == 80

@@ -1104,3 +1104,55 @@ def test_entry_panel_check_records_observe_hit(monkeypatch):
     assert "faedrine" in rec["ore_names"]
     assert saved, "_save_panel_check_observed 必須被呼叫"
     assert giveup == [], "不再直接 giveup"
+
+
+# ── _sample_banner_color：banner 色相跳變偵測（double chill，2026-08-02）────────
+
+def test_sample_banner_color_detects_large_hue_jump(monkeypatch):
+    """Regression for circular distance bug：大角度跳變（0→100°）必須偵測到。
+
+    舊 min(diff, 90-diff) 公式對 diff=100 算出 -10（負數）→ 永遠 < 門檻 → 漏判。
+    修後用 hue_circular_diff：min(100, 180-100)=80 → 正確偵測。
+    """
+    from miningbot import vision, capture
+    bot = make_fake_bot(
+        bind=["_sample_banner_color"],
+        log_harvest=_Rec(),
+        _banner_hue=0.0,
+        _banner_color_changes=[])
+    monkeypatch.setattr(vision, "banner_text_hue", lambda *a, **kw: 100.0)
+    monkeypatch.setattr(capture, "crop", lambda frame, region: np.zeros((10, 10, 3)))
+    monkeypatch.setattr(cfg, "banner_color_sample_enabled", True)
+    bot._sample_banner_color(None)
+    assert len(bot._banner_color_changes) == 1, "大角度色相跳變必須被偵測到"
+
+
+def test_sample_banner_color_ignores_small_hue_diff(monkeypatch):
+    """色相變化 < 門檻 → 不記跳變。"""
+    from miningbot import vision, capture
+    bot = make_fake_bot(
+        bind=["_sample_banner_color"],
+        log_harvest=_Rec(),
+        _banner_hue=50.0,
+        _banner_color_changes=[])
+    monkeypatch.setattr(vision, "banner_text_hue", lambda *a, **kw: 53.0)  # Δ=3° < 15°
+    monkeypatch.setattr(capture, "crop", lambda frame, region: np.zeros((10, 10, 3)))
+    monkeypatch.setattr(cfg, "banner_color_sample_enabled", True)
+    bot._sample_banner_color(None)
+    assert bot._banner_color_changes == [], "小角度變化不應記為跳變"
+
+
+def test_sample_banner_color_no_text_no_change(monkeypatch):
+    """banner_text_hue 回 None（無文字像素）→ 不更新、不記跳變。"""
+    from miningbot import vision, capture
+    bot = make_fake_bot(
+        bind=["_sample_banner_color"],
+        log_harvest=_Rec(),
+        _banner_hue=50.0,
+        _banner_color_changes=[])
+    monkeypatch.setattr(vision, "banner_text_hue", lambda *a, **kw: None)
+    monkeypatch.setattr(capture, "crop", lambda frame, region: np.zeros((10, 10, 3)))
+    monkeypatch.setattr(cfg, "banner_color_sample_enabled", True)
+    bot._sample_banner_color(None)
+    assert bot._banner_color_changes == []
+    assert bot._banner_hue == 50.0, "hue 不應被 None 覆蓋"

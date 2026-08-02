@@ -1264,8 +1264,7 @@ class Bot:
         if hue is None:
             return
         if self._banner_hue is not None:
-            diff = abs(hue - self._banner_hue)
-            diff = min(diff, 90.0 - diff)          # OpenCV H 0..179，環形半周=90
+            diff = vision.hue_circular_diff(hue, self._banner_hue)
             if diff >= cfg.banner_hue_change_deg / 2.0:
                 now = time.time()
                 self._banner_color_changes.append(now)
@@ -3584,9 +3583,9 @@ class Bot:
             #   已取到 banner 色相跳變（兩則 spawn 訊息不同隨機色）。查近期跳變→設旗標，
             #   之後重置（下一場重新累積）。旗標消費：採完第一顆強制 bonus sweep +
             #   bonus sweep 全空交人工。
-            _now_dc = time.time()
+            _now = time.time()
             self._double_chill_detected = any(
-                t >= _now_dc - cfg.double_chill_window_s
+                t >= _now - cfg.double_chill_window_s
                 for t in self._banner_color_changes)
             if self._double_chill_detected:
                 self.log_harvest.info(
@@ -7041,40 +7040,37 @@ class Bot:
             recheck, self._target_marker, self.harvest.extra_targets,
             cfg.harvest_extra_targets_max, cfg.harvest_extra_target_min_dist_px)
         if verdict2 == "CONTINUE":
-            self.harvest.extra_targets += 1
-            self.harvest.d3_attempts = 0
-            self.harvest.verify_fail_resweeps = 0
             self.logger.info("[%s] 採集成功但畫面仍有另一追蹤框 (%d,%d) -> 續採（第 %d 顆額外目標）",
-                             hid, recheck[0], recheck[1], self.harvest.extra_targets)
-            self.last_action = "續採第%d顆" % (self.harvest.extra_targets + 1)
-            # 重開聊天差分基準：上一顆的成功行已確認入帳，續採的差分要以「現在」為起點。
-            # （「episode 基準不作廢」規則護的是誤判失敗時晚到的成功行；確認成功後重取語意正確，
-            #   否則上一顆的成功行會讓第二發 D3 未命中也被判 confirmed＝假成功。）
-            fresh = capture.grab()
-            self._chat_baseline = None
-            self._chat_baseline_crop = capture.crop(fresh, cfg.chat_region)
-            self._chat_last_crop = self._chat_baseline_crop
-            self._chat_ledger = None   # 下次開火後的基準 OCR 會重建
-            self._reharvest_sweep()    # 重新 D2 掃描（掃描可能將到期）；保 _pre_scan_ref、重置計時器
+                             hid, recheck[0], recheck[1], self.harvest.extra_targets + 1)
+            self.last_action = "續採第%d顆" % (self.harvest.extra_targets + 2)
+            self._start_bonus_sweep()
             return                     # 留在 HARVESTING；net_rotations 繼續累計，最後一次轉回
         # ★ double chill（banner 色相偵測到兩則 spawn）：採到第一顆但畫面無可見第二顆框
         #   → 強制重新 sweep（第二顆可能在別方位，當下視野看不到）。bonus sweep 全空時再由
         #   EXIT_SUCCESS 路徑（decide_bonus_empty）交人工。只在首顆採完觸發一次（extra_targets==0）。
         if self._double_chill_detected and self.harvest.extra_targets == 0:
-            self.harvest.extra_targets += 1
-            self.harvest.d3_attempts = 0
-            self.harvest.verify_fail_resweeps = 0
             self.logger.info("[%s] double chill → 無可見追蹤框仍強制重新 sweep（第 %d 顆）",
-                             hid, self.harvest.extra_targets)
+                             hid, self.harvest.extra_targets + 1)
             self.last_action = "double chill 強制續掃"
-            fresh = capture.grab()
-            self._chat_baseline = None
-            self._chat_baseline_crop = capture.crop(fresh, cfg.chat_region)
-            self._chat_last_crop = self._chat_baseline_crop
-            self._chat_ledger = None
-            self._reharvest_sweep()
+            self._start_bonus_sweep()
             return
         self._harvest_resume_mining()
+
+    def _start_bonus_sweep(self):
+        """採集成功後續採的共用重置（CONTINUE 路徑與 double chill 強制續掃共用）。
+
+        extra_targets++、D3/verify 計數歸零、聊天基準重取（上一顆成功行已入帳，
+        差分起點改為現在）、reharvest sweep。呼叫端負責 log + last_action（訊息不同）。
+        """
+        self.harvest.extra_targets += 1
+        self.harvest.d3_attempts = 0
+        self.harvest.verify_fail_resweeps = 0
+        fresh = capture.grab()
+        self._chat_baseline = None
+        self._chat_baseline_crop = capture.crop(fresh, cfg.chat_region)
+        self._chat_last_crop = self._chat_baseline_crop
+        self._chat_ledger = None   # 下次開火後的基準 OCR 會重建
+        self._reharvest_sweep()    # 重新 D2 掃描（掃描可能將到期）；保 _pre_scan_ref、重置計時器
 
     def _harvest_resume_mining(self):
         """採集成功後的視角回正 + 恢復挖礦（從 _harvest_success 抽出，incident 072 續採共用）。

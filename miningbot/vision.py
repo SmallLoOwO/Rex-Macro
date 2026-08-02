@@ -1031,14 +1031,24 @@ def banner_text_hue(crop_bgr, sat_min: int = 60, val_min: int = 80,
     刷新兩則——音訊「連音」無法分辨（1.5s 滾動窗合併），但文字色相不同（隨機 RGB）。
     MINING 期間每 tick 取樣，色相跳變 ≥ 門檻 = 第二則 = double chill。
 
-    回傳值是 OpenCV 的 H channel（0..179，不是 0..360）；呼叫端做環形差時用
-    ``min(|a-b|, 180-|a-b|)``。
+    回傳值是 OpenCV 的 H channel（0..179，不是 0..360）；呼叫端用 `hue_circular_diff`
+    算環形差。
     """
     hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
     mask = (hsv[:, :, 1] >= sat_min) & (hsv[:, :, 2] >= val_min)
     if int(mask.sum()) < pixel_min:
         return None
     return float(np.median(hsv[:, :, 0][mask]))
+
+
+def hue_circular_diff(a: float, b: float) -> float:
+    """兩個 OpenCV hue 值（0..179）的環形距離（0..90）。純函式。
+
+    OpenCV HSV 的 H channel 是 0..179（壓縮自 0..359°），所以全周=180、半周=90。
+    紅色在 0 和 179 兩端相鄰——直線差 179 但環形差只有 1。
+    """
+    d = abs(a - b)
+    return min(d, 180.0 - d)
 
 
 def filter_box_ink(crop) -> int:
