@@ -64,3 +64,26 @@ def test_active_61_countdown_detected():
     result = vision.find_template_edges(scene, _template(), cfg.boost_edge_threshold,
                                         cfg.boost_buff_scales)
     assert result is not None
+
+
+# --- H073（2026-08-02）：全螢幕校準後使用次數 icon 偽陽性 -----------------------
+# harvest 168 sweep 幀：D5 boost 未生效，但使用次數 icon 的 edge match score
+# 0.42 > 舊門檻 0.40 → boost guard 以為 D5 還在、不補。
+# 這些 fixture 是生產幀的 boost_indicator_region 裁圖（95px 高，全螢幕校準後），
+# 與既有 fixture（145px 高，校準前）互補——後者的計數 icon score 僅 0.19、測不到
+# 這條迴歸。
+
+def test_h168_sweep_no_boost_not_detected():
+    """harvest 168 sweep 幀（D5 未生效）：使用次數 icon 不得偵測為 boost active。"""
+    scene = _load("h168_sweep_no_boost.png")
+    result = vision.find_template_edges(scene, _template(), cfg.boost_edge_threshold,
+                                        cfg.boost_buff_scales)
+    assert result is None, "D5 未生效時使用次數 icon 偽陽性（H073 根因）"
+
+
+def test_h168_mining_boost_active_detected():
+    """harvest 168 mining 幀（D5 生效中）：active buff 圖示必須偵測到。"""
+    scene = _load("h168_mining_boost_active.png")
+    result = vision.find_template_edges(scene, _template(), cfg.boost_edge_threshold,
+                                        cfg.boost_buff_scales)
+    assert result is not None

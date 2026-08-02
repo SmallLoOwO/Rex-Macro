@@ -106,7 +106,7 @@ class Config:
     # 2026-07-28 全螢幕：y935→985（底端錨定 +50）。高度 145→95 是因為舊區的 1030-1080 那段
     # 本來就是工作列（不是遊戲畫面），全螢幕下效果列徽章實佔 y≈1003-1073，985-1080 完整涵蓋。
     boost_indicator_region: Region = field(default_factory=lambda: Region(1150, 985, 590, 95))
-    boost_edge_threshold: float = 0.40           # 瓶子邊緣比對門檻（校準時調）
+    boost_edge_threshold: float = 0.55           # 瓶子邊緣比對門檻；H073：0.40 在全螢幕校準後讓使用次數 icon 偽陽性（score 0.42），true boost 0.77+，0.55 兩側夾
     boost_cooldown_s: float = 5.0                # 按 D5 後多久內不重按（等瓶子出現，避免狂按）
     boost_check_interval_s: float = 0.2          # boost 高頻偵測「不空轉」：boost 到期→立刻補，越快偵測瓶子消失越好（提早補無意義且浪費換道具時間，見 2026-07-02 spec #4 方案 A）
     boost_buff_scales: tuple = (1.0,)            # boost 瓶子＝固定尺寸 UI → 單尺度即可（~56ms/次），高頻掃描才不吃 CPU（D4 續用 buff_scales）

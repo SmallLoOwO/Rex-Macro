@@ -5,9 +5,11 @@
 
 | 檔案 | 畫面上有什麼 | 期望 |
 |---|---|---|
-| `before_only_count.png` | 只有常駐的**使用次數計數圖示** | 偵測不到瓶子 → 該補 D5 |
+| `before_only_count.png` | 只有常駐的**使用次數計數圖示**（舊 145px region） | 偵測不到瓶子 → 該補 D5 |
 | `active_47.png` | 計數圖示 + 倒數 47s 的瓶子 | 偵測到 → 生效中，不補 |
 | `active_61.png` | 同上，倒數 61s | 偵測到 → 生效中，不補 |
+| `h168_sweep_no_boost.png` | harvest 168 sweep 幀：只有使用次數 icon（D5 未生效） | 偵測不到 → 該補 D5（H073） |
+| `h168_mining_boost_active.png` | harvest 168 mining 幀：active buff + 次數 icon | 偵測到 → 生效中（H073） |
 
 兩種倒數數字（47／61）是刻意的：驗證邊緣比對**不受數字內容影響**。
 

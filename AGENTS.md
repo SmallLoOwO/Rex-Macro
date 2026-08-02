@@ -324,9 +324,9 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   缺失時自動 retry；sweep 每方位的 `_harvest_scan_guard` 持續檢查效果列 Local
   徽章，缺了就補掃再繼續（不交人工）。**需實機驗證**：下一輪 log 預期看到
   `[scan-confirm] enter ok=True/False` 及 `scan guard: 無 Local 徽章 -> 補掃 D2`。
-  另發現 `_boost_needs_refresh` 有偽陽性（matchTemplate score 0.337 但 edge
-  match 通過，命中 boost 使用次數 icon 而非 active buff）——D5 boost guard 的
-  獨立問題，另行追查。
+  另修復 `_boost_needs_refresh` 偽陽性：全螢幕校準後使用次數 icon 的 edge match
+  score 從 0.19 升到 0.42（剛過舊門檻 0.40），boost guard 以為 D5 還在而不補。
+  `boost_edge_threshold` 0.40→0.55（true boost 0.77+ vs 次數 icon 0.42-）。
 - **`giveup_rescue_observe` is on (observation mode) and needs a human decision to
   leave it.** Path B of the give-up rescue judges "this ore was already banked" but
   still hands over to the human; every hit is appended to
