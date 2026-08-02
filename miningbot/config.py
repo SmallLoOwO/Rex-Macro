@@ -396,19 +396,20 @@ class Config:
     # 高階（panel_whitelist_hues）：
     #   Otherworldly 334(5E0E32)｜Unfathomable 219(032C79)｜Enigmatic 70(CDF600)
     #   ｜Transcendent 210(0080FF)｜Exquisite 128(56C365)｜Exotic 46(F6C940)
-    # 低階（panel_low_tier_hues，反向閘用）：
-    #   Mythic 305(FF00EB)｜Surreal 165(1DD7A9)｜Master 280(9A00E6)
+    # 低階（panel_low_tier_hues，反向閘用；D11 量測值，與 wiki 差 ≤1°）：
+    #   Mythic 304(FF00EB,wiki305)｜Surreal 166(1DD7A9,wiki165)｜Master 280(9A00E6)
     #   ｜Rare 30(FF8001)｜Uncommon 0(FF2626)｜Common 0(C1C1C1,灰階S=0)
     # ⚠ Rare wiki FF8001 HSV≈30°，Uncommon FF2626 HSV≈0°——兩階色相相近但 Rare 偏橙。
-    #   Common C1C1C1 是灰階（S=0），色相無意義，實機量到 H=0 與 Uncommon 同帶。
+    #   Common／Layer 是灰階（S=0），色相無意義，實機量到 H=0 與 Uncommon 同帶；
+    #   兩種灰只能用 V 分辨（色帶起點 x=18：Common 192、Layer 132，D13）。
+    # 反向閘語意：色相**不**落在這些帶就當成高階、擋零點成立。
     panel_whitelist_hues: tuple = (46.0, 70.0, 128.0, 210.0, 219.0, 334.0)
-    panel_low_tier_hues: tuple = (0.0, 30.0, 165.0, 280.0, 305.0)
-    # 已量到的非白名單色帶（D11）：Mythic 304｜Surreal 166｜低階 0/30/280。
-    # 給 spec 01 反向閘用——色相不落在這些帶就當成高階、擋零點成立。
     panel_low_tier_hues: tuple = (0.0, 30.0, 166.0, 280.0, 304.0)
     panel_hue_tol_deg: float = 6.0
     panel_hue_sample_x: tuple = (120, 165)    # 取樣窗（crop 座標）：名字與數量之間的純底色帶。
                                               # ⚠ 別往左取，x<10 是面板邊框（深藍 H≈120，與列色無關）
+                                              # 這裡的 V 已被漸層衰減到原色 ~55%——要加 S/V
+                                              # 判據得改用色帶起點 x=18（＝wiki 原色，D13）
     annotate_undo_window_s: float = 900.0     # 標註 Ctrl+Z 還原限時（spec 05）：只救當下誤按，
                                               # 不刪可能已進版控的舊素材。15 分鐘
 

@@ -1607,8 +1607,9 @@ HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一
 # 全階級 wiki 色碼已收集（https://rex-reincarnated.fandom.com/wiki/Category:Tiers）
 #
 #   Tier          Wiki HSV  Wiki HEX      實機   Δ
-#   Common          0°      C1C1C1 (灰)    0°    0°  S=0（灰階，H 無意義）
-#   Uncommon        0°      FF2626 (紅)    0°    0°  與 Common 同 H，靠 S 區分
+#   Layer           ?          ?         灰V132  —   S=0，比 Common 暗；wiki 色碼待查
+#   Common          0°      C1C1C1 (灰)  灰V192  1   S=0（H 無意義，只能用 V 分辨）
+#   Uncommon        0°      FF2626 (紅)    0°    0°  與 Common 同 H，靠 S 區分（實機 S≈217）
 #   Rare           30°      FF8001 (橙)   30°    0°
 #   Master        280°      9A00E6 (紫)   280°   0°
 #   Surreal       165°      1DD7A9 (青)   166°   1°
@@ -1617,16 +1618,36 @@ HIGH_TIER_NAMES: tuple[str, ...] = _HIGH_TIERS   # 供 web/DC 驗證用（唯一
 #   Exquisite     128°      56C365 (綠)   128°   0°
 #   Transcendent  210°      0080FF (藍)   210°   0°
 #   Enigmatic      70°      CDF600 (金)    70°   0°
-#   Unfathomable  219°      032C79 (深藍)  219°   0°
+#   Unfathomable  219°      032C79 (深藍)  220°   1°
 #   Otherworldly  333°      5E0E32 (深紅)  334°   1°
 #   Imaginary    42°+201°  EEBA44+C9DEE9   —    雙色漸層，面板色相待量
 #   Zenith          ?          ?            —    未量測
+#
+# 「實機」欄＝tests/fixtures/panel_tiers/ 的量測（2026-08-02，D13）。回歸測試
+# tests/test_panel_tier_hues.py 對 fixture 重跑同一套量測並比對本表。
+# ⚠ Layer／Common 是灰階（S=0）→ H 無意義，`panel_row_hues` 對它們回 0.0。現行判定
+#   正確是因為 0.0 也在 panel_low_tier_hues 裡——**這是巧合不是設計**：若哪天出現
+#   H=0 的高階礦，零點閘會把灰階列一起放行。wiki 現有 14 階裡沒有，暫時安全。
+#   兩種灰只能用 V 分辨（色帶起點 x=18：Common 192、Layer 132）。
+# ⚠ 色帶**起點 x=18 的像素就是 wiki 官方色**（往右是漸層衰減），三張幀 14 條帶
+#   ΔBGR ≤2。現行 H-only 判定在取樣窗 (120,165) 已全數正確故未改用；將來要加 S/V
+#   判據時 x=18 才是有跨階級可比性的錨點——(120,165) 的 V 已衰減到原色 ~55%。
+# ⚠ 取樣協議是結論的一部分：固定窗 cfg.panel_hue_sample_x + **逐列中位**（不用
+#   平均）。首量 Unfathomable 用環形平均得 227.4°（差 8.4°，看起來像表值錯了），
+#   實為紅色礦名的抗鋸齒像素污染。面板列有水平漸層，但只在 V 上，H 沿列恆定。
+# ⚠ 實機 Transcendent 210° 與 Unfathomable 220° 僅差 10°，panel_hue_tol_deg=6
+#   時兩帶重疊 2°（214-216）。兩階都屬高階，對「有沒有 Exotic+」的存在判定無影響
+#   ——但 2026-08-02 的階級門檻改成**可非連續選擇**後多了一種情況：單獨關掉
+#   Transcendent 而保留 Unfathomable 時，色相 213-216 會同時滿足「白名單命中」與
+#   「落在低階帶」兩個矛盾判定（實測 main.py 面板色檢走「兩訊號不一致 → 否決，
+#   照舊交人工」，方向安全）。實機量到的 220° 不在該區間內，故未調 tol——要調得
+#   先有落在 213-216 的實機樣本，不可憑感覺收窄（見 docs/open-detection-issues.md D13）。
 TIER_HUES: dict[str, float] = {
     "Exotic": 46.0,       # 黃     wiki F6C940 HSV 45°
     "Exquisite": 128.0,   # 綠     wiki 56C365 HSV 128°
     "Transcendent": 210.0,  # 藍   wiki 0080FF HSV 210°
     "Enigmatic": 70.0,    # 亮綠/金 wiki CDF600 HSV 70°
-    "Unfathomable": 219.0,  # 深藍偏黑 wiki 032C79 HSV 219°
+    "Unfathomable": 219.0,  # 深藍偏黑 wiki 032C79 HSV 219°（實機 220°，取 wiki 值；差 1° 遠小於 tol）
     "Otherworldly": 334.0,  # 深紅   wiki 5E0E32 HSV 333°
 }
 

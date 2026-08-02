@@ -32,6 +32,7 @@
 | [`effect_row/`](effect_row/README.md) | D2 雷達效果列判讀（Local／CaveSkim／D4 已用） | `test_effect_row_fixtures.py` |
 | [`menu/`](menu/README.md) | Roblox 設定選單 Movement Mode 循環 | `test_roblox_menu.py` |
 | [`panel/`](panel/README.md) | 左下 NORMAL 背包面板名字欄剖析（交人工前救援路 B／雙 chill 對帳） | `test_panel_fixtures.py` |
+| [`panel_tiers/`](panel_tiers/README.md) | 面板列底色的階級色相（`TIER_HUES` 實機依據，含固定取樣協議；D13） | `test_panel_tier_hues.py` |
 | [`pitch/`](pitch/README.md) | 俯仰動作「真的動了」vs「被吃」兩側夾（H048/H052） | `test_pitch_fixtures.py` |
 | [`player_list/`](player_list/README.md) | 右上角玩家列表開／關 | `test_player_list_fixtures.py` |
 | [`reentry/`](reentry/README.md) | 回礦：Depth 錨、開場凍結、放大圖漂移（H044/H046/H050） | `test_reentry_fixtures.py`、`test_depth_fixtures.py` |

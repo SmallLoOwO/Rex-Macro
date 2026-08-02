@@ -1,0 +1,83 @@
+{
+  "_comment": "NORMAL 面板列底色的階級色相 ground truth（2026-08-02 實機，使用者背包）。y 是 ore_panel_region 裁切後座標（全幀 y - 380）。tier 由 rare_ores 查礦名獨立確認，不是看顏色反推。",
+  "_protocol": "固定窗 cfg.panel_hue_sample_x=(120,165)，逐列中位→跨列中位，S>60。見 .scratch/measure_tier_hues.py 與 docs/incidents.md D13。",
+  "frames": [
+    {
+      "file": "tiers_high4_20260802.png",
+      "note": "高階四連：先前唯一沒有實機量測的 Unfathomable / Otherworldly 都在這張",
+      "bands": [
+        {"tier": "Otherworldly", "y": [78, 108], "hue": 334.0, "ores": ["Retina"]},
+        {"tier": "Unfathomable", "y": [111, 146], "hue": 220.0, "ores": ["Asminthia"]},
+        {"tier": "Enigmatic", "y": [150, 395], "hue": 70.0,
+         "ores": ["Genuinium", "Illumina", "Sinstar", "Continuum Rift", "Exospinel",
+                  "The Flying Dutchman", "32-Bit Integer Limit"]},
+        {"tier": "Transcendent", "y": [402, 678], "hue": 210.0,
+         "ores": ["Finalitium", "Luminosaic", "Suncindium", "Lifeforce Drainer",
+                  "Coinstorm", "Exsanguinatia", "The All-Seeing", "Trinitium"]}
+      ]
+    },
+    {
+      "file": "tiers_mixed6_20260802.png",
+      "note": "高低階混合六連：涵蓋三個 LOW_TIERS（Mythic/Surreal/Master），驗證它們正確地不在 TIER_HUES 裡",
+      "bands": [
+        {"tier": "Transcendent", "y": [75, 94], "hue": 210.0, "ores": ["Pastelorium"]},
+        {"tier": "Exquisite", "y": [95, 274], "hue": 128.0,
+         "ores": ["Cosmic Treasure", "Sagittarius Quasar", "Spectrasoul",
+                  "Elegascene", "Lunar Astatine"]},
+        {"tier": "Exotic", "y": [275, 382], "hue": 46.0,
+         "ores": ["Asterium", "Mechaspark", "Astatine"]},
+        {"tier": "Mythic", "y": [383, 526], "hue": 304.0, "low_tier": true,
+         "ores": ["Plasmal", "Passionblaze", "Astralisium"]},
+        {"tier": "Surreal", "y": [527, 634], "hue": 166.0, "low_tier": true,
+         "ores": ["Prasiloudis", "Asternigh", "Enigmasteri"]},
+        {"tier": "Master", "y": [635, 681], "hue": 280.0, "low_tier": true,
+         "ores": ["Adasparta"]}
+      ]
+    },
+    {
+      "file": "tiers_grey_lowtier_20260802.png",
+      "note": "灰階列（Common / Layer）——前兩張都沒有的型態。S=0 使 H 無意義，兩者只能用 V 分辨。",
+      "bands": [
+        {"tier": "Transcendent", "y": [75, 110], "hue": 210.0, "ores": ["Pixelated Mass"]},
+        {"tier": "Mythic", "y": [111, 146], "hue": 304.0, "low_tier": true,
+         "ores": ["Passionblaze"]},
+        {"tier": "Rare", "y": [147, 182], "hue": 30.0, "low_tier": true,
+         "ores": ["Vantaglass"]},
+        {"tier": "Uncommon", "y": [183, 290], "hue": 0.0, "low_tier": true,
+         "note": "紅色系 S≈217；與 Common 同 H=0，靠 S 區分",
+         "ores": ["Brass", "Obsidian Glass", "Cassiopeia"]},
+        {"tier": "Common", "y": [291, 398], "hue": 0.0, "low_tier": true,
+         "grey": true, "value_at_x18": 192,
+         "note": "wiki C1C1C1 = V193，帶起點 x=18 量到 192",
+         "ores": ["Glass", "Orglass", "Bass"]},
+        {"tier": "Layer", "y": [399, 470], "hue": 0.0, "low_tier": true,
+         "grey": true, "value_at_x18": 132,
+         "note": "第二種灰，明顯較暗；wiki 色碼待查",
+         "ores": ["Foligrass", "Frosted Grass"]}
+      ]
+    }
+  ],
+  "band_origin": {
+    "_comment": "重大發現（2026-08-02）：色帶起點 x=18 的像素**就是 wiki 官方色**，往右才是漸層衰減。三張幀 14 條帶逐一比對，ΔBGR ≤2（漸層起始的一格衰減）。這比目前的取樣窗 (120,165) 是強得多的錨——那裡的 V 已經掉到原色的 ~55%。",
+    "x": 18,
+    "verified_tiers": {
+      "Otherworldly": "5E0E32", "Unfathomable": "032C79", "Enigmatic": "CDF600",
+      "Transcendent": "0080FF", "Exquisite": "56C365", "Exotic": "F6C940",
+      "Mythic": "FF00EB", "Surreal": "1DD7A9", "Master": "9A00E6",
+      "Rare": "FF8001", "Common": "C1C1C1"
+    },
+    "not_adopted_because": "現行 H-only 判定在 (120,165) 已全數正確（三張幀 21 條帶零誤判），改取樣窗要重驗每一條既有迴歸。x=18 的價值在未來要加 S/V 判據時——那時 H 不夠用，就需要一個色度未衰減的錨點。"
+  },
+  "gradient": {
+    "_comment": "使用者 2026-08-02 指出背包顏色有漸層，疑心它造成讀數不一致。實測：漸層是水平的（左亮右暗）且只在 V 上，H 沿列恆定。",
+    "direction": "horizontal, left bright to right dark",
+    "channel": "V only",
+    "measured": {
+      "Transcendent": {"hue_span_deg": 0.0, "v_range": [68, 252]},
+      "Enigmatic": {"hue_span_deg": 0.0, "v_range": [65, 242]},
+      "Unfathomable": {"hue_span_deg": 2.0, "v_range": [32, 118]},
+      "Otherworldly": {"hue_span_deg": 0.0, "v_range": [24, 92]}
+    },
+    "implication": "取樣位置改變 V、不改變 H。TIER_HUES 與兩個色相閘只用 H，故階級判定不受取樣位置影響——但要加 S/V 判據時必須連取樣窗一起指定。"
+  }
+}

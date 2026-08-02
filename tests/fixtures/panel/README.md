@@ -45,6 +45,7 @@
 | `125_giveup_after_backpack.png` | 同上，+7 秒 | 內容相同的對照組 |
 | `145_rescue_pre_panel.png` | harvest 145（2026-07-31 14:37:18，chill 前參考點） | H069 假命中的基準張，頂列 `Imbollyx` |
 | `145_rescue_cur_panel.png` | 同上，+130 秒（14:39:28 交人工前） | 五列低階新礦擠進來 → 舊版誤判進帳。**誤收側迴歸** |
+| `h160_leprechaun_exquisite_clovara_exotic.png` | harvest 160 的 `panel_zero_failed` 裁圖 | **混合階級面板**：同時有 `leprechaun`(Exquisite) 與 `clovara`(Exotic)，是偵測階級門檻的兩側夾證據——門檻設 Exquisite 時 Exotic 那列必須同步從名字閘、救援色相閘、零點色相閘三處消失（`test_detection_tier_real_fixture.py`） |
 
 ⚠ 這兩張是 **craft 面板開著**拍的。名字路不受影響（0.999+ 全數讀出），但任何未來
 要讀**數量**的實作必須先守門：craft 面板從 x≈185 起疊在數字欄上，OCR 會讀到配方

@@ -595,3 +595,94 @@ RR#42 玩家在網頁點了三次傳送板，三次都 `still_surface`。
 
 `TIER_HUES` 已補入 Enigmatic=70°。`panel_whitelist_hues` 同步加入 70°。
 Unfathomable 以上仍未量測——靠 `non_low_tier_hues` 反向閘兜住。
+
+---
+
+## D13（2026-08-02）：Transcendent 與 Unfathomable 色帶在 `panel_hue_tol_deg=6` 下重疊 2°；非連續階級選擇時產生矛盾判定
+
+**量測**（`tests/fixtures/panel_tiers/`，使用者背包實機幀，礦名查 `rare_ores` 獨立確認階級）：
+
+| 階級 | wiki | 實機 | Δ | 來源礦名 |
+|---|---|---|---|---|
+| Otherworldly | 333° | **334°** | 1° | Retina |
+| Unfathomable | 219° | **220°** | 1° | Asminthia |
+| Enigmatic | 70° | **70°** | 0° | Genuinium 等 8 顆 |
+| Transcendent | 210° | **210°** | 0° | Finalitium 等 8 顆 |
+| Exquisite | 128° | **128°** | 0° | Cosmic Treasure 等 5 顆 |
+| Exotic | 45° | **46°** | 1° | Asterium/Mechaspark/Astatine |
+| Mythic（低階） | 305° | **304°** | 1° | Plasmal 等 3 顆 |
+| Surreal（低階） | 165° | **166°** | 1° | Prasiloudis 等 3 顆 |
+| Master（低階） | 280° | **280°** | 0° | Adasparta |
+
+Unfathomable 與 Otherworldly 先前只有 wiki 色碼、無實機佐證（註釋表卻標成已量測），
+本批補上。**wiki HEX→HSV 全 12 階重算無誤**，`TIER_HUES` 的值全部正確。
+
+**問題**：實機 Transcendent 210° 與 Unfathomable 220° 相差 10°，`panel_hue_tol_deg=6`
+需要 >12° 才不重疊 → 兩帶重疊 2°（214-216）。
+
+原註釋曾有這條警告，但在 `5650531` 改寫表格時被刪，理由「兩階都屬高階，對偵測無影響」
+——當時成立（兩個閘都只做存在判定）。**同日稍晚的 `2539119`（階級門檻改勾選式）
+讓它不成立**：該功能主打非連續選擇，單獨關掉 Transcendent 而保留 Unfathomable 時，
+色相 **213-216** 同時滿足「白名單命中（算稀有）」與「落在低階帶（不算高階）」。
+
+**為何不修**：實機量到的 Unfathomable 是 220°，**不在矛盾區間 213-216 內**；
+逐列讀數穩定（218-220，n=45/列）。實務上不會觸發，且 `main.py:5392` 遇到兩訊號
+不一致會走「否決，照舊交人工」，方向安全。要收窄 `panel_hue_tol_deg`（4.5 以下即
+不重疊）必須先有落在 213-216 的實機樣本做兩側夾——**沒有樣本不動門檻**。
+
+**取樣協議（結論的一部分，改量測方式前必讀）**：固定窗 `cfg.panel_hue_sample_x`
+(120,165) + **逐列中位→跨列中位，不用平均**。首次量測用環形平均得 Unfathomable
+227.4°（差 8.4°、看起來像表值錯了），實為紅色礦名的抗鋸齒像素污染，改逐列中位後
+220.0°——**差點寫出一個假修復**。面板列有水平漸層（左亮右暗）但**只在 V 上**，
+H 沿列與沿行皆恆定（Transcendent 幅度 0.0°），故取樣位置不影響階級判定；
+要加 S/V 判據時必須連取樣窗一起指定。腳本：`.scratch/measure_tier_hues.py`。
+
+**仍缺**：`Imaginary`（wiki 雙色 `EEBA44`+`C9DEE9`＝42°+201°，雙色漸層，固定窗
+只會讀到其一或混色）與 `Zenith`（wiki 無色碼）至今無樣本，靠 `non_low_tier_hues`
+反向閘兜住（未知色相當高階，保守）。
+
+### D13 續（2026-08-02）：第三張素材補灰階列（Common／Layer）與「色帶起點＝wiki 原色」
+
+使用者換面板提供低階為主的一張（`tiers_grey_lowtier_20260802.png`），補上前兩張
+沒有的**灰階列**型態。11 列全部判定正確（1 高階擋零點、10 低階放行，零誤判）。
+
+| 礦名 | 階級 | H | S | 備註 |
+|---|---|---|---|---|
+| Pixelated Mass | Transcendent | 210 | 255 | 唯一高階，正確擋零點 |
+| Passionblaze | Mythic（低） | 304 | 255 | |
+| Vantaglass | Rare（低） | 30 | 253 | |
+| Brass／Obsidian Glass／Cassiopeia | Uncommon（低） | 0 | ~217 | 與 Common 同 H，靠 S 區分 |
+| Glass／Orglass／Bass | **Common（低）** | — | **0** | 灰階，x=18 的 V=192（wiki C1C1C1=193） |
+| Foligrass／Frosted Grass | **Layer（低）** | — | **0** | 灰階，x=18 的 V=132；wiki 色碼待查 |
+
+**灰階列的判定是「巧合正確」**：`panel_row_hues` 對 S=0 回 H=0.0，而 0.0 剛好在
+`panel_low_tier_hues` 裡 → 零點閘放行、白名單閘不命中，兩者都對。但**若將來出現
+H=0 的高階礦，這條會反過來咬人**（wiki 現有 14 階裡沒有，暫時安全）。已加迴歸
+`test_grey_rows_are_not_mistaken_for_high_tier` 釘住現況。
+
+⚠ **量測腳本的盲區**：用 `S>60` 過濾會**整列跳過**灰階列，輸出裡看不到它們。
+第一版 `_band_hue` 就是這樣寫的，加進灰階 fixture 後直接紅燈；已改成「整條帶無
+飽和像素 → 確認確實是灰（S≤30）再回 0.0」。
+
+**額外發現：色帶起點 x=18 的像素就是 wiki 官方色。** 漸層由此往右衰減。三張幀
+14 條帶逐一比對，ΔBGR ≤2：
+
+```
+Transcendent  x=18 [254,127,0]   wiki 0080FF [255,128,0]
+Enigmatic     x=18 [0,244,203]   wiki CDF600 [0,246,205]
+Common        x=18 [192,192,192] wiki C1C1C1 [193,193,193]
+```
+
+**未改用**：現行 H-only 判定在取樣窗 (120,165) 已全數正確（三張幀 21 條帶零誤判），
+換窗要重驗每一條既有迴歸，不值得。x=18 的價值在**將來要加 S/V 判據時**——那時 H
+不夠用（灰階就是這種情況），而 (120,165) 的 V 已衰減到原色 ~55%、沒有跨階級可比性。
+已由 `test_band_origin_x18_equals_wiki_colour` 釘住，將來要用時不必重新發現。
+
+**累計覆蓋**：三張幀、21 條帶、11 個階級。仍缺 `Imaginary`（wiki 雙色漸層
+42°+201°）與 `Zenith`（wiki 無色碼），使用者尚未取得。
+
+**順手修掉的 config 死行**：`panel_low_tier_hues` 在 `config.py` 被**定義兩次**
+（`470f1ff` 加註釋表時遺留），第一行 `(0.0, 30.0, 165.0, 280.0, 305.0)` 是 wiki 值、
+第二行 `(0.0, 30.0, 166.0, 280.0, 304.0)` 是 D11 實機值。dataclass 後者覆蓋前者，
+**行為一直是對的**（生效值是實機值），但編輯第一行會靜默無效——下一個人照著 wiki
+改那行會以為改了、實際沒有。已合併成單一定義（生效值不變，已驗證）。
