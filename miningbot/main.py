@@ -4441,21 +4441,20 @@ class Bot:
         self._update_reset_chime_active()
         self._consume_pending_rotate()
         self._consume_web_pending()  # web client 命令（P1 Task 10）
-        # Discord `ability` 指令消費：可消費狀態才按 .→F→X→,（HARVESTING/REENTRY 插按鍵會
-        # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
-        # 使用者要求（2026-08-02）：右轉45°施放能力再轉回，最大化手動能力效果；
+        # Discord `ability` 指令消費：可消費狀態才按 .→X→,→等1s→F（HARVESTING/REENTRY
+        # 插按鍵會干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
+        # 使用者要求（2026-08-03 實機確認）：正確順序是右轉→X→左轉→等1秒→F。
+        # 舊順序 .→F→X→, 只有 F 生效、X 被跳過；改成此順序後能力可正常施放。
         # 全程不放開 W／左鍵（key_press 只送按下+放開，不影響按住中的鍵）。
-        # 每鍵之間留延遲（預設 0.09s 太快會被遊戲吃鍵）：轉向 0.2s、F/X 各 0.15s。
-        # F→X 之間尤其不能短：F 開啟能力系統需要時間，X 在 0.09s 後抵達時 UI 尚未
-        # 就緒 → X 被吃 → 毫無反應（2026-08-03 實機回報：只有 F 生效）。
         if self._pending_ability and can_consume_ability(self.state):
             self._pending_ability = False
-            ic.key_press(".", delay=0.2)
-            ic.key_press("f", delay=0.15)
-            ic.key_press("x", delay=0.15)
-            ic.key_press(",", delay=0.15)
-            self.last_action = "遠端能力：右轉→F→X→轉回"
-            self.log_discord.info("ability 已執行 .→F→X→,（state=%s）",
+            ic.key_press(".", delay=0.2)     # 右轉 45°
+            ic.key_press("x", delay=0.15)    # X
+            ic.key_press(",", delay=0.2)     # 左轉回正面
+            time.sleep(1.0)                  # 等待 1 秒（使用者確認的必要間隔）
+            ic.key_press("f")                # F（施放能力）
+            self.last_action = "遠端能力：右轉→X→左轉→等1s→F"
+            self.log_discord.info("ability 已執行 .→X→,→1s→F（state=%s）",
                                   self.state.value)
         # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
         # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。

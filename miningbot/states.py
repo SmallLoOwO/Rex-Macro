@@ -152,9 +152,9 @@ def is_blocked_from_mining(state: State, paused: bool) -> bool:
 
 
 def can_consume_ability(state: State) -> bool:
-    """Discord `ability` 指令（遠端 .→F→X→,）的主迴圈消費閘（純函式）。
+    """Discord `ability` 指令（遠端 .→X→,→等1s→F）的主迴圈消費閘（純函式）。
 
-    回傳 True：MINING / NEEDS_HUMAN / RESET_WAIT —— 按 .→F→X→, 安全、不干擾其他流程。
+    回傳 True：MINING / NEEDS_HUMAN / RESET_WAIT —— 按 .→X→,→等1s→F 安全、不干擾其他流程。
     回傳 False：HARVESTING / REENTRY —— sweep/開火/回礦導航進行中插按鍵會打亂時序，
     旗標留著不消費，回到可消費狀態（MINING 等）後自然執行。
     """
