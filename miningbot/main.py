@@ -5265,6 +5265,7 @@ class Bot:
             nudge = {"mid": 0, "up": -cfg.sweep_pitch_step_px,
                      "down": cfg.sweep_pitch_step_px}[observation.layer]
             self.harvest.pitch_touched = True
+            self._unequip_scanner(f"[{hid}] recovery pitch")
             ok = self._pitch_drag_verified(
                 f"[{hid}] recovery pitch reset",
                 lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
@@ -6222,6 +6223,7 @@ class Bot:
         if pitch is not None:
             nudge = {"up": -cfg.sweep_pitch_step_px, "down": cfg.sweep_pitch_step_px,
                      "mid": 0}[pitch]
+            self._unequip_scanner(f"[{hid}] AIM 俯仰對齊")
             ok = self._pitch_drag_verified(
                 f"[{hid}] AIM 俯仰歸位",
                 lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
@@ -6656,6 +6658,7 @@ class Bot:
             return
         time.sleep(1.0)
         if cfg.sweep_pitch_center_back_px > 0:   # 俯仰未校準（=0）絕不動；歸位冪等、多做無害
+            self._unequip_scanner(f"[{hid}] AIM 收尾俯仰歸位")
             self._pitch_drag_verified(
                 f"[{hid}] AIM 收尾俯仰歸位",
                 lambda: ic.pitch_reset(cfg.sweep_pitch_clamp_px,
@@ -9595,6 +9598,32 @@ class Bot:
         ic.move_to(cfg.screen_w // 2, cfg.screen_h // 2)
         ic.settle(cfg.sampler_pitch_focus_settle_s)
 
+    def _unequip_scanner(self, reason: str) -> None:
+        """D2 裝備中則卸裝——俯仰前卸除，避免抬頭時觸發全域掃描。
+
+        遊戲機制：拿著掃描器(D2)抬頭會觸發**全伺服器掃描**，把過去放棄的低稀有礦
+        也掃成追蹤框，汙染本輪偵測。pitch_reset 內含「拖到夾限＝抬頭極限」步驟，
+        所以無論目標是上層還是下層都會經過抬頭——一律先卸裝。之後 ``_run_scan →
+        execute_scan`` 的 slot_selected 守門（H065）會自動重裝，不需呼叫端善後。
+
+        守門比照 execute_scan：先讀 slot 2 是否已選中，**已裝備才按 "2"**（toggle：
+        未裝備時按 "2" 會裝上）。卸裝後再讀一次確認生效；按鍵被吃就記 warning，
+        呼叫端照常俯仰（best-effort：無法保證按鍵不被吃，但 log 留下診斷線索）。
+        """
+        if not vision.slot_selected(capture.grab(), cfg.d2_slot_region,
+                                    cfg.d2_selected_greenness_min):
+            return                                          # D2 未裝備 → 無需卸裝
+        ic.key_press("2")                                   # toggle 卸下掃描器
+        time.sleep(0.3)                                     # 等卸裝動畫（同 execute_scan 裝備延遲）
+        if vision.slot_selected(capture.grab(), cfg.d2_slot_region,
+                                cfg.d2_selected_greenness_min):
+            self.log_harvest.warning(
+                "俯仰前卸裝 D2 失敗（原因：%s）——按鍵疑似被吃，抬頭仍可能觸發全域掃描",
+                reason)
+        else:
+            self.log_harvest.info(
+                "俯仰前卸裝 D2（原因：%s）——避免抬頭觸發全域掃描", reason)
+
     def _pitch_goto_layer(self, tag: str, nudge_px: int) -> bool:
         """絕對定位到某俯仰層：pitch_reset 回標準角 → nudge；兩輪都被吃回 False。
 
@@ -9603,7 +9632,12 @@ class Bot:
 
         2026-07-31 從 `_pitch_layer_transition` 抽出來給手動瞄準三層掃描共用：
         兩邊都要「絕對定位到某層、被吃就放棄該層」，各寫一份必然漂。
+
+        ★ 俯仰前先卸裝 D2：pitch_reset 的夾限步驟會讓視角掃過正上方，拿著掃描器
+          抬頭會觸發全伺服器掃描（見 ``_unequip_scanner``）。所有呼叫端都在採集流程
+          （上一層掃完 D2 仍裝備著），在這裡統一卸裝比每個呼叫端各寫一份可靠。
         """
+        self._unequip_scanner(tag)
         ok = False
         for attempt in (1, 2):
             ok = self._pitch_drag_verified(

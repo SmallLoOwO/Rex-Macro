@@ -115,3 +115,64 @@ def test_no_layers_left_is_a_noop(monkeypatch):
 
     assert bot._pitch_layer_transition() is False
     assert events == []
+
+
+# ── 俯仰前卸裝 D2（避免抬頭觸發全域掃描）──
+
+def test_layer_transition_unequips_d2_before_pitching(monkeypatch):
+    """抬頭前必須先卸裝 D2——拿著掃描器抬頭會觸發全伺服器掃描，汙染偵測。
+
+    pitch_reset 的夾限步驟會讓視角掃過正上方，所以無論目標是上層還是下層都會經過
+    抬頭。_pitch_goto_layer 在拖曳前先呼叫 _unequip_scanner，順序不可顛倒。
+    """
+    bot, events = _bot(monkeypatch)
+    bot._unequip_scanner = lambda reason: events.append(("unequip", reason))
+
+    assert bot._pitch_layer_transition() is True
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["unequip", "drag", "drag", "scan"], \
+        "unequip 必須在 drag 之前——先卸 D2 再抬頭"
+
+
+def test_unequip_scanner_presses_2_when_d2_equipped(monkeypatch):
+    """D2 已裝備 → 按 "2" toggle 卸裝，再讀一次確認生效。"""
+    monkeypatch.setattr(main.capture, "grab", lambda *a, **k: None)
+    results = [True, False]  # 第一次：已裝備；第二次（驗證）：已卸裝
+    monkeypatch.setattr(main.vision, "slot_selected",
+                        lambda *a, **k: results.pop(0))
+    presses = []
+    monkeypatch.setattr(main.ic, "key_press", lambda key: presses.append(key))
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
+
+    bot = make_fake_bot(bind=["_unequip_scanner"])
+    bot._unequip_scanner("test")
+
+    assert presses == ["2"], "D2 已裝備時應按一次 '2' toggle 卸下"
+
+
+def test_unequip_scanner_noop_when_d2_not_equipped(monkeypatch):
+    """D2 未裝備 → 不按鍵（防 toggle 反向裝上）。"""
+    monkeypatch.setattr(main.capture, "grab", lambda *a, **k: None)
+    monkeypatch.setattr(main.vision, "slot_selected", lambda *a, **k: False)
+    presses = []
+    monkeypatch.setattr(main.ic, "key_press", lambda key: presses.append(key))
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
+
+    bot = make_fake_bot(bind=["_unequip_scanner"])
+    bot._unequip_scanner("test")
+
+    assert presses == [], "D2 未裝備時不應按鍵——否則 toggle 會反而裝上"
+
+
+def test_unequip_scanner_warns_when_key_eaten(monkeypatch):
+    """按了 "2" 但 slot_selected 仍為 True → 按鍵疑似被吃，best-effort 照常俯仰。"""
+    monkeypatch.setattr(main.capture, "grab", lambda *a, **k: None)
+    monkeypatch.setattr(main.vision, "slot_selected", lambda *a, **k: True)
+    presses = []
+    monkeypatch.setattr(main.ic, "key_press", lambda key: presses.append(key))
+    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
+
+    bot = make_fake_bot(bind=["_unequip_scanner"])
+    bot._unequip_scanner("test")
+
+    assert presses == ["2"], "仍嘗試按了一次（best-effort）"

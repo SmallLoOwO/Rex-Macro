@@ -113,6 +113,8 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._pending_aim = None
     # 聊天喚醒（H064）＝純 I/O（移游標＋抓幀），不是這裡要驗的接線 → 預設 no-op
     bot._reveal_chat = lambda: True
+    # 俯仰前卸裝 D2＝純 I/O（截圖＋按鍵），不是接線測試要驗的 → 預設 no-op
+    bot._unequip_scanner = lambda *a, **k: None
     for name in bind:
         setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     for key, value in attrs.items():

@@ -174,3 +174,12 @@ Search symbols instead of line numbers:
   NEEDS_HUMAN. A guard that re-scans **must** reset `_harvest_start`/`elapsed_s`:
   `_await_scan_ready` can block up to `radar_scan_wait_max_s` (36s) and would otherwise
   trip `sweep_timeout_s` (30s) on the very next tick.
+- **D2 must be unequipped before any pitch change during harvest** (2026-08-03). Game
+  mechanic: holding the scanner (D2) while pitching up triggers a **server-wide scan**
+  that reveals previously-abandoned low-rarity ores as tracker boxes, polluting the
+  current detection. `pitch_reset` always sweeps through the upward clamp limit, so this
+  applies to every layer transition — up, down, or return-to-mid. `_pitch_goto_layer`
+  calls `_unequip_scanner` before the drag; `_run_scan → execute_scan`'s existing
+  `slot_selected` guard (H065) re-equips D2 automatically afterward. Three direct
+  `_pitch_drag_verified` sites outside `_pitch_goto_layer` (historical recovery, AIM
+  alignment, AIM success tail) each call `_unequip_scanner` explicitly.
