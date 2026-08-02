@@ -1,6 +1,6 @@
 {
   "_comment": "NORMAL 面板列底色的階級色相 ground truth（2026-08-02 實機，使用者背包）。y 是 ore_panel_region 裁切後座標（全幀 y - 380）。tier 由 rare_ores 查礦名獨立確認，不是看顏色反推。",
-  "_protocol": "固定窗 cfg.panel_hue_sample_x=(120,165)，逐列中位→跨列中位，S>60。見 .scratch/measure_tier_hues.py 與 docs/incidents.md D13。",
+  "_protocol": "固定窗 cfg.panel_hue_sample_x=(120,165)，逐列中位→跨列中位，S>60。見 miningbot/measure_tier_hues.py 與 docs/open-detection-issues.md D13。",
   "frames": [
     {
       "file": "tiers_high4_20260802.png",

@@ -635,7 +635,7 @@ Unfathomable 與 Otherworldly 先前只有 wiki 色碼、無實機佐證（註�
 227.4°（差 8.4°、看起來像表值錯了），實為紅色礦名的抗鋸齒像素污染，改逐列中位後
 220.0°——**差點寫出一個假修復**。面板列有水平漸層（左亮右暗）但**只在 V 上**，
 H 沿列與沿行皆恆定（Transcendent 幅度 0.0°），故取樣位置不影響階級判定；
-要加 S/V 判據時必須連取樣窗一起指定。腳本：`.scratch/measure_tier_hues.py`。
+要加 S/V 判據時必須連取樣窗一起指定。工具：`uv run python -m miningbot.measure_tier_hues`。
 
 **仍缺**：`Imaginary`（wiki 雙色 `EEBA44`+`C9DEE9`＝42°+201°，雙色漸層，固定窗
 只會讀到其一或混色）與 `Zenith`（wiki 無色碼）至今無樣本，靠 `non_low_tier_hues`

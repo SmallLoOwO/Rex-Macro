@@ -618,8 +618,9 @@ def parse_panel_rows(boxes, max_x: int, min_y: int, min_letters: int = 3) -> lis
 def whitelist_hue_hits(hues, whitelist_hues, tol_deg: float) -> list:
     """列底色色相裡落在白名單（Exotic+）色帶內的那些（保序）。
 
-    白名單色帶＝`Config.panel_whitelist_hues`（Exotic 46／Exquisite 128／
-    Transcendent 210／Enigmatic 70，2026-08-02 實機全面板驗證）。色相是環狀的。
+    白名單色帶＝`Config.panel_whitelist_hues`（Exotic 46／Enigmatic 70／
+    Exquisite 128／Transcendent 210／Unfathomable 219／Otherworldly 334；
+    六階全部 2026-08-02 實機驗證，素材 tests/fixtures/panel_tiers/）。色相是環狀的。
 
     用途是**保守方向**：命中就代表面板上有 Exotic+ 礦，因此「面板零點」不成立。
     反向（沒命中就宣告採到了）不在這裡做——那要先有實機對帳資料。
@@ -656,7 +657,12 @@ def non_low_tier_hues(hues, low_tier_hues, tol_deg: float) -> list:
     猜錯的後果只是「多交一次人工」，不會多放生一顆礦。
 
     低階色帶清單（`Config.panel_low_tier_hues`）來自 D11 量測：Mythic 304／
-    Surreal 166／低階 0、30、280。色相是環狀的。
+    Surreal 166／Master 280／Rare 30／Uncommon 0。色相是環狀的。
+
+    ⚠ `Common` 與 `Layer` 是**灰階**（S=0）→ `vision.panel_row_hues` 回 H=0.0，
+    落在上面的 0.0 帶而被正確放行——但那是**巧合不是設計**（0.0 那格本來是給
+    Uncommon 的紅）。若哪天出現 H=0 的高階礦，這兩種灰會跟著被放行。兩種灰只能
+    用 V 分辨（色帶起點 x=18：Common 192／Layer 132），見 D13。
     """
     return [h for h in _clean_hues(hues)
             if not _hue_in_any_band(h, low_tier_hues, tol_deg)]

@@ -62,6 +62,7 @@ miningbot/
   remote_aim.py             Discord-assisted harvest alignment
   roblox_menu.py            menu OCR decisions
   sampler.py                numbered manual-sample writing (R-key Tk UI retired 2026-07-17)
+  measure_tier_hues.py      offline/live: panel row-colour tier hues; the fixed sampling protocol for `TIER_HUES` (D13)
   notify.py                 Discord HTTP API and async notifications
   discord_commands.py       pure Discord command parsing
   web_protocol.py           WebSocket message dataclasses, parsers, coord validation
@@ -109,6 +110,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Re-entry corpus / dataset | `corpus.py`, `build_reentry_dataset.py` | `Bot._rr_save_corpus`, `<log_dir>/corpus/reentry/`, `dataset.jsonl`, `--eval`; MSIX dual-path resolution lives only in `build_reentry_dataset` |
 | Teleport board prediction | `teleport_board.py` docstring (HSV percentile table) | `Bot._predict_teleport_board`, `reentry_predict_min_score`; suggestion only, never auto-click |
 | World/ore data | `game_data.py`, `tests/test_game_data.py` | `fetch_ores.py`, tracked JSON datasets; active registry, low/high tier conflicts, JSON sync |
+| Panel tier hues (`TIER_HUES`, `panel_*_hues`) | `docs/open-detection-issues.md` D13, `tests/fixtures/panel_tiers/README.md` | `measure_tier_hues.py` (fixed sampling protocol — **per-row median, never mean**), `tests/test_panel_tier_hues.py`; gradient is V-only so H is position-independent, but grey rows (Common/Layer) have no hue at all |
 | Manual sampling / calibration | `docs/manual-sampling.md` | `sampler.py`, `calibrate_surface.py` (capture via remote-control 📷; the R-key window is gone) |
 | Logs/snapshots | `diagnostics.py`, `docs/incidents.md` | categorized runtime snapshots |
 
@@ -282,6 +284,7 @@ pythonw -m miningbot
 uv run python -m miningbot.fetch_ores
 uv run python -m miningbot.fetch_trackers
 uv run python -m miningbot.capture_template boost
+uv run python -m miningbot.measure_tier_hues            # 面板階級色相（D13；抓當下畫面或給 PNG）
 uv run python -m miningbot.calibrate_surface --import NNN
 uv run python -m miningbot.calibrate_pitch
 uv run python -m miningbot.build_reentry_dataset --rescue

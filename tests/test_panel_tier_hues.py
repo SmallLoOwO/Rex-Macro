@@ -182,6 +182,41 @@ def test_band_origin_x18_equals_wiki_colour(fname, band):
         f'wiki {wiki} = {want.astype(int)}，最大差 {delta:.0f}')
 
 
+def test_measure_tool_identifies_every_ground_truth_band():
+    """`miningbot.measure_tier_hues` 對三張 fixture 的每條帶都要認出正確階級。
+
+    工具是使用者持續補階級時的入口（`uv run python -m miningbot.measure_tier_hues`），
+    它報錯階級比沒有工具更糟——會把「量到的」寫進 TIER_HUES。這條把它自己也納入
+    迴歸：自動切帶 + 命名，兩者任一退步就紅燈。
+    """
+    from miningbot import measure_tier_hues as mt
+
+    for frame in _ground_truth()["frames"]:
+        crop = _panel_crop(frame["file"])
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        x0, x1 = cfg.panel_hue_sample_x
+        found = {}
+        for y0, y1 in mt.detect_bands(hsv, x0, x1):
+            if y1 < cfg.panel_row_min_y:
+                continue                        # 標頭／篩選框，不是礦列
+            r = mt.band_hue(hsv, y0, y1, x0, x1)
+            if r is None:
+                continue
+            h, s, _v, _n = r
+            bgr = mt.origin_bgr(crop, y0, y1)
+            if s <= mt.GREY_SAT_MAX:            # 灰階：只能用 x=18 的未衰減亮度
+                for t, gv in mt.GREY_TIER_VALUES.items():
+                    if abs(int(bgr[0]) - gv) <= mt.GREY_TIER_TOL:
+                        found[t] = h
+            else:
+                tier, d, _low = mt.nearest_tier(h)
+                if d <= 1.5:
+                    found[tier] = h
+        want = {b["tier"] for b in frame["bands"]}
+        assert want <= set(found), (
+            f'{frame["file"]}：工具沒認出 {want - set(found)}（認出的是 {sorted(found)}）')
+
+
 def test_hue_is_stable_across_the_horizontal_gradient():
     """漸層只在 V 上，H 沿列恆定（使用者 2026-08-02 疑慮的實測答案）。
 

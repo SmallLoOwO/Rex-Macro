@@ -31,7 +31,8 @@
 
 ## 固定取樣協議（改量測方式前先讀）
 
-量測腳本：`.scratch/measure_tier_hues.py`。三條規則缺一不可：
+量測工具：`uv run python -m miningbot.measure_tier_hues`（省略路徑＝抓當下畫面；
+`--save out.png` 順便存檔）。三條規則缺一不可：
 
 1. **固定窗 `cfg.panel_hue_sample_x`（120-165）** — 與 production 同一塊像素。
 2. **逐列中位 → 跨列中位，不用平均** — 礦名文字是少數像素，中位吃不掉；
