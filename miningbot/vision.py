@@ -82,18 +82,25 @@ def _best_edge_match(scene_e, sh, sw, template_bgr, scales):
             best_loc = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
     return best_val, best_loc
 
-def find_template_edges(scene_bgr, template_bgr, threshold: float, scales=(1.0,)):
+def find_template_edges(scene_bgr, template_bgr, threshold: float, scales=(1.0,),
+                        *, with_score=False):
     """顏色無關 + 多尺度的模板定位：先用 Canny 取邊緣（只看形狀）再比對。
 
     適用於目標填色每次都不同、但外框/形狀固定的情況（例如掃描後的礦物標記）。
     `scales` 會把模板縮放成多種大小各試一次，取最佳——這樣即使模板（例如 wiki 圖）
     的尺寸跟畫面上不一致也能找到（模板比對本身不具縮放不變性）。
     回中心座標 (x, y)，找不到回 None。threshold 為邊緣相關度（0..1，越高越嚴）。
+    ``with_score=True`` 時回 ``(loc_or_None, best_score)``——呼叫端可 log 分數
+    做門檻調參（boost 偵測的 false-positive 根因排查）。
     """
     scene_e = _canny(scene_bgr)
     sh, sw = scene_e.shape[:2]
     val, loc = _best_edge_match(scene_e, sh, sw, template_bgr, scales)
-    return loc if (loc is not None and val >= threshold) else None
+    found = loc is not None and val >= threshold
+    result = loc if found else None
+    if with_score:
+        return result, val
+    return result
 
 def find_best_marker(scene_bgr, templates: dict, threshold: float, scales=(1.0,)):
     """在多個標記模板（不同階級）中找最佳匹配（顏色無關 + 多尺度）。

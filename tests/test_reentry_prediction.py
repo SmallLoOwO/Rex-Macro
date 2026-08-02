@@ -105,6 +105,7 @@ def _frames_bot():
     from miningbot.main import Bot
     registry = _FakeRegistry()
     bot = types.SimpleNamespace(
+        logger=logging.getLogger("test_predict"),
         log_discord=logging.getLogger("test_predict"),
         _web_thread=types.SimpleNamespace(
             app=types.SimpleNamespace(state=types.SimpleNamespace(registry=registry))))

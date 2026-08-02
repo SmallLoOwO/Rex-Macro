@@ -100,6 +100,7 @@ def make_fake_bot(*, bind=(), **attrs):
     """
     bot = Bot.__new__(Bot)
     bot.logger = logging.getLogger("tests.fake_bot")
+    bot.log_harvest = logging.getLogger("tests.fake_bot.harvest")
     bot.log_discord = logging.getLogger("tests.fake_bot.discord")
     # web 三件組預設「沒有 web」——要測 web 路徑的測試自己傳進來覆蓋
     bot._web_pending = None

@@ -782,21 +782,37 @@ class Bot:
         """
         t = self._templates.get("boost_active")
         if t is None:
+            if not getattr(self, "_boost_no_template_warned", False):
+                self._boost_no_template_warned = True
+                self.logger.warning("boost 模板缺失（boost_active）— boost 守門停用")
             return False
         now = time.time()
         if now - self._last_boost_check >= cfg.boost_check_interval_s:
             self._last_boost_check = now
             # 在整條效果列裡用「形狀/邊緣」找瓶子（忽略顏色與會變的數字、容忍疊加位移）
-            self._boost_present = vision.find_template_edges(
+            match, score = vision.find_template_edges(
                 capture.crop(frame, cfg.boost_indicator_region), t,
-                cfg.boost_edge_threshold, cfg.boost_buff_scales) is not None
+                cfg.boost_edge_threshold, cfg.boost_buff_scales, with_score=True)
+            was_present = self._boost_present
+            self._boost_present = match is not None
             if self._boost_present and self._boost_press_pending:
                 # 成功觸發確認（2026-07-19）：只認「偵測到瓶子重現」這一刻，樂觀快取
                 # （_harvest_boost_guard 的 True）不算證據——它不清 pending。
                 self._confirm_boost_use(frame)
+            # 分數 log（門檻調參根據）：AGENTS.md CURRENT RISK AREAS 說 0.40→0.55 因偽陽性改
+            if was_present and not self._boost_present:
+                self.logger.info("boost 偵測：瓶子消失（score=%.3f < 門檻 %.2f）— 可能到期",
+                                 score, cfg.boost_edge_threshold)
+            elif not self._boost_present:
+                self.logger.debug("boost 偵測：瓶子不在（score=%.3f, 門檻 %.2f）",
+                                  score, cfg.boost_edge_threshold)
         if self._boost_present:
             return False
-        return (time.time() - self._last_boost) > cfg.boost_cooldown_s
+        ready = (time.time() - self._last_boost) > cfg.boost_cooldown_s
+        if not ready:
+            self.logger.debug("boost 不在但冷卻中（已過 %.1fs／需 %.1fs）",
+                              time.time() - self._last_boost, cfg.boost_cooldown_s)
+        return ready
 
     def _confirm_boost_use(self, frame):
         """瓶子重現＝一次成功使用：+1、讀右下角計數器對帳、落 jsonl。
@@ -889,6 +905,10 @@ class Bot:
                  for (x, y, w, h) in slots]
         self._radar_local_present = harvester.scan_succeeded(texts)
         self._radar_cave_present = harvester.cave_skim_present(texts)
+        if self._radar_local_present or self._radar_cave_present:
+            self.logger.debug("radar_badges: Local=%s CaveSkim=%s（%d 格 OCR=%s）",
+                              self._radar_local_present, self._radar_cave_present,
+                              len(slots), texts)
         return self._radar_local_present, self._radar_cave_present
 
     def _run_scan(self):
@@ -4048,6 +4068,8 @@ class Bot:
         回 True＝已推送；False＝沒有 web thread／一張都沒編碼成功。
         """
         if self._web_thread is None or not frames:
+            self.logger.debug("send_web_intervention_frames: 跳過（web_thread=%s, frames=%d）",
+                              self._web_thread is not None, len(frames) if frames else 0)
             return False
         registry = self._web_thread.app.state.registry
         # 2026-07-27：使用者是「有提醒才連進來」——開始記錄這輪序列，晚到的連線
@@ -4077,6 +4099,8 @@ class Bot:
                      "routing_key": routing_key, "summary": ctx_summary,
                      "mode": mode, "frame_count": total, "note": note},
         ))
+        self.logger.info("send_web_intervention_frames: 已推 %d 張（flow=%s, routing_key=%s, mode=%s）",
+                         total, flow, routing_key, mode)
         return True
 
     # 2026-07-31 移除 `_send_web_intervention_event`（單幀推送）與
@@ -4117,20 +4141,26 @@ class Bot:
         `_running`/`paused`（關閉或暫停要放得掉主迴圈，否則 F12 關不掉）。
         """
         if self._web_pending is None:
+            self.logger.warning("await_web_action: web_pending 為 None（routing_key=%s）", routing_key)
             return None, None
         while True:
             reply = self._web_pending.pop(routing_key)
             if reply is not None:
+                self.logger.info("await_web_action: 收到 click（routing_key=%s）", routing_key)
                 return "click", reply
             for cmd in controls:
                 if self._web_pending.pop(f"control:{cmd}") is not None:
+                    self.logger.info("await_web_action: 收到控制鍵 %s（routing_key=%s）", cmd, routing_key)
                     return cmd, None
             if self._web_pending.pop(f"control:force_discord:{routing_key}") is not None:
+                self.logger.info("await_web_action: 玩家按 🔀 改用 Discord（routing_key=%s）", routing_key)
                 return "force_discord", None
             if self._mine_resetting:
                 # 等待期間礦坑又重置：八方位圖已過時，別讓玩家對著舊圖點
+                self.logger.warning("await_web_action: 等待中礦坑重置 -> 中止（routing_key=%s）", routing_key)
                 return None, None
             if not self._running or self.paused:
+                self.logger.warning("await_web_action: bot 停止/暫停 -> 中止（routing_key=%s）", routing_key)
                 return None, None
             time.sleep(0.5)
 
@@ -5787,6 +5817,7 @@ class Bot:
         `_handle_web_aim_click` → `_execute_remote_fire` 完整重掃重找）。
         """
         if self._web_thread is None:
+            self.logger.debug("[%s] push_web_aim_candidates: 無 web thread，跳過", ctx.harvest_id)
             return False
         import cv2
         overlays = {path: (dir_idx, layer)
@@ -5813,12 +5844,16 @@ class Bot:
             self._wait_snapshot_ready(path, max(0.0, deadline - time.monotonic()))
             img = cv2.imread(path)
             if img is None:
+                self.logger.warning("[%s] push_web_aim_candidates: 讀不到圖 %s", ctx.harvest_id, path)
                 continue
             png = self._encode_png(img)
             if png:
                 web_frames.append((dir_idx, layer, png))
         if not web_frames:
+            self.logger.warning("[%s] push_web_aim_candidates: 無幀可推（picks=%d）", ctx.harvest_id, len(picks))
             return False
+        self.logger.info("[%s] push_web_aim_candidates: 推 %d 張到 web（routing_key=harvest:%s）",
+                         ctx.harvest_id, len(web_frames), ctx.harvest_id)
         return self._send_web_intervention_frames(
             flow="harvest", routing_key=f"harvest:{ctx.harvest_id}",
             frames=web_frames, ctx_summary=summary,
@@ -6163,8 +6198,10 @@ class Bot:
         if not ready:
             return False, detail
         if not self._focus_roblox():
+            self.log_harvest.warning("[%s] AIM abort：無法聚焦 Roblox", hid)
             return False, "無法聚焦 Roblox"
         if self._mine_resetting:
+            self.log_harvest.warning("[%s] AIM abort：礦坑重置中", hid)
             return False, "礦坑重置中"
         # 1. 對齊：yaw（驗證式）＋俯仰層（reset→nudge，同 pitch-sweep 慣例）
         steps, pitch = remote_aim.plan_alignment(
@@ -6177,6 +6214,7 @@ class Bot:
                 done += 1 if steps > 0 else -1
         ctx.pose_net_rotations += done         # 姿態記帳＝實際轉動（被吃不計）
         if done != steps:
+            self.log_harvest.warning("[%s] AIM abort：轉向被吃（%d/%d），姿態已記帳", hid, done, steps)
             return False, f"轉向被吃（{done}/{steps}），姿態已記帳，可重試"
         if pitch is not None:
             nudge = {"up": -cfg.sweep_pitch_step_px, "down": cfg.sweep_pitch_step_px,
@@ -6190,6 +6228,7 @@ class Bot:
                     f"[{hid}] AIM nudge {nudge}px", lambda: ic.pitch_nudge(nudge))
             if not ok:
                 ctx.pose_pitch_layer = "mid"   # reset 至少跑過，保守記歸位
+                self.log_harvest.warning("[%s] AIM abort：俯仰對齊被吃（目標 %s）", hid, pitch)
                 return False, "俯仰對齊被吃，可重試"
             ctx.pose_pitch_layer = pitch
         # 2. 重新 D2 掃描（框早已到期；新 episode 語意，重拍 ref 正確——非 H026 情境）
@@ -6212,6 +6251,7 @@ class Bot:
                 if "未命中" in detail:
                     # 限縮偵測未命中（非綠色框/框不在格內）→ 放大手選退路（§5 步驟 5）
                     self._enter_aim_fine(ctx, cell, tgt_dir, tgt_layer, hid)
+                    self.log_harvest.info("[%s] AIM：格內未命中 -> 進入放大手選退路", hid)
                     return None, "entered awaiting_fine"
                 return False, detail             # 預算用盡／格無效
         else:
@@ -6327,7 +6367,9 @@ class Bot:
         fire_frame = capture.grab()
         fire_path = self._hsnap(fire_frame, "aim_fire_%dx%d" % pos)
         if not self._fire_d3_at(*pos):
-            return False, f"D3 冷卻尚餘 {self._d3_cooldown_remaining():.1f}s"
+            cd = self._d3_cooldown_remaining()
+            self.log_harvest.warning("[%s] AIM 開火失敗：D3 冷卻尚餘 %.1fs", hid, cd)
+            return False, f"D3 冷卻尚餘 {cd:.1f}s"
         self._record_target_observation(
             layer=tgt_layer, dir_idx=tgt_dir, pos=pos, score=pos_score,
             status="fired", source="remote_d3", snapshot_path=fire_path)
@@ -6346,6 +6388,8 @@ class Bot:
                     cur, chat_before, common, rare_names, hid, "remote-aim")
                 last_crop = cur
                 if confirmed:
+                    self.log_harvest.info("[%s] AIM 開火確認成功（輪詢命中，已過 %.1fs）",
+                                          hid, time.time() - fired_at)
                     self._remote_fire_success(ctx, hid)
                     return True, "confirmed"
         # 窗口到期最終確認（H020 慣例）
@@ -6353,8 +6397,12 @@ class Bot:
         _, confirmed, _ = self._verify_chat_ocr(
             cur, chat_before, common, rare_names, hid, "remote-aim-final")
         if confirmed:
+            self.log_harvest.info("[%s] AIM 開火確認成功（最終確認命中，已過 %.1fs）",
+                                  hid, time.time() - fired_at)
             self._remote_fire_success(ctx, hid)
             return True, "confirmed(final)"
+        self.log_harvest.warning("[%s] AIM 開火未確認：verify 窗口到期（%.1fs 內聊天無新稀有礦）",
+                                 hid, cfg.harvest_verify_window_s)
         return False, "verify 窗口內聊天未確認"
 
     def _detect_boost_present(self, frame) -> bool:
@@ -7780,6 +7828,7 @@ class Bot:
         排到 ≤門檻）收尾中不點擊、不拖曳，避免卡頓吃輸入；≤門檻才進入上面的點擊→閘鏈。
         """
         if not self._focus_roblox():
+            self.logger.warning("[RR] 開場 abort：無法聚焦 Roblox")
             self._rr_notify("⚠ 無法聚焦 Roblox，回 `重骰` 重試或 `跳過`")
             self._rr_ensure_ctx(reroll)
             return
@@ -7895,6 +7944,7 @@ class Bot:
             self.last_action = f"回礦開場閘未過（{gate}），等畫面活過來"
             return
         self._rr_open_first_ts = 0.0             # 全閘通過才清探測狀態
+        self.logger.info("[RR#%s] 開場閘全過 -> 開始八方位拍照", ctx.episode_id)
         # H052：舊「俯仰歸位疑似被吃」警告已移除——非凍結＝生效（誤報來源），
         # 真凍結由 plan_opening_gate 擋在拍照前，不會走到這裡。
         # 先掃八方位，再問 web（2026-07-26 改）。
@@ -7915,6 +7965,7 @@ class Bot:
         captured = self._rr_sweep_capture(
             encode_for_web=getattr(self, "_web_thread", None) is not None)
         if captured is None:
+            self.logger.info("[RR#%s] 八方位拍照中止：礦坑重置中", ctx.episode_id)
             return                                # 掃到一半遇到重置：下一輪 tick 處理
         pairs, rot_missed, web_pngs = captured
         if self._reentry_await_player_click(self._rr_ctx, web_pngs, rot_missed):
@@ -8018,6 +8069,8 @@ class Bot:
         rot_missed = 0
         for i in range(8):
             if self._mine_resetting:
+                self.logger.info("[RR#%s] 八方位拍照中止：礦坑重置中（已完成 %d/8）",
+                                 ctx.episode_id, i)
                 return None                       # 上層 tick 下一輪處理 reset
             f = capture.grab()
             # 檔名/標籤一律 1 起算（2026-07-18 使用者要求；ctx.shots 內部仍 0-based）
@@ -9559,9 +9612,11 @@ class Bot:
                     f"{tag} nudge {nudge_px}px(attempt {attempt})",
                     lambda: ic.pitch_nudge(nudge_px))
             if ok:
+                self.logger.debug("pitch_goto_layer(%s)：成功（attempt %d）", tag, attempt)
                 return True
             self._focus_roblox()
             ic.settle(cfg.sampler_pitch_focus_settle_s)
+        self.logger.warning("pitch_goto_layer(%s)：兩次嘗試都被吃 -> 放棄該層", tag)
         return ok
 
     def _pitch_layer_transition(self) -> bool:

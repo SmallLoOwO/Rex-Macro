@@ -925,6 +925,7 @@ def test_await_web_reentry_action_returns_force_discord_on_control_key():
     from miningbot.web_ipc import PendingReplies
 
     bot = Bot.__new__(Bot)
+    bot.logger = logging.getLogger("test_web_intervention")
     bot._web_pending = PendingReplies()
     bot._mine_resetting = False
     bot._running = True

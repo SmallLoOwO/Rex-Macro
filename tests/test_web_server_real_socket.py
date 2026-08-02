@@ -222,6 +222,7 @@ def test_main_push_helper_sends_needs_last(server):
 
     bot = _Bot()
     bot._web_thread = thread
+    bot.logger = logging.getLogger("test_sweep_wire")
     bot.log_discord = logging.getLogger("test_sweep_wire")
     bot._send_web_intervention_frames = _types.MethodType(
         Bot._send_web_intervention_frames, bot)
@@ -267,6 +268,7 @@ def test_main_push_helper_carries_layer_for_harvest_candidates(server):
 
     bot = _Bot()
     bot._web_thread = thread
+    bot.logger = logging.getLogger("test_layer_wire")
     bot.log_discord = logging.getLogger("test_layer_wire")
     bot._send_web_intervention_frames = _types.MethodType(
         Bot._send_web_intervention_frames, bot)

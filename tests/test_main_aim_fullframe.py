@@ -51,6 +51,7 @@ def _aim_bot(monkeypatch, *, roi_hit=None, fullframe_hit=None):
 
     bot = Bot.__new__(Bot)
     bot.logger = _LogRecorder()
+    bot.log_harvest = bot.logger
     bot._mine_resetting = False
     bot._shape_templates = {}
     bot._wait_for_d3_cooldown = lambda deadline: (True, "")
