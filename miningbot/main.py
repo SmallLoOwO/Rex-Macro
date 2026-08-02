@@ -5008,11 +5008,14 @@ class Bot:
         # 查 _boost_present 快取即可——_boost_needs_refresh 每 0.2s 更新它；
         # 旋轉中無 tick 插隊（_on_enter 同步），快取值反映旋轉最後一刻的狀態。
         # getattr 預設 True：測試用 Bot.__new__ 繞過 __init__ 時不誤殺（同 _await_scan_ready 慣例）。
-        if not getattr(self, "_boost_present", True):
-            self.logger.warning(
-                "方位 reference（%s）：旋轉途中 boost 到期（耗時 %.1fs）-> "
-                "整組作廢，退回單張 ref（FOV 混合：前半寬/後半窄）",
-                why, time.time() - t0)
+        boost_ok = getattr(self, "_boost_present", True)
+        elapsed = time.time() - t0
+        if not boost_ok:
+            self.log_harvest.warning(
+                "[%s] 方位 reference（%s）：旋轉途中 boost 到期（耗時 %.1fs）-> "
+                "整組作廢，退回單張 ref（FOV 混合：前半寬/後半窄）——"
+                "本 episode 跨方位差分回到 D06 前行為，有漏抓風險",
+                self.harvest.harvest_id if self.harvest else "?", why, elapsed)
             self._pre_scan_refs = {}
             self._pre_scan_refs_layer = None
             return False
@@ -5020,9 +5023,9 @@ class Bot:
         self._pre_scan_refs = refs
         self._pre_scan_refs_layer = self.harvest.pitch_layer if self.harvest else None
         self.log_harvest.info(
-            "[%s] 方位 reference（%s）：8 張已拍（layer=%s，耗時 %.1fs）",
+            "[%s] 方位 reference（%s）：8 張已拍（layer=%s，耗時 %.1fs，boost=有效）",
             self.harvest.harvest_id if self.harvest else "?", why,
-            self._pre_scan_refs_layer, time.time() - t0)
+            self._pre_scan_refs_layer, elapsed)
         return True
 
     def _dir_reference(self, abs_dir: int, fallback):

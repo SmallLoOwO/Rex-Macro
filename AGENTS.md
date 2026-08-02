@@ -242,6 +242,14 @@ conventions.
 - Every completed task must end with a commit: run the full test suite green
   first, stage only the files the task touched, and write a Chinese commit
   message describing the change (cite the H incident id when applicable).
+- **Every new feature, fix, or behavioural change must include logging** that lets
+  a future agent diagnose failures from logs alone — without re-reading the code to
+  guess what happened. At minimum: log the decision point (what was chosen and why),
+  the key variables that drove it, and the outcome. Log the fallback/early-exit path
+  too, not just the happy path — "it fell back to single ref" is more important to
+  trace than "8 refs captured." Use `self.log_harvest` for episode-scoped events
+  (keyed by `harvest_id`) and `self.logger` for one-off warnings. When in doubt,
+  over-log: a redundant line costs nothing; a missing line costs a full re-investigation.
 - **Keep docs in sync.** When a task adds or changes a runtime rule, Discord
   command, web-configurable field, config parameter, or detection/decision path,
   update the relevant doc files **in the same commit**. Stale docs are worse than
