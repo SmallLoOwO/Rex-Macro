@@ -329,6 +329,7 @@ class Bot:
         self._radar_toggle = self._load_radar_toggle()
         self._radar_auto_scan_at = 0.0               # **連續使用**上次按左鍵的時刻（採集自己按的不算）
         self._radar_check_at = 0.0                   # 徽章偵測節流錨
+        self._scan_guard_at = 0.0                    # H073 sweep 掃描守門：上次補掃 D2 的時刻（節流錨）
         self._radar_local_present = False            # 節流間沿用的快取
         self._radar_cave_present = False
         self._radar_ocr_ok = True                    # OCR 引擎可用否（run() 啟動時探測；False→定時後備）
@@ -3559,6 +3560,10 @@ class Bot:
             self._capture_dir_references("進場")
             self._run_scan()            # 裝備 D2 + 點擊觸發掃描
             self._confirm_scan("enter")  # enforce：badge 沒出現自動 refocus+重掃；sweep guard 持續守門
+            # 進場這次（含 retry）就是本 episode 最近一次補掃 → 當作 sweep 守門的節流起點：
+            # ①上一輪 harvest 的 _scan_guard_at 不得延續（否則新一輪前 34s 守門形同關閉）
+            # ②retry 剛失敗時 dir0 不該立刻再按第三次 D2（冷卻中按下去無效，見 _await_scan_ready）
+            self._scan_guard_at = time.time()
             self._harvest_start = time.time()
             self._target_marker = None          # 尚未掃描，第一個 tick 將做全方位掃描
             # ★ 聊天基準提升到 episode 級（2026-07-04 H032 延伸對策）：進場拍一次、
@@ -4782,6 +4787,13 @@ class Bot:
         self.log_harvest.info("[%s] scan guard: 無 Local 徽章 -> 補掃 D2", hid)
         self._await_scan_ready("scan-guard")
         self._run_scan()
+        # 預算從補掃**之後**才起算（同 _reharvest_sweep／_pitch_layer_transition）：
+        # _await_scan_ready 最長等 radar_scan_wait_max_s(36s) + execute_scan 的 1.5s，
+        # 不重置的話下一個 tick 的 elapsed_s 必定 > sweep_timeout_s(30s) → self-heal
+        # 剛救回掃描就被自己的耗時判成「sweep 超時」交人工。
+        if self.harvest is not None:
+            self._harvest_start = time.time()
+            self.harvest.elapsed_s = 0.0
         return True
 
     def _tracker_exclusions(self):
@@ -5860,6 +5872,7 @@ class Bot:
                 f"約需 2 分鐘——礦在上下層時平視那 8 張本來就照不到")
         snaps = {}                          # {(layer, abs_dir): 原幀快照路徑}
         web_frames = []                     # [(abs_dir, layer, png)]（原幀、無格線）
+        scan_unconfirmed = set()            # H073：掃描確認失敗的層名（照拍，但要告知玩家）
         want_web = self._web_thread is not None
         for layer in layers:
             # 每層絕對定位（reset→nudge）。mid 只做 reset＝冪等歸位，同舊行為。
@@ -5882,9 +5895,14 @@ class Bot:
             harvester.prepare_scan()
             self._await_scan_ready(where)
             self._run_scan()
-            if not self._confirm_scan(where) and layer.name == "mid":
-                notify.send_message(token, ch, "❌ 掃描未生效，可再回 `手動` 重試或 `跳過`")
-                return
+            # H073：_confirm_scan 內含 refocus+等冷卻+重掃一次（self-heal）。它回 False
+            # 只代表「重試後仍讀不到 Local 徽章」——可能是掃描真的沒觸發，也可能只是 OCR
+            # 假陰性。`手動` 是玩家明確請求的救援路徑，直接踢回去最不該（使用者指定：
+            # 「如果沒有則先補上再繼續」），故照樣拍圖，只在訊息裡標注供玩家判讀。
+            if not self._confirm_scan(where):
+                self.logger.warning("[%s] MANUAL survey %s 層掃描確認失敗 -> 仍照拍（圖可能無框）",
+                                    hid, layer.name)
+                scan_unconfirmed.add(layer.name)
             # 每層獨立預算，從重掃**之後**才起算（同失敗路徑：放前面會被掃描內含的
             # 等待與可能的冷卻等待吃掉）
             deadline = time.time() + cfg.remote_aim_budget_s
@@ -5941,6 +5959,13 @@ class Bot:
         if not rendered and not web_frames:
             notify.send_message(token, ch, "❌ 全方位快照失敗，可再回 `手動` 重試或 `跳過`")
             return
+        if scan_unconfirmed:
+            # H073：掃描沒確認到仍照拍，但玩家看到空圖時要知道是「可能沒掃到」而不是
+            # 「這層真的沒礦」——否則會把 bot 的失誤當成礦不存在。
+            notify.send_message(
+                token, ch,
+                f"⚠️ {'／'.join(sorted(scan_unconfirmed))} 層掃描未確認生效，"
+                f"圖裡可能看不到框——沒框時可 `手動` 重拍一次")
         if web_frames and self._await_manual_survey_web_click(ctx, routing_key,
                                                               web_frames):
             return                          # 網頁已接手（點擊排進 _pending_aim）

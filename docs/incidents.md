@@ -781,6 +781,22 @@ fixture 位置慣例：
   1. `_confirm_scan` enforce 模式重試後回傳實際結果（`return ok` 取代 `return True`）。
   2. `scan_confirm_mode` 預設從 `"off"` 改 `"enforce"`——進場 `_confirm_scan` 偵測到 badge 缺失時自動 refocus + 等冷卻 + 重掃一次（一次 retry）。
   3. **`_harvest_scan_guard`（核心）**：比照 `_harvest_boost_guard`，在 `_sweep_for_tracker` 每方位檢查效果列 Local 徽章，缺了就 `_await_scan_ready` + `_run_scan` 補掃再繼續——**不交人工**（self-heal）。throttle（`_scan_guard_at`，`radar_repeat_interval_s`）防 OCR 假陰性 spam 冷卻。
-- **D5 boost 偽陽性（同場修復）**：`_boost_needs_refresh` 的 `find_template_edges` 在效果列 matchTemplate score 僅 0.337（< 門檻 0.4），但 edge-based 偵測通過——命中位置 (1705,1039) 與 boost 使用次數區 (1720,990,90,90) 重疊。使用者指出：D5 成功觸發時效果列會出現**兩個**幾乎同樣的瓶子圖示（一個 active buff、一個使用次數）；只有一個＝boost 未生效，那個是次數icon。**根因**：全螢幕校準（2026-07-28）後 boost_indicator_region 從 145px 高變 95px 高，使用次數 icon 在新 region 內的 edge match score 從 0.19 升到 0.42（剛過舊門檻 0.40）。**修復**：`boost_edge_threshold` 0.40→0.55（true boost 0.77+、次數 icon 0.42-，兩側夾）。新 fixture `h168_sweep_no_boost.png`／`h168_mining_boost_active.png` 是 harvest 168 生產幀裁圖（95px 高），與既有 fixture（145px 高、校準前）互補。
-- **回歸**：`tests/test_scan_confirm_gate.py` 8 項——`_confirm_scan` 四種模式回傳值（off/observe/enforce-ok/enforce-fail/enforce-retry-succeed）、`_harvest_scan_guard` badge 在放行/缺了補掃/throttle 防spam。`tests/test_main_harvest_runtime.py` 4 項 sweep 測試加 `_harvest_scan_guard` mock。全測試 2346 passed（4 項 pre-existing failure 與本修復無關）。
-- **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True/False`（進場驗證）及 `[168] scan guard: 無 Local 徽章 -> 補掃 D2`（sweep 中途補掃）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；scan guard 頻繁觸發＝掃描持續被吃或 OCR 假陰性。
+- **D5 boost 偽陽性（同場修復）**：`_boost_needs_refresh` 的 `find_template_edges` 在效果列 matchTemplate score 僅 0.337（< 門檻 0.4），但 edge-based 偵測通過——命中位置 (1705,1039) 與 boost 使用次數區 (1720,990,90,90) 重疊。使用者指出：D5 成功觸發時效果列會出現**兩個**幾乎同樣的瓶子圖示（一個 active buff、一個使用次數）；只有一個＝boost 未生效，那個是次數icon。**根因**：全螢幕校準（2026-07-28）後 boost_indicator_region 從 145px 高變 95px 高，使用次數 icon 在新 region 內的 edge match score 從 0.19 升到 0.42（剛過舊門檻 0.40）。**修復**：`boost_edge_threshold` 0.40→0.55。新 fixture `h168_sweep_no_boost.png`／`h168_mining_boost_active.png` 是 harvest 168 生產幀裁圖（95px 高），與既有 fixture（145px 高、校準前）互補。**兩側夾（2026-08-02 code review 複驗，全五張 fixture 實測）**：
+
+  | fixture | 高度 | edge score | 期望 |
+  |---|---|---|---|
+  | `before_only_count` | 145px | 0.194 | 拒 |
+  | `h168_sweep_no_boost` | 95px | **0.419** ← 誤收上界 | 拒 |
+  | `active_61` | 145px | **0.619** ← 真值下界 | 收 |
+  | `h168_mining_boost_active` | 95px | 0.787 | 收 |
+  | `active_47` | 145px | 0.798 | 收 |
+
+  ⚠ 初版本條目寫「true boost 0.77+」是**錯的**（只看了兩張最高分的），真值下界是 `active_61` 的 0.619——0.55 的正側餘裕只有 0.069、負側 0.131。要再調高門檻前必須先補真 boost 樣本，否則會切掉 `active_61` 這型。
+- **code review 補修（2026-08-02，同日）**：雙軸 review 抓到四個缺口，已一併修掉——
+  1. **`手動` survey 仍會交人工**：`_tick_remote_aim` 的 `if not self._confirm_scan(where) and layer.name == "mid": return` 是 `04a2d2c` 的既有碼，`scan_confirm_mode="off"` 時是死碼，改 `enforce` 後**被啟用**＝正面違反「先補上再繼續」。改成照拍、記 `scan_unconfirmed`，並在發圖前用 ⚠️ 訊息告知玩家「這層掃描未確認、沒框可再 `手動` 一次」（否則玩家會把 bot 失誤當成「這層真的沒礦」）。
+  2. **補掃後沒重置 sweep 預算**：`_await_scan_ready` 最長等 `radar_scan_wait_max_s`(36s)，不重置則下個 tick 的 `elapsed_s` 必 > `sweep_timeout_s`(30s) → self-heal 剛救回掃描就被自己的耗時判成「sweep 超時 -> 歷史目標復原/人工」。比照 `_reharvest_sweep` 重置 `_harvest_start`／`elapsed_s`。
+  3. **`_scan_guard_at` 沒在 `__init__` 宣告**（只靠 `getattr` 預設）：跨 episode 殘留會讓新一輪前 34s 守門形同關閉。已補宣告，並在進場 `_confirm_scan("enter")` 之後設為當下——進場那次就是最近一次補掃，順帶擋掉「retry 剛失敗、dir0 立刻按第三次 D2」。
+  4. **兩側夾數字寫錯**（見上表）。新增 `test_boost_edge_threshold_brackets_both_sides` 用全五張 fixture 實算兩側，門檻挪到夾不住就紅燈，不必再靠人重跑離線量測。
+- **回歸**：`tests/test_scan_confirm_gate.py` 11 項——`_confirm_scan` 五種模式回傳值、`_harvest_scan_guard` badge 在放行/缺了補掃/throttle 防spam/補掃後重置預算/harvest 為 None 不爆/`__init__` 有宣告。`tests/test_boost_fixtures.py` 6 項（含兩側夾）。`tests/test_main_harvest_runtime.py` 4 項 sweep 測試加 `_harvest_scan_guard` mock。
+- **⚠ 下一場實機驗證預期**：log 出現 `[scan-confirm] enter ok=True/False`（進場驗證）及 `[168] scan guard: 無 Local 徽章 -> 補掃 D2`（sweep 中途補掃）。反指標：ok=True 卻 sweep 全空＝真正沒礦（正常）；scan guard 頻繁觸發＝掃描持續被吃或 OCR 假陰性。補掃後不該再看到緊接著的「sweep 超時」（那是上面第 2 點修掉的病徵）。
+- **⚠ 仍未補的證據缺口**：`scan_confirm_mode` 從 `off` 改 `enforce` 讓 `_scan_local_badge_present` 這條逐格 OCR 變成 load-bearing，但目前所有測試都是 `lambda: True/False` mock，**沒有一張真實效果列幀進 `tests/fixtures/`**（harvest 168 的實測文字 `"Used tu"`／`"A"` 只寫在本條目，幀還在 `.scratch/h168_*.png`）。依 AGENTS.md「Visual/OCR threshold changes require real fixtures」這是欠的——OCR 假陰性的代價現在是每方位多一次補掃＋等冷卻。下次實機取到有／無 Local 徽章的成對效果列幀時補進 `tests/fixtures/scan_confirm/`。

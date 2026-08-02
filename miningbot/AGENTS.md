@@ -79,7 +79,8 @@ Search symbols instead of line numbers:
 - FSM: `observe`, `_update_reset_complete`, `_on_enter`, `_tick`, and every
   `self.state =` assignment.
 - Harvest: `_find_tracker*`, `_rotate_verified`, `_sweep_for_tracker`,
-  `_tick_harvest`, `_harvest_success`, `_late_chat_confirm`, `_harvest_giveup`.
+  `_tick_harvest`, `_harvest_success`, `_late_chat_confirm`, `_harvest_giveup`,
+  `_harvest_boost_guard`/`_harvest_scan_guard` (the two self-heal guards).
 - Remote/re-entry: `_handle_aim_reply`, `_tick_remote_aim`, `_tick_reentry*`, and
   `_rr_*`/`_zoom_*`/`_pitch_*` helpers.
 - Sampling/HUD: `_sampler_pitch_prepare`, remote-control 📷 branch in
@@ -165,3 +166,11 @@ Search symbols instead of line numbers:
 - `scan_confirm_region` now holds the whole bottom-right effect row; badge slots shift
   as buffs stack, so locate them with `vision.find_effect_slots` and OCR per slot —
   never hardcode a single slot, and never OCR the whole strip at once.
+- The two effect-bar guards are **self-heal, never hand-over** (H073, user-specified:
+  「如果沒有則先補上再繼續」). `_harvest_boost_guard` re-applies D5, `_harvest_scan_guard`
+  re-runs D2; both return True to mean "screen changed, re-grab the frame". Any new
+  `_confirm_scan` call site follows the same rule — a False return means "retry already
+  happened and still no badge", which is a reason to log and continue, not to abort to
+  NEEDS_HUMAN. A guard that re-scans **must** reset `_harvest_start`/`elapsed_s`:
+  `_await_scan_ready` can block up to `radar_scan_wait_max_s` (36s) and would otherwise
+  trip `sweep_timeout_s` (30s) on the very next tick.

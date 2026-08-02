@@ -87,3 +87,28 @@ def test_h168_mining_boost_active_detected():
     result = vision.find_template_edges(scene, _template(), cfg.boost_edge_threshold,
                                         cfg.boost_buff_scales)
     assert result is not None
+
+
+def test_boost_edge_threshold_brackets_both_sides():
+    """門檻兩側夾（AGENTS.md：threshold 變更必須列出真值與誤收兩側的實測分數）。
+
+    初版 H073 條目寫「true boost 0.77+」是錯的——只看了兩張最高分的，真值下界其實是
+    active_61 的 0.619。這條測試把兩側釘住：門檻挪動到夾不住任一側就紅燈，
+    不必再靠人重跑一次離線量測才發現。
+    """
+    positives = ["active_47.png", "active_61.png", "h168_mining_boost_active.png"]
+    negatives = ["before_only_count.png", "h168_sweep_no_boost.png"]
+    tpl = _template()
+
+    def score(name):
+        scene = _load(name)
+        edges = vision._canny(scene)
+        sh, sw = edges.shape[:2]
+        val, _ = vision._best_edge_match(edges, sh, sw, tpl, cfg.boost_buff_scales)
+        return val
+
+    worst_true = min(score(n) for n in positives)
+    best_false = max(score(n) for n in negatives)
+    assert best_false < cfg.boost_edge_threshold <= worst_true, (
+        f"門檻 {cfg.boost_edge_threshold} 沒夾在兩側之間："
+        f"誤收上界 {best_false:.3f} / 真值下界 {worst_true:.3f}")
