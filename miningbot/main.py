@@ -80,7 +80,7 @@ if cfg.web_server_enabled:
 # 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
-_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內按一次 X；等同 `ability` 指令）
+_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（遊戲內先按 F 再按 X；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_REENTER_EMOJI = "🏠"  # 手動回礦（等同 `回礦` 指令／STUCK 🏠；只寫旗標，主迴圈消費）
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
@@ -2012,7 +2012,7 @@ class Bot:
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
-                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內按一次 X；等同 `ability`）\n"
+                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（在遊戲內先按 F 再按 X；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
                 f" 點 **{_REMOTE_REENTER_EMOJI}** 回礦（等同 `回礦` 指令，重走回礦流程取回正確方位）\n"
                 f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先放開挖礦鍵→清空→重接）\n"
@@ -2499,7 +2499,7 @@ class Bot:
             notify.send_message(token, ch,
                 f"⚡ 能力指令已排入（狀態: {self.state.value}"
                 + ("，暫停中——恢復後才會執行" if self.paused else "")
-                + "）→ 主迴圈將在遊戲內按一次 X")
+                + "）→ 主迴圈將在遊戲內先按 F 再按 X")
             self.log_discord.info("CMD ability -> queued state=%s paused=%s",
                                   self.state.value, self.paused)
 
@@ -2636,7 +2636,7 @@ class Bot:
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
                 "`status` — 查詢目前狀態、統計、保留清單\n"
                 "`shot` — 截圖目前畫面並傳送（遠端檢查用）\n"
-                "`ability` — 遠端按一次 X（手動使用能力；採集/回礦中會等空檔執行）\n"
+                "`ability` — 遠端先按 F 再按 X（手動使用能力；採集/回礦中會等空檔執行）\n"
                 "`轉 [左|右]` — 遠端轉 45°（預設右轉；手動校正回礦落地後的斜向面向；"
                 "採集/回礦中不接受，不排隊）\n"
                 "`回礦` — 手動觸發回礦（卡死自救/蒐集面板樣本；同 `reenter`）\n"
@@ -4429,12 +4429,12 @@ class Bot:
         self._update_reset_chime_active()
         self._consume_pending_rotate()
         self._consume_web_pending()  # web client 命令（P1 Task 10）
-        # Discord `ability` 指令消費：可消費狀態才按 X（HARVESTING/REENTRY 插按鍵會
+        # Discord `ability` 指令消費：可消費狀態才按 F→X（HARVESTING/REENTRY 插按鍵會
         # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
         if self._pending_ability and can_consume_ability(self.state):
             self._pending_ability = False
-            ic.key_press("x")
-            self.last_action = "遠端能力：已按 X"
+            ic.key_press("f"); ic.key_press("x")
+            self.last_action = "遠端能力：已按 F→X"
             self.log_discord.info("ability 已執行（state=%s）", self.state.value)
         # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
         # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。
