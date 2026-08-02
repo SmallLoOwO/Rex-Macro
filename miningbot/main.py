@@ -4445,7 +4445,9 @@ class Bot:
         # 干擾時序，旗標留著等回 MINING 再執行）。狀態閘走純函式 can_consume_ability。
         # 使用者要求（2026-08-02）：右轉45°施放能力再轉回，最大化手動能力效果；
         # 全程不放開 W／左鍵（key_press 只送按下+放開，不影響按住中的鍵）。
-        # 每鍵之間留延遲（預設 0.09s 太快會被遊戲吃鍵）：轉向 0.2s、能力各 0.15s。
+        # 每鍵之間留延遲（預設 0.09s 太快會被遊戲吃鍵）：轉向 0.2s、F/X 各 0.15s。
+        # F→X 之間尤其不能短：F 開啟能力系統需要時間，X 在 0.09s 後抵達時 UI 尚未
+        # 就緒 → X 被吃 → 毫無反應（2026-08-03 實機回報：只有 F 生效）。
         if self._pending_ability and can_consume_ability(self.state):
             self._pending_ability = False
             ic.key_press(".", delay=0.2)
@@ -4453,7 +4455,8 @@ class Bot:
             ic.key_press("x", delay=0.15)
             ic.key_press(",", delay=0.15)
             self.last_action = "遠端能力：右轉→F→X→轉回"
-            self.log_discord.info("ability 已執行（state=%s）", self.state.value)
+            self.log_discord.info("ability 已執行 .→F→X→,（state=%s）",
+                                  self.state.value)
         # Discord `清空` 指令消費（2026-08-01）：手動清空面板篩選框。
         # MINING 時 W/滑鼠按住中，先放開才能點 UI；清完重新 init 接回挖礦。
         if self._pending_clear_panel and self.state not in (State.HARVESTING, State.REENTRY):
