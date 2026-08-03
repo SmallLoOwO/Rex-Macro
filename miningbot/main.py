@@ -4454,7 +4454,7 @@ class Bot:
             ic.key_press(",", delay=0.2)     # 左轉回正面
             time.sleep(3.0)                  # 等待 3 秒（使用者確認的必要間隔）
             ic.key_press("f")                # F（施放能力）
-            time.sleep(0.3)                  # 等遊戲渲染能力效果再截圖
+            time.sleep(1.0)                  # 等遊戲渲染能力效果再截圖（過早拍不到效果）
             frame = capture.grab()
             stem = sampler.save_sample(frame, cfg.manual_snapshot_dir,
                                        self._pitch_offset_px)
