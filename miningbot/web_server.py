@@ -740,6 +740,10 @@ def create_app(
             if field == "detection_disabled_tiers":
                 from miningbot.game_data import set_detection_disabled_tiers
                 set_detection_disabled_tiers(value)
+                # 推 pending 讓主迴圈發 Discord 確認（比照 set_layer；背景執行緒不做
+                # Discord I/O）。值已即時生效，這裡只補「（來自網頁）」確認訊息，
+                # 讓玩家知道改了什麼、現在偵測哪些階級——否則設了像沒設。
+                pending.push("control:set_detection_tier", True)
             # 持久化（若有指定路徑）——不帶 current_overrides，save_overrides 自會重讀檔
             if app.state.overrides_path:
                 save_overrides(app.state.overrides_path, field, value)

@@ -275,6 +275,74 @@ def test_main_consume_web_pending_rejects_invalid_value(tmp_path, monkeypatch):
     assert not overrides_path.exists()
 
 
+# --- 偵測階級網頁儲存 → Discord 確認（2026-08-03）---
+
+
+def test_post_api_config_detection_tier_queues_notification(tmp_path):
+    """POST detection_disabled_tiers 要 push control:set_detection_tier，
+    讓主迴圈發 Discord 確認——否則玩家在網頁改了階級卻無從得知有沒有生效
+    （「目標層」走的是同一條 push → consume → _rr_notify 確認路徑）。"""
+    from miningbot import game_data
+    from miningbot.web_ipc import FallbackState
+
+    cfg = Config()
+    pending = PendingReplies()
+    overrides = str(tmp_path / "overrides.json")
+    app = create_app(
+        pending=pending, fallback=FallbackState(), broadcast_callback=None,
+        config=cfg, overrides_path=overrides)
+    client = TestClient(app)
+    try:
+        r = client.post("/api/config",
+                        json={"field": "detection_disabled_tiers", "value": ["Exotic"]})
+        assert r.status_code == 200
+        assert pending.pop("control:set_detection_tier") is not None, \
+            "POST detection_disabled_tiers 必須 push control:set_detection_tier"
+    finally:
+        game_data.set_detection_disabled_tiers(set())
+
+
+def test_post_other_fields_do_not_queue_detection_tier(tmp_path):
+    """只有 detection_disabled_tiers 走 set_detection_tier；其他欄位不該污染 slot。"""
+    cfg = Config()
+    pending = PendingReplies()
+    overrides = str(tmp_path / "overrides.json")
+    app = create_app(
+        pending=pending, fallback=FallbackState(), broadcast_callback=None,
+        config=cfg, overrides_path=overrides)
+    client = TestClient(app)
+    client.post("/api/config", json={"field": "reentry_mode", "value": "auto"})
+    assert pending.pop("control:set_detection_tier") is None
+
+
+def test_consume_web_pending_notifies_detection_tier_change():
+    """push control:set_detection_tier → 主迴圈 _rr_notify 發 Discord 確認，
+    文字列出目前偵測狀態 + 「（來自網頁）」。"""
+    from miningbot import game_data
+    from tests.fake_bot import make_fake_bot
+
+    notes = []
+    pending = PendingReplies()
+    pending.push("control:set_detection_tier", True)
+    game_data.set_detection_disabled_tiers({"Exotic"})
+    try:
+        bot = make_fake_bot(
+            bind=["_consume_web_pending"],
+            _web_pending=pending,
+            _rr_notify=lambda text, image_paths=None: notes.append(text),
+        )
+        bot._consume_web_pending()
+        assert len(notes) == 1
+        assert "偵測階級已更新" in notes[0]
+        assert "來自網頁" in notes[0]
+        # status 反映當下 game_data（Exotic 被排除 → Exquisite 以上）
+        assert "Exquisite" in notes[0]
+        # pending 已被消費
+        assert pending.pop("control:set_detection_tier") is None
+    finally:
+        game_data.set_detection_disabled_tiers(set())
+
+
 # --- 2026-07-28：/api/player + /api/radar（D2 開關網頁化；保留清單已從網頁移除）---
 
 

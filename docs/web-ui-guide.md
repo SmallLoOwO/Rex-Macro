@@ -220,7 +220,9 @@ Discord `掃描`/`削洞` 共用同一份持久化檔案）而不是 `/api/confi
 CLI 工作（spec §12）。想改的話跟 agent 說，不是在網頁找。
 
 改完即時生效，並寫進 `<log_dir>/config_overrides.json`，下次啟動自動讀回。優先序是
-Config default → `.env` → `config_overrides.json`（最高）。
+Config default → `.env` → `config_overrides.json`（最高）。改目標層或偵測階級時，
+Discord 會跳出確認訊息（`✅ 目標層改為：…（來自網頁）`／`✅ 偵測階級已更新：…（來自網頁）`），
+讓玩家在 Discord 端確認設定有沒有生效。
 
 ### 標註是介入的副產品
 

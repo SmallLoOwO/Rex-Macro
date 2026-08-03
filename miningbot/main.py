@@ -3834,6 +3834,14 @@ class Bot:
                 self.logger.info("web: 目標層改為 %s（已同步每世界黏性層）", layer.strip())
             else:
                 self.logger.warning("web: set_layer 值不合法，忽略: %r", layer)
+        # 網頁設定頁改偵測階級（2026-08-03）：值已在 HTTP route 即時生效（config +
+        # game_data + save_overrides），這裡只補 Discord 確認——比照 set_layer 的
+        # 「（來自網頁）」確認訊息。讀當下 game_data 狀態（已套用最新值），即使玩家
+        # 連按兩次儲存、第二次 push 被丟棄，確認訊息仍反映真正的現行設定。
+        if self._web_pending.pop("control:set_detection_tier") is not None:
+            status = game_data.format_detection_status()
+            self._rr_notify(f"✅ 偵測階級已更新：{status}（來自網頁）")
+            self.log_discord.info("web: 偵測階級已更新 -> %s", status)
         # 2026-07-28：遙控器五顆鍵（▶️⏸️⚡📷🏠）網頁對應版——pause/resume/request_frame
         # 從 P1 就留著沒接（"P1 未接業務邏輯"），玩家在網頁完全無法暫停/繼續/看畫面。
         # 這裡直接照抄 _poll_remote_reactions 對應分支的邏輯（同樣是背景執行緒觸發，
