@@ -2575,10 +2575,21 @@ class Bot:
                                       self.state.value)
             else:
                 self._pending_restart = True
+                # 不加狀態閘（使用者明確要求：只要暫停就能重開）——但暫停時若剛好卡在
+                # REENTRY 半路（_rr_ctx 開著），重開會直接丟掉這場回礦：沒收尾 ledger，
+                # 新行程重啟後 init_mining_sequence 是 W + 左鍵，人在哪就從哪開始採礦。
+                # 只警告不擋，警告同時進 Discord 訊息與 log，事後好排錯。
+                abandoning_reentry = self.state is State.REENTRY or self._rr_ctx is not None
+                warn = ""
+                if abandoning_reentry:
+                    warn = ("\n⚠ 目前有進行中的回礦（REENTRY）——重開會直接放棄這場，"
+                            "不會收尾 ledger；新行程啟動後會從角色目前位置直接開挖。")
                 notify.send_message(token, ch,
                     f"🔄 重開中——將在 {cfg.restart_delay_s:.0f} 秒後自動重啟"
-                    f"（套用更新）。bot 先正常關機，再由 relauncher 啟動新行程。")
-                self.log_discord.info("CMD 重開 -> paused=True, _pending_restart set")
+                    f"（套用更新）。bot 先正常關機，再由 relauncher 啟動新行程。{warn}")
+                self.log_discord.info(
+                    "CMD 重開 -> paused=True, _pending_restart set, state=%s, "
+                    "abandoning_reentry=%s", self.state.value, abandoning_reentry)
 
         elif cmd in discord_commands.RADAR_COMMAND_KIND:
             which = discord_commands.RADAR_COMMAND_KIND[cmd]
@@ -2827,7 +2838,6 @@ class Bot:
         # H061：web 模組的 import 已在模組層完成（見檔頭），這裡不再有 deferred import。
         # 舊的「run() 開頭 eager import」緩解（afcab21）其實沒生效——Bot.__init__ 早就
         # spawn 了 audio/snapshot/rapidocr/tesserocr 四個 worker，run() 開頭已經太晚。
-        self._check_restart_marker()
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
                          "啟動檢查期間 Q=跳過檢查直接開挖, log_level=%s)", cfg.log_level)
@@ -2837,6 +2847,9 @@ class Bot:
         # （太晚設 True 會把早按的 Q 丟掉、使用者以為沒生效）。
         self._startup_phase = True
         threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        # _check_restart_marker 放熱鍵執行緒之後（原本是 run() 第一行）：notify.send_message
+        # 逾時 10s，Discord 打不通時會擋住 F12/Q 熱鍵最多 10s 才武裝——熱鍵先上線才安全。
+        self._check_restart_marker()
         # 先確認 Roblox 在、聚焦它，完成初始化定位後才開始
         if not self._focus_roblox():
             self._alert("找不到/無法聚焦 Roblox，請先開好遊戲再啟動")
@@ -9635,18 +9648,23 @@ class Bot:
     def _schedule_restart(self) -> bool:
         """Spawn detached relauncher；成功回 True（主迴圈接著 _quit），失敗回 False。
 
-        relauncher 是獨立 cmd：`timeout /t N /nobreak` 做延遲（shell=True 給 cmd.exe
-        自己的 console，不依賴 loopback／防火牆，不像 ping 會在網路異常時悄悄變成
-        0 秒延遲）→ `&` 無條件串接 start "" 啟動新 pythonw -m miningbot（延遲指令本身
-        就是關機安全間隔，不該看它成不成功）。DETACHED_PROCESS 讓它在父行程結束後
-        存活。sys.executable 精確重現啟動當下的直譯器（Store Python 的 pythonw.exe
-        或 .venv 的 python）。restart_delay_s 必須蓋過 _quit 之後 finally 區塊的實際
-        關機耗時（snapshot drain + web thread join + audio/放鍵），見 config.py 註解。
+        relauncher 是獨立 cmd：`waitfor /t N RestartDelay` 做延遲 → `&` 無條件串接
+        start "" 啟動新 pythonw -m miningbot（延遲指令本身就是關機安全間隔，不該看
+        它成不成功——waitfor 逾時本來就回傳非 0，`>nul 2>&1` 把這個「正常失敗」也
+        滅音）。**不能用 `timeout`**：`timeout` 在 stdin 被 redirect（這裡是
+        `stdin=subprocess.DEVNULL`）時會拒絕互動式倒數、直接以 rc=125 立即結束——
+        實測 0.69s 就串接執行 start，等同延遲形同虛設，新行程在舊行程 finally
+        清乾淨之前就搶 WebIPC port bind（H067 同型）。`ping -n N 127.0.0.1` 也測過
+        （11.14s，可行），但依賴 loopback／防火牆，網路異常時可能悄悄變成更短延遲；
+        `waitfor` 不碰網路、不需要 console 輸入，10.45s 命中目標最穩。DETACHED_PROCESS
+        讓它在父行程結束後存活。sys.executable 精確重現啟動當下的直譯器（Store
+        Python 的 pythonw.exe 或 .venv 的 python）。restart_delay_s 的真正涵蓋範圍
+        見 config.py 註解（HUD 快速退出 vs. 無 HUD 完整 finally 兩種關機路徑）。
         """
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        delay = cfg.restart_delay_s
+        delay = max(1, int(cfg.restart_delay_s))
         relaunch = (
-            f'timeout /t {int(delay)} /nobreak >nul '
+            f'waitfor /t {delay} RestartDelay >nul 2>&1 '
             f'& start "" "{sys.executable}" -m miningbot'
         )
         try:

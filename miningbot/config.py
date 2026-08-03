@@ -743,7 +743,7 @@ class Config:
     # 狀態訊息 edit_message 降頻（秒）：狀態/動作變動最快每 N 秒 edit 一次，
     # 避免狀態機快速擺盪洗版（2026-07-26 P2 spec §7）。低於此間隔的變動
     # 靠下次 repin（RepinDebouncer）順帶刷新。
-    restart_delay_s: float = 10.0               # Discord `重開`：relauncher 等待秒數（確保舊行程完全結束再啟動新的；必須 > snapshot_shutdown_drain_s(5.0) + web thread join timeout(2.0) + audio/放鍵餘裕，不是只蓋 drain）
+    restart_delay_s: float = 10.0               # Discord `重開`：relauncher 等待秒數（確保舊行程完全結束再啟動新的）。實際關機耗時分兩種路徑，不是單一公式：hud_enabled=True（預設）時 StatusHUD._poll 每 300ms 重新武裝一次，偵測到 _quit 設的 _running=False 就呼叫 root.destroy()，mainloop() 隨即返回、main() 跟著返回、直譯器收尾把還在 finally 區塊裡的 daemon bot 執行緒直接砍斷——snapshot drain 被腰斬，實測退出約 0.3-0.5s；hud_enabled=False 時沒有這個競速者，finally 會跑好跑滿：snapshot_shutdown_drain_s(5.0) + web thread join(2.0) + audio/放鍵餘裕。10.0 是拿較慢的無 HUD 路徑再加安全邊界，不是描述唯一一條關機路徑的公式。
     restart_marker_max_age_s: float = 300.0      # restart_marker 存活上限（秒）：擋失敗重開留下的過期 marker——舊行程 relauncher 啟動後自己 crash、或新行程還沒到 run() 就死，marker 會一直躺著；下次「跟這次重開無關的手動啟動」若不擋，會誤報「重開完成」到 Discord
 
     # 選單前置切換（Movement Mode）＋聊天框前置檢查

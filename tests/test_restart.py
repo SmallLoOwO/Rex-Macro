@@ -1,6 +1,7 @@
 """Discord 重開指令的暫停閘 + relauncher 測試。"""
 import os
 import subprocess
+import sys
 import time
 import types
 
@@ -53,7 +54,7 @@ def test_restart_rejected_when_not_paused(monkeypatch):
 def test_consume_pending_restart_spawns_and_returns_true(monkeypatch):
     calls = []
     monkeypatch.setattr("subprocess.Popen",
-                        lambda *a, **k: calls.append(k) or types.SimpleNamespace())
+                        lambda *a, **k: calls.append((a, k)) or types.SimpleNamespace())
     monkeypatch.setattr("miningbot.notify.send_message", lambda *a, **k: None)
     bot = make_fake_bot(
         bind=["_consume_pending_restart", "_schedule_restart"],
@@ -63,8 +64,19 @@ def test_consume_pending_restart_spawns_and_returns_true(monkeypatch):
     assert result is True
     assert bot._pending_restart is False
     assert len(calls) == 1
+    args, kwargs = calls[0]
     # DETACHED_PROCESS 必須在 creationflags 裡——relauncher 才能在父行程結束後存活
-    assert calls[0].get("creationflags", 0) & subprocess.DETACHED_PROCESS
+    assert kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS
+    command = args[0]
+    # F1: timeout.exe 在 stdin 被 redirect 時秒退（rc=125），實測延遲形同虛設；
+    # 改用 waitfor，逾時本身就是成功路徑，不依賴網路（別再退回 timeout/ping）。
+    assert "waitfor" in command
+    assert "timeout" not in command
+    from miningbot.config import DEFAULT as cfg
+    assert str(int(cfg.restart_delay_s)) in command
+    assert "-m miningbot" in command
+    assert sys.executable in command
+    assert kwargs.get("cwd")
 
 
 def test_consume_pending_restart_noop_when_flag_clear(monkeypatch):
