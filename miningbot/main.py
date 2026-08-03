@@ -3627,26 +3627,49 @@ class Bot:
             self._episode_succeeded = False
             self._episode_chill_at = time.time()
             self._harvest_origin_ref = frame
-            # ★ 進場面板色檢（H072）：記 gains 但**不再短路 giveup**（2026-08-02）。
-            #   舊版直接呼叫 _harvest_giveup 寫 NEEDS_HUMAN，但 _on_enter 回傳 None →
-            #   resolve_state_transition 蓋回 HARVESTING → 殘值 state-commit bug（harvest 171）。
-            #   且 double chill 時第一顆可能已被動挖到、面板已有，但第二顆追蹤框還在——
-            #   直接交人工會放生。現在 sweep 照跑；全空才用 gains 當 giveup reason。
+            # ★ 進場面板色檢（H072）：面板已有白名單 礦＝chill 前已被鎬子挖到。
+            #   命中時短路 NEEDS_HUMAN——略過 prepare_scan / D2 冷卻 / reference 旋轉 /
+            #   sweep 全流程（harvest 184 實測：87s 全白跑）。短路以 _on_enter 回傳
+            #   NEEDS_HUMAN 的正規 pattern（同 REENTRY 聚焦失敗降級），不呼叫
+            #   _harvest_giveup（harvest 171 state-commit bug 根因）。
+            #   double chill 時不改路徑（仍短路），只換通知文字——採集期間 D5 FOV
+            #   漂移讓 sweep 本來就不可靠（184 實測：dir=0 找到框但 verify 失敗、
+            #   resweep + 3 層全空），短路跟正常流程結果一樣（都交人工），只是快 87s。
             self._entry_panel_gains = self._harvest_entry_panel_check(hid)
             # ★ double chill 偵測（banner 色相，2026-08-02）：chill 觸發前的 MINING tick
             #   已取到 banner 色相跳變（兩則 spawn 訊息不同隨機色）。查近期跳變→設旗標，
             #   之後重置（下一場重新累積）。旗標消費：採完第一顆強制 bonus sweep +
             #   bonus sweep 全空交人工。
+            #   len(recent) >= 2（非 any()）：單一 chill 也會產生 1 次跳變——any() 在
+            #   單 chill 也 fire，使面板短路永遠被擋住（grilling 2026-08-04 log 驗證）。
             _now = time.time()
-            self._double_chill_detected = any(
-                t >= _now - cfg.double_chill_window_s
-                for t in self._banner_color_changes)
+            _recent_banner = [t for t in self._banner_color_changes
+                              if t >= _now - cfg.double_chill_window_s]
+            self._double_chill_detected = len(_recent_banner) >= 2
             if self._double_chill_detected:
                 self.log_harvest.info(
-                    "[%s] double chill 偵測（banner 色相跳變 → 強制 bonus sweep + 全空交人工）",
-                    hid)
+                    "[%s] double chill 偵測（banner 色相跳變 %d 次 → 強制 bonus sweep + 全空交人工）",
+                    hid, len(_recent_banner))
             self._banner_color_changes = []
             self._banner_hue = None
+            # ★ 面板命中短路：略過整個 sweep 流程，直接 NEEDS_HUMAN（2026-08-04 grilling）。
+            #   log 驗證（171/184）：兩筆命中都無 double chill，短路正確。
+            #   觀察期（2/10）仍記錄到 panel_check_observed.json；目標 NEEDS_HUMAN 非 MINING
+            #   →就算判錯也不靜默放生。
+            if self._entry_panel_gains:
+                if self._double_chill_detected:
+                    self._human_reason = (
+                        f"進場面板已有稀有 礦（{'、'.join(self._entry_panel_gains)}），"
+                        f"且偵測到 double chill → 請手動確認是否有第二顆追蹤框")
+                else:
+                    self._human_reason = (
+                        f"進場面板已有稀有 礦（{'、'.join(self._entry_panel_gains)}），"
+                        f"可能 chill 前已被鎬子挖到 → 請確認後按 Q 繼續")
+                self.log_harvest.info(
+                    "[%s] 面板色檢命中 → 短路 NEEDS_HUMAN（略過 sweep%s）",
+                    hid, "，double chill" if self._double_chill_detected else "")
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return State.NEEDS_HUMAN
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
             # ★ boost 守門（H026）：reference 必須在「最終 FOV」下拍——若進場時 D5 已到期
             #   卻不補，之後守門補上時 FOV 展開，ref 與實況錯位、preexist 差分全失準。
@@ -7201,12 +7224,13 @@ class Bot:
 
         面板（已歸零可信）有白名單（Exotic+）礦＝這場 MINING 期間已挖到。
 
-        **不再短路 giveup**（2026-08-02）：舊版直接呼叫 `_harvest_giveup` 在
-        `_on_enter(HARVESTING)` 裡寫 `NEEDS_HUMAN`，但 `_on_enter` 回傳 None →
-        `resolve_state_transition` 蓋回 HARVESTING → 殘值 state-commit bug（harvest 171）。
-        且 double chill 時第一顆可能已被動挖到、面板已有，但第二顆追蹤框還在等 D3——
-        直接交人工會放生。現在只記 gains；sweep 照跑，全空才由 `_tick_harvest` 用 gains
-        當 giveup reason。giveup 時 `_giveup_rescue` 路 B 仍會讀面板，自然接手。
+        命中時由呼叫端（``_on_enter(HARVESTING)``）短路 NEEDS_HUMAN（2026-08-04）：
+        略過 prepare_scan / D2 冷卻 / reference 旋轉 / sweep 全流程。短路以正規
+        ``return State.NEEDS_HUMAN`` pattern（同 REENTRY 聚焦失敗降級），不呼叫
+        ``_harvest_giveup``——避免 harvest 171 的 state-commit bug（_on_enter 回傳
+        None → resolve_state_transition 蓋回 HARVESTING → 殘值）。
+
+        double chill 時不改路徑（仍短路），只換通知文字。
 
         觀察期記錄照舊：每次命中記進 panel_check_observed.json，累計到目標次數後問玩家。
 
@@ -7219,7 +7243,7 @@ class Bot:
             return []
         self.log_harvest.warning(
             "[%s] H072 進場面板色檢命中：面板已有白名單 礦 %s——"
-            "chill 前可能已被鎬子挖到（仍照常 sweep，全空才交人工）",
+            "chill 前可能已被鎬子挖到（呼叫端將短路 NEEDS_HUMAN）",
             hid, "、".join(gains))
         # ── 觀察期記帳（比照 rescue observe）──
         self._panel_check_observed.append({

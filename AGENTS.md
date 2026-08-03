@@ -348,31 +348,40 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   was not, which silently abandons a real rare ore — and both slipped past the tests,
   hence the observation period. Do not flip it without showing the evidence first;
   `scan_confirm_mode` above is what happens when nobody is reminded.
-- **`harvest_entry_panel_check` is on and records to `panel_check_observed.json`.**
+- **`harvest_entry_panel_check` short-circuits to NEEDS_HUMAN** (2026-08-04).
   When chill triggers and the NORMAL panel already has a whitelisted (Exotic+) ore,
-  the bot **records the gains but no longer short-circuits** (2026-08-02): the sweep
-  runs normally — if a tracker is found it is harvested (possibly the second ore of a
-  double chill); if sweep is empty, `_harvest_giveup` fires with the panel-check reason.
-  The old short-circuit caused a state-commit bug (harvest 171: `_harvest_giveup` inside
-  `_on_enter(HARVESTING)` wrote NEEDS_HUMAN, but `resolve_state_transition` overrode it
-  back to HARVESTING → stale episode state → unpredictable behavior).
-  Each hit is appended to `<log_dir>/panel_check_observed.json`.
+  the bot **skips the entire sweep flow** (prepare_scan / D2 cooldown / reference
+  rotation / 8-direction sweep) and goes straight to NEEDS_HUMAN — saving ~87s on
+  cases where the pickaxe already collected the ore before chill (harvest 184: 87s
+  all-empty sweep). The short-circuit uses the correct `_on_enter` return-state pattern
+  (same as REENTRY focus-fail degradation), NOT `_harvest_giveup` — the old short-circuit
+  (pre-2026-08-02) called `_harvest_giveup` inside `_on_enter(HARVESTING)` which returned
+  None → `resolve_state_transition` overrode it back to HARVESTING → state-commit bug
+  (harvest 171). The 2026-08-02 fix removed the short-circuit entirely; the 2026-08-04
+  fix restores it with the correct return pattern. Double-chill does not change the path
+  (still short-circuits), only the notification text — sweep reliability is already
+  compromised by D5 FOV drift during these episodes (184: found tracker dir=0 but verify
+  failed, resweep + 3 layers all empty). Each hit is appended to
+  `<log_dir>/panel_check_observed.json`.
   **When that file reaches `panel_check_observe_target` (10) entries, lay the records
   out for the user and ask whether to switch to automatic** (skip NEEDS_HUMAN, resume
   mining directly). Requires `_panel_zeroed_at` to be set — if the panel clear at MINING
   entry failed (H070/H071), the check is bypassed entirely. The manual `清空` command
   is the fallback for when the automatic clear fails.
-- **Double-chill detection via banner color** (2026-08-02). Audio cannot count two
-  near-simultaneous chills (1.5s rolling window merges them), but the top banner text
-  is discrete with a unique random RGB per spawn message. During MINING, each tick
-  samples the banner text hue (`vision.banner_text_hue`); a hue jump ≥
-  `banner_hue_change_deg` sets `_double_chill_detected` at HARVESTING entry. When the
-  flag is set: (1) after harvesting the first ore, a bonus sweep is forced even with no
-  visible tracker, and (2) if the bonus sweep is empty, the bot hands to human instead
-  of resuming MINING. The flag is a safety enhancement — the base layer (panel-check
-  always sweeps) protects against double chill regardless. **Needs live-game validation**:
-  verify that banner text hue is sampled correctly and that double-chill episodes
-  trigger the expected bonus sweep + human handoff.
+- **Double-chill detection via banner color** (2026-08-02, threshold fixed 2026-08-04).
+  Audio cannot count two near-simultaneous chills (1.5s rolling window merges them), but
+  the top banner text is discrete with a unique random RGB per spawn message. During
+  MINING, each tick samples the banner text hue (`vision.banner_text_hue`); hue jumps
+  are timestamped into `_banner_color_changes`. At HARVESTING entry, **≥2 jumps within
+  `double_chill_window_s`** sets `_double_chill_detected` — NOT `any()` (which fires for
+  a single chill's 1 jump, blocking the panel-check short-circuit forever). Log validation
+  (2026-08-04): 89 banner changes across one day, 9 clusters of ≥2 within 3s, 3 matched
+  actual harvest entries (172/174/178, all sweep-empty → human). When the flag is set:
+  (1) after harvesting the first ore, a bonus sweep is forced even with no visible
+  tracker, and (2) if the bonus sweep is empty, the bot hands to human instead of
+  resuming MINING. **Needs live-game validation**: verify that banner text hue is sampled
+  correctly and that double-chill episodes trigger the expected bonus sweep + human
+  handoff.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.

@@ -1066,10 +1066,10 @@ def _entry_panel_bot(monkeypatch, *, panel=(), zeroed=True, enabled=True, **attr
 
 
 def test_entry_panel_check_returns_gains_when_rare_in_panel(monkeypatch):
-    """面板已有白名單 礦（chill 前鎬子已挖到）→ 回傳 gains，不直接交人工（sweep 照跑）。"""
+    """面板已有白名單 礦（chill 前鎬子已挖到）→ 回傳 gains（呼叫端短路 NEEDS_HUMAN）。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine"])
     assert bot._harvest_entry_panel_check("162") == ["faedrine"]
-    assert giveup == [], "不再短路 giveup——sweep 照跑，全空才由 _tick_harvest giveup"
+    assert giveup == [], "_harvest_entry_panel_check 不直接 giveup——短路由 _on_enter 呼叫端做"
 
 
 def test_entry_panel_check_passes_when_panel_empty(monkeypatch):
@@ -1093,7 +1093,7 @@ def test_entry_panel_check_disabled_by_config(monkeypatch):
 
 
 def test_entry_panel_check_records_observe_hit(monkeypatch):
-    """命中時記進 _panel_check_observed（觀察期）；不再 giveup，只回傳 gains。"""
+    """命中時記進 _panel_check_observed（觀察期）；函式本身不 giveup，短路由呼叫端。"""
     bot, giveup = _entry_panel_bot(monkeypatch, panel=["faedrine", "hallonite"])
     saved = []
     bot._save_panel_check_observed = lambda: saved.append(True)
@@ -1103,7 +1103,7 @@ def test_entry_panel_check_records_observe_hit(monkeypatch):
     assert rec["harvest_id"] == "162"
     assert "faedrine" in rec["ore_names"]
     assert saved, "_save_panel_check_observed 必須被呼叫"
-    assert giveup == [], "不再直接 giveup"
+    assert giveup == [], "_harvest_entry_panel_check 不直接 giveup"
 
 
 # ── _sample_banner_color：banner 色相跳變偵測（double chill，2026-08-02）────────
@@ -1156,3 +1156,161 @@ def test_sample_banner_color_no_text_no_change(monkeypatch):
     bot._sample_banner_color(None)
     assert bot._banner_color_changes == []
     assert bot._banner_hue == 50.0, "hue 不應被 None 覆蓋"
+
+
+# ── double chill len() >= 2（非 any()）：grilling 2026-08-04 ──────────────────
+
+def test_double_chill_threshold_single_change_not_double(monkeypatch):
+    """單一 banner 色相跳變不算 double chill——any() 會誤判，len() >= 2 正確。
+
+    單一 chill 必產生 ≥1 跳變（chill 訊息刷新 banner），any() 在單 chill 也 fire，
+    使面板命中短路永遠被擋住。log 驗證（harvest 171/184）：兩筆命中都是單 chill。
+    """
+    now = 1000.0
+    window = cfg.double_chill_window_s
+    changes = [now - 1.0]  # 窗內 1 次
+    recent = [t for t in changes if t >= now - window]
+    assert not (len(recent) >= 2), "1 次跳變 ≠ double chill"
+
+
+def test_double_chill_threshold_two_changes_is_double(monkeypatch):
+    """窗內 2 次跳變＝double chill（兩則 chill 訊息不同隨機色）。"""
+    now = 1000.0
+    window = cfg.double_chill_window_s
+    changes = [now - 2.0, now - 0.5]  # 窗內 2 次
+    recent = [t for t in changes if t >= now - window]
+    assert len(recent) >= 2, "2 次跳變 ＝ double chill"
+
+
+def test_double_chill_threshold_changes_outside_window_ignored(monkeypatch):
+    """窗外跳變不算——只有近 double_chill_window_s 秒的跳變才有效。"""
+    now = 1000.0
+    window = cfg.double_chill_window_s
+    changes = [now - window - 1.0, now - window - 0.5]  # 都在窗外
+    recent = [t for t in changes if t >= now - window]
+    assert not (len(recent) >= 2), "窗外跳變不算"
+
+
+# ── 面板命中短路 NEEDS_HUMAN（2026-08-04 grilling）────────────────────────────
+
+def _harvesting_entry_bot(monkeypatch, *, panel_gains, banner_changes=None,
+                          double_chill_window=3.0):
+    """組一台能跑 _on_enter(HARVESTING) 到短路判定點的 fake bot。
+
+    短路在 panel check + double chill 之後、prepare_scan 之前——只要短路觸發，
+    後面的 I/O（D2 冷卻、reference 旋轉、sweep）全不會碰到。
+    """
+    monkeypatch.setattr(cfg, "harvest_entry_panel_check", True)
+    monkeypatch.setattr(cfg, "double_chill_window_s", double_chill_window)
+    monkeypatch.setattr(cfg, "banner_color_sample_enabled", True)
+
+    need_human_calls = []
+
+    bot = make_fake_bot(
+        bind=["_on_enter"],
+        log_harvest=_Rec(),
+        harvest=None,
+        _harvest_seq=200,
+        _save_harvest_seq=lambda: None,
+        _hsnap_crop=lambda *a, **kw: None,
+        _hsnap=lambda *a, **kw: None,
+        _panel_check_observed=[],
+        _save_panel_check_observed=lambda: None,
+        _panel_check_observed_path=lambda: "/tmp/test_panel.json",
+        _banner_color_changes=list(banner_changes or []),
+        _banner_hue=None,
+        _human_reason=None,
+        _episode_succeeded=False,
+        _double_chill_detected=False,
+        _harvest_origin_ref=None,
+        _episode_chill_at=0.0,
+        _entry_panel_gains=[],
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        human_cleared=True,
+        listener=type("L", (), {"save_buffer_wav": lambda *a, **kw: None})(),
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+    )
+    # _harvest_entry_panel_check 直接回傳預設 gains（繞過面板讀取 I/O）
+    bot._harvest_entry_panel_check = lambda hid: list(panel_gains)
+    # _alert / ic 不做 I/O
+    bot._alert = lambda msg: None
+    # _on_enter(NEEDS_HUMAN) 遞迴呼叫時追蹤
+    _orig_on_enter = bot._on_enter
+
+    def _tracking_on_enter(s, frame):
+        if s is State.NEEDS_HUMAN:
+            need_human_calls.append(s)
+            bot.human_cleared = False
+            return State.NEEDS_HUMAN
+        return _orig_on_enter(s, frame)
+
+    bot._on_enter = _tracking_on_enter
+    return bot, need_human_calls
+
+
+def test_on_enter_harvesting_short_circuits_on_panel_hit(monkeypatch):
+    """面板命中 + 無 double chill → _on_enter(HARVESTING) 回傳 NEEDS_HUMAN。"""
+    from miningbot import harvester as harvester_mod
+    import miningbot.capture as capture_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    monkeypatch.setattr(capture_mod, "crop",
+                        lambda f, r: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(harvester_mod, "format_harvest_id", lambda n: f"{n:03d}")
+    monkeypatch.setattr(harvester_mod, "plan_pitch_layers", lambda *a: [])
+
+    bot, nh_calls = _harvesting_entry_bot(
+        monkeypatch, panel_gains=["faedrine"], banner_changes=[])
+    result = bot._on_enter(State.HARVESTING, None)
+
+    assert result is State.NEEDS_HUMAN, "面板命中必須短路 NEEDS_HUMAN"
+    assert nh_calls, "必須跑 NEEDS_HUMAN 副作用"
+    assert "faedrine" in (bot._human_reason or ""), "通知必須提到 礦名"
+
+
+def test_on_enter_harvesting_short_circuits_with_double_chill_message(monkeypatch):
+    """面板命中 + double chill → 仍短路 NEEDS_HUMAN，但通知提到第二顆。"""
+    from miningbot import harvester as harvester_mod
+    import miningbot.capture as capture_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    monkeypatch.setattr(capture_mod, "crop",
+                        lambda f, r: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(harvester_mod, "format_harvest_id", lambda n: f"{n:03d}")
+    monkeypatch.setattr(harvester_mod, "plan_pitch_layers", lambda *a: [])
+
+    bot, nh_calls = _harvesting_entry_bot(
+        monkeypatch, panel_gains=["coinstorm"],
+        banner_changes=[now[0] - 2.0, now[0] - 0.5])
+    result = bot._on_enter(State.HARVESTING, None)
+
+    assert result is State.NEEDS_HUMAN
+    assert "double chill" in (bot._human_reason or "").lower() or \
+           "第二顆" in (bot._human_reason or "")
+
+
+def test_on_enter_harvesting_normal_flow_when_panel_empty(monkeypatch):
+    """面板沒命中 → 不短路：_on_enter(HARVESTING) 回傳 None（正常流程）。"""
+    from miningbot import harvester as harvester_mod
+    import miningbot.capture as capture_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    monkeypatch.setattr(capture_mod, "crop",
+                        lambda f, r: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(harvester_mod, "format_harvest_id", lambda n: f"{n:03d}")
+    monkeypatch.setattr(harvester_mod, "plan_pitch_layers", lambda *a: [])
+
+    bot, nh_calls = _harvesting_entry_bot(
+        monkeypatch, panel_gains=[], banner_changes=[])
+
+    # 面板空 → 不短路 → _on_enter 繼續跑 prepare_scan 等後續 I/O
+    # 這裡只驗「沒短路」：不回傳 NEEDS_HUMAN、不跑 NEEDS_HUMAN 副作用
+    # （prepare_scan 等後續 I/O 會因為 fake bot 缺方法而 raise，用 pytest.raises 接住）
+    with pytest.raises((AttributeError, TypeError)):
+        bot._on_enter(State.HARVESTING, None)
+    assert not nh_calls, "面板空時不應跑 NEEDS_HUMAN 副作用"
