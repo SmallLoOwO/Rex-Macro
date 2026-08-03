@@ -28,3 +28,10 @@ def test_parse_command_accepts_calibration():
     command = parse_command("calib mining")
     assert command.name == "calib"
     assert command.args == ("mining",)
+
+
+def test_parse_command_accepts_restart():
+    assert parse_command("重開").name == "重開"
+    assert parse_command("restart").name == "restart"
+    assert parse_command("RESTART").name == "restart"
+    assert parse_command("!重開").name == "重開"
