@@ -1,5 +1,7 @@
 """Discord 重開指令的暫停閘 + relauncher 測試。"""
+import os
 import subprocess
+import time
 import types
 
 from miningbot.discord_commands import DiscordCommand
@@ -123,3 +125,18 @@ def test_check_restart_marker_noop_when_absent(monkeypatch, tmp_path):
     bot = make_fake_bot(bind=["_check_restart_marker"])
     bot._check_restart_marker()
     assert sent == []   # 沒 marker → 不發訊息
+
+
+def test_check_restart_marker_stale_discarded_silently(monkeypatch, tmp_path):
+    marker = tmp_path / "restart_marker"
+    marker.write_text("2026-08-03 12:00:00", encoding="utf-8")
+    old = time.time() - 999  # > restart_marker_max_age_s (300s) 預設值
+    os.utime(marker, (old, old))
+    monkeypatch.setattr("miningbot.config.DEFAULT.log_dir", str(tmp_path))
+    sent = []
+    monkeypatch.setattr("miningbot.notify.send_message",
+                        lambda *a, **k: sent.append(a[2]))
+    bot = make_fake_bot(bind=["_check_restart_marker"])
+    bot._check_restart_marker()
+    assert not marker.exists()   # 過期 marker 仍刪除
+    assert sent == []            # 但不發「重開完成」（避免誤報跟這次啟動無關的重開）

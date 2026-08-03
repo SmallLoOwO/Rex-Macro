@@ -9607,18 +9607,29 @@ class Bot:
             self._pause()
 
     def _check_restart_marker(self):
-        """啟動時檢查 restart marker——存在=剛被重開，通知 Discord 後刪除。"""
+        """啟動時檢查 restart marker——存在=剛被重開，通知 Discord 後刪除。
+
+        用 mtime 判斷新鮮度（不解析寫入的時間字串——mtime 本來就有，省一層格式耦合）。
+        超過 restart_marker_max_age_s 視為過期（relauncher 沒接上/新行程半路死掉留下的
+        殘留 marker），靜默刪除、不發 Discord——否則下次跟這次重開無關的手動啟動會誤報
+        「重開完成」。
+        """
         marker = os.path.join(cfg.log_dir, "restart_marker")
         if not os.path.exists(marker):
             return
+        age = time.time() - os.path.getmtime(marker)
         try:
             os.remove(marker)
         except OSError:
             pass
+        if age > cfg.restart_marker_max_age_s:
+            self.logger.info("restart marker stale (age=%.1fs > max=%.1fs) -> discarded, no Discord notify",
+                             age, cfg.restart_marker_max_age_s)
+            return
         from . import notify
         notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
             "✅ 重開完成，已套用更新")
-        self.logger.info("restart marker found -> notified Discord, deleted marker")
+        self.logger.info("restart marker found (age=%.1fs) -> notified Discord, deleted marker", age)
 
     def _schedule_restart(self) -> bool:
         """Spawn detached relauncher；成功回 True（主迴圈接著 _quit），失敗回 False。

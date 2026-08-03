@@ -744,6 +744,7 @@ class Config:
     # 避免狀態機快速擺盪洗版（2026-07-26 P2 spec §7）。低於此間隔的變動
     # 靠下次 repin（RepinDebouncer）順帶刷新。
     restart_delay_s: float = 10.0               # Discord `重開`：relauncher 等待秒數（確保舊行程完全結束再啟動新的；必須 > snapshot_shutdown_drain_s(5.0) + web thread join timeout(2.0) + audio/放鍵餘裕，不是只蓋 drain）
+    restart_marker_max_age_s: float = 300.0      # restart_marker 存活上限（秒）：擋失敗重開留下的過期 marker——舊行程 relauncher 啟動後自己 crash、或新行程還沒到 run() 就死，marker 會一直躺著；下次「跟這次重開無關的手動啟動」若不擋，會誤報「重開完成」到 Discord
 
     # 選單前置切換（Movement Mode）＋聊天框前置檢查
     # docs/superpowers/specs/2026-07-08-menu-preflight-boost-design.md
