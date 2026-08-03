@@ -9608,21 +9608,24 @@ class Bot:
     def _schedule_restart(self) -> bool:
         """Spawn detached relauncher；成功回 True（主迴圈接著 _quit），失敗回 False。
 
-        relauncher 是獨立 cmd：ping 做延遲（timeout 在無 console 的 detached 環境
-        不可靠）→ start "" 啟動新 pythonw -m miningbot。DETACHED_PROCESS 讓它在
-        父行程結束後存活。sys.executable 精確重現啟動當下的直譯器（Store Python
-        的 pythonw.exe 或 .venv 的 python）。
+        relauncher 是獨立 cmd：`timeout /t N /nobreak` 做延遲（shell=True 給 cmd.exe
+        自己的 console，不依賴 loopback／防火牆，不像 ping 會在網路異常時悄悄變成
+        0 秒延遲）→ `&` 無條件串接 start "" 啟動新 pythonw -m miningbot（延遲指令本身
+        就是關機安全間隔，不該看它成不成功）。DETACHED_PROCESS 讓它在父行程結束後
+        存活。sys.executable 精確重現啟動當下的直譯器（Store Python 的 pythonw.exe
+        或 .venv 的 python）。restart_delay_s 必須蓋過 _quit 之後 finally 區塊的實際
+        關機耗時（snapshot drain + web thread join + audio/放鍵），見 config.py 註解。
         """
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         delay = cfg.restart_delay_s
         relaunch = (
-            f'ping -n {int(delay) + 1} 127.0.0.1 >nul '
+            f'timeout /t {int(delay)} /nobreak >nul '
             f'& start "" "{sys.executable}" -m miningbot'
         )
         try:
             subprocess.Popen(
                 relaunch, cwd=repo, shell=True,
-                creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

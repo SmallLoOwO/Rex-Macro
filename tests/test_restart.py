@@ -1,4 +1,5 @@
 """Discord 重開指令的暫停閘 + relauncher 測試。"""
+import subprocess
 import types
 
 from miningbot.discord_commands import DiscordCommand
@@ -60,8 +61,8 @@ def test_consume_pending_restart_spawns_and_returns_true(monkeypatch):
     assert result is True
     assert bot._pending_restart is False
     assert len(calls) == 1
-    # DETACHED_PROCESS (0x8) 必須在 creationflags 裡——relauncher 才能在父行程結束後存活
-    assert calls[0].get("creationflags", 0) & 0x00000008
+    # DETACHED_PROCESS 必須在 creationflags 裡——relauncher 才能在父行程結束後存活
+    assert calls[0].get("creationflags", 0) & subprocess.DETACHED_PROCESS
 
 
 def test_consume_pending_restart_noop_when_flag_clear(monkeypatch):
