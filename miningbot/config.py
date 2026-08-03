@@ -743,6 +743,7 @@ class Config:
     # 狀態訊息 edit_message 降頻（秒）：狀態/動作變動最快每 N 秒 edit 一次，
     # 避免狀態機快速擺盪洗版（2026-07-26 P2 spec §7）。低於此間隔的變動
     # 靠下次 repin（RepinDebouncer）順帶刷新。
+    restart_delay_s: float = 5.0               # Discord `重開`：relauncher 等待秒數（確保舊行程完全結束再啟動新的；>snapshot_shutdown_drain_s）
 
     # 選單前置切換（Movement Mode）＋聊天框前置檢查
     # docs/superpowers/specs/2026-07-08-menu-preflight-boost-design.md

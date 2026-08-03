@@ -423,6 +423,9 @@ class Bot:
         # 自動清空在 _on_enter(MINING)/_resume_mining_tail 跑，但 H070/H071 證實
         # 實機上會失敗（失焦/打字被吃），使用者需要手動重清以避免路 B 假陽性。
         self._pending_clear_panel = False
+        # Discord `重開` 指令（2026-08-03）：只在暫停時生效；輪詢執行緒設旗標，
+        # 主迴圈消費（spawn relauncher + _quit）。布林於 GIL 下原子（同 _pending_clear_panel）。
+        self._pending_restart = False
         # Discord `轉` 指令（2026-07-21 H059）：遠端轉 45°，供使用者手動校正斜向面向
         # （回礦落地約一半機率對角，自動視覺判定已證實做不到——見 07-21 findings）。
         # 同上：輪詢執行緒只寫 ±1，輸入一律由主迴圈 _consume_pending_rotate 送。
@@ -2557,6 +2560,24 @@ class Bot:
                 notify.send_message(token, ch,
                     f"🧹 已排入清空背包面板（狀態: {self.state.value}）→ 主迴圈下個 tick 執行")
             self.log_discord.info("CMD 清空 -> state=%s", self.state.value)
+
+        elif cmd in ("重開", "restart"):
+            # 遠端重開（2026-08-03，使用者需求）：終止 bot 並自動重啟套用更新。
+            # 安全閘＝只在暫停時生效（暫停本身就是確認，不加二次確認）。
+            # 輪詢執行緒只設旗標，主迴圈消費（spawn relauncher 需在主執行緒 +
+            # _quit 後 finally 清理區塊要完整跑過）。
+            if not self.paused:
+                notify.send_message(token, ch,
+                    f"❌ 重開未接受：目前非暫停（{self.state.value}）。\n"
+                    f"請先 `pause` 暫停再打 `重開`（重開會中斷目前工作）")
+                self.log_discord.info("CMD 重開 -> rejected (not paused), state=%s",
+                                      self.state.value)
+            else:
+                self._pending_restart = True
+                notify.send_message(token, ch,
+                    f"🔄 重開中——將在 {cfg.restart_delay_s:.0f} 秒後自動重啟"
+                    f"（套用更新）。bot 先正常關機，再由 relauncher 啟動新行程。")
+                self.log_discord.info("CMD 重開 -> paused=True, _pending_restart set")
 
         elif cmd in discord_commands.RADAR_COMMAND_KIND:
             which = discord_commands.RADAR_COMMAND_KIND[cmd]
