@@ -9675,8 +9675,11 @@ class Bot:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.logger.info("restart scheduled: relauncher spawned (delay=%ds, exe=%s)",
-                             delay, sys.executable)
+            # 指令字串整條入 log：F1 的教訓是「延遲指令沒生效」與「有生效」在 log 上
+            # 長得一模一樣（timeout 秒退 rc=125 也照樣 spawn）。哪天 waitfor 在某台
+            # Windows image 上不在，或有人改回 timeout/ping，只有這行能從 log 看出來。
+            self.logger.info("restart scheduled: relauncher spawned (delay=%ds, exe=%s, cmd=%r)",
+                             delay, sys.executable, relaunch)
             # 寫 marker 讓新行程啟動時通知「重開完成」（best-effort，寫失敗不擋重開）
             marker = os.path.join(cfg.log_dir, "restart_marker")
             try:
