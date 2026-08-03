@@ -6,6 +6,7 @@ import time
 import logging
 import ctypes
 import json
+import subprocess
 import threading
 import queue
 import itertools
@@ -3056,6 +3057,9 @@ class Bot:
         self._last_progress = time.time()
         try:
             while self._running:
+                if self._consume_pending_restart():
+                    self._quit()
+                    continue
                 if self._pending_calib_start is not None:
                     self._consume_calib_start()
                 if self.paused:
@@ -9600,6 +9604,49 @@ class Bot:
             self.logger.info("human cleared (Q) — 恢復挖礦 (from %s)", self.state.value)
         else:  # "pause"
             self._pause()
+
+    def _schedule_restart(self) -> bool:
+        """Spawn detached relauncher；成功回 True（主迴圈接著 _quit），失敗回 False。
+
+        relauncher 是獨立 cmd：ping 做延遲（timeout 在無 console 的 detached 環境
+        不可靠）→ start "" 啟動新 pythonw -m miningbot。DETACHED_PROCESS 讓它在
+        父行程結束後存活。sys.executable 精確重現啟動當下的直譯器（Store Python
+        的 pythonw.exe 或 .venv 的 python）。
+        """
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        delay = cfg.restart_delay_s
+        relaunch = (
+            f'ping -n {int(delay) + 1} 127.0.0.1 >nul '
+            f'& start "" "{sys.executable}" -m miningbot'
+        )
+        try:
+            subprocess.Popen(
+                relaunch, cwd=repo, shell=True,
+                creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.logger.info("restart scheduled: relauncher spawned (delay=%ds, exe=%s)",
+                             delay, sys.executable)
+            return True
+        except Exception as e:
+            self.logger.error("restart relauncher spawn failed: %s", e)
+            from . import notify
+            notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+                f"❌ 重開失敗：無法啟動 relauncher（{e}），bot 繼續運行。請手動重啟。")
+            return False
+
+    def _consume_pending_restart(self) -> bool:
+        """主迴圈每輪呼叫：_pending_restart 設了就 spawn relauncher 並回 True（該關機）。
+
+        spawn 失敗回 False（bot 不關機），旗標已清（不重試）。比照 _consume_calib_start
+        的消費模式。
+        """
+        if not self._pending_restart:
+            return False
+        self._pending_restart = False
+        return self._schedule_restart()
 
     def _quit(self):
         self.logger.info("QUIT (%s) — 結束程式", cfg.hotkey_quit)
