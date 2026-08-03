@@ -424,6 +424,9 @@ class Bot:
         # 自動清空在 _on_enter(MINING)/_resume_mining_tail 跑，但 H070/H071 證實
         # 實機上會失敗（失焦/打字被吃），使用者需要手動重清以避免路 B 假陽性。
         self._pending_clear_panel = False
+        # 清空重試計數（2026-08-04）：_clear_panel_filter 每次跑完設成實際 attempt 數，
+        # _consume_clear_panel 拿來寫 Discord 回報（「第 N 次重試成功」／「已重試 N 次」）。
+        self._panel_clear_attempts = 0
         # Discord `重開` 指令（2026-08-03）：只在暫停時生效；輪詢執行緒設旗標，
         # 主迴圈消費（spawn relauncher + _quit）。布林於 GIL 下原子（同 _pending_clear_panel）。
         self._pending_restart = False
@@ -2691,7 +2694,7 @@ class Bot:
                 "`rotate [left|right] (轉)` — 遠端轉 45°（預設右轉；校正回礦落地後的斜向面向；"
                 "採集/回礦中不接受，不排隊）\n"
                 "`clearpanel (清空)` — 清空背包面板篩選框（挖礦中先放開挖礦鍵→清空→重接；"
-                "採集/回礦中不接受；同 `清背包`）\n"
+                "採集/回礦中不接受；同 `清背包`；清不乾淨會自動重試直到確認淨空）\n"
                 "`tier [tier] (階級)` — 偵測階級開關（打勾=偵測）：`tier Exquisite`=關 Exotic 以上、"
                 "`tier off/on Exotic`=個別開關；不帶參數＝查詢\n"
                 "`caveskim [on|off] (削洞)` — D2 Z（Cave Skim）連續使用：冷卻好就自動再按，"
@@ -4485,13 +4488,20 @@ class Bot:
             time.sleep(0.15)
         self._clear_panel_filter()
         zeroed = getattr(self, "_panel_zeroed_at", None) is not None
+        attempts = getattr(self, "_panel_clear_attempts", 1)
         if was_mining:
             miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
             ic.key_down("w"); ic.mouse_down()
-        notify.send_message(
-            token, ch,
-            f"{'✅' if zeroed else '⚠️'} 背包面板{'已清空' if zeroed else '清空未確認'}"
-            f"（路 B {'可信任' if zeroed else '將跳過'}下一場）")
+        if zeroed:
+            retry_note = f"（第 {attempts} 次重試成功）" if attempts > 1 else ""
+            notify.send_message(
+                token, ch,
+                f"✅ 背包面板已清空{retry_note}（路 B 可信任下一場）")
+        else:
+            notify.send_message(
+                token, ch,
+                f"⚠️ 背包面板清空未確認（已重試 {attempts} 次）"
+                f"（路 B 將跳過下一場）")
 
     def _summarize_survey_ctx(self, ctx) -> str:
         """給 web client 介入面板顯示的 context 摘要（純文字）。
@@ -5407,8 +5417,40 @@ class Bot:
         """清空 NORMAL 面板篩選框，維持「進 MINING 時面板上沒有白名單礦」的不變式
         （spec 2026-07-31；判準 2026-07-31 實機放寬，見下）。
 
-        序列：click(篩選框) → typewrite("w" × N) → settle → OCR 驗 → key_press("enter")。
-        驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING，02 據此跳過路 B。
+        **重試迴圈**（2026-08-04，使用者要求「與稀有挖礦一樣——一旦發現沒有清除就
+        再次進行直到淨空」）：驗證不過時重新聚焦 → 重做整條 click→type→verify，上限
+        ``panel_clear_max_retries``（預設 3，共 4 次嘗試）。比照 ``_rotate_verified``
+        的 self-heal 模式。焦點拿不到或例外不重試（``retryable=False``）——前者重試
+        無益，後者 UI 狀態未知。舊版「不重試打字」的顧慮是 H047/H063 聊天框 toggle
+        翻面，但篩選框是文字輸入框不是 toggle，click 進去只會重新聚焦，不會翻面。
+        """
+        for attempt in range(cfg.panel_clear_max_retries + 1):
+            is_final = attempt >= cfg.panel_clear_max_retries
+            zeroed, retryable = self._clear_panel_filter_once(save_snapshot=is_final)
+            self._panel_clear_attempts = attempt + 1
+            if zeroed:
+                if attempt:
+                    self.logger.info("面板歸零：第 %d 次重試成功", attempt + 1)
+                return
+            if not retryable:
+                return  # 焦點/例外：重試無益
+            if not is_final:
+                self.logger.warning(
+                    "面板歸零未確認（attempt %d/%d）→ 重新聚焦後重做整條序列",
+                    attempt + 1, cfg.panel_clear_max_retries + 1)
+                self._focus_roblox()
+        self.logger.warning(
+            "面板歸零：重試 %d 次仍失敗 → 路 B 將跳過下一場",
+            cfg.panel_clear_max_retries + 1)
+
+    def _clear_panel_filter_once(self, *, save_snapshot: bool = True) -> tuple[bool, bool]:
+        """單次清空嘗試。回傳 ``(zeroed, retryable)``。
+
+        retryable=False 表示不該重試（焦點拿不到、rapidocr 不可用、例外）；
+        retryable=True 表示可以重試（驗證不過——面板還有白名單 礦或底色不符）。
+
+        序列：click(篩選框) → key_press("w" × N) → settle → OCR 驗 → key_press("enter")。
+        驗過才記 ``_panel_zeroed_at``；否則設 None ＋ WARNING。
 
         **不必清空篩選框**（H071，使用者確認）：框吃得下無限長的字，打字永遠是附加、
         文字永遠有變、遊戲的篩選也永遠會重跑。要清的是**面板**，不是那個框。
@@ -5421,14 +5463,10 @@ class Bot:
         **列底色用反向閘**（spec 01）：色相不落在已知低階帶（0/30/166/280/304）就當成
         高階 → 零點不成立。未量到的新 tier 也擋得住，代價只是多交一次人工。
 
-        **不重試打字**：H047/H063 的教訓是 UI 上「多試幾次」會翻面；點歪的座標若是別的
-        按鈕，重試等於多按它幾次。一次失敗＝下一場路 B 關掉＝回到今日行為。重讀面板
-        （不重新點也不重新打字）不在此列——那是唯讀的。
-
         另外多讀一次（`panel_clear_verify_max_s`）：17:43:47 那次讀到的是**清空前
         原封不動的前 8 列**，面板重繪比 settle 慢是其中一個可能。讀不到零點時把該
-        裁圖存成快照（`panel_zero_failed`），下一場才有證據分辨「點沒中／字沒進／
-        重繪沒跟上」——先前只有一行 WARNING，事後完全查不下去。
+        裁圖存成快照（`panel_zero_failed`，只在最後一次重試存——不洗快照），下一場才有
+        證據分辨「點沒中／字沒進／重繪沒跟上」——先前只有一行 WARNING，事後完全查不下去。
         """
         try:
             # H070 聚焦守門：Roblox 不在前景時整組輸入被系統丟掉。實機 2026-07-31
@@ -5440,7 +5478,7 @@ class Bot:
             if not self._focus_roblox():
                 self._panel_zeroed_at = None
                 self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（路 B 將跳過下一場）")
-                return
+                return False, False
             band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
             before = vision.filter_box_ink(band0)
             before_w = vision.filter_box_text_width(band0)
@@ -5476,7 +5514,7 @@ class Bot:
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None
                 self.logger.info("面板歸零：rapidocr 不可用 → 跳過驗證（路 B 將不信任面板）")
-                return
+                return False, False
 
             deadline = time.time() + cfg.panel_clear_verify_max_s
             reads = 0
@@ -5509,23 +5547,28 @@ class Bot:
                     self.logger.info(
                         "面板零點成立（標頭 %s、無白名單礦、殘留 %d 列：%s、讀 %d 次）",
                         header, len(names), "、".join(names) or "空", reads)
-                    break
+                    return True, False
                 # 至多兩讀（次數也是上界：時鐘停住時預算不會自己到期）
                 if reads >= 2 or time.time() >= deadline:
                     self._panel_zeroed_at = None
                     # 篩選框那組數字上面已經記過（不論成敗），這裡只補面板側的判讀依據：
                     # 標頭／殘留礦名／讀了幾次，加上列底色訊號（hue_high 在迴圈裡另記）。
                     self.logger.warning(
-                        "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次、篩選框墨量 %s"
-                        " → 路 B 將跳過下一場（下一場救援路 B 不可信任面板）",
+                        "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次、篩選框墨量 %s",
                         header or "讀不到", len(names), "、".join(names) or "空", reads,
                         "有變" if ink_changed else "沒變")
-                    # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨
-                    self._enqueue_snapshot(crop, "panel_zero_failed")
-                    break
+                    # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨。
+                    # 只在最後一次重試存（save_snapshot）——不洗快照。
+                    if save_snapshot:
+                        try:
+                            self._enqueue_snapshot(crop, "panel_zero_failed")
+                        except Exception:
+                            pass
+                    return False, True
         except Exception as e:
             self._panel_zeroed_at = None
             self.logger.warning("面板歸零例外（路 B 將跳過）：%s", e)
+            return False, False
         finally:
             # 脫離文字框改按 Enter（spec 01）：舊版點畫面中央是一次真的挖礦點擊，
             # 實測 17:37:04 那次挖到一顆 shamrock 回填面板、害零點判失敗。Enter 不會

@@ -939,6 +939,87 @@ def test_clear_failure_saves_snapshot_for_next_session(monkeypatch):
     assert saved == ["panel_zero_failed"]
 
 
+# ── 重試迴圈（2026-08-04 使用者要求「與稀有挖礦一樣」）─────────────────────────
+
+class _PhasedPanelOCR:
+    """OCR mock：依呼叫次數回不同 (header, names)，讓 attempt 之間可以換結果。
+
+    phases[i] = (header, names) ——第 i+1 次呼叫回這組（超過範圍重複最後一組）。
+    """
+
+    def __init__(self, phases):
+        self._phases = phases
+        self.calls = 0
+
+    def __call__(self, crop, region_offset=(0, 0)):
+        self.calls += 1
+        header, names = self._phases[min(self.calls - 1, len(self._phases) - 1)]
+        boxes = []
+        if header:
+            boxes.append({"text": header, "score": 0.99, "center": (118, 14)})
+        for i, n in enumerate(names):
+            boxes.append({"text": n, "score": 0.99, "center": (80, 78 + i * 36)})
+        return boxes
+
+
+def test_clear_retries_until_zeroed(monkeypatch):
+    """第一次 attempt 驗證不過 → 重新聚焦 → 第二次成功（使用者要求的核心行為）。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 2)
+    bot, *_ = _clear_bot(monkeypatch)
+    # 前 2 次讀（attempt 1 的 2 reads）回 faedrine；第 3 次起（attempt 2）回空。
+    ocr = _PhasedPanelOCR([("NORMAL", ["faedrine"])] * 2 + [("NORMAL", [])] * 4)
+    monkeypatch.setattr(main.ocr, "read_text_boxes", ocr)
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is not None, "重試後必須歸零成功"
+    assert bot._panel_clear_attempts == 2, "應在第 2 次 attempt 成功"
+
+
+def test_clear_retry_exhausted_sets_none(monkeypatch):
+    """所有重試都失敗 → _panel_zeroed_at 維持 None。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 1)
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+
+
+def test_clear_retry_exhausted_saves_snapshot_once(monkeypatch):
+    """重試用盡只存一次 panel_zero_failed（不洗快照）。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 2)
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    saved = []
+    bot._enqueue_snapshot = lambda crop, label: saved.append(label)
+    bot._clear_panel_filter()
+    assert saved == ["panel_zero_failed"], "只應在最後一次 attempt 存一次裁圖"
+
+
+def test_clear_focus_failure_does_not_retry(monkeypatch):
+    """焦點拿不到 → retryable=False → 不重試（重試無益）。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 3)
+    bot, clicks, typed, keys, _ocr = _clear_bot(monkeypatch, focused=False)
+    bot._clear_panel_filter()
+    assert bot._panel_clear_attempts == 1, "焦點失敗不得重試"
+    assert clicks == [], "沒焦點不該點 UI"
+    assert keys == ["enter"], "只按一次 Enter（finally）"
+
+
+def test_clear_exception_does_not_retry(monkeypatch):
+    """例外 → retryable=False → 不重試（UI 狀態未知）。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 3)
+    bot, _clicks, _typed, keys, _ocr = _clear_bot(monkeypatch, exc="boom")
+    bot._clear_panel_filter()
+    assert bot._panel_clear_attempts == 1, "例外不得重試"
+    assert keys == ["enter"], "只按一次 Enter"
+
+
+def test_clear_zero_retries_matches_old_behavior(monkeypatch):
+    """panel_clear_max_retries=0 時只做一次（舊行為）。"""
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 0)
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    bot._clear_panel_filter()
+    assert bot._panel_zeroed_at is None
+    assert bot._panel_clear_attempts == 1
+
+
 def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
     """插入點 A：_on_enter(MINING) 清空排在 init_mining_sequence 之前。"""
     order = []

@@ -384,8 +384,11 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   **When that file reaches `panel_check_observe_target` (10) entries, lay the records
   out for the user and ask whether to switch to automatic** (skip NEEDS_HUMAN, resume
   mining directly). Requires `_panel_zeroed_at` to be set — if the panel clear at MINING
-  entry failed (H070/H071), the check is bypassed entirely. The manual `清空` command
-  is the fallback for when the automatic clear fails.
+  entry failed (H070/H071), the check is bypassed entirely. Panel clear now retries
+  (`panel_clear_max_retries`, 2026-08-04: re-does the full click→type→verify sequence
+  up to N times, matching `_rotate_verified`'s self-heal pattern), so persistent
+  failure is rarer. The manual `清空` command remains the fallback for when all retries
+  are exhausted.
 - **Double-chill detection via banner color** (2026-08-02, threshold fixed 2026-08-04).
   Audio cannot count two near-simultaneous chills (1.5s rolling window merges them), but
   the top banner text is discrete with a unique random RGB per spawn message. During
