@@ -19,7 +19,8 @@ I/O 編排；純決策拆在 `states.py`、`harvester.py`、`miner.py`、`game_d
 ## 開工三步
 
 ```powershell
-git status --short          # 保留所有不相關的既有修改（可能有另一個 session 在改）
+git worktree list           # 看 sibling session；自己要動手前先開 worktree（RULE 16）
+git status --short          # 主目錄髒＋有 sibling worktree ＝ 別人在改，別跟著動主目錄
 uv sync --locked
 uv run pytest -q            # 完整命令清單見 AGENTS.md COMMANDS
 ```
@@ -30,6 +31,10 @@ uv run pytest -q            # 完整命令清單見 AGENTS.md COMMANDS
 - 用 `rg`／Grep 找符號，不要相信文件裡的歷史行號。
 - ⚠ Grep 工具守 gitignore，搜不到 `.claude/worktrees/**`；查「某修復是否已存在」時
   要另外跑 `git worktree list` 與孤兒 commit 掃描。
+- ⚠ **每個 session 一棵 worktree**（NON-NEGOTIABLE RUNTIME RULE 16）。主工作目錄
+  共用，平行 edit 會互覆；`EnterWorktree` 或 `git worktree add` 開自己的目錄再動手。
+  `.claude/hooks/worktree-enforce.ps1` SessionStart 會在主目錄髒＋有 sibling worktree
+  時發警告。
 - 專案技能：`.claude/skills/tuning-from-incidents`（實機事故微調迴圈）。
 
 ## 文件地圖

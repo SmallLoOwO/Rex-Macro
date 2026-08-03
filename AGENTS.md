@@ -228,10 +228,28 @@ conventions.
       `ctx.pose_pitch_layer` is honest for the next `plan_alignment`.
     Both use the routing key `harvest:<harvest_id>`, so a later push replaces the
     earlier panel — release the held images before pushing a new batch.
+16. **One session, one worktree.** Before the first edit of any session, open
+    or create a git worktree on a dedicated branch (`EnterWorktree`, or
+    `git worktree add ../<repo>-<task> -b <task>`). The primary working
+    directory is shared between sessions; editing it in parallel means the last
+    commit silently overwrites the other's work. Evidence: the orphan worktree
+    `sad-proskuriakova-705b24` at detached `408069b` held the only copy of the
+    H055 fix for three days (2026-07-22); `git fsck --lost-found` lists two
+    dangling commits (`7082eaeb`, `3c857eea`) of unrecoverable session work.
+    A `SessionStart` hook (`.claude/hooks/worktree-enforce.ps1`) injects a
+    warning when the primary tree is dirty and a sibling worktree exists; the
+    hook is silent inside a linked worktree. Merge protocol: tests green
+    inside the worktree → commit there → merge into the integration branch →
+    remove the worktree (`ExitWorktree` / `git worktree remove`). `.claude/
+    worktrees/**` is already gitignored, so the Grep tool cannot see inside
+    worktrees — when checking "is this fix already done elsewhere" also run
+    `git worktree list` and scan dangling commits (`git fsck --lost-found`).
 
 ## DEVELOPMENT WORKFLOW
 
-- Start with `git status --short` and preserve unrelated user/tool changes.
+- Start with `git status --short`. If another session is active (unrelated
+  changes you did not write, or a sibling worktree exists), open a new
+  worktree before editing — see NON-NEGOTIABLE RUNTIME RULE 16.
 - Use `rg` and symbol names rather than stale line numbers.
 - Test pure decisions first. Default tests must not require Roblox, devices, or live
   Discord.
