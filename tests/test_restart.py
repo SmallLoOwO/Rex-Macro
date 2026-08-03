@@ -90,3 +90,36 @@ def test_consume_pending_restart_spawn_fail_keeps_running(monkeypatch):
     result = bot._consume_pending_restart()
     assert result is False              # spawn 失敗 → 不關機
     assert bot._pending_restart is False  # 旗標已清（不會重試）
+
+
+def test_restart_marker_written_on_success(monkeypatch, tmp_path):
+    monkeypatch.setattr("subprocess.Popen",
+                        lambda *a, **k: types.SimpleNamespace())
+    monkeypatch.setattr("miningbot.config.DEFAULT.log_dir", str(tmp_path))
+    monkeypatch.setattr("miningbot.notify.send_message", lambda *a, **k: None)
+    bot = make_fake_bot(bind=["_schedule_restart"])
+    bot._schedule_restart()
+    assert (tmp_path / "restart_marker").exists()
+
+
+def test_check_restart_marker_notifies_and_deletes(monkeypatch, tmp_path):
+    marker = tmp_path / "restart_marker"
+    marker.write_text("2026-08-03 12:00:00", encoding="utf-8")
+    monkeypatch.setattr("miningbot.config.DEFAULT.log_dir", str(tmp_path))
+    sent = []
+    monkeypatch.setattr("miningbot.notify.send_message",
+                        lambda *a, **k: sent.append(a[2]))
+    bot = make_fake_bot(bind=["_check_restart_marker"])
+    bot._check_restart_marker()
+    assert not marker.exists()
+    assert any("重開完成" in m for m in sent)
+
+
+def test_check_restart_marker_noop_when_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr("miningbot.config.DEFAULT.log_dir", str(tmp_path))
+    sent = []
+    monkeypatch.setattr("miningbot.notify.send_message",
+                        lambda *a, **k: sent.append(a[2]))
+    bot = make_fake_bot(bind=["_check_restart_marker"])
+    bot._check_restart_marker()
+    assert sent == []   # 沒 marker → 不發訊息

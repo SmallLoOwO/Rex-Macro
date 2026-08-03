@@ -2826,6 +2826,7 @@ class Bot:
         # H061：web 模組的 import 已在模組層完成（見檔頭），這裡不再有 deferred import。
         # 舊的「run() 開頭 eager import」緩解（afcab21）其實沒生效——Bot.__init__ 早就
         # spawn 了 audio/snapshot/rapidocr/tesserocr 四個 worker，run() 開頭已經太晚。
+        self._check_restart_marker()
         self._running = True
         self.logger.info("bot started (全域熱鍵 Ctrl+Q 只暫停 / Q 暫停↔繼續 / F12 結束 / "
                          "啟動檢查期間 Q=跳過檢查直接開挖, log_level=%s)", cfg.log_level)
@@ -9605,6 +9606,20 @@ class Bot:
         else:  # "pause"
             self._pause()
 
+    def _check_restart_marker(self):
+        """啟動時檢查 restart marker——存在=剛被重開，通知 Discord 後刪除。"""
+        marker = os.path.join(cfg.log_dir, "restart_marker")
+        if not os.path.exists(marker):
+            return
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        from . import notify
+        notify.send_message(cfg.discord_bot_token, cfg.discord_channel_id,
+            "✅ 重開完成，已套用更新")
+        self.logger.info("restart marker found -> notified Discord, deleted marker")
+
     def _schedule_restart(self) -> bool:
         """Spawn detached relauncher；成功回 True（主迴圈接著 _quit），失敗回 False。
 
@@ -9632,6 +9647,13 @@ class Bot:
             )
             self.logger.info("restart scheduled: relauncher spawned (delay=%ds, exe=%s)",
                              delay, sys.executable)
+            # 寫 marker 讓新行程啟動時通知「重開完成」（best-effort，寫失敗不擋重開）
+            marker = os.path.join(cfg.log_dir, "restart_marker")
+            try:
+                with open(marker, "w", encoding="utf-8") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+            except OSError:
+                self.logger.warning("restart marker write failed (non-blocking)")
             return True
         except Exception as e:
             self.logger.error("restart relauncher spawn failed: %s", e)
