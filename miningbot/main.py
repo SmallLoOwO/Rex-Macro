@@ -2661,6 +2661,7 @@ class Bot:
                 "**操控**\n"
                 "`pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `resume` 恢復）\n"
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
+                "`重開 (restart)` — 重開 bot 套用更新（⚠ 只在暫停時生效；先 `pause` 再打）\n"
                 "`ability` — 使用能力（右轉45°→F→X→轉回正面；採集/回礦中會等空檔執行）\n"
                 "\n"
                 "**查詢**\n"

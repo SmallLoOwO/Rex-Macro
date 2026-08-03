@@ -105,7 +105,7 @@ Most runtime PNG/WAV files are machine-local. Fresh-checkout tests must use trac
 | Chill/reset audio | `audio.py`, `tests/test_audio.py` | `main._on_audio_*` |
 | Mine reset | reset/capacity incident evidence | `states.py`, `_banner_ocr_loop`, `_update_reset_complete` |
 | Re-entry | newest implemented re-entry specs | `reentry.py`, `reentry_remote.py`, `_tick_reentry*`; every path bounded, ledger written, pitch/zoom restored |
-| Discord controls | command/parser tests | `main._poll_discord`, `notify.py` |
+| Discord controls | command/parser tests | `main._poll_discord`, `notify.py`; incl. `重開`/`restart` (`_schedule_restart`, `_consume_pending_restart`, paused-only gate) |
 | Web UI / WebSocket IPC | `docs/superpowers/specs/2026-07-26-web-ui-design.md`, `miningbot/AGENTS.md` Web UI layer | `web_*` modules, `main._web_*`, `Bot._execute_remote_fire_from_web`, `Bot._rr_click_from_web` |
 | Re-entry corpus / dataset | `corpus.py`, `build_reentry_dataset.py` | `Bot._rr_save_corpus`, `<log_dir>/corpus/reentry/`, `dataset.jsonl`, `--eval`; MSIX dual-path resolution lives only in `build_reentry_dataset` |
 | Teleport board prediction | `teleport_board.py` docstring (HSV percentile table) | `Bot._predict_teleport_board`, `reentry_predict_min_score`; suggestion only, never auto-click |
