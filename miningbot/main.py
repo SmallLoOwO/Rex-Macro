@@ -4531,8 +4531,8 @@ class Bot:
         if self._pending_ability and can_consume_ability(self.state):
             self._pending_ability = False
             ic.key_press(".", delay=0.2)     # 右轉 45°
-            ic.key_press("x", delay=0.15)    # X
-            ic.key_press(",", delay=1.0)     # 左轉回正面
+            ic.key_press("x", delay=1.0)     # X——停在 45° 等 1 秒讓技能生效再轉回
+            ic.key_press(",", delay=0.2)     # 左轉回正面
             time.sleep(4.0)                  # 等待 4 秒（使用者確認的必要間隔）
             ic.key_press("f")                # F（施放能力）
             time.sleep(2.0)                  # 等遊戲渲染能力效果再截圖（過早拍不到效果）
