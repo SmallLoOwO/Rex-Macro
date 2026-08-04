@@ -4615,6 +4615,15 @@ class Bot:
         if self._pending_clear_panel and self.state not in (State.HARVESTING, State.REENTRY):
             self._pending_clear_panel = False
             self._consume_clear_panel()
+        # 假暫停修復（2026-08-04 使用者反映）：主迴圈頂部檢查 self.paused 後，
+        # _on_enter(MINING) 等狀態進場副作用可能跑數秒（面板歸零重試、zoom 歸位、
+        # init_mining_sequence）。若玩家在此期間按下暫停，主迴圈仍會繼續跑完
+        # _tick_mining／_tick_harvest 等——外觀「已暫停」但 bot 還在動，且期間
+        # chill 等事件無法被主迴圈消費。此處再驗一次：進場副作用跑完、dispatch
+        # 前若已暫停，直接 return，讓主迴圈下一輪落入 pause 分支。
+        if self.paused:
+            self.logger.info("tick: 進場副作用完成後偵測到 paused，跳過本輪 dispatch")
+            return
         if self.state is State.MINING:
             self._tick_mining(frame)
         elif self.state is State.HARVESTING:
@@ -9330,15 +9339,29 @@ class Bot:
 
         走 `reentry_remote.parse_reply` 同一條路，跟玩家在 Discord 打字完全等價。
         回 True＝已排入（caller 不必再發 Discord 八方位）。
+
+        ⚠ 不走 `_queue_reentry_reply`：本函式在主迴圈 `_rr_open_episode →
+        _reentry_await_player_click` 內呼叫，那段期間 `_rr_busy` 為 True（擋 Discord
+        輪詢執行緒補刀），走 `_queue_reentry_reply` 會被 `_rr_busy` 閘誤擋「上一則
+        指令還在執行」→ skip 排不進去 → `_reentry_await_player_click` 收走提醒訊息
+        （按鈕消失）→ `_pending_reentry` 始終 None → 主迴圈下一 tick 永遠等不到
+        pending → 卡死（2026-08-04 使用者反映）。直接寫 `_pending_reentry`，同
+        `_rr_skip_on_pause_resume` 的模式——布林/tuple 指派在 GIL 下原子。
         """
         raw = self._RR_WEB_CONTROLS[kind]
         reply = reentry_remote.parse_reply(raw)
-        if reply is None or self._pending_reentry is not None:
+        if reply is None:
             self.log_discord.info(
-                "[RR#%s] 回礦 web %s 被忽略（解析失敗或上一則指令還在執行）",
+                "[RR#%s] 回礦 web %s 解析失敗", ctx.episode_id, raw)
+            return False
+        if self._pending_reentry is not None:
+            self.log_discord.info(
+                "[RR#%s] 回礦 web %s 被忽略（上一則指令還在執行）",
                 ctx.episode_id, raw)
             return False
-        self._queue_reentry_reply(raw, reply, source="web")
+        self._pending_reentry = (raw, reply)
+        self.log_discord.info(
+            "RR web reply=%s -> pending（bypass _rr_busy，主迴圈內部呼叫）", reply)
         self._broadcast_intervention_result(ctx, kind, f"已收到「{raw}」，處理中…")
         self.log_discord.info("[RR#%s] 回礦 web 介入：玩家按 %s", ctx.episode_id, raw)
         return True

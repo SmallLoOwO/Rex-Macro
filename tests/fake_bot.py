@@ -116,6 +116,7 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._antiafk_last = 0.0
     bot._antiafk_pressed_at = 0.0
     bot._antiafk_mute_logged = False
+    bot.paused = False
     # 聊天喚醒（H064）＝純 I/O（移游標＋抓幀），不是這裡要驗的接線 → 預設 no-op
     bot._reveal_chat = lambda: True
     # 俯仰前卸裝 D2＝純 I/O（截圖＋按鍵），不是接線測試要驗的 → 預設 no-op

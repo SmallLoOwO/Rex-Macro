@@ -391,6 +391,36 @@ def test_tick_does_not_consume_clear_panel_in_harvesting(monkeypatch):
     assert bot._pending_clear_panel is True, "旗標必須保留等回 MINING"
 
 
+def test_tick_skips_dispatch_when_paused(monkeypatch):
+    """假暫停修復（2026-08-04）：_on_enter(MINING) 完成後、dispatch 前若已 paused，
+    _tick 直接 return——不跑 _tick_mining，讓主迴圈下一輪落入 pause 分支。
+
+    場景：玩家按 ▶️ 恢復 → 主迴圈通過 pause check → _on_enter(MINING) 跑面板歸零
+    （數秒）→ 玩家按 ⏸️ 暫停 → _on_enter 結束 → _tick 偵測到 paused → return。
+    """
+    dispatched = []
+    bot = make_fake_bot(
+        bind=["_tick"],
+        state=State.MINING,
+        paused=True,                       # 模擬 _on_enter 期間被設了暫停
+        _pending_clear_panel=False,
+        _pending_ability=False,
+        _pending_rotate=None,
+        _update_reset_chime_active=lambda: None,
+        _consume_web_pending=lambda: None,
+        _consume_pending_rotate=lambda: None,
+        _tick_mining=lambda frame: dispatched.append("mining"),
+        _tick_harvest=lambda frame: dispatched.append("harvest"),
+        _tick_reentry=lambda frame: dispatched.append("reentry"),
+        _pending_aim=None,
+    )
+    monkeypatch.setattr(main, "can_consume_ability", lambda s: False)
+
+    bot._tick(_frame())
+
+    assert dispatched == [], "paused 時不得 dispatch 到任何狀態 handler"
+
+
 # ── 5. 網頁 control:clearpanel → _pending_clear_panel ──────────────────────
 
 def test_web_clearpanel_control_sets_pending_flag(monkeypatch):

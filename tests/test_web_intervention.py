@@ -370,13 +370,15 @@ def test_main_reentry_notifies_discord_that_web_is_waiting(monkeypatch):
 
 
 def test_main_reentry_panel_buttons_queue_existing_commands(monkeypatch):
-    """面板的 🎲重骰／⏭️跳過 走既有 reentry 指令佇列（與 Discord 打字等價）。"""
-    queued = []
+    """面板的 🎲重骰／⏭️跳過 走既有 reentry 指令佇列（與 Discord 打字等價）。
+
+    2026-08-04：_queue_web_reentry_control 改直接寫 _pending_reentry（bypass
+    _rr_busy），不再走 _queue_reentry_reply——測試改驗 _pending_reentry。
+    """
     bot = _reentry_bot(
         monkeypatch,
         _send_web_intervention_frames=lambda **kw: True,
         _await_web_reentry_action=lambda routing_key:("reroll", None),
-        _queue_reentry_reply=lambda raw, reply, source: queued.append((raw, reply.kind, source)),
         _broadcast_intervention_result=lambda *a, **kw: None,
     )
     from tests.fake_bot import FakeReentryCtx
@@ -384,7 +386,10 @@ def test_main_reentry_panel_buttons_queue_existing_commands(monkeypatch):
     ctx.attempt, ctx.sticky_layer = 1, "Shamrock"
 
     assert bot._reentry_await_player_click(ctx, _PNGS) is True
-    assert queued == [("重骰", "reroll", "web")]
+    assert bot._pending_reentry is not None
+    raw, reply = bot._pending_reentry
+    assert raw == "重骰"
+    assert reply.kind == "reroll"
 
 
 def test_main_reentry_sweep_button_recaptures_and_repushes(monkeypatch):
@@ -2036,6 +2041,33 @@ def test_consume_web_pending_ignores_confirm_when_pending_reentry_busy():
     )
     bot._consume_web_pending()
     assert calls == []
+
+
+def test_queue_web_reentry_control_bypasses_rr_busy(monkeypatch):
+    """web ⏭️跳過 在 _rr_busy=True 期間（主迴圈卡在 _rr_open_episode 裡）仍能排入。
+
+    回歸測試（2026-08-04）：玩家在 Discord 提醒訊息上按 ⏭️ →
+    _queue_web_reentry_control 走 _queue_reentry_reply → 被 _rr_busy 閘誤擋
+    → _pending_reentry 沒排進去 → 介入訊息收走 → 卡死。
+    修法＝直接寫 _pending_reentry，不過 _queue_reentry_reply。
+    """
+    from tests.fake_bot import make_fake_bot, FakeReentryCtx
+
+    bot = make_fake_bot(
+        bind=["_queue_web_reentry_control"],
+        _rr_busy=True,                       # 模擬 _rr_open_episode 執行中
+        _pending_reentry=None,
+        _broadcast_intervention_result=lambda *a, **kw: None,
+    )
+    ctx = FakeReentryCtx(episode_id="99")
+
+    result = bot._queue_web_reentry_control(ctx, "skip")
+
+    assert result is True
+    assert bot._pending_reentry is not None
+    raw, reply = bot._pending_reentry
+    assert raw == "跳過"
+    assert reply.kind == "skip"
 
 
 class TestRrClickAndVerifyWebBroadcast:
