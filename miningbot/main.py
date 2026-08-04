@@ -4236,6 +4236,9 @@ class Bot:
             if not self._running or self.paused:
                 self.logger.warning("await_web_action: bot 停止/暫停 -> 中止（routing_key=%s）", routing_key)
                 return None, None
+            # 防掛機：主迴圈整個卡在本函式，line 3164 的 antiafk 分支跑不到。
+            # 無限等（2026-07-30 拿掉逾時）後，等待 >15min 不按 Space → Roblox 踢人。
+            self._antiafk_tick("網頁介入等待")
             time.sleep(0.5)
 
     def _save_auto_fixture(
@@ -7436,7 +7439,8 @@ class Bot:
     def _tick_reentry_remote(self, frame):
         """REENTRY 遠端模式主迴圈（2026-07-12 spec）：首 tick 開場，之後消費 pending 指令。
 
-        等待回覆無硬超時（使用者延遲以分鐘計）；防踢由 run() 主迴圈的 antiafk 分支保活。
+        等待回覆無硬超時（使用者延遲以分鐘計）；防踢由 _await_web_action 內的 antiafk 保活
+        （主迴圈卡在 _tick 裡，line 3164 的分支跑不到）。
         """
         if self._mine_resetting:
             self._rr_abort_reset(frame)

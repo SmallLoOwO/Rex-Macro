@@ -111,6 +111,11 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._mine_resetting = False
     bot._rr_ctx = None
     bot._pending_aim = None
+    # 防掛機（_antiafk_tick 由 _await_web_action 呼叫；預設 0=未計時，
+    # 第一次只設 timer 就 return，interval 900s 遠大於測試 mock 時間）
+    bot._antiafk_last = 0.0
+    bot._antiafk_pressed_at = 0.0
+    bot._antiafk_mute_logged = False
     # 聊天喚醒（H064）＝純 I/O（移游標＋抓幀），不是這裡要驗的接線 → 預設 no-op
     bot._reveal_chat = lambda: True
     # 俯仰前卸裝 D2＝純 I/O（截圖＋按鍵），不是接線測試要驗的 → 預設 no-op

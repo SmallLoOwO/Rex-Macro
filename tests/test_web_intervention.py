@@ -2372,3 +2372,44 @@ def test_panel_centers_letterboxed_frame():
     assert "snapshotImg.style.transform" in html
     # 點擊換算用 img 的 rect，不是 canvas
     assert "snapshotImg.getBoundingClientRect()" in html
+
+
+# ---------------------------------------------------------------------------
+# 防掛機：_await_web_action 阻塞期間必須照常按 Space 保活
+# ---------------------------------------------------------------------------
+
+def test_await_web_action_calls_antiafk_during_wait(monkeypatch):
+    """無限等待迴圈阻塞主迴圈 → 防掛機分支（line 3164）跑不到。
+
+    2026-08-04：使用者在回礦網頁介入等待期間被 Roblox 踢出。根因是
+    `_await_web_action` 的 `while True` 卡住 `_tick()`，主迴圈防掛機
+    永遠不執行。修法＝在等待迴圈內直接呼叫 `_antiafk_tick`。
+    """
+    import miningbot.main as main_mod
+    from tests.fake_bot import make_fake_bot
+    from miningbot.web_ipc import PendingReplies
+
+    pending = PendingReplies()
+    antiafk_calls = []
+
+    def fake_antiafk(context):
+        antiafk_calls.append(context)
+        # 首次呼叫就推 force_discord，讓迴圈下一輪跳出
+        if len(antiafk_calls) == 1:
+            pending.push(f"control:force_discord:reentry:ep1", "stop")
+
+    # time.sleep 不真睡——antiafk 回呼裡已推了 reply，下一輪立即返回
+    monkeypatch.setattr(main_mod.time, "sleep", lambda s: None)
+
+    bot = make_fake_bot(
+        bind=["_await_web_action"],
+        _web_pending=pending,
+        _running=True,
+        paused=False,
+        _mine_resetting=False,
+        _antiafk_tick=fake_antiafk,
+    )
+
+    kind, reply = bot._await_web_action("reentry:ep1")
+    assert kind == "force_discord"
+    assert antiafk_calls == ["網頁介入等待"]
