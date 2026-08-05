@@ -238,11 +238,16 @@ conventions.
     A `SessionStart` hook (`.claude/hooks/worktree-enforce.ps1`) injects a
     warning when the primary tree is dirty and a sibling worktree exists; the
     hook is silent inside a linked worktree. Merge protocol: tests green
-    inside the worktree → commit there → merge into the integration branch →
-    remove the worktree (`ExitWorktree` / `git worktree remove`). `.claude/
-    worktrees/**` is already gitignored, so the Grep tool cannot see inside
-    worktrees — when checking "is this fix already done elsewhere" also run
-    `git worktree list` and scan dangling commits (`git fsck --lost-found`).
+    inside the worktree → commit there → merge into the integration branch
+    (`feature/optimization-roadmap` — the branch the bot actually runs from)
+    → remove the worktree (`ExitWorktree` / `git worktree remove`). **An
+    unmerged worktree branch is invisible to the running bot** — the commit
+    exists in git but the bot executes whatever is checked out in the primary
+    working tree, so a fix left on a branch is a fix that doesn't exist.
+    `.claude/ worktrees/**` is already gitignored, so the Grep tool cannot
+    see inside worktrees — when checking "is this fix already done elsewhere"
+    also run `git worktree list` and scan dangling commits
+    (`git fsck --lost-found`).
 
 ## DEVELOPMENT WORKFLOW
 
@@ -259,6 +264,14 @@ conventions.
 - Every completed task must end with a commit: run the full test suite green
   first, stage only the files the task touched, and write a Chinese commit
   message describing the change (cite the H incident id when applicable).
+- **After committing, merge into `feature/optimization-roadmap`.** The bot
+  runs from this branch; a commit on a worktree branch that hasn't been
+  merged is invisible to the running program. Before finishing a session,
+  also check for other unmerged branches: `git for-each-ref --format='%(refname:short)
+  %(committerdate:short)' refs/heads/ | while read b _; do n=$(git rev-list --count
+  feature/optimization-roadmap..$b 2>/dev/null); [ "$n" -gt 0 ] && echo "$b: $n unmerged";
+  done` — cherry-pick or merge any that belong, then delete stale branches
+  (`git branch -d <name>` for merged, `git branch -D <name>` for orphaned).
 - **Every new feature, fix, or behavioural change must include logging** that lets
   a future agent diagnose failures from logs alone — without re-reading the code to
   guess what happened. At minimum: log the decision point (what was chosen and why),
