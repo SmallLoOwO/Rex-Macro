@@ -1562,6 +1562,36 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
 .hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
 #note { padding: 0.3rem 1rem; background: #5a4a1e; font-size: 0.8rem;
         color: #ffe9b0; display: none; }
+/* 把手：桌機隱藏；手機直向時是抽屜唯一露出的部分（ticket 03 起的骨架）。
+   抽屜本體就是同一個 #side——media query 把它從右側欄重打造成底部抽屜，
+   所以全頁只有一組按鍵、不需複製或 location-independent binding（ticket 02 因此不需要）。 */
+#drawer-handle { display: none; }
+
+/* ── 手機直向版面：窄寬(≤600px)＋直向時，圖全螢幕、#side 變底部抽屜 ── */
+@media (max-width: 600px) and (orientation: portrait) {
+  header { display: none; }                          /* 標題列讓出高度給圖 */
+  #drawer-handle {
+    display: flex; align-items: center; gap: 0.45rem;
+    height: 34px; padding: 0 0.7rem; flex: 0 0 auto;
+    position: sticky; top: 0; z-index: 2;
+    background: #2a2a2a; border-bottom: 1px solid #444;
+    color: #9ad; font-size: 0.74rem; line-height: 1.2;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #drawer-handle .grip {
+    flex: 0 0 auto; width: 26px; height: 4px; border-radius: 2px; background: #666; }
+  #side {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    width: auto; max-width: none;
+    border-left: 0; border-top: 1px solid #444;
+    /* 預設收合：只露 34px 把手（#drawer-handle 是第一個子元素） */
+    max-height: 34px; overflow: hidden;
+    transition: max-height 0.2s ease;
+  }
+  #side.drawer-open { max-height: 65vh; overflow-y: auto; }
+  /* #side 已 position:fixed 脫離 flex flow → #container 自動佔滿 #main 全寬全高 */
+}
 </style>
 </head>
 <body>
@@ -1576,6 +1606,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     <div id="predict-mark"><span class="pm-label"></span></div>
   </div>
   <div id="side">
+    <div id="drawer-handle"><span class="grip"></span></div>
     <div id="status-line">連線中…</div>
     <div id="remote-bar">
       <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>

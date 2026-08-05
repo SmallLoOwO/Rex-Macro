@@ -2412,3 +2412,35 @@ def test_await_web_action_calls_antiafk_during_wait(monkeypatch):
     kind, reply = bot._await_web_action("reentry:ep1")
     assert kind == "force_discord"
     assert antiafk_calls == ["網頁介入等待"]
+
+
+# ---------------------------------------------------------------------------
+# 手機直向介入面板（mobile-intervention-panel tickets 03~08）
+#
+# seam：render_intervention_html() 渲染字串 marker（同 TestPanelHasReentryControls
+# 等既有面板測試標準）。實作策略：桌機的 #side 側欄與手機抽屜共用同一個 DOM
+# 元素——CSS media query（窄寬＋直向）把 #side 從右側欄重打造成底部抽屜，
+# 所以只有一組按鍵、不需複製、不需 location-independent binding（ticket 02 因此
+# 不需要）。手勢行為（展開／收回）不在此自動化，留實機驗收。
+# ---------------------------------------------------------------------------
+
+
+class TestPanelMobilePortraitLayout:
+    """ticket 03：窄寬＋直向時圖全螢幕、底部把手；桌機版面不退步。"""
+
+    def test_narrow_portrait_media_query_present(self):
+        html = _panel_html()
+        assert "@media" in html
+        # 直向條件——區分手機版與桌機版的關鍵 marker
+        assert "orientation: portrait" in html or "orientation:portrait" in html
+
+    def test_drawer_handle_element_present(self):
+        html = _panel_html()
+        assert 'id="drawer-handle"' in html
+
+    def test_desktop_sidebar_and_main_still_present(self):
+        """桌機版面不退步：側欄、主體、容器都在（手機版是疊加、不是取代）。"""
+        html = _panel_html()
+        assert 'id="side"' in html
+        assert 'id="main"' in html
+        assert 'id="container"' in html
