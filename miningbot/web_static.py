@@ -1621,9 +1621,9 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     </div>
     <div id="toolbar">
       <div id="nav-row">
-        <button id="prev" type="button" title="上一個方位">&#9664;</button>
+        <button id="prev" data-keep-open type="button" title="上一個方位">&#9664;</button>
         <span id="dir-label">&#8212;</span>
-        <button id="next" type="button" title="下一個方位">&#9654;</button>
+        <button id="next" data-keep-open type="button" title="下一個方位">&#9654;</button>
       </div>
       <span id="dots"></span>
       <button id="adopt" class="confirm" type="button" hidden title="直接送出 bot 猜的位置">&#127919; 採用建議</button>
@@ -1713,6 +1713,15 @@ function toggleDrawer() {
   sideEl.classList.toggle('drawer-open');
 }
 if (handleEl) handleEl.addEventListener('click', toggleDrawer);
+
+// 動作鍵點完自動收回抽屜；方位導覽鍵（data-keep-open）保持開啟以便連續翻閱（ticket 07）。
+// 動作鍵（採用建議/重掃/重骰/好/作廢/跳過）會結束或推進介入，收回讓玩家看結果。
+function closeDrawer() {
+  if (sideEl) sideEl.classList.remove('drawer-open');
+}
+document.querySelectorAll('#toolbar button').forEach(b => {
+  if (!b.hasAttribute('data-keep-open')) b.addEventListener('click', closeDrawer);
+});
 
 // ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
 // 玩家不會一直盯著這一頁。沒有這段，網頁介入等於「剛好有看到才有用」——

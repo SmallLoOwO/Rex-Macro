@@ -2481,3 +2481,15 @@ class TestPanelDrawerControlsMobile:
         html = _panel_html()
         norm = " ".join(html.split())  # 折疊空白便於比對 CSS 規則
         assert "#remote-bar { display: none;" in norm
+
+
+class TestPanelDrawerAutoRetract:
+    """ticket 07：方位導覽鍵（prev/next）點完不收回；動作鍵點完自動收回。"""
+
+    def test_nav_buttons_marked_keep_open(self):
+        html = _panel_html()
+        assert 'data-keep-open' in html
+
+    def test_close_drawer_function_present(self):
+        html = _panel_html()
+        assert 'closeDrawer' in html
