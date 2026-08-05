@@ -2333,7 +2333,7 @@ def test_moved_unconfirmed_hands_over_to_confirm_instead_of_retrying(monkeypatch
 def test_panel_confirm_mode_switches_buttons_and_blocks_clicks():
     """mode='confirm' 的那批圖是證據，不是要玩家點位置的掃描圖。"""
     html = _panel_html()
-    assert "confirmMode = p.mode === 'confirm'" in html
+    assert "setConfirmMode(p.mode === 'confirm')" in html
     assert "sweepBtn.hidden = !isReentry || confirmMode" in html
     assert "confirmBtn.hidden = !confirmMode" in html
     # 點畫面在這階段沒有消費端，靜靜躺到 TTL 過期比直接說清楚更糟
@@ -2493,3 +2493,22 @@ class TestPanelDrawerAutoRetract:
     def test_close_drawer_function_present(self):
         html = _panel_html()
         assert 'closeDrawer' in html
+
+
+class TestPanelConfirmModeMobile:
+    """ticket 08：確認階段（awaiting_confirm）抽屜只顯示 好/重骰/作廢、無方位導覽；
+    點圖不送座標（既有 confirmMode 雙閘）；桌機確認階段不變。"""
+
+    def test_confirm_mode_class_marker(self):
+        html = _panel_html()
+        assert 'confirm-mode' in html
+
+    def test_mobile_confirm_mode_hides_nav_and_skip(self):
+        html = _panel_html()
+        assert '#side.confirm-mode #nav-row' in html
+        assert '#side.confirm-mode #skip' in html
+
+    def test_confirm_mode_click_guard_present(self):
+        """確認階段點圖不送座標——既有 confirmMode 雙閘仍在（防回退）。"""
+        html = _panel_html()
+        assert 'confirmMode' in html

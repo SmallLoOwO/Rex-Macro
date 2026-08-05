@@ -1571,6 +1571,11 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
 @media (max-width: 600px) and (orientation: portrait) {
   header { display: none; }                          /* 標題列讓出高度給圖 */
   #remote-bar { display: none; }   /* 挖礦遙控鍵是挖礦時用的，介入模式隱藏（故事15） */
+  /* 確認階段（ticket 08）：只留 好/重骰/作廢；隱藏方位導覽與跳過。
+     採用建議/重掃由 JS hidden 屬性處理（桌面共用，維持桌機確認階段不變）。 */
+  #side.confirm-mode #nav-row,
+  #side.confirm-mode #dots,
+  #side.confirm-mode #skip { display: none; }
   #drawer-handle {
     display: flex; align-items: center; gap: 0.45rem;
     height: 34px; padding: 0 0.7rem; flex: 0 0 auto;
@@ -1722,6 +1727,14 @@ function closeDrawer() {
 document.querySelectorAll('#toolbar button').forEach(b => {
   if (!b.hasAttribute('data-keep-open')) b.addEventListener('click', closeDrawer);
 });
+
+// 確認階段（awaiting_confirm）標記：手機直向 CSS 據此隱藏方位導覽與跳過，
+// 只留 好/重骰/作廢（ticket 08）。桌機不受影響（規格：桌機確認階段不變）。
+// 點圖不送座標由 sendClickNative 內既有的 confirmMode 雙閘負責，這裡只統一設旗標。
+function setConfirmMode(on) {
+  confirmMode = !!on;
+  if (sideEl) sideEl.classList.toggle('confirm-mode', confirmMode);
+}
 
 // ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
 // 玩家不會一直盯著這一頁。沒有這段，網頁介入等於「剛好有看到才有用」——
@@ -1945,7 +1958,7 @@ function connect() {
       // mode==='confirm'（2026-08-01）＝這批是 awaiting_confirm 的證據圖（點擊處／
       // 落點），不是要玩家點位置的掃描圖。點畫面在這階段沒有消費端（主迴圈已離開
       // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰/作廢。
-      confirmMode = p.mode === 'confirm';
+      setConfirmMode(p.mode === 'confirm');
       setStatus((confirmMode ? '' : '需要介入：') + (p.summary || p.flow), 'need');
       noteEl.style.display = p.note ? 'block' : 'none';
       noteEl.textContent = p.note || '';
@@ -1981,7 +1994,7 @@ function connect() {
       if (awaitingConfirm) {
         // 緊接著會來一批 mode='confirm' 的證據圖（點擊處／落點），那支會再設一次
         // 同樣的按鈕組；這裡先切好，圖還在路上時面板就已經是可以回答的狀態。
-        confirmMode = true;
+        setConfirmMode(true);
         hintEl.textContent = CONFIRM_HINT;
         adoptBtn.hidden = true; sweepBtn.hidden = true;
         rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
@@ -1990,7 +2003,7 @@ function connect() {
         // 2026-08-01：介入結束要清掉畫面上的證據圖，不然面板「不會消失」、
         // 玩家以為還能點。清 frames + 空白 img + currentEvent=null（sendClick 擋）。
         currentEvent = null;
-        confirmMode = false;
+        setConfirmMode(false);
         frames = []; seen = new Set(); curFrame = 0;
         snapshotImg.removeAttribute('src');
         zoom = 1.0; pan = [0, 0];
@@ -2165,7 +2178,7 @@ confirmBtn.addEventListener('click', () => {
   // 立刻清 currentEvent：送出與後端 descended 廣播之間若點畫面，sendClickNative
   // 仍會通過 currentEvent+confirmMode 雙閘送出 reentry_click。清掉就擋住（2026-08-01）。
   currentEvent = null;
-  confirmMode = false;
+  setConfirmMode(false);
   hintEl.textContent = CLICK_HINT;
   for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
 });
