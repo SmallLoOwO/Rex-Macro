@@ -1610,6 +1610,45 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
 .hint { padding: 0.3rem 1rem; background: #333; font-size: 0.8rem; color: #aaa; }
 #note { padding: 0.3rem 1rem; background: #5a4a1e; font-size: 0.8rem;
         color: #ffe9b0; display: none; }
+/* 把手：桌機隱藏；手機直向時是抽屜唯一露出的部分（ticket 03 起的骨架）。
+   抽屜本體就是同一個 #side——media query 把它從右側欄重打造成底部抽屜，
+   所以全頁只有一組按鍵、不需複製或 location-independent binding（ticket 02 因此不需要）。 */
+#drawer-handle { display: none; }
+
+/* ── 手機直向版面：窄寬(≤600px)＋直向時，圖全螢幕、#side 變底部抽屜 ── */
+@media (max-width: 600px) and (orientation: portrait) {
+  header { display: none; }                          /* 標題列讓出高度給圖 */
+  #remote-bar { display: none; }   /* 挖礦遙控鍵是挖礦時用的，介入模式隱藏（故事15） */
+  /* 確認階段（ticket 08）：只留 好/重骰/作廢；隱藏方位導覽與跳過。
+     採用建議/重掃由 JS hidden 屬性處理（桌面共用，維持桌機確認階段不變）。 */
+  #side.confirm-mode #nav-row,
+  #side.confirm-mode #dots,
+  #side.confirm-mode #skip { display: none; }
+  #drawer-handle {
+    display: flex; align-items: center; gap: 0.45rem;
+    height: 34px; padding: 0 0.7rem; flex: 0 0 auto;
+    position: sticky; top: 0; z-index: 2;
+    background: #2a2a2a; border-bottom: 1px solid #444;
+    color: #9ad; font-size: 0.74rem; line-height: 1.2;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #drawer-handle .grip {
+    flex: 0 0 auto; width: 26px; height: 4px; border-radius: 2px; background: #666; }
+  #drawer-handle .handle-text {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #side {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    width: auto; max-width: none;
+    border-left: 0; border-top: 1px solid #444;
+    /* 預設收合：只露 34px 把手（#drawer-handle 是第一個子元素） */
+    max-height: 34px; overflow: hidden;
+    transition: max-height 0.2s ease;
+  }
+  #side.drawer-open { max-height: 65vh; overflow-y: auto; }
+  /* #side 已 position:fixed 脫離 flex flow → #container 自動佔滿 #main 全寬全高 */
+}
 </style>
 </head>
 <body>
@@ -1624,6 +1663,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     <div id="predict-mark"><span class="pm-label"></span></div>
   </div>
   <div id="side">
+    <div id="drawer-handle"><span class="grip"></span><span class="handle-text">MiningBot 介入面板</span></div>
     <div id="status-line">連線中…</div>
     <div id="remote-bar">
       <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
@@ -1634,9 +1674,9 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     </div>
     <div id="toolbar">
       <div id="nav-row">
-        <button id="prev" type="button" title="上一個方位">&#9664;</button>
+        <button id="prev" data-keep-open type="button" title="上一個方位">&#9664;</button>
         <span id="dir-label">&#8212;</span>
-        <button id="next" type="button" title="下一個方位">&#9654;</button>
+        <button id="next" data-keep-open type="button" title="下一個方位">&#9654;</button>
       </div>
       <span id="dots"></span>
       <button id="adopt" class="confirm" type="button" hidden title="直接送出 bot 猜的位置">&#127919; 採用建議</button>
@@ -1667,6 +1707,9 @@ const rerollBtn = document.getElementById('reroll');
 const confirmBtn = document.getElementById('confirm');
 const skipBtn = document.getElementById('skip');
 const statusLineEl = document.getElementById('status-line');
+const handleEl = document.getElementById('drawer-handle');
+const handleTextEl = handleEl ? handleEl.querySelector('.handle-text') : null;
+const sideEl = document.getElementById('side');
 const hintEl = document.getElementById('hint');
 const rcResumeBtn = document.getElementById('rc-resume');
 const rcPauseBtn = document.getElementById('rc-pause');
@@ -1694,9 +1737,49 @@ const CLICK_HINT = '手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 
 const CONFIRM_HINT = '這兩張是證據圖（點擊處／落點），可放大檢查——此時點畫面不會送出座標。確認後按下面的按鈕。';
 
 const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
+let _statusKind = 'idle';
 function setStatus(text, kind) {
   statusEl.textContent = text;
   statusEl.style.color = STATUS_COLORS[kind] || STATUS_COLORS.idle;
+  _statusKind = kind || 'idle';
+  updateHandle();
+}
+
+// 把手＝手機直向的狀態列（ticket 04）：方位 + 主狀態 + 連線組合成一行，
+// 顏色隨狀態 kind。桌機 handleTextEl 為 null（把手 display:none）→ no-op。
+function updateHandle() {
+  if (!handleTextEl) return;
+  const dir = (dirLabel.textContent && dirLabel.textContent !== '\\u2014') ? dirLabel.textContent : '';
+  const st = statusEl.textContent || '';
+  const conn = (ws && ws.readyState === 1) ? '' : '未連線';
+  const parts = [dir, st, conn].filter(Boolean);
+  handleTextEl.textContent = parts.join(' · ') || 'MiningBot 介入面板';
+  handleTextEl.style.color = STATUS_COLORS[_statusKind] || '#9ad';
+}
+
+// 把手點擊＝展開／收回抽屜（ticket 05）。CSS 已備 #side.drawer-open 規則。
+// 桌機 handleEl 為 null（把手 display:none）→ 不綁監聽器。
+function toggleDrawer() {
+  if (!sideEl) return;
+  sideEl.classList.toggle('drawer-open');
+}
+if (handleEl) handleEl.addEventListener('click', toggleDrawer);
+
+// 動作鍵點完自動收回抽屜；方位導覽鍵（data-keep-open）保持開啟以便連續翻閱（ticket 07）。
+// 動作鍵（採用建議/重掃/重骰/好/作廢/跳過）會結束或推進介入，收回讓玩家看結果。
+function closeDrawer() {
+  if (sideEl) sideEl.classList.remove('drawer-open');
+}
+document.querySelectorAll('#toolbar button').forEach(b => {
+  if (!b.hasAttribute('data-keep-open')) b.addEventListener('click', closeDrawer);
+});
+
+// 確認階段（awaiting_confirm）標記：手機直向 CSS 據此隱藏方位導覽與跳過，
+// 只留 好/重骰/作廢（ticket 08）。桌機不受影響（規格：桌機確認階段不變）。
+// 點圖不送座標由 sendClickNative 內既有的 confirmMode 雙閘負責，這裡只統一設旗標。
+function setConfirmMode(on) {
+  confirmMode = !!on;
+  if (sideEl) sideEl.classList.toggle('confirm-mode', confirmMode);
 }
 
 // ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
@@ -1842,6 +1925,7 @@ function renderNav() {
     else if (seen.has(i)) d.className = 'seen';
     dotsEl.appendChild(d);
   }
+  updateHandle();
 }
 
 function showFrame(i) {
@@ -1919,8 +2003,8 @@ function connect() {
       const isReentry = p.flow === 'reentry';
       // mode==='confirm'（2026-08-01）＝這批是 awaiting_confirm 的證據圖（點擊處／
       // 落點），不是要玩家點位置的掃描圖。點畫面在這階段沒有消費端（主迴圈已離開
-      // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰。
-      confirmMode = p.mode === 'confirm';
+      // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰/作廢。
+      setConfirmMode(p.mode === 'confirm');
       setStatus((confirmMode ? '' : '需要介入：') + (p.summary || p.flow), 'need');
       noteEl.style.display = p.note ? 'block' : 'none';
       noteEl.textContent = p.note || '';
@@ -1956,7 +2040,7 @@ function connect() {
       if (awaitingConfirm) {
         // 緊接著會來一批 mode='confirm' 的證據圖（點擊處／落點），那支會再設一次
         // 同樣的按鈕組；這裡先切好，圖還在路上時面板就已經是可以回答的狀態。
-        confirmMode = true;
+        setConfirmMode(true);
         hintEl.textContent = CONFIRM_HINT;
         adoptBtn.hidden = true; sweepBtn.hidden = true;
         rerollBtn.hidden = false; confirmBtn.hidden = false;
@@ -1965,7 +2049,7 @@ function connect() {
         // 2026-08-01：介入結束要清掉畫面上的證據圖，不然面板「不會消失」、
         // 玩家以為還能點。清 frames + 空白 img + currentEvent=null（sendClick 擋）。
         currentEvent = null;
-        confirmMode = false;
+        setConfirmMode(false);
         frames = []; seen = new Set(); curFrame = 0;
         snapshotImg.removeAttribute('src');
         zoom = 1.0; pan = [0, 0];
@@ -1995,6 +2079,7 @@ function connect() {
   };
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'command', payload: { cmd: 'request_status' } }));
+    updateHandle();
   };
   ws.onclose = () => {
     setStatus('WebSocket 斷線，5s 後重連…', 'fail');
@@ -2139,7 +2224,7 @@ confirmBtn.addEventListener('click', () => {
   // 立刻清 currentEvent：送出與後端 descended 廣播之間若點畫面，sendClickNative
   // 仍會通過 currentEvent+confirmMode 雙閘送出 reentry_click。清掉就擋住（2026-08-01）。
   currentEvent = null;
-  confirmMode = false;
+  setConfirmMode(false);
   hintEl.textContent = CLICK_HINT;
   for (const b of [sweepBtn, rerollBtn, confirmBtn, skipBtn]) b.hidden = true;
 });

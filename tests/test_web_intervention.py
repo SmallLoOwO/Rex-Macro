@@ -2425,7 +2425,7 @@ def test_moved_unconfirmed_hands_over_to_confirm_instead_of_retrying(monkeypatch
 def test_panel_confirm_mode_switches_buttons_and_blocks_clicks():
     """mode='confirm' 的那批圖是證據，不是要玩家點位置的掃描圖。"""
     html = _panel_html()
-    assert "confirmMode = p.mode === 'confirm'" in html
+    assert "setConfirmMode(p.mode === 'confirm')" in html
     assert "sweepBtn.hidden = !isReentry || confirmMode" in html
     assert "confirmBtn.hidden = !confirmMode" in html
     # 點畫面在這階段沒有消費端，靜靜躺到 TTL 過期比直接說清楚更糟
@@ -2504,3 +2504,103 @@ def test_await_web_action_calls_antiafk_during_wait(monkeypatch):
     kind, reply = bot._await_web_action("reentry:ep1")
     assert kind == "force_discord"
     assert antiafk_calls == ["網頁介入等待"]
+
+
+# ---------------------------------------------------------------------------
+# 手機直向介入面板（mobile-intervention-panel tickets 03~08）
+#
+# seam：render_intervention_html() 渲染字串 marker（同 TestPanelHasReentryControls
+# 等既有面板測試標準）。實作策略：桌機的 #side 側欄與手機抽屜共用同一個 DOM
+# 元素——CSS media query（窄寬＋直向）把 #side 從右側欄重打造成底部抽屜，
+# 所以只有一組按鍵、不需複製、不需 location-independent binding（ticket 02 因此
+# 不需要）。手勢行為（展開／收回）不在此自動化，留實機驗收。
+# ---------------------------------------------------------------------------
+
+
+class TestPanelMobilePortraitLayout:
+    """ticket 03：窄寬＋直向時圖全螢幕、底部把手；桌機版面不退步。"""
+
+    def test_narrow_portrait_media_query_present(self):
+        html = _panel_html()
+        assert "@media" in html
+        # 直向條件——區分手機版與桌機版的關鍵 marker
+        assert "orientation: portrait" in html or "orientation:portrait" in html
+
+    def test_drawer_handle_element_present(self):
+        html = _panel_html()
+        assert 'id="drawer-handle"' in html
+
+    def test_desktop_sidebar_and_main_still_present(self):
+        """桌機版面不退步：側欄、主體、容器都在（手機版是疊加、不是取代）。"""
+        html = _panel_html()
+        assert 'id="side"' in html
+        assert 'id="main"' in html
+        assert 'id="container"' in html
+
+
+class TestPanelHandleStatusBar:
+    """ticket 04：把手身兼狀態列——顯示方位／狀態／連線，並隨狀態更新。"""
+
+    def test_handle_has_status_text_element(self):
+        html = _panel_html()
+        assert 'handle-text' in html
+
+    def test_handle_update_function_present(self):
+        """把手文字由 JS 從方位／狀態／連線組合，並在狀態變更時更新（marker）。"""
+        html = _panel_html()
+        assert 'updateHandle' in html
+
+
+class TestPanelDrawerExpandCollapse:
+    """ticket 05：把手上拉／點擊展開抽屜、再點收回。"""
+
+    def test_drawer_toggle_function_present(self):
+        html = _panel_html()
+        assert 'toggleDrawer' in html
+
+    def test_drawer_open_toggled_via_classlist(self):
+        """JS 用 classList 操作 drawer-open（CSS 已備 .drawer-open 規則）。"""
+        html = _panel_html()
+        assert 'classList' in html
+        assert "drawer-open" in html
+
+
+class TestPanelDrawerControlsMobile:
+    """ticket 06：抽屜裡的介入按鍵沿用既有命令邏輯（同一組 #side 按鍵），
+    並在手機直向隱藏挖礦遙控鍵（故事15：遙控鍵是挖礦時用的）。"""
+
+    def test_mining_remote_buttons_hidden_on_mobile(self):
+        html = _panel_html()
+        norm = " ".join(html.split())  # 折疊空白便於比對 CSS 規則
+        assert "#remote-bar { display: none;" in norm
+
+
+class TestPanelDrawerAutoRetract:
+    """ticket 07：方位導覽鍵（prev/next）點完不收回；動作鍵點完自動收回。"""
+
+    def test_nav_buttons_marked_keep_open(self):
+        html = _panel_html()
+        assert 'data-keep-open' in html
+
+    def test_close_drawer_function_present(self):
+        html = _panel_html()
+        assert 'closeDrawer' in html
+
+
+class TestPanelConfirmModeMobile:
+    """ticket 08：確認階段（awaiting_confirm）抽屜只顯示 好/重骰/作廢、無方位導覽；
+    點圖不送座標（既有 confirmMode 雙閘）；桌機確認階段不變。"""
+
+    def test_confirm_mode_class_marker(self):
+        html = _panel_html()
+        assert 'confirm-mode' in html
+
+    def test_mobile_confirm_mode_hides_nav_and_skip(self):
+        html = _panel_html()
+        assert '#side.confirm-mode #nav-row' in html
+        assert '#side.confirm-mode #skip' in html
+
+    def test_confirm_mode_click_guard_present(self):
+        """確認階段點圖不送座標——既有 confirmMode 雙閘仍在（防回退）。"""
+        html = _panel_html()
+        assert 'confirmMode' in html
