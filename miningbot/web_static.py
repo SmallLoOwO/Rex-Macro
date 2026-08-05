@@ -646,7 +646,7 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
     <div id="tiers">{tier_btns or '<span class="hint">（game_data 無 tier）</span>'}</div>
     <p id="sticky-note"></p>
 
-    <button type="button" class="submit" id="submit">送出標註</button>
+    <button type="button" class="submit" id="submit" disabled>載入中…</button>
     <p class="hint">在快照上拖曳出方形（1:1）；Shift + 拖曳 = 平移；
     滾輪 / 雙指 = 縮放；Esc 清除方形；Ctrl + Z 還原上一張。</p>
   </div>
@@ -701,6 +701,34 @@ const queuePosEl = document.getElementById('queue-pos');
 // 首張是 server 直接渲染的（queue[0]），curEpisode 要跟著起跑，否則在第一張選了
 // 稀有度、按 j 到同一場的第二張就會被當成換場清掉。
 if (queue.length) curEpisode = queue[0].episode || null;
+
+// 送出守門：圖片必須完全載入且沒有 POST 在進行中才能送出。
+// 快速連按 Enter 時新圖還沒顯示就送出＝連裡面藏著的漏判也一起錯過（2026-08-05）。
+let imgReady = false;
+let submitting = false;
+const PRELOAD_AHEAD = 5;  // localhost 無頻寬顧慮，多預載幾張暖機
+const preloaded = new Set();
+
+function updateSubmitGate() {{
+  const btn = document.getElementById('submit');
+  if (!btn) return;
+  const blocked = !imgReady || submitting;
+  btn.disabled = blocked;
+  btn.textContent = blocked ? '載入中…' : '送出標註';
+}}
+
+// 背景預載：顯示第 i 張時暖機後 5 張。玩家按 Enter 時圖已在 browser cache
+// → img.src 一改 load 幾乎瞬間觸發 → 守門無感。預載來不及時守門照常生效。
+function preloadAhead() {{
+  if (!queue.length) return;
+  for (let i = 1; i <= PRELOAD_AHEAD && qIndex + i < queue.length; i++) {{
+    const p = queue[qIndex + i].path;
+    if (preloaded.has(p)) continue;
+    preloaded.add(p);
+    const pre = new Image();
+    pre.src = '/snapshot?path=' + encodeURIComponent(p);
+  }}
+}}
 
 function derivedSymptom() {{
   const column = SYMPTOM_BY_OBS[activeObs] || SYMPTOM_BY_OBS.unsure;
@@ -761,6 +789,8 @@ function showQueueItem(i) {{
   const item = queue[qIndex];
   sourcePath = item.path;
   imageName = item.path.split('/').pop().split('\\\\').pop();
+  imgReady = false;
+  updateSubmitGate();
   img.src = '/snapshot?path=' + encodeURIComponent(item.path);
   selRect = null; sel.style.display = 'none';
   bot = {{ verdict: item.verdict, x: item.x, y: item.y }};
@@ -777,7 +807,8 @@ function showQueueItem(i) {{
 function setQueueDone(done) {{
   const submitBtn = document.getElementById('submit');
   const doneNote = document.getElementById('done-note');
-  if (submitBtn) submitBtn.disabled = !!done;
+  if (done) {{ if (submitBtn) submitBtn.disabled = true; }}
+  else {{ updateSubmitGate(); }}
   if (img) img.style.display = done ? 'none' : '';
   if (doneNote) doneNote.style.display = done ? 'block' : 'none';
   if (done) {{
@@ -809,10 +840,17 @@ function fitToView() {{
   pan = [(vw - img.naturalWidth * zoom) / 2, (vh - img.naturalHeight * zoom) / 2];
   applyTransform();
 }}
+// 圖片載入守門 + 預載觸發：onImgLoad 在 img 'load' 事件時啟用送出鍵並暖機後續。
+function onImgLoad() {{
+  imgReady = true;
+  fitToView();
+  updateSubmitGate();
+  preloadAhead();
+}}
 if (img) {{
-  img.addEventListener('load', fitToView);
-  if (img.complete && img.naturalWidth) fitToView();  // 首次載入時可能已經 cache 命中，load 事件不會再等
-  else applyTransform();                               // 圖還沒到之前先套預設值，避免 transform 是空字串
+  img.addEventListener('load', onImgLoad);
+  if (img.complete && img.naturalWidth) onImgLoad();  // cache 命中：load 不會再等，直接觸發
+  else {{ applyTransform(); updateSubmitGate(); }}      // 圖還沒到：先套預設 transform，送出鍵維持禁用
 }}
 
 // ── wheel zoom（桌機） ────────────────────────────────────────────────
@@ -1060,6 +1098,11 @@ function categoryFor(name) {{
 }}
 
 async function submitAnnotation() {{
+  if (submitting) return;                       // POST 進行中，靜默忽略（防同張重複送出）
+  if (!imgReady) {{                              // 圖片還沒載入完——不讓玩家盲送
+    statusEl.textContent = '圖片還在載入中…';
+    return;
+  }}
   const symptom = derivedSymptom();
   // 框從哪來：玩家拖的優先；玩家說「什麼都沒有」但 bot 卻接受了（＝誤判），
   // 就用 bot 自己記的座標當框心——那塊裁圖正是要拿去調門檻的硬負樣本，
@@ -1101,6 +1144,8 @@ async function submitAnnotation() {{
     payload.annotation = annotation;
     payload.category = categoryFor(imageName);
   }}
+  submitting = true;
+  updateSubmitGate();
   statusEl.textContent = '送出中…';
   try {{
     const r = await fetch('/api/annotate', {{
@@ -1120,6 +1165,7 @@ async function submitAnnotation() {{
     undoStack.push({{ item: removed, index: qIndex, image: payload.image,
                      category: payload.category || null,
                      symptom: payload.symptom }});
+    submitting = false;  // POST 完成；showQueueItem/setQueueDone 透過 imgReady 接管守門
     if (queue.length || removed) {{
       if (!queue.length) {{
         setQueueDone(true);
@@ -1128,6 +1174,8 @@ async function submitAnnotation() {{
       showQueueItem(qIndex);
     }}
   }} catch (err) {{
+    submitting = false;
+    updateSubmitGate();
     statusEl.textContent = '送出失敗：' + err.message;
   }}
 }}

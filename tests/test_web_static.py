@@ -102,7 +102,8 @@ def test_render_annotate_html_queue_exhausted_hides_image_and_submit():
     assert "沒有其他圖片了" in html
     assert "function setQueueDone(" in html
     done = html.split("function setQueueDone(done)")[1].split("renderQueuePos();")[0]
-    assert "submitBtn.disabled = !!done" in done
+    assert "submitBtn.disabled = true" in done
+    assert "updateSubmitGate()" in done
     assert "img.style.display = done ? 'none' : ''" in done
 
 
@@ -225,6 +226,35 @@ def test_render_annotate_html_has_pinch_zoom_or_wheel_zoom():
     has_zoom = ("wheel" in html or "touchmove" in html
                 or "touchstart" in html)
     assert has_zoom
+
+
+def test_render_annotate_html_submit_button_starts_disabled():
+    """送出鍵初始 disabled——圖片還沒載入不能送出（防快速連按盲送）。
+
+    2026-08-05：佇列模式快速連按 Enter 時，新圖還沒顯示就送出＝連裡面藏著的
+    漏判（FN）也一起錯過。送出鍵在圖片 load 事件前一律禁用。
+    """
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
+    assert 'id="submit" disabled' in html
+
+
+def test_render_annotate_html_has_preload_and_submit_gate():
+    """背景預載 5 張 + imgReady/submitting 守門必須存在於前端 JS。"""
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]),
+                                queue=[{"path": "/a.png", "label": "x"}])
+    assert "preloadAhead" in html, "預載函式必須存在"
+    assert "PRELOAD_AHEAD" in html, "預載張數常數必須存在"
+    assert "imgReady" in html, "圖片載入狀態旗標必須存在"
+    assert "submitting" in html, "POST 防重複旗標必須存在"
+    assert "function updateSubmitGate()" in html, "守門更新函式必須存在"
+
+
+def test_render_annotate_html_submit_blocks_when_image_not_ready():
+    """submitAnnotation 在 imgReady=false 時應提早 return 並提示。"""
+    html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
+    fn = html.split("async function submitAnnotation()")[1]
+    assert "!imgReady" in fn, "imgReady=false 時必須攔截"
+    assert "圖片還在載入中" in fn, "必須提示玩家圖片仍在載入"
 
 
 # ---------------------------------------------------------------------------
