@@ -733,7 +733,15 @@ function preloadAhead() {{
 function derivedSymptom() {{
   const column = SYMPTOM_BY_OBS[activeObs] || SYMPTOM_BY_OBS.unsure;
   // 只認 'accepted'；沒記判定的一律走 rejected 那欄（見 symptom_from_observation）
-  return column[bot.verdict === 'accepted' ? 'accepted' : 'rejected'];
+  let s = column[bot.verdict === 'accepted' ? 'accepted' : 'rejected'];
+  // 邊界：d3_miss_N 的 label 帶 verdict=accepted 但沒有座標（_N 是 attempt 編號，
+  // 不是 mark_x_mark_y）。玩家選「什麼都沒有」→ 正常推 false_positive，但沒座標
+  // 就裁不出「bot 誤判的位置」、玩家也框不出不存在的东西。降級為 no_target——
+  // 整張幀本身就是負樣本，不必指到特定裁圖。
+  if (s === 'false_positive' && (bot.x === null || bot.x === undefined)) {{
+    s = 'no_target';
+  }}
+  return s;
 }}
 
 function renderBotLine() {{
