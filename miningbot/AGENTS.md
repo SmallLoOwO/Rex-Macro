@@ -55,7 +55,7 @@ change rules; repository-wide behavior belongs in the root contract.
 | `web_ipc.py` | `routing_key`, `PendingReplies` (first-wins), `FallbackState` (grace period) |
 | `web_server.py` | `create_app` (FastAPI + WS endpoint + HTTP routes), `WebIPCThread` (uvicorn daemon), `ConnectionRegistry` (cross-thread broadcast) |
 | `web_sink.py` | `WebEventSink` (EventLog → WS broadcast); parallel to `notify.make_discord_sink` |
-| `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (5 fields incl. `detection_disabled_tiers`), `is_web_configurable`, `validate_value` |
+| `web_config_whitelist.py` | `WEB_CONFIGURABLE_FIELDS` (4 fields incl. `detection_disabled_tiers`; `sweep_pitch_enabled` removed 2026-08-05), `is_web_configurable`, `validate_value` |
 | `web_config_persistence.py` | `load/save/apply_overrides_to_config` (atomic JSON write; idempotent on restart) |
 | `web_static.py` | `render_index_html` (settings), `render_intervention_html` (pinch-zoom + tap), `render_history_html`, `render_annotate_html` (single or tier queue), `render_failures_html` / `render_stats_html` (agent-facing: ugly layout, complete data) |
 | `web_annotation.py` | `build_annotation`, `normalize_symptom`, `symptom_from_observation` (player states what he sees; symptom is derived), `rarity_choices_from_game_data`, `validate_annotation`, `verdict_agrees` + `NO_LABEL` sentinel |

@@ -69,7 +69,7 @@ miningbot/
   web_ipc.py                race routing key, PendingReplies, FallbackState
   web_server.py             FastAPI app, WebSocket endpoint, WebIPCThread, HTTP routes
   web_sink.py               EventLog → WebSocket broadcast sink
-  web_config_whitelist.py   player-editable Config field whitelist (4 fields)
+  web_config_whitelist.py   player-editable Config field whitelist (3 fields)
   web_config_persistence.py config_overrides.json load/save/apply
   web_static.py             HTML renderers (player settings, intervention, history, annotate)
   web_annotation.py         annotation schema + symptom/rarity helpers
@@ -164,7 +164,10 @@ conventions.
     fields in `WEB_CONFIGURABLE_FIELDS` to players; thresholds, ROI, and detection
     params are AI-agent-only via direct `config.py` edits — **exception**:
     `detection_disabled_tiers` (2026-08-02, user-specified: changes frequently during
-    play, controls which ore tiers count as "rare" for all detection systems). WebSocket IPC uses
+    play, controls which ore tiers count as "rare" for all detection systems).
+    `sweep_pitch_enabled` was removed from the whitelist on 2026-08-05 (pitch-layer
+    scanning disabled — see rule 15); the config field remains in `config.py` but is
+    vestigial and has no effect. WebSocket IPC uses
     routing-key first-wins (`flow:episode_id`; second reply for the same key is
     dropped). **Connection count never gates a push** (2026-07-31, user-specified):
     every intervention flow pushes its frames into the registry replay buffer
@@ -216,16 +219,12 @@ conventions.
       The web click queues `_pending_aim` (kind `point`) so it goes through
       `_execute_remote_fire`'s realign → rescan → refind sequence; it must not borrow
       `_handle_web_aim_click`, which drops replies while `_aim_busy` is set.
-      It captures **mid + up + down** (24 frames) whenever pitch is calibrated,
-      gated on `plan_pitch_layers(True, …)` and deliberately **not** on
-      `sweep_pitch_enabled` — that flag governs the automatic failure path, while
-      `手動` is an explicit player request (harvest 144: the ore sat above near-miss
-      candidate ⑨, and a mid-only handoff made it unreachable). `_handle_aim_reply`
-      accepts `5U`/`5D` under the same calibration-only gate, or the images would be
-      sent to a syntax that answers 看不懂. Per-layer: re-press D2 (a full layer takes
-      ~30s and trackers expire), budget restarts after the rescan, an eaten drag skips
-      that layer, and the survey ends with `_pitch_goto_layer(…, 0)` so
-      `ctx.pose_pitch_layer` is honest for the next `plan_alignment`.
+      It captures **mid only** (8 frames) — pitch-layer scanning was disabled on
+      2026-08-05 (user request: "多移動多錯又花多時間"), so `plan_pitch_layers`
+      always returns `[]` and the survey no longer adds up/down layers.
+      `_handle_aim_reply` no longer accepts `5U`/`5D` (the layer list is `("mid",)`
+      only). Per-survey: re-press D2 (tracker expires after ~30s), budget restarts
+      after the rescan.
     Both use the routing key `harvest:<harvest_id>`, so a later push replaces the
     earlier panel — release the held images before pushing a new batch.
 16. **One session, one worktree.** Before the first edit of any session, open

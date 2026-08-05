@@ -2910,6 +2910,7 @@ class Bot:
         self._startup_pitch_status = harvester.format_startup_pitch_status(
             cfg.sweep_pitch_center_back_px, homed, self._pitch_offset_px)
         self.logger.info("啟動仰角：%s", self._startup_pitch_status)
+        self.logger.info("俯仰層掃描已停用（2026-08-05 使用者要求）——sweep 全空直接交人工/收尾，不再上下多掃兩層")
         # 面板歸零（2026-08-04 使用者要求）：啟動時面板可能有上一 session 殘留的
         # 白名單 礦——不清的話第一場 chill 的進場面板色檢會誤判「已進帳」。與
         # _on_enter(MINING) 同一條路，init_mining_sequence 前清（LMB 按住後點不了 UI）。
@@ -3630,9 +3631,9 @@ class Bot:
             self._save_harvest_seq()              # 持久化：重啟後從這號繼續，不重複
             hid = harvester.format_harvest_id(self._harvest_seq)
             self.harvest = harvester.HarvestState(0, 0.0, harvest_id=hid)
-            self.harvest.pitch_layers_left = harvester.plan_pitch_layers(
-                cfg.sweep_pitch_enabled, cfg.sweep_pitch_step_px,
-                cfg.sweep_pitch_center_back_px)
+            # 俯仰層掃描已停用（2026-08-05 使用者要求）→ pitch_layers_left 恆空，
+            # decide_sweep_failure 的 NEXT_LAYER 分支自然死、_pitch_layer_transition 永不被呼叫。
+            self.harvest.pitch_layers_left = []
             # remote-aim：新一輪採集 episode 重置 context＋sweep 記錄（跨層/跨 RESWEEP 累積）
             self._aim_context = None
             self._sweep_shots = []

@@ -30,11 +30,10 @@ def test_get_api_config_returns_whitelisted_fields(app_parts):
     r = client.get("/api/config")
     assert r.status_code == 200
     data = r.json()
-    # 4 個白名單欄位都該出現
+    # 白名單欄位都該出現（sweep_pitch_enabled 已移除——俯仰層掃描停用）
     assert "reentry_mode" in data
     assert "reentry_target_layer" in data
     assert "reentry_yaw_sample_sweep" in data
-    assert "sweep_pitch_enabled" in data
     # 現值 = Config 預設
     assert data["reentry_mode"] == cfg.reentry_mode
 
@@ -146,11 +145,10 @@ def test_get_root_returns_html_with_form(app_parts):
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
     body = r.text
-    # 4 個欄位 form 元素
+    # 欄位 form 元素（sweep_pitch_enabled 已移除——俯仰層掃描停用）
     assert "reentry_mode" in body
     assert "reentry_target_layer" in body
     assert "reentry_yaw_sample_sweep" in body
-    assert "sweep_pitch_enabled" in body
     # JS 提交邏輯（fetch /api/config）
     assert "/api/config" in body
     assert "fetch" in body.lower() or "XMLHttpRequest" in body

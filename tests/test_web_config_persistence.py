@@ -12,9 +12,9 @@ class TestLoadOverrides:
 
     def test_valid_json_returns_dict(self, tmp_path):
         p = tmp_path / "overrides.json"
-        p.write_text(json.dumps({"reentry_mode": "auto", "sweep_pitch_enabled": True}))
+        p.write_text(json.dumps({"reentry_mode": "auto", "reentry_yaw_sample_sweep": True}))
         result = load_overrides(str(p))
-        assert result == {"reentry_mode": "auto", "sweep_pitch_enabled": True}
+        assert result == {"reentry_mode": "auto", "reentry_yaw_sample_sweep": True}
 
     def test_corrupted_json_returns_empty(self, tmp_path):
         p = tmp_path / "bad.json"
@@ -40,9 +40,9 @@ class TestSaveOverrides:
         p = str(tmp_path / "overrides.json")
         # 第一次存 reentry_mode
         first = save_overrides(p, "reentry_mode", "auto", current_overrides={})
-        # 第二次存 sweep_pitch_enabled，保留既有
-        second = save_overrides(p, "sweep_pitch_enabled", True, current_overrides=first)
-        assert second == {"reentry_mode": "auto", "sweep_pitch_enabled": True}
+        # 第二次存 reentry_yaw_sample_sweep，保留既有
+        second = save_overrides(p, "reentry_yaw_sample_sweep", True, current_overrides=first)
+        assert second == {"reentry_mode": "auto", "reentry_yaw_sample_sweep": True}
 
     def test_save_overwrites_same_field(self, tmp_path):
         p = str(tmp_path / "overrides.json")
@@ -107,8 +107,8 @@ class TestApplyOverridesToConfig:
         cfg = Config()
         applied = apply_overrides_to_config(cfg, {
             "reentry_mode": "auto",
-            "sweep_pitch_enabled": True,
+            "reentry_yaw_sample_sweep": True,
         })
-        assert set(applied) == {"reentry_mode", "sweep_pitch_enabled"}
+        assert set(applied) == {"reentry_mode", "reentry_yaw_sample_sweep"}
         assert cfg.reentry_mode == "auto"
-        assert cfg.sweep_pitch_enabled is True
+        assert cfg.reentry_yaw_sample_sweep is True

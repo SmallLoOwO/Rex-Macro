@@ -32,16 +32,19 @@ def _bot(monkeypatch, *, layers=("up", "down"), drag_ok=True, resetting=False,
     events = []
     monkeypatch.setattr(main.time, "time", lambda c=itertools.count(1000): float(next(c)))
 
+    # 層序列直接建構（2026-08-05：plan_pitch_layers 已恆回空 list，
+    # 無法再用它產生測試層。這裡驗的是 _pitch_layer_transition 的接線，
+    # 不是 plan_pitch_layers 的閘門行為。）
+    _all_layers = {"up": harvester.PitchLayer("up", -120),
+                   "down": harvester.PitchLayer("down", 120)}
+
     bot = make_fake_bot(
         bind=["_pitch_layer_transition"],
         logger=_LogRecorder(),
         log_harvest=_LogRecorder(),
         harvest=types.SimpleNamespace(
             harvest_id="777", pitch_layer="mid", pitch_touched=False,
-            # 層序列由 production 函式產（步進量取任意已校準值——這裡驗的是層轉換的
-            # 接線，不是校準常數；抄 config 預設只會做出一個改變偵測器）
-            pitch_layers_left=[layer for layer in harvester.plan_pitch_layers(True, 120, 370)
-                               if layer.name in layers]),
+            pitch_layers_left=[_all_layers[name] for name in layers]),
         _mine_resetting=resetting,
         _pre_scan_ref=ref,
         _radar_last={"scan": last_scan_at},

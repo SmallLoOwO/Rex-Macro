@@ -50,12 +50,17 @@ class PitchLayer:
 def plan_pitch_layers(enabled: bool, step_px: int, center_back_px: int) -> list:
     """回失敗路徑要補掃的俯仰層序列（不含已掃過的標準層；純函式）。
 
-    未校準（step=0 或 center_back<=0）視同停用——與 reentry「無模板視同關閉」同慣例。
-    順序固定上→下：實機經驗礦多在壁上高處，H026 證實下方也會漏，兩層都掃。
+    ★ 2026-08-05 使用者要求停用（「多移動多錯又花多時間」）：俯仰層掃描每次撲空
+    多花 ~90-100s（上下各一輪），且拖曳被遊戲吃的機率高、校正誤差累積。現階段
+    專精 8 方位掃描即可，故恆回空 list。所有呼叫端（自動失敗路徑 pitch_layers_left、
+    手動 survey 層序列、5U/5D 可用層檢查）自動降級為只掃 mid 層。
+
+    原始邏輯保留為註解供未來重新啟用參考：
+      if not enabled or step_px == 0 or center_back_px <= 0:
+          return []
+      return [PitchLayer("up", -step_px), PitchLayer("down", step_px)]
     """
-    if not enabled or step_px == 0 or center_back_px <= 0:
-        return []
-    return [PitchLayer("up", -step_px), PitchLayer("down", step_px)]
+    return []
 
 
 def mining_pitch_home_enabled(center_back_px: int) -> bool:

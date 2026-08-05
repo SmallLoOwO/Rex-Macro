@@ -382,21 +382,20 @@ def test_scan_succeeded_rejects_empty_and_unrelated():
 
 
 class TestPlanPitchLayers:
-    """失敗路徑俯仰掃描的層規劃（2026-07-11 spec）：未校準/停用回空；啟用回上→下兩層。"""
+    """俯仰層掃描已停用（2026-08-05 使用者要求）→ plan_pitch_layers 恆回空 list。"""
 
     def test_disabled_returns_empty(self):
         assert harvester.plan_pitch_layers(False, 300, 400) == []
+
+    def test_enabled_also_returns_empty(self):
+        """即使 enabled=True 且已校準，也回空——功能全面停用。"""
+        assert harvester.plan_pitch_layers(True, 300, 400) == []
 
     def test_uncalibrated_step_returns_empty(self):
         assert harvester.plan_pitch_layers(True, 0, 400) == []
 
     def test_uncalibrated_center_back_returns_empty(self):
         assert harvester.plan_pitch_layers(True, 300, 0) == []
-
-    def test_enabled_yields_up_then_down(self):
-        layers = harvester.plan_pitch_layers(True, 300, 400)
-        assert [l.name for l in layers] == ["up", "down"]
-        assert [l.nudge_px for l in layers] == [-300, 300]
 
 
 class TestDecideSweepFailurePitchLayers:

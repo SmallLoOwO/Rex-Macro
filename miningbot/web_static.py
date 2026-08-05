@@ -69,7 +69,6 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
     reentry_mode = getattr(config, "reentry_mode", "remote")
     fallback_layer = getattr(config, "reentry_target_layer", "")
     yaw_sample = getattr(config, "reentry_yaw_sample_sweep", False)
-    sweep_pitch = getattr(config, "sweep_pitch_enabled", False)
     detection_tier = getattr(config, "detection_disabled_tiers", ())
 
     target_layer = fallback_layer
@@ -92,22 +91,7 @@ def render_index_html(config, layer_info: dict | None = None) -> str:
                           "偵測到之後儲存才會記進該世界。")
 
     yaw_checked = "checked" if yaw_sample else ""
-    sweep_checked = "checked" if sweep_pitch else ""
     layer_hint_html = (f'<p class="hint">{layer_hint}</p>' if layer_hint else "")
-
-    # 掃描俯仰勾了不一定會動：`harvester.plan_pitch_layers` 在 step_px==0 或
-    # center_back_px<=0（都＝沒校準過）時回空 list，等於整個功能靜默停用。
-    # 不講的話玩家勾了、以為開了、行為卻沒變——這正是「設定看不懂」的一種。
-    step_px = getattr(config, "sweep_pitch_step_px", 0)
-    center_back_px = getattr(config, "sweep_pitch_center_back_px", 0)
-    if step_px == 0 or center_back_px <= 0:
-        sweep_status = ('<p class="hint warn">⚠ <b>目前就算勾選也不會生效</b>：'
-                        '上下掃描需要先量出「一層要拖幾像素」，而這個值尚未校準'
-                        f'（<code>sweep_pitch_step_px={_esc(step_px)}</code>）。'
-                        '校準前這個開關等於關著。</p>')
-    else:
-        sweep_status = ('<p class="hint ok">✅ 已校準，勾選即生效'
-                        f'（一層 <code>{_esc(step_px)}px</code>）。</p>')
 
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant">
@@ -193,17 +177,6 @@ h2 {{ margin-top: 2rem; border-top: 1px solid #2a2f38; padding-top: 1rem;
     <b>代價</b>：每次回礦成功後多花約 15 秒轉一圈，並多佔一些硬碟空間。
     不想收就關掉。</p>
 
-  <label class="check"><input type="checkbox" id="sweep_pitch_enabled"
-                name="sweep_pitch_enabled" {sweep_checked}>
-    <span>掃描俯仰（找不到礦時，改抬頭／低頭再找一輪）</span></label>
-  <p class="hint"><b>「俯仰」＝鏡頭上下角度</b>（左右轉叫方位，上下抬叫俯仰）。<br>
-    bot 找礦時會原地轉一圈掃 8 個方向。這個開關管的是<b>那一圈全空之後</b>怎麼辦：
-    關著＝就此放棄這一輪；開著＝把鏡頭往上、往下各調一次再各掃一輪，
-    撈那些在<b>上一層或下一層</b>、平視角度看不到的礦。<br>
-    <b>代價</b>：每次撲空多花<b>約 90-100 秒</b>掃 2 圈（上下各一輪；任一層的鏡頭拖曳
-    被遊戲吃掉要重試再 +15 秒），但能少掉一些「明明有礦卻回報全空」。</p>
-  {sweep_status}
-
   <fieldset style="border:1px solid #ccc; padding:0.6rem; border-radius:4px;">
     <legend style="font-weight:bold; padding:0 0.4rem;">偵測階級（打勾 = 會偵測）</legend>{
     chr(10).join(
@@ -243,7 +216,6 @@ form.addEventListener('submit', async (e) => {{
     reentry_mode: document.getElementById('reentry_mode').value,
     reentry_target_layer: document.getElementById('reentry_target_layer').value,
     reentry_yaw_sample_sweep: document.getElementById('reentry_yaw_sample_sweep').checked,
-    sweep_pitch_enabled: document.getElementById('sweep_pitch_enabled').checked,
     detection_disabled_tiers: disabledTiers,
   }};
   status.className = 'status';

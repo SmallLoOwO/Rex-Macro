@@ -381,32 +381,12 @@ def test_explains_what_yaw_sample_corpus_is_for():
         assert word in html, f"缺少解釋語料用途的關鍵字：{word}"
 
 
-def test_explains_what_sweep_pitch_means():
-    """「俯仰」要說明是鏡頭上下角度，並講清楚它在哪個時機作用。"""
-    html = render_index_html(_CalibratedCfg())
-    assert "俯仰" in html
-    assert "上下" in html
-    for word in ("全空", "放棄"):
-        assert word in html, f"缺少解釋掃描俯仰時機的關鍵字：{word}"
-
-
 def test_explains_reentry_mode_and_target_layer():
     html = render_index_html(_CalibratedCfg())
     assert "傳送板" in html, "回礦模式要講清楚回礦是在做什麼"
     assert "不會驗證" in html, "目標層只是記帳、bot 不驗證，這點必須講明"
 
 
-def test_warns_when_sweep_pitch_checkbox_would_be_a_no_op():
-    """勾了卻不會生效是最糟的沉默失敗——沒校準時必須明說。
-
-    `harvester.plan_pitch_layers` 在 step_px==0 時回空 list，功能整個靜默停用。
-    """
-    html = render_index_html(_UncalibratedCfg())
-    assert "不會生效" in html
-    assert "sweep_pitch_step_px=0" in html
-
-
-def test_no_warning_once_calibrated():
-    html = render_index_html(_CalibratedCfg())
-    assert "不會生效" not in html
-    assert "已校準" in html
+# 掃描俯仰 UI 已移除（2026-08-05 俯仰層掃描停用）——
+# test_warns_when_sweep_pitch_checkbox_would_be_a_no_op 與
+# test_no_warning_once_calibrated 隨之退役。

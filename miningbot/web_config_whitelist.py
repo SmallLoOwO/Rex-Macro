@@ -10,7 +10,6 @@ WEB_CONFIGURABLE_FIELDS: frozenset[str] = frozenset({
     "reentry_mode",
     "reentry_target_layer",
     "reentry_yaw_sample_sweep",
-    "sweep_pitch_enabled",
     "detection_disabled_tiers",
 })
 
