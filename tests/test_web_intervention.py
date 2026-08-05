@@ -2471,3 +2471,13 @@ class TestPanelDrawerExpandCollapse:
         html = _panel_html()
         assert 'classList' in html
         assert "drawer-open" in html
+
+
+class TestPanelDrawerControlsMobile:
+    """ticket 06：抽屜裡的介入按鍵沿用既有命令邏輯（同一組 #side 按鍵），
+    並在手機直向隱藏挖礦遙控鍵（故事15：遙控鍵是挖礦時用的）。"""
+
+    def test_mining_remote_buttons_hidden_on_mobile(self):
+        html = _panel_html()
+        norm = " ".join(html.split())  # 折疊空白便於比對 CSS 規則
+        assert "#remote-bar { display: none;" in norm

@@ -1570,6 +1570,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
 /* ── 手機直向版面：窄寬(≤600px)＋直向時，圖全螢幕、#side 變底部抽屜 ── */
 @media (max-width: 600px) and (orientation: portrait) {
   header { display: none; }                          /* 標題列讓出高度給圖 */
+  #remote-bar { display: none; }   /* 挖礦遙控鍵是挖礦時用的，介入模式隱藏（故事15） */
   #drawer-handle {
     display: flex; align-items: center; gap: 0.45rem;
     height: 34px; padding: 0 0.7rem; flex: 0 0 auto;
