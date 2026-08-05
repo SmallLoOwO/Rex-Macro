@@ -48,7 +48,8 @@ class TestParseReply:
         assert parse_reply("跳過").kind == "skip"
         assert parse_reply("好").kind == "confirm"
         assert parse_reply("OK").kind == "confirm"
-        assert parse_reply("作廢").kind == "void"
+        # 2026-08-03：作廢退役——parse_reply 不再認 void（層不對就重骰）
+        assert parse_reply("作廢") is None
 
     def test_layer_command(self):
         r = parse_reply("層 Mantle Layer")
@@ -250,7 +251,8 @@ class TestZoomRestore:
 
 # ===== Task 4：REENTRY 互動 embed 純函式（2026-07-13 spec）=====
 from miningbot.reentry_remote import (build_reentry_embed, reaction_to_reentry_reply,
-                                      REENTRY_REACTIONS)
+                                      reaction_to_confirm_reply,
+                                      REENTRY_REACTIONS, CONFIRM_REACTIONS)
 
 
 class TestReentryEmbed:
@@ -323,6 +325,21 @@ class TestReactionToReply:
 
     def test_reactions_constant(self):
         assert REENTRY_REACTIONS == ("🎲", "⏭️", "📷")
+
+
+class TestConfirmReactionToReply:
+    """2026-08-03：awaiting_confirm 證據訊息的 ⭕🎲 反應鈕。"""
+
+    def test_known_emojis(self):
+        assert reaction_to_confirm_reply("⭕").kind == "confirm"
+        assert reaction_to_confirm_reply("🎲").kind == "reroll"
+
+    def test_unknown_emoji_returns_none(self):
+        assert reaction_to_confirm_reply("⏭️") is None
+        assert reaction_to_confirm_reply("") is None
+
+    def test_confirm_reactions_constant(self):
+        assert CONFIRM_REACTIONS == ("⭕", "🎲")
 
 
 # ===== H044：開場探測節奏＋手動觸發記帳 =====

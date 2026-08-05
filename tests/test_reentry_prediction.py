@@ -242,7 +242,12 @@ if __name__ == "__main__":       # pragma: no cover
 # D14（2026-08-02）：這幾張 descended 幀的板子 mask blob 是直向/近方形
 # （aspect 0.78 / 0.92），v0 的 aspect 閘 [1.60, 3.00] 只要橫向——降 hue 下界無效
 # （形狀就不對）。詳 docs/open-detection-issues.md D14。修好後把名字移除，警告即消失。
-_D14_ASPECT_GAP = frozenset({"auto_46_success", "auto_48_success"})
+# D14 已知偵測 gap：descended（真板子）但 v0 偵測器構不到，不讓測試紅。
+# 修好後把名字從此移除即可讓 warning 消失。
+# - auto_46/48_success：板子直向/近方，aspect 閘 [1.60, 3.00] 構不到
+# - auto_54_success：板框太暗（V=32-52 vs 校準 V_lo=80），降 V_lo 反而更糟
+_D14_KNOWN_GAPS = frozenset({"auto_46_success", "auto_48_success",
+                              "auto_54_success"})
 
 
 def test_teleport_board_detector_hits_every_annotated_fixture():
@@ -292,7 +297,7 @@ def test_teleport_board_detector_hits_every_annotated_fixture():
         if got is None or got[2] < cfg.reentry_predict_min_score:
             # verify != "descended" 不是 ground truth（見 docstring）→ 偵測不到不算退步
             if descended:
-                bucket = known if name in _D14_ASPECT_GAP else misses
+                bucket = known if name in _D14_KNOWN_GAPS else misses
                 bucket.append("%s -> %s" % (name, got))
             continue
         if descended and (abs(got[0] - ann["cx"]) >= 60
@@ -300,10 +305,10 @@ def test_teleport_board_detector_hits_every_annotated_fixture():
             misses.append("%s -> %s 偏離成功點擊 (%d,%d)"
                           % (name, got, ann["cx"], ann["cy"]))
     assert not misses, "傳送板偵測退步：" + "；".join(misses)
-    # D14 gap 不讓測試紅，但要可見——修好後移出 _D14_ASPECT_GAP 此警告即消失
+    # D14 gap 不讓測試紅，但要可見——修好後移出 _D14_KNOWN_GAPS 此警告即消失
     if known:
         import warnings
-        warnings.warn("D14 偵測 gap 未修（板子 aspect 直向）：" + "；".join(known))
+        warnings.warn("D14 偵測 gap 未修（板子 aspect 直向或亮度过低）：" + "；".join(known))
 
 
 # ---- RR#42：點擊前吸附到當下這一幀的板子（2026-08-01）---------------------

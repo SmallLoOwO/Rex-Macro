@@ -345,6 +345,7 @@ def test_tick_consumes_pending_clear_panel_in_mining(monkeypatch):
         _pending_clear_panel=True,
         _pending_ability=False,
         _pending_rotate=None,
+        _capacity_stall_alert_pending=None,
         _consume_clear_panel=lambda: consumed.append(True),
         _update_reset_chime_active=lambda: None,
         _consume_web_pending=lambda: None,
@@ -374,6 +375,7 @@ def test_tick_does_not_consume_clear_panel_in_harvesting(monkeypatch):
         _pending_clear_panel=True,
         _pending_ability=False,
         _pending_rotate=None,
+        _capacity_stall_alert_pending=None,
         _consume_clear_panel=lambda: consumed.append(True),
         _update_reset_chime_active=lambda: None,
         _consume_web_pending=lambda: None,
@@ -413,6 +415,7 @@ def test_tick_skips_dispatch_when_paused(monkeypatch):
         _tick_harvest=lambda frame: dispatched.append("harvest"),
         _tick_reentry=lambda frame: dispatched.append("reentry"),
         _pending_aim=None,
+        _capacity_stall_alert_pending=None,
     )
     monkeypatch.setattr(main, "can_consume_ability", lambda s: False)
 

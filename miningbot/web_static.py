@@ -1643,7 +1643,6 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
       <button id="sweep" class="act" type="button" title="重新拍一輪八方位">&#10227; 重掃</button>
       <button id="reroll" class="act" type="button" title="換一個重生點">&#127922; 重骰</button>
       <button id="confirm" class="confirm" type="button" title="下礦沒問題，開挖">&#9989; 好</button>
-      <button id="void" class="skip" type="button" title="這筆點擊資料有問題，作廢">&#128465; 作廢</button>
       <button id="skip" class="skip" type="button" title="放棄回礦，回正常挖礦">&#9197; 跳過</button>
     </div>
     <div id="note"></div>
@@ -1666,7 +1665,6 @@ const adoptBtn = document.getElementById('adopt');
 const sweepBtn = document.getElementById('sweep');
 const rerollBtn = document.getElementById('reroll');
 const confirmBtn = document.getElementById('confirm');
-const voidBtn = document.getElementById('void');
 const skipBtn = document.getElementById('skip');
 const statusLineEl = document.getElementById('status-line');
 const hintEl = document.getElementById('hint');
@@ -1689,7 +1687,7 @@ let curFrame = 0;
 let seen = new Set();
 let pendingFrameSnapshot = false;  // 📷 即時畫面：下一張 binary 是單張快照，不進 frames[]
 // 確認階段（回礦 awaiting_confirm）：畫面上是點擊處/落點證據圖，點它不會送出任何
-// 東西——bot 主迴圈此刻在等 好/重骰/作廢，沒有人在收 reentry_click。
+// 東西——bot 主迴圈此刻在等 好/重骰，沒有人在收 reentry_click。
 let confirmMode = false;
 
 const CLICK_HINT = '手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 + 拖曳。直接點畫面上的傳送板送出位置；有綠圈＝bot 猜的位置，按 \\uD83C\\uDFAF 採用建議一鍵送出';
@@ -1921,17 +1919,17 @@ function connect() {
       const isReentry = p.flow === 'reentry';
       // mode==='confirm'（2026-08-01）＝這批是 awaiting_confirm 的證據圖（點擊處／
       // 落點），不是要玩家點位置的掃描圖。點畫面在這階段沒有消費端（主迴圈已離開
-      // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰/作廢。
+      // 等待迴圈），所以停掉點擊送出，並把按鈕換成 好/重骰。
       confirmMode = p.mode === 'confirm';
       setStatus((confirmMode ? '' : '需要介入：') + (p.summary || p.flow), 'need');
       noteEl.style.display = p.note ? 'block' : 'none';
       noteEl.textContent = p.note || '';
       hintEl.textContent = confirmMode ? CONFIRM_HINT : CLICK_HINT;
-      // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑。好/作廢只在
+      // 回礦才有重掃/重骰/跳過；harvest 開火沒有等價路徑。好只在
       // awaiting_confirm 才出現（這裡的 confirm mode，或 INTERVENTION_RESULT 那支）。
       for (const b of [rerollBtn, skipBtn]) b.hidden = !isReentry;
       sweepBtn.hidden = !isReentry || confirmMode;
-      confirmBtn.hidden = !confirmMode; voidBtn.hidden = !confirmMode;
+      confirmBtn.hidden = !confirmMode;
       curFrame = 0;
       zoom = 1.0; pan = [0, 0];  // 保底：萬一這裡才是這輪第一次拿到 frames
       renderNav();       // 採用建議鍵由 renderNav 依「這張有沒有預測」決定顯不顯示
@@ -1947,11 +1945,11 @@ function connect() {
       const v = p.verdict || '';
       const ok = (v === 'fire_ok' || v === 'descended');
       // awaiting_confirm：Depth 已確認下礦，但 bot 設定要求人工放行才開挖——
-      // 這不是「結束」也不是「失敗」，是換一組按鈕等玩家表態（好/重骰/作廢），
+      // 這不是「結束」也不是「失敗」，是換一組按鈕等玩家表態（好/重骰），
       // 原本這步只能切回 Discord 打字，玩家人已經在網頁上了不該被踢出去。
       const awaitingConfirm = v === 'awaiting_confirm';
       // 逾時／中止／主動切 Discord：這集之後這個頁面就不是主控了，跟 ok 一樣收起面板，
-      // 不然玩家還以為能繼續點這批已經作廢的舊圖。
+      // 不然玩家還以為能繼續點這批已經失效的舊圖。
       const done = ok || v === 'web_timeout' || v === 'web_escalate' || v === 'web_aborted';
       setStatus(p.summary || v, awaitingConfirm ? 'need' : (ok ? 'ok' : 'fail'));
       stopFlashing();
@@ -1961,7 +1959,7 @@ function connect() {
         confirmMode = true;
         hintEl.textContent = CONFIRM_HINT;
         adoptBtn.hidden = true; sweepBtn.hidden = true;
-        rerollBtn.hidden = false; confirmBtn.hidden = false; voidBtn.hidden = false;
+        rerollBtn.hidden = false; confirmBtn.hidden = false;
         skipBtn.hidden = false;
       } else if (done) {
         // 2026-08-01：介入結束要清掉畫面上的證據圖，不然面板「不會消失」、
@@ -1972,7 +1970,7 @@ function connect() {
         snapshotImg.removeAttribute('src');
         zoom = 1.0; pan = [0, 0];
         hintEl.textContent = CLICK_HINT;
-        for (const b of [adoptBtn, sweepBtn, rerollBtn, confirmBtn, voidBtn,
+        for (const b of [adoptBtn, sweepBtn, rerollBtn, confirmBtn,
                          skipBtn]) b.hidden = true;
         renderNav();
       }
@@ -2091,9 +2089,9 @@ function sendClickNative(nativeX, nativeY) {
     return;
   }
   if (confirmMode) {
-    // 確認階段沒有人在收 reentry_click（主迴圈在等 好/重骰/作廢），送了只會靜靜
+    // 確認階段沒有人在收 reentry_click（主迴圈在等 好/重骰），送了只會靜靜
     // 躺在 pending 裡等 TTL 過期——說清楚，別讓玩家以為自己已經重點了一次。
-    setStatus('這是證據圖，點畫面不會送出；請按 好／重骰／作廢', 'need');
+    setStatus('這是證據圖，點畫面不會送出；請按 好／重骰', 'need');
     return;
   }
   const cmd = currentEvent.flow === 'reentry' ? 'reentry_click' : 'fire_at';
@@ -2143,9 +2141,8 @@ confirmBtn.addEventListener('click', () => {
   currentEvent = null;
   confirmMode = false;
   hintEl.textContent = CLICK_HINT;
-  for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
+  for (const b of [sweepBtn, rerollBtn, confirmBtn, skipBtn]) b.hidden = true;
 });
-voidBtn.addEventListener('click', () => sendControl('void', '作廢'));
 skipBtn.addEventListener('click', () => {
   sendControl('skip', '跳過');
   currentEvent = null;
@@ -2163,7 +2160,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight') showFrame(curFrame + 1);
 });
 
-for (const b of [sweepBtn, rerollBtn, confirmBtn, voidBtn, skipBtn]) b.hidden = true;
+for (const b of [sweepBtn, rerollBtn, confirmBtn, skipBtn]) b.hidden = true;
 window.addEventListener('resize', () => { if (snapshotImg.naturalWidth) fitToView(); });
 renderNav();
 // 容器還沒展開（naturalWidth=0）時 fitToView 是 no-op；圖到逹 load 事件會自動呼叫

@@ -22,7 +22,8 @@ _KEYWORDS = {
     "重骰": "reroll", "reroll": "reroll",
     "跳過": "skip", "skip": "skip",
     "好": "confirm", "ok": "confirm",
-    "作廢": "void", "void": "void",
+    # 2026-08-03：作廢退役——實機經驗層不對就重骰，從不單獨作廢資料；
+    # void_entry/ledger 追加保留供 build_reentry_dataset 處理歷史語料。
     # 2026-07-19：回礦中調好的仰角直接寫回 config 標準角（校準卡在 REENTRY 被拒，
     # 過去只能事後重校）。裸 `存檔` 比照校準卡詞彙；`仰角 存檔` 同義。
     "存檔": "pitch_save", "save": "pitch_save",
@@ -610,7 +611,6 @@ REENTRY_REACTIONS: tuple[str, ...] = ("🎲", "⏭️", "📷")
 
 _PENDING_LABELS = {
     'layer': '更新目標層',
-    'void': '作廢上一筆',
     'skip': '跳過回挖礦',
     'reroll': '重新擲點',
     'sweep': '重新掃描',
@@ -699,6 +699,24 @@ def reaction_to_reentry_reply(emoji: str):
     回的 kind 與 parse_reply 的關鍵字一致（reroll/skip/sweep），主迴圈消費路徑零改動。
     """
     kind = _REACTION_KIND.get(emoji)
+    if kind is None:
+        return None
+    return RemoteReply(kind)
+
+
+# awaiting_confirm 證據訊息專用反應鈕（2026-08-03 使用者要求）。
+# ⭕＝好（放行開挖）、🎲＝重骰（回地表換重生點）。🎲 與 embed 卡的 reroll 同語意——
+# 兩張是不同訊息、各自輪詢，不會互相干擾。
+CONFIRM_REACTIONS: tuple[str, ...] = ("⭕", "🎲")
+_CONFIRM_REACTION_KIND = {"⭕": "confirm", "🎲": "reroll"}
+
+
+def reaction_to_confirm_reply(emoji: str):
+    """確認階段反應鈕 → RemoteReply；非 CONFIRM_REACTIONS 回 None。
+
+    kind 與 parse_reply 的好/重骰一致，主迴圈消費路徑零改動。
+    """
+    kind = _CONFIRM_REACTION_KIND.get(emoji)
     if kind is None:
         return None
     return RemoteReply(kind)

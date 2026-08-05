@@ -89,7 +89,7 @@ def _manual_survey_bot(monkeypatch, discord_calls, *, step_px=100, **over):
         _pitch_goto_layer=lambda tag, nudge_px: True,
         _hsnap=lambda f, label: "",       # 落盤走非同步，測試不落地
         _encode_png=lambda f: b"png",
-        _notify_web_intervention_pending=lambda key, headline, hint: None,
+        _notify_web_intervention_pending=lambda key, headline, hint, **kw: None,
         _broadcast_intervention_result=lambda *a, **kw: None,
     )
     attrs.update(over)
@@ -441,7 +441,7 @@ def test_main_reentry_pushes_even_when_nobody_connected(monkeypatch):
         _web_fallback=FakeFallback(fallback=True),        # 沒有任何 client
         _send_web_intervention_frames=lambda **kw: (
             pushed.append(len(kw["frames"])) or True),
-        _notify_web_intervention_pending=lambda key, headline, hint: notified.append(key),
+        _notify_web_intervention_pending=lambda key, headline, hint, **kw: notified.append(key),
         _await_web_reentry_action=lambda routing_key:(None, None),
         _broadcast_intervention_result=lambda ctx, verdict, summary, flow="reentry": None,
     )
@@ -699,6 +699,7 @@ def _build_stub_bot_for_reentry(monkeypatch):
     bot._pending_reentry = None
     bot._web_intervention_mid = {}
     bot._web_escalate = {}
+    bot._web_skip_reaction = {}
     bot._web_url = lambda: "http://test:8765"
     # capture.grab 在主迴圈 thread 上跑，monkeypatch module attr 即可
     monkeypatch.setattr(main_mod.capture, "grab", lambda: object())
@@ -721,7 +722,8 @@ def _build_stub_bot_for_reentry(monkeypatch):
     for name in ("_reentry_await_player_click", "_broadcast_intervention_result",
                  "_web_client_online", "_notify_web_intervention_pending",
                  "_resolve_web_intervention_ping", "_arm_web_escalate_reaction",
-                 "_poll_web_escalate_reactions"):
+                 "_arm_web_skip_reaction", "_poll_web_escalate_reactions",
+                 "_poll_web_skip_reactions"):
         setattr(bot, name, types.MethodType(getattr(Bot, name), bot))
     return bot
 
@@ -909,17 +911,89 @@ def test_poll_web_escalate_reactions_no_push_when_count_at_baseline(monkeypatch)
     assert bot._web_pending.pop("control:force_discord:reentry:26") is None
 
 
+def test_notify_web_intervention_pending_arms_skip_reaction(monkeypatch):
+    """``skip_button=True`` 時要同時貼 🔀 和 ⏭️，兩者各自記基線。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    added_calls = []
+    monkeypatch.setattr(
+        "miningbot.main.notify.add_reaction",
+        lambda token, ch, mid, emoji: (added_calls.append((mid, emoji)), (True, "HTTP 204"))[1])
+
+    bot._notify_web_intervention_pending(
+        "reentry:test_ep", "回礦 #test_ep 已拍好 8 個方位", "點傳送板。",
+        skip_button=True)
+
+    assert added_calls == [("notify-mid", "🔀"), ("notify-mid", "⏭️")]
+    assert bot._web_escalate.get("reentry:test_ep") == ("notify-mid", 1)
+    assert bot._web_skip_reaction.get("reentry:test_ep") == ("notify-mid", 1)
+
+
+def test_notify_web_intervention_pending_no_skip_button_by_default(monkeypatch):
+    """``skip_button`` 不傳時只貼 🔀，不貼 ⏭️（採集流程沒有跳過語意）。"""
+    bot = _build_stub_bot_for_reentry(monkeypatch)
+    added_calls = []
+    monkeypatch.setattr(
+        "miningbot.main.notify.add_reaction",
+        lambda token, ch, mid, emoji: (added_calls.append((mid, emoji)), (True, "HTTP 204"))[1])
+
+    bot._notify_web_intervention_pending("harvest:h1", "手動瞄準", "點目標位置。")
+
+    assert added_calls == [("notify-mid", "🔀")]
+    assert bot._web_skip_reaction == {}
+
+
+def test_poll_web_skip_reactions_pushes_skip_on_extra_click(monkeypatch):
+    """⏭️ 反應數超過基線 → push control:skip（_await_web_action 的 controls 路徑撿到）。"""
+    from miningbot.main import Bot
+    from miningbot.web_ipc import PendingReplies
+
+    bot = Bot.__new__(Bot)
+    bot.log_discord = logging.getLogger("test_skip_poll")
+    bot._web_pending = PendingReplies()
+    bot._web_skip_reaction = {"reentry:26": ("mid-1", 1)}
+
+    monkeypatch.setattr(
+        "miningbot.notify.get_reactions",
+        lambda token, ch, mid, emoji: [{"id": "bot-self"}, {"id": "player-1"}])
+
+    bot._poll_web_skip_reactions()
+
+    assert bot._web_skip_reaction == {}, "觸發後要從等待清單移除"
+    assert bot._web_pending.pop("control:skip") is True
+
+
+def test_poll_web_skip_reactions_no_push_when_count_at_baseline(monkeypatch):
+    """只有機器人自己（count==baseline）不該誤觸發。"""
+    from miningbot.main import Bot
+    from miningbot.web_ipc import PendingReplies
+
+    bot = Bot.__new__(Bot)
+    bot.log_discord = logging.getLogger("test_skip_poll")
+    bot._web_pending = PendingReplies()
+    bot._web_skip_reaction = {"reentry:26": ("mid-1", 1)}
+
+    monkeypatch.setattr(
+        "miningbot.notify.get_reactions", lambda token, ch, mid, emoji: [{"id": "bot-self"}])
+
+    bot._poll_web_skip_reactions()
+
+    assert bot._web_skip_reaction == {"reentry:26": ("mid-1", 1)}, "沒人多按，武裝狀態要維持"
+    assert bot._web_pending.pop("control:skip") is None
+
+
 def test_resolve_web_intervention_ping_clears_escalate_entry(monkeypatch):
-    """介入結束收回提醒訊息時，順便清掉 escalate 追蹤——訊息都要被刪了，
+    """介入結束收回提醒訊息時，順便清掉 escalate／skip 追蹤——訊息都要被刪了，
     再查那則訊息的反應只會白費一次 API。
     """
     bot = _build_stub_bot_for_reentry(monkeypatch)
     bot._web_intervention_mid = {"reentry:test_ep": "notify-mid"}
     bot._web_escalate = {"reentry:test_ep": ("notify-mid", 1)}
+    bot._web_skip_reaction = {"reentry:test_ep": ("notify-mid", 1)}
 
     bot._resolve_web_intervention_ping("reentry:test_ep")
 
     assert bot._web_escalate == {}
+    assert bot._web_skip_reaction == {}
     assert bot._web_intervention_mid == {}
 
 
@@ -1959,7 +2033,8 @@ def test_web_aim_click_drops_held_images(monkeypatch):
 # ---------------------------------------------------------------------------
 # 2026-07-28：回礦 awaiting_confirm 階段（Depth 已確認下礦，但
 # cfg.reentry_remote_auto_resume=False 安全預設要求人工放行）補上網頁「好」／
-# 「作廢」——原本這步只能切回 Discord 打字，玩家已經在網頁面板上卻被踢出去。
+# 「重骰」——原本這步只能切回 Discord 打字，玩家已經在網頁面板上卻被踢出去。
+# （作廢已於 2026-08-03 退役——實機經驗層不對就重骰，從不單獨作廢資料。）
 # ---------------------------------------------------------------------------
 
 
@@ -1981,24 +2056,6 @@ def test_consume_web_pending_routes_confirm_to_reentry_queue():
     assert calls == [("好", "confirm", "web")]
 
 
-def test_consume_web_pending_routes_void_to_reentry_queue():
-    """網頁「作廢」按鈕——同上，換一個關鍵字。"""
-    from miningbot.web_ipc import PendingReplies
-    from tests.fake_bot import make_fake_bot
-
-    pending = PendingReplies()
-    pending.push("control:void", {"cmd": "void"})
-    calls = []
-    bot = make_fake_bot(
-        bind=["_consume_web_pending"],
-        _web_pending=pending,
-        _pending_reentry=None,
-        _queue_reentry_reply=lambda raw, reply, source: calls.append((raw, reply.kind, source)),
-    )
-    bot._consume_web_pending()
-    assert calls == [("作廢", "void", "web")]
-
-
 @pytest.mark.parametrize("cmd,raw,kind", [
     ("reroll", "重骰", "reroll"),
     ("sweep", "掃", "sweep"),
@@ -2007,7 +2064,7 @@ def test_consume_web_pending_routes_reroll_and_sweep(cmd, raw, kind):
     """網頁「重骰」／「重掃」按鈕——前端有按鈕但後端原本沒接，按了靜默消失。
 
     2026-08-01 使用者反映重骰沒作用；根因＝_consume_web_pending 只認
-    confirm/void/skip，不認 reroll/sweep。
+    confirm/skip，不認 reroll/sweep。
     """
     from miningbot.web_ipc import PendingReplies
     from tests.fake_bot import make_fake_bot
@@ -2102,6 +2159,9 @@ class TestRrClickAndVerifyWebBroadcast:
         import cv2
         monkeypatch.setattr(cv2, "imwrite", lambda *a, **kw: True)
         bot._rr_notify = lambda *a, **kw: (True, "")
+        # 2026-08-03：確認證據訊息的 Discord 發送＋反應鈕——測的是 web 廣播，Discord 側
+        # 打真 API 無意義，stub 成 no-op。
+        bot._rr_notify_confirm = lambda *a, **kw: None
         bot._rr_snap_dir = lambda: "."
         bot._rr_click_and_verify = types.MethodType(Bot._rr_click_and_verify, bot)
         # RR#42 點擊吸附走真實偵測器沒意義（fake_frame 是全黑）——這組測的是點擊後
@@ -2242,7 +2302,7 @@ class TestAwaitingConfirmEvidenceOnWeb:
         needed = [c.payload for c in calls if isinstance(c, WebMessage)
                   and c.payload.get("event") == "INTERVENTION_NEEDED"]
         assert needed and needed[-1]["mode"] == "confirm", (
-            "confirm 模式讓 client 顯示 好/重骰/作廢 而不是掃描那組鍵")
+            "confirm 模式讓 client 顯示 好/重骰 而不是掃描那組鍵")
         assert b"landing-bytes" in calls, "落點圖的位元組要真的送出去"
 
     def test_result_broadcast_before_frames_push(self, monkeypatch, tmp_path):

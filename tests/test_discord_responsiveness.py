@@ -26,21 +26,18 @@ def _reaction_message(**counts):
 
 
 def _stub_reaction_clear(monkeypatch, ok=True, detail="HTTP 204"):
-    """攔截 clear_reaction/add_reaction，回傳被清掉的 (message_id, emoji) list。
+    """攔截 remove_user_reactions，回傳被清掉的 (message_id, emoji) list。
 
     測試絕不能真的打 Discord API——沒攔到就會發出真實 HTTP 請求。
     """
     cleared = []
 
-    def fake_clear(token, channel_id, message_id, emoji, timeout=10.0):
+    def fake_remove(token, channel_id, message_id, emoji, timeout=10.0):
         if ok:
             cleared.append((message_id, emoji))
         return ok, detail
 
-    monkeypatch.setattr(notify, "clear_reaction", fake_clear)
-    monkeypatch.setattr(
-        notify, "add_reaction",
-        lambda *_args, **_kwargs: (True, "HTTP 204"))
+    monkeypatch.setattr(notify, "remove_user_reactions", fake_remove)
     return cleared
 
 
@@ -222,6 +219,7 @@ def _poll_bot(monkeypatch, state):
     bot.state = state
     bot.paused = False
     bot._rr_embed_mid = None
+    bot._rr_confirm_mid = None               # 2026-08-03：awaiting_confirm 反應鈕輪詢
     bot._rr_ctx = None
     bot._rr_busy = False
     bot._stuck_alert_mid = None
@@ -629,20 +627,17 @@ def _reset_bot():
 
 
 class TestResetReactionButton:
-    def test_clears_then_readds_and_restores_baseline(self, monkeypatch):
-        """清空 → 機器人重貼自己那顆 → 基線回 1（按鈕還在，且可以立刻再按）。"""
+    def test_removes_user_reaction_and_restores_baseline(self, monkeypatch):
+        """移除點擊者反應（機器人自己那顆保留原位）→ 基線回 1（按鈕還在，可以立刻再按）。"""
         bot = _reset_bot()
         calls = []
         monkeypatch.setattr(
-            notify, "clear_reaction",
-            lambda t, c, m, e, timeout=10.0: calls.append(("clear", e)) or (True, "HTTP 204"))
-        monkeypatch.setattr(
-            notify, "add_reaction",
-            lambda t, c, m, e, timeout=10.0: calls.append(("add", e)) or (True, "HTTP 204"))
+            notify, "remove_user_reactions",
+            lambda t, c, m, e, timeout=10.0: calls.append(("remove", e)) or (True, "HTTP 204"))
         seen = {"⏸️": 2}
 
         assert bot._reset_reaction_button("mid", "⏸️", seen) is True
-        assert calls == [("clear", "⏸️"), ("add", "⏸️")]
+        assert calls == [("remove", "⏸️")]
         assert seen["⏸️"] == 1, "基線必須回到 1，否則下次點擊算不出 increment"
 
     def test_permission_failure_disables_permanently(self, monkeypatch):
@@ -650,11 +645,11 @@ class TestResetReactionButton:
         bot = _reset_bot()
         attempts = []
 
-        def fake_clear(t, c, m, e, timeout=10.0):
+        def fake_remove(t, c, m, e, timeout=10.0):
             attempts.append(e)
             return False, "HTTP 403: {\"code\": 50013, \"message\": \"Missing Permissions\"}"
 
-        monkeypatch.setattr(notify, "clear_reaction", fake_clear)
+        monkeypatch.setattr(notify, "remove_user_reactions", fake_remove)
         assert bot._reset_reaction_button("mid", "⏸️", {}) is False
         assert bot._reaction_clear_ok is False
         # 第二次不該再打 API
@@ -665,7 +660,7 @@ class TestResetReactionButton:
         """50003 = Cannot execute action on a DM channel（舊註解講的就是這個）。"""
         bot = _reset_bot()
         monkeypatch.setattr(
-            notify, "clear_reaction",
+            notify, "remove_user_reactions",
             lambda *_a, **_k: (False, "HTTP 403: {\"code\": 50003}"))
         assert bot._reset_reaction_button("mid", "⏸️", {}) is False
         assert bot._reaction_clear_ok is False
@@ -674,7 +669,7 @@ class TestResetReactionButton:
         """網路/rate limit 是暫時的——不可因此永久降級。"""
         bot = _reset_bot()
         monkeypatch.setattr(
-            notify, "clear_reaction",
+            notify, "remove_user_reactions",
             lambda *_a, **_k: (False, "HTTP 429: rate limited"))
         assert bot._reset_reaction_button("mid", "⏸️", {}) is False
         assert bot._reaction_clear_ok is True, "暫時性失敗下次仍要再試"
@@ -682,7 +677,7 @@ class TestResetReactionButton:
     def test_no_message_id_is_noop(self, monkeypatch):
         bot = _reset_bot()
         monkeypatch.setattr(
-            notify, "clear_reaction",
+            notify, "remove_user_reactions",
             lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不該打 API")))
         assert bot._reset_reaction_button(None, "⏸️", {}) is False
 
@@ -697,7 +692,7 @@ class TestRemoteControlFallsBackToRepost:
             lambda *_args: _reaction_message(
                 **{"▶️": 1, "⏸️": 2, "⚡": 1, "📷": 1}))
         monkeypatch.setattr(
-            notify, "clear_reaction",
+            notify, "remove_user_reactions",
             lambda *_a, **_k: (False, "HTTP 403: {\"code\": 50013}"))
         bot._pause = lambda: setattr(bot, "paused", True)
         bot._repost_remote_control = lambda: reposted.append(True)

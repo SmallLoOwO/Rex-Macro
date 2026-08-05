@@ -173,9 +173,8 @@ _TEMPLATES = {
                                   + f"（{m.get('source', '?')} 證據）已在 chill 前進帳"
                                   + ("，觀察中 → 仍交人工，請對照確認"
                                      if m.get("observed") else "，不交人工、繼續挖礦")),
-    "CAPACITY_STALL":  lambda m: (f"⚠️ 容量 {m.get('pct', '?')}% 已 {m.get('minutes', '?')} 分鐘"
-                                  "沒上升——鎬子可能沒真的在挖，請看一眼畫面"
-                                  "（bot 繼續跑，沒有停機）"),
+    # CAPACITY_STALL 不在 sink：需要截圖＋🏠 反應鈕（sink 不支援），改走主迴圈
+    # _notify_capacity_stall（比照 STUCK 的 _notify_stuck 模式）。事件仍記錄供診斷。
     "NEEDS_HUMAN":     lambda m: f"⚠️ 需要人工介入：{m.get('reason', '未知原因')}{m.get('rotation_hint', '')}",
     "SPAWN_CHILL":     lambda m: (f"💎 spawn chill！稀有礦可能生在 礦坑刷新的預設方塊，"
                                   f"bot 處於 {m.get('state', '?')} 挖不到，請手動處理"),
@@ -299,17 +298,29 @@ def send_images_message(token: str, channel_id: str, content: str,
     採集放棄 NEEDS_HUMAN 用：附 D3 執行前/後兩張讓人工及時判定 礦是否被挖走。
     image_paths 順序即附件順序（Discord 依此顯示）。
     """
+    ok, detail, _ = send_images_message_with_id(
+        token, channel_id, content, image_paths, timeout)
+    return ok, detail
+
+
+def send_images_message_with_id(token: str, channel_id: str, content: str,
+                                image_paths: list, timeout: float = 30.0):
+    """送訊息 + 圖並回 (ok, detail, message_id)——需要對該訊息貼反應時用。
+
+    比照 send_message_with_id：Discord POST 回應內含完整 message JSON（multipart 亦然），
+    從中取 "id"。回礦 awaiting_confirm 證據圖貼 ⭕🎲 反應鈕靠它拿 mid。
+    """
     if not token or not channel_id:
-        return False, "缺少 token 或 channel_id"
+        return False, "缺少 token 或 channel_id", None
     files = []
     for p in image_paths:
         try:
             with open(p, "rb") as f:
                 files.append((os.path.basename(p), f.read()))
         except Exception as e:
-            return False, f"讀圖失敗 ({p}): {e}"
+            return False, f"讀圖失敗 ({p}): {e}", None
     if not files:
-        return False, "無可傳圖片"
+        return False, "無可傳圖片", None
     attachments = [{"id": i, "filename": fn} for i, (fn, _) in enumerate(files)]
     payload = {"content": content, "attachments": attachments}
     body, content_type = _build_multipart(payload, files)
@@ -324,12 +335,17 @@ def send_images_message(token: str, channel_id: str, content: str,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return True, f"HTTP {resp.status}"
+            body = resp.read().decode("utf-8", "replace")
+            try:
+                mid = json.loads(body).get("id")
+            except (ValueError, AttributeError):
+                mid = None
+            return True, f"HTTP {resp.status}", mid
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
-        return False, f"HTTP {e.code}: {body}"
+        return False, f"HTTP {e.code}: {body}", None
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", None
 
 
 def fetch_messages(token: str, channel_id: str, after: str | None = None,

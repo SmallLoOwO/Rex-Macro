@@ -305,6 +305,53 @@ def test_webipc_thread_starts_and_serves_websocket(app_parts, monkeypatch):
         thread.join(timeout=2.0)
 
 
+def test_webipcthread_forwards_every_create_app_param():
+    """WebIPCThread 必須收下並轉發 create_app 的每一個 shared 參數。
+
+    回歸 2026-07-29：no_target 功能給 create_app 加了 negatives_dir、main.py 呼叫端
+    也跟著傳，但漏改中間的 WebIPCThread.__init__——production 唯一傳完整 kwargs 的
+    呼叫端（main.py:2647）因此 TypeError，被 except 吞掉，整個網頁 server 沒起來，
+    介入面板空白沒圖可點。整套測試之所以沒抓到：route 測試全走 create_app 直連
+    TestClient、繞過 WebIPCThread；僅有的幾顆 WebIPCThread 構造測試都只傳最小 kwargs。
+
+    兩道守門：
+    1. 結構：create_app 的參數扣除 WebIPCThread 刻意自有的三個（broadcast_callback /
+       on_startup / ping_interval_s）後，必須每一個都出現在 WebIPCThread.__init__。
+       以後再給 create_app 加參數卻漏 WebIPCThread，這行 assert 直接紅。
+    2. 行為：用 main.py:2647 的同一組 kwargs 構造一次，確認 app.state 真的接到值——
+       這正是 production 那行呼叫的離線重現。
+    """
+    import inspect
+    from miningbot.web_server import WebIPCThread, create_app
+
+    ca = set(inspect.signature(create_app).parameters)
+    ti = set(inspect.signature(WebIPCThread.__init__).parameters)
+    # pending/fallback 兩邊都有；這三個是 WebIPCThread 自己擁有、不該從外部轉發的
+    owned_by_thread = {"broadcast_callback", "on_startup", "ping_interval_s"}
+    missing = (ca - owned_by_thread) - ti
+    assert not missing, (
+        f"create_app 參數 {missing} 沒有出現在 WebIPCThread.__init__——"
+        f"main.py 傳進來會 TypeError，網頁 server 整個起不來")
+
+    # 行為：複製 main.py:2647 的 production kwargs（dummy 值，不 start()）
+    cfg = type("Cfg", (), {"websocket_ping_interval_s": 30.0})()
+    thread = WebIPCThread(
+        pending=PendingReplies(), fallback=FallbackState(),
+        host="127.0.0.1", port=0, config=cfg,
+        overrides_path=None,
+        snapshot_index_path="/tmp/sidx.jsonl",
+        fixtures_dir="/tmp/fixtures",
+        snapshots_root="/tmp/snapshots",
+        negatives_dir="/tmp/negatives",
+        layer_getter=lambda: None,
+        player_state_getter=lambda: None,
+    )
+    assert thread.app.state.snapshot_index_path == "/tmp/sidx.jsonl"
+    assert thread.app.state.fixtures_dir == "/tmp/fixtures"
+    assert thread.app.state.snapshots_root == "/tmp/snapshots"
+    assert thread.app.state.negatives_dir == "/tmp/negatives"
+
+
 def test_main_loop_consumes_web_pending_at_safe_point(tmp_path):
     """bot 主迴圈 safe point 會 pop web_pending 的控制類命令，並真的執行動作。
 

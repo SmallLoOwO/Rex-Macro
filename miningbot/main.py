@@ -81,10 +81,11 @@ if cfg.web_server_enabled:
 # 反應輪詢模式已由 !list 分頁驗證可行（_poll_list_reactions），沿用同一條路徑最簡。
 _REMOTE_RESUME_EMOJI = "▶️"
 _REMOTE_PAUSE_EMOJI = "⏸️"
-_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（.→F→X→,；等同 `ability` 指令）
+_REMOTE_ABILITY_EMOJI = "⚡"   # 遠端使用能力（.→X→,→等3s→F；等同 `ability` 指令）
 _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯讀觀測，輪詢執行緒直接抓）
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
+_WEB_SKIP_EMOJI = "⏭️"       # 2026-08-03：回礦網頁等待提醒上的「跳過回挖礦」反應
 
 
 def _tier_usage(bad_input: str, valid_tiers) -> str:
@@ -93,20 +94,15 @@ def _tier_usage(bad_input: str, valid_tiers) -> str:
             f"`階級 Exquisite` = 關 Exotic（常用）\n"
             f"`階級 關 Exotic` / `階級 開 Exotic` = 個別開關\n"
             f"可用階級：{' / '.join(valid_tiers)}")
-# awaiting_confirm 的選項說明（2026-08-01 使用者反映）。舊寫法「點錯回 `重骰`」把
-# 重骰當成「有疑慮」的預設答案，但重骰＝回地表換重生點、整輪重來（開場閘＋八方位
-# 掃描 ~2 分鐘），而人此刻已經在礦裡——點歪或指令被吃都不會讓人跑到別的地方去。
-# 不確定時「保持原地」（按好）才是零成本的那一邊，只有實測層真的不對才值得重骰。
+# awaiting_confirm 的選項說明。2026-08-03 使用者要求精簡：移除冗長解釋與作廢
+# （實機經驗層不對就重骰，從不單獨作廢資料），並補上反應鈕——證據訊息本身會貼
+# ⭕🎲，不必切回 embed 卡。
 _RR_CONFIRM_CHOICES_DISCORD = (
-    "沒問題回 `好` 開挖\n"
-    "**確定層不對**才回 `重骰`（回地表換重生點、整輪重來 ~2 分鐘）\n"
-    "不確定就回 `好`——人已經在礦裡，原地開挖不吃虧\n"
-    "資料要作廢回 `作廢`")
-# 2026-08-01 使用者反映：手機面板塞不下 + 語句沒有斷句。每個選項獨立一行。
+    "回 `好` 開挖；層不對 `重骰`（回地表 ~2 分鐘）\n"
+    "反應鈕：⭕ 好　🎲 重骰")
 _RR_CONFIRM_CHOICES_WEB = (
-    "好＝開挖（不確定也按好，人已在礦）\n"
-    "重骰＝回地表重來 ~2 分鐘\n"
-    "作廢＝丟資料")
+    "好＝開挖（不確定也按好）\n"
+    "重骰＝回地表 ~2 分鐘")
 # 手動瞄準三層掃描（2026-07-31）：顯示順序與人話層名。up 排最前——實機經驗礦多在
 # 壁上高處（同 harvester.plan_pitch_layers 的順序論證）。
 _MANUAL_LAYER_ORDER = {"up": 0, "mid": 1, "down": 2}
@@ -367,6 +363,8 @@ class Bot:
         # 逐一查有沒有人多按一次；按了就排 control:force_discord:<routing_key>，
         # 等待迴圈立刻放棄 web、退回 Discord（不必等滿整個 budget）。
         self._web_escalate: dict[str, tuple[str, int]] = {}
+        # 2026-08-03：回礦 web 介入提醒上的 ⏭️（跳過）反應追蹤，比照 _web_escalate。
+        self._web_skip_reaction: dict[str, tuple[str, int]] = {}
         # 釘底防抖（2026-07-19 spec）：看到新訊息只立旗標，頻道安靜滿
         # cfg.discord_repin_quiet_s 才刪舊貼新（_repin_tick）；回礦收尾由 _rr_finalize
         # 主動立遙控器旗標——修「回礦完成後要等使用者發話遙控器才出現」的消費競態。
@@ -411,6 +409,9 @@ class Bot:
         self._panel_check_observed: list = self._load_panel_check_observed()
         # 容量停滯偵測（spec 04）：(last_pct, last_change_at, alerted)；只在 MINING 期間推進
         self._capacity_stall: tuple = (None, time.time(), False)
+        # 容量停滯警報 pending：worker 設 (pct, minutes)、主迴圈消費送 Discord（截圖＋🏠 鈕）。
+        # sink 不支援反應鈕／截圖等落盤，故改 flag-based（同 _manual_reentry 跨執行緒模式）。
+        self._capacity_stall_alert_pending: tuple | None = None
         # Discord 遠端瞄準（2026-07-11 spec）：giveup 時的 aim context＋sweep 各方位近失候選
         self._aim_context = None                 # AimContext（giveup 時建、回挖礦/重置時作廢）
         self._sweep_shots: list = []             # [remote_aim.SweepShot]（episode 級、跨層累積）
@@ -458,6 +459,8 @@ class Bot:
         self._evac_done = False                   # RESET_WAIT 撤離結果（REENTRY embed 僅供 footer 標注，不改流程）
         self._rr_embed_mid = None                 # REENTRY episode embed 訊息 id（_rr_finalize 時刪除，避免殘留死卡）
         self._rr_reactions_seen: dict[str, int] = {}  # embed 反應數基線（同步語意）
+        self._rr_confirm_mid = None               # awaiting_confirm 證據訊息 id（貼 ⭕🎲 反應鈕用；離開確認階段即清）
+        self._rr_confirm_seen: dict[str, int] = {}  # 確認訊息反應數基線
         self._rr_last_min = -1                    # embed 分鐘數節流：變了才 PATCH（每分鐘最多 1 次，防 rate limit）
         self._last_reset_check = 0.0
         self._mine_resetting = False
@@ -1903,6 +1906,8 @@ class Bot:
         # 每張卡都只做一個 GET；沒有新文字訊息時也必須照常檢查。
         if self._rr_embed_mid and self.state is State.REENTRY:
             self._poll_rr_reactions()
+        if self._rr_confirm_mid and self.state is State.REENTRY:
+            self._poll_rr_confirm_reactions()
         if self._stuck_alert_mid and self.state is not State.MINING:
             self._stuck_alert_mid = None       # 離開 MINING＝卡住語境失效，🏠 作廢（訊息留著）
         elif self._stuck_alert_mid:
@@ -1911,6 +1916,8 @@ class Bot:
             self._poll_remote_reactions()
         if getattr(self, "_web_escalate", None):
             self._poll_web_escalate_reactions()
+        if getattr(self, "_web_skip_reaction", None):
+            self._poll_web_skip_reactions()
         if self._calib_session is not None:
             self._poll_calib_reactions()
         if self._list_message_id:
@@ -2041,7 +2048,7 @@ class Bot:
                 f"\n"
                 f" 點 **{_REMOTE_RESUME_EMOJI}** 繼續挖礦（等同按 Q / `resume`）\n"
                 f" 點 **{_REMOTE_PAUSE_EMOJI}** 暫停（等同按 Ctrl+Q / `pause`）\n"
-                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（右轉45°→F→X→轉回正面；等同 `ability`）\n"
+                f" 點 **{_REMOTE_ABILITY_EMOJI}** 使用能力（右轉→X→左轉→等3秒→F；等同 `ability`）\n"
                 f" 點 **{_REMOTE_SNAP_EMOJI}** 截圖（立即回傳當前畫面）\n"
                 f" 點 **{_REMOTE_CLEAR_EMOJI}** 清空背包面板（等同 `清空` 指令；挖礦中先放開挖礦鍵→清空→重接）\n"
                 f"\n"
@@ -2511,7 +2518,7 @@ class Bot:
             notify.send_message(token, ch,
                 f"⚡ 能力指令已排入（狀態: {self.state.value}"
                 + ("，暫停中——恢復後才會執行" if self.paused else "")
-                + "）→ 主迴圈將右轉45°→F→X→轉回正面")
+                + "）→ 主迴圈將右轉→X→左轉→等3秒→F")
             self.log_discord.info("CMD ability -> queued state=%s paused=%s",
                                   self.state.value, self.paused)
 
@@ -2678,7 +2685,7 @@ class Bot:
                 "`pause` — 遠距暫停（等同 Ctrl+Q；防掛機保持開啟；用 `resume` 恢復）\n"
                 "`resume` — 遠距恢復採礦（清 NEEDS_HUMAN/RESET_WAIT/暫停；等同按 Q）\n"
                 "`重開 (restart)` — 重開 bot 套用更新（⚠ 只在暫停時生效；先 `pause` 再打）\n"
-                "`ability` — 使用能力（右轉45°→F→X→轉回正面；採集/回礦中會等空檔執行）\n"
+                "`ability` — 使用能力（右轉→X→左轉→等3秒→F；採集/回礦中會等空檔執行）\n"
                 "\n"
                 "**查詢**\n"
                 "`status` — 查詢目前狀態、統計、保留清單\n"
@@ -2772,7 +2779,7 @@ class Bot:
             notify.send_message(token, ch,
                 "❓ 看不懂。可用：`3 C2`（方位 1-8+粗格）、`B3`／`B3 <層名>`（細格）、"
                 "`放大 <細格>`、`遠 [n]`/`近 [n]`（鏡頭）、`上|下 [px]`/`歸位`（俯仰）、"
-                "`掃`、`重骰`、`層 <層名>`、`好`、`作廢`、`跳過`（回挖礦）")
+                "`掃`、`重骰`、`層 <層名>`、`好`、`跳過`（回挖礦）")
             return
         self._queue_reentry_reply(content, reply, source="text")
 
@@ -3502,9 +3509,10 @@ class Bot:
         self.logger.warning(
             "容量 %.0f%% 已 %.0f 分鐘沒上升——鎬子可能沒真的在挖（不停機，只通知）",
             self._capacity_stall[0], mins)
-        # Discord 走事件 sink，**不在這個 worker 執行緒直接打 HTTP**
-        # （miningbot/AGENTS.md THREADING：網路送出屬於 async sink；這裡阻塞會卡住
-        # 0.5s 節奏的重置橫幅偵測）。文案在 notify._FORMATTERS["CAPACITY_STALL"]。
+        # worker 執行緒**不得直接打 HTTP**（miningbot/AGENTS.md THREADING：阻塞會卡住
+        # 0.5s 節奏的重置橫幅偵測）。改設 pending flag，主迴圈 _tick 消費時才送 Discord
+        # （需要截圖＋🏠 反應鈕，比照 _notify_stuck 在主迴圈送）。事件仍記錄供診斷。
+        self._capacity_stall_alert_pending = (round(self._capacity_stall[0]), round(mins))
         self.log.log("CAPACITY_STALL",
                      pct=round(self._capacity_stall[0]), minutes=round(mins))
 
@@ -3789,6 +3797,8 @@ class Bot:
                 self._rr_busy = False
                 self._rr_embed_mid = None        # episode embed 清乾淨（上輪 finalize 已刪訊息，保險清）
                 self._rr_reactions_seen = {}
+                self._rr_confirm_mid = None
+                self._rr_confirm_seen = {}
                 self._rr_last_min = -1
                 self.last_action = "重置完成，遠端回礦中（等待 Discord 指令）"
                 self.log.log("REENTRY_START")
@@ -3923,10 +3933,10 @@ class Bot:
                 self.logger.info("web: 跳過（排入 reentry pending）")
             else:
                 self.logger.info("web: 跳過被忽略（上一則指令還在執行或非回礦中）")
-        # 網頁 reentry 按鈕（好／作廢／重骰／重掃）：全部走既有 reentry 指令路徑，
+        # 網頁 reentry 按鈕（好／重骰／重掃）：全部走既有 reentry 指令路徑，
         # 跟 `跳過` 那段一樣的接法。重骰/重掃原本前端有按鈕但這裡沒接——按了靜默
-        # 消失（2026-08-01 使用者反映重骰沒作用）。
-        for cmd, raw in (("confirm", "好"), ("void", "作廢"),
+        # 消失（2026-08-01 使用者反映重骰沒作用）。作廢已退役（2026-08-03）。
+        for cmd, raw in (("confirm", "好"),
                          ("reroll", "重骰"), ("sweep", "掃")):
             if self._web_pending.pop(f"control:{cmd}") is not None:
                 reply = reentry_remote.parse_reply(raw)
@@ -4182,7 +4192,7 @@ class Bot:
 
         `mode`（2026-08-01）："sweep"＝這批圖要玩家點位置（既有行為）；"confirm"
         ＝回礦 awaiting_confirm 的證據圖（點擊處／落點），client 據此改顯示
-        好/重骰/作廢 並停掉點擊送出。dict 型 item 可多帶 `label` 當方位標籤——
+        好/重骰 並停掉點擊送出。dict 型 item 可多帶 `label` 當方位標籤——
         兩張證據圖標「方位 1/2」沒有意義，玩家要知道哪張是哪張。
 
         回 True＝已推送；False＝沒有 web thread／一張都沒編碼成功。
@@ -4615,6 +4625,12 @@ class Bot:
         if self._pending_clear_panel and self.state not in (State.HARVESTING, State.REENTRY):
             self._pending_clear_panel = False
             self._consume_clear_panel()
+        # 容量停滯警報（spec 04）：worker 設 pending flag → 主迴圈送截圖＋🏠 反應鈕。
+        # 必須在主迴圈跑：要截圖（等非同步寫檔落盤）＋貼反應（需 message_id）。
+        if self._capacity_stall_alert_pending is not None:
+            _pct, _mins = self._capacity_stall_alert_pending
+            self._capacity_stall_alert_pending = None
+            self._notify_capacity_stall(frame, _pct, _mins)
         # 假暫停修復（2026-08-04 使用者反映）：主迴圈頂部檢查 self.paused 後，
         # _on_enter(MINING) 等狀態進場副作用可能跑數秒（面板歸零重試、zoom 歸位、
         # init_mining_sequence）。若玩家在此期間按下暫停，主迴圈仍會繼續跑完
@@ -4698,7 +4714,7 @@ class Bot:
                 self.log_discord.warning("扣住的候選疊圖補發失敗：%s", e)
 
     def _notify_web_intervention_pending(self, routing_key: str, headline: str,
-                                         hint: str) -> None:
+                                         hint: str, skip_button: bool = False) -> None:
         """網頁開始等玩家點時，在 Discord 發一則帶網址的提醒（2026-07-26）。
 
         為什麼需要：網頁介入唯一的通知管道就是「玩家剛好開著面板」。實機 07-26
@@ -4710,15 +4726,21 @@ class Bot:
 
         2026-07-31 從回礦專用改成通用（routing_key + 兩段文案）：手動瞄準八方位
         也走同一套「無條件推網頁 → Discord 給網址 → 按 🔀 才轉 Discord」。
+
+        2026-08-03 使用者要求：回礦提醒加 ⏭️（跳過）反應鈕，玩家不必開網頁就能
+        直接跳過回挖礦；同時精簡文案，移除「慢慢來」等冗長敘述。``skip_button``
+        僅回礦傳 True（採集流程沒有跳過語意）。
         """
         from . import notify
         url = f"{self._web_url()}/intervention"
         ping = f"<@{notify.PING_USER_ID}>"
+        buttons = f"{_WEB_ESCALATE_EMOJI} 改用 Discord"
+        if skip_button:
+            buttons += f"　{_WEB_SKIP_EMOJI} 跳過回挖礦"
         text = (f"{ping} 🌐 **網頁在等你點**：{headline}\n"
                 f"{url}\n"
-                f"{hint}"
-                f"**慢慢來，圖會一直留著等你，不會逾時**；"
-                f"不想用網頁、要改用 Discord 圖文操作就按下面的 {_WEB_ESCALATE_EMOJI}。")
+                f"{hint}\n"
+                f"{buttons}。")
         try:
             ok, _detail, mid = notify.send_message_with_id(
                 cfg.discord_bot_token, cfg.discord_channel_id, text)
@@ -4728,6 +4750,8 @@ class Bot:
         if ok and mid:
             self._web_intervention_mid[routing_key] = mid
             self._arm_web_escalate_reaction(routing_key, mid)
+            if skip_button:
+                self._arm_web_skip_reaction(routing_key, mid)
 
     def _arm_web_escalate_reaction(self, routing_key: str, mid: str) -> None:
         """在等待網頁介入的提醒訊息上加 🔀，讓玩家不必等滿 budget 就能手動切 Discord。
@@ -4760,10 +4784,38 @@ class Bot:
                 self.log_discord.info(
                     "web escalate：%s 按了 %s，改用 Discord", routing_key, _WEB_ESCALATE_EMOJI)
 
+    def _arm_web_skip_reaction(self, routing_key: str, mid: str) -> None:
+        """在回礦 web 介入提醒上加 ⏭️，讓玩家不開網頁就能跳過回挖礦（2026-08-03）。
+
+        比照 `_arm_web_escalate_reaction`：基線用 add_reaction 成功＝1，避免把
+        bot 自己的反應誤判成玩家點擊。加反應失敗只記 log——加值路徑不擋主流程。
+        """
+        from . import notify
+        added, detail = notify.add_reaction(
+            cfg.discord_bot_token, cfg.discord_channel_id, mid, _WEB_SKIP_EMOJI)
+        if not added:
+            self.log_discord.warning("web skip 反應加不上去（%s）：%s", routing_key, detail)
+            return
+        self._web_skip_reaction[routing_key] = (mid, 1)
+
+    def _poll_web_skip_reactions(self) -> None:
+        """輪詢所有等待中的 ⏭️ 反應；有人多按一次就排 control:skip 給等待迴圈撿。"""
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        for routing_key, (mid, baseline) in list(self._web_skip_reaction.items()):
+            reactions = notify.get_reactions(token, ch, mid, _WEB_SKIP_EMOJI)
+            if len(reactions) > baseline:
+                del self._web_skip_reaction[routing_key]
+                if self._web_pending is not None:
+                    self._web_pending.push("control:skip", True)
+                self.log_discord.info(
+                    "web skip：%s 按了 %s，跳過回挖礦", routing_key, _WEB_SKIP_EMOJI)
+
     def _resolve_web_intervention_ping(self, routing_key: str) -> None:
         """本輪 web 介入結束（成功／退回 Discord）→ 收掉那則提醒訊息。"""
         from . import notify
         getattr(self, "_web_escalate", {}).pop(routing_key, None)
+        getattr(self, "_web_skip_reaction", {}).pop(routing_key, None)
         mid = self._web_intervention_mid.pop(routing_key, None)
         if not mid:
             return
@@ -7782,6 +7834,8 @@ class Bot:
             self.log_discord.info("RR embed delete mid=%s -> %s", self._rr_embed_mid, detail)
         self._rr_embed_mid = None
         self._rr_reactions_seen = {}
+        self._rr_confirm_mid = None            # 證據訊息不刪（非控制卡），只停輪詢
+        self._rr_confirm_seen = {}
         self._rr_last_min = -1
         ctx, self._rr_ctx = self._rr_ctx, None
         self._pending_reentry = None
@@ -7960,6 +8014,31 @@ class Bot:
         self.log_discord.info("RR TXT %s -> %s", text[:30], detail)
         return ok, detail
 
+    def _rr_notify_confirm(self, text: str, image_paths: list):
+        """awaiting_confirm 證據訊息：送圖＋貼 ⭕🎲 反應鈕＋建基線（照抄 _rr_post_embed）。
+
+        2026-08-03 使用者要求：確認階段也能用反應鈕表態，不必切回 embed 卡打字。
+        證據訊息（點擊處紅圈＋落點全幀）就是玩家盯著看的那則——反應貼在上面最直覺。
+        用 send_images_message_with_id 拿 mid（send_images_message 不回 mid）；
+        失敗（網路／權限）只記 log，不影響確認流程——玩家仍可打字 `好`／`重骰`。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        ok, detail, mid = notify.send_images_message_with_id(
+            token, ch, text, image_paths)
+        self.log_discord.info("RR confirm msg %s -> %s (mid=%s)",
+                              text[:30], detail, mid)
+        self._rr_confirm_mid = None
+        self._rr_confirm_seen = {}
+        if not (ok and mid):
+            return
+        seen = {}
+        for em in reentry_remote.CONFIRM_REACTIONS:
+            added, _ = notify.add_reaction(token, ch, mid, em)
+            seen[em] = 1 if added else 0
+        self._rr_confirm_mid = mid
+        self._rr_confirm_seen = seen
+
     def _click_surface_verified(self, tag: str) -> bool:
         """按「回到地表」並以幀差驗證傳送；未達門檻則重試。
 
@@ -8102,6 +8181,36 @@ class Bot:
             self._reset_reaction_button(mid, emoji, self._rr_reactions_seen)
             break                                # 一次輪詢只處理一個
 
+    def _poll_rr_confirm_reactions(self):
+        """輪詢 awaiting_confirm 證據訊息的 ⭕🎲 反應（照抄 _poll_rr_reactions 換訊息來源）。
+
+        只在 ctx.phase == "awaiting_confirm" 時處理——phase 已變（玩家打字確認／重骰、
+        或主迴圈已收尾）就清 mid 停輪詢，舊訊息上的殘留反應不再觸發。
+        """
+        from . import notify
+        ctx = self._rr_ctx
+        if ctx is None or ctx.phase != "awaiting_confirm":
+            self._rr_confirm_mid = None
+            self._rr_confirm_seen = {}
+            return
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        mid = self._rr_confirm_mid
+        if not mid:
+            return
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
+            return
+        self._rr_confirm_seen, increments = notify.find_reaction_increments(
+            message, self._rr_confirm_seen, reentry_remote.CONFIRM_REACTIONS)
+        for emoji, delta in increments:
+            reply = reentry_remote.reaction_to_confirm_reply(emoji)
+            if reply is None:
+                continue
+            self._queue_reentry_reply(
+                f"reaction:{emoji}", reply, source=f"confirm-reaction:{emoji}+{delta}")
+            self._reset_reaction_button(mid, emoji, self._rr_confirm_seen)
+            break                                # 一次輪詢只處理一個
+
     def _notify_stuck(self, reason: str):
         """STUCK Discord 警告＋🏠 手動回礦反應鈕（H044 spec 第 3 節）。
 
@@ -8154,6 +8263,37 @@ class Bot:
         self._stuck_alert_mid = None       # 一次性：觸發後按鈕作廢（訊息留著）
         notify.send_message(token, ch, "⛏ 手動回礦已排入（🏠）→ 下個 tick 進 REENTRY")
         self.log_discord.info("STUCK 🏠 反應 +%d -> manual_reentry", delta)
+
+    def _notify_capacity_stall(self, frame, pct, mins):
+        """容量停滯 Discord 警報＋截圖＋🏠 手動回礦反應鈕（spec 04）。
+
+        在主迴圈跑（_tick 消費 pending flag）：worker 設 flag、主迴圈送。
+        需要主迴圈的理由：①截圖要等非同步寫檔落盤再上傳 ②貼反應需 message_id。
+        與 _notify_stuck 同模式——回礦未啟用＝只送截圖不含 🏠，不貼反應。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        active = self._reentry_active()
+        text = (f"⚠️ 容量 {pct}% 已 {mins} 分鐘沒上升"
+                "——鎬子可能沒真的在挖，請看一眼畫面"
+                "（bot 繼續跑，沒有停機）")
+        if active:
+            text += "\n點 🏠 或回 `回礦` ＝手動回礦自救（回地表→傳圖→你指揮）"
+        # 截圖（非同步寫檔，等落盤再上傳——比照 remote 📷 shot 路徑）
+        shot_path = self._snapshot(frame, "capacity_stall") if frame is not None else None
+        if shot_path:
+            self._wait_snapshot_ready(shot_path)
+            ok, detail, mid = notify.send_images_message_with_id(token, ch, text, [shot_path])
+        else:
+            ok, detail, mid = notify.send_message_with_id(token, ch, text)
+        self.log_discord.info("CAPACITY_STALL -> %s (mid=%s)", detail, mid)
+        if not (ok and mid and active):
+            return
+        added, _ = notify.add_reaction(token, ch, mid, "🏠")
+        # 覆寫 STUCK 的 mid：容量停滯比 STUCK 更嚴重（15min vs 60s），
+        # 🏠 輪詢走同一個 _stuck_alert_mid（_poll_stuck_reaction 消費）。
+        self._stuck_alert_mid = mid
+        self._stuck_seen = {"🏠": 1 if added else 0}
 
     def _rr_drain_reset(self):
         """清 H066 重置收尾等候狀態（等候結束／episode 收尾／交人工後都要清）。"""
@@ -8986,10 +9126,10 @@ class Bot:
             self.logger.warning("[RR#%s] Depth OCR 讀不到，點擊驗證退回幀差＋人工確認",
                                 ctx.episode_id)
             ctx.phase = "awaiting_confirm"
-            self._rr_notify(
+            self._rr_notify_confirm(
                 f"❓ 畫面有變化但 Depth 讀不到、無法確認下礦（{evidence}）。\n"
                 f"左圖紅圈＝點擊處、右圖＝落點。\n{_RR_CONFIRM_CHOICES_DISCORD}",
-                image_paths=[mpath, lpath])
+                [mpath, lpath])
             self._rr_ask_confirm_on_web(
                 ctx, mpath, lpath,
                 f"❓ 畫面有變化但 Depth 讀不到，無法確認下礦（{evidence}）。\n"
@@ -9008,9 +9148,9 @@ class Bot:
             self._rr_success(ctx, "success")
         else:
             ctx.phase = "awaiting_confirm"
-            self._rr_notify(
+            self._rr_notify_confirm(
                 f"❓ 已下礦（{evidence}）。\n左圖紅圈＝點擊處、右圖＝落點。\n{_RR_CONFIRM_CHOICES_DISCORD}",
-                image_paths=[mpath, lpath])
+                [mpath, lpath])
             self._rr_ask_confirm_on_web(
                 ctx, mpath, lpath,
                 f"❓ 已下礦（{evidence}）。\n{_RR_CONFIRM_CHOICES_WEB}")
@@ -9028,7 +9168,7 @@ class Bot:
         `begin_intervention_replay()` 重新開一輪。反過來寫會把剛推的證據圖清掉，
         晚到的連線又只剩空白面板（RR#34 同型）。
 
-        推送用 `mode="confirm"`：client 據此顯示 好/重骰/作廢 而不是掃描那組鍵，
+        推送用 `mode="confirm"`：client 據此顯示 好/重骰 而不是掃描那組鍵，
         並停掉點擊送出——這階段點畫面沒有任何消費端（主迴圈已離開等待迴圈）。
         讀不到檔就只送文字，證據圖是加值路徑，不能炸掉確認流程。
         """
@@ -9233,14 +9373,16 @@ class Bot:
                 ctx_summary=summary, note=note):
             return False
         # 網頁在等你點——Discord 發一則提醒（玩家不必剛好開著面板盯著）
+        # 2026-08-03：加 ⏭️ 跳過反應鈕（玩家不必開網頁就能跳過），精簡文案。
         self._notify_web_intervention_pending(
             routing_key,
             f"回礦 #{ctx.episode_id}（attempt {ctx.attempt}）已拍好 {len(web_pngs)} 個方位",
-            "左右切方位 → 直接點傳送板；也可在面板上 ⟳ 重掃／🎲 重骰／⏭️ 跳過。")
+            "左右切方位 → 直接點傳送板。",
+            skip_button=True)
         self.log_discord.info(
-            "[RR#%s] 回礦 web 介入：已推 %d 張（推送當下 client %s；無限等，玩家按 %s 才改 Discord）",
+            "[RR#%s] 回礦 web 介入：已推 %d 張（推送當下 client %s；無限等，玩家按 %s/%s）",
             ctx.episode_id, len(web_pngs), "在線" if online else "離線",
-            _WEB_ESCALATE_EMOJI)
+            _WEB_ESCALATE_EMOJI, _WEB_SKIP_EMOJI)
 
         try:
             for attempt in range(1, max_attempts + 1):

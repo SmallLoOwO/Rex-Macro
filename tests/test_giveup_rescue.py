@@ -1042,7 +1042,8 @@ def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
         _post_harvest_watch=0,
         _focus_roblox=lambda: (order.append("focus") or True),
         _zoom_normalize=lambda *_: None,
-        _clear_panel_filter=lambda: order.append("clear"),
+        _clear_panel_filter=lambda: (order.append("clear"),
+                                     setattr(bot, "_panel_zeroed_at", 9999.0)),
         _rotate_verified=None,
         _log_w_state=lambda *_: None)
     monkeypatch.setattr(main.miner, "init_mining_sequence",
@@ -1073,7 +1074,8 @@ def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
         _post_harvest_watch=0,
         _log_w_state=lambda *_: None,
         _rotate_verified=None,
-        _clear_panel_filter=lambda: order.append("clear"))
+        _clear_panel_filter=lambda: (order.append("clear"),
+                                     setattr(bot, "_panel_zeroed_at", 9999.0)))
     monkeypatch.setattr(main.harvester, "restore_view", lambda *a, **kw: None)
     monkeypatch.setattr(main.miner, "init_mining_sequence",
                         lambda **kw: order.append("init"))
@@ -1201,6 +1203,7 @@ def _stall_bot(monkeypatch, state=None, stall=None):
         bind=["_check_capacity_stall"], logger=_Rec(), log=_FakeEventLog(),
         state=state or main.State.MINING,
         _capacity_stall=stall or (10.0, 0.0, False),
+        _capacity_stall_alert_pending=None,
         _mine_resetting=False, _human_reason="")
 
 
@@ -1218,19 +1221,24 @@ def test_capacity_stall_alert_never_stops_the_bot(monkeypatch):
     assert bot._human_reason == ""
 
 
-def test_capacity_stall_goes_through_the_event_sink_not_blocking_http(monkeypatch):
-    """通知走 EventLog（非同步 sink），不得在 banner worker 執行緒直接打 HTTP。
+def test_capacity_stall_sets_pending_flag_not_blocking_http(monkeypatch):
+    """worker 設 pending flag，不在 banner worker 執行緒直接打 HTTP。
 
     miningbot/AGENTS.md THREADING：「Discord/network sends belong behind the async
-    sink or poller」——這裡阻塞會卡住 0.5s 節奏的重置橫幅偵測。
+    sink or poller」——這裡阻塞會卡住 0.5s 節奏的重置橫幅偵測。截圖＋🏠 反應鈕
+    等主迴圈 _tick 消費 pending flag 時才送。
     """
     monkeypatch.setattr(main.time, "time", lambda: 10_000.0)
     monkeypatch.setattr(main.notify, "send_message",
+                        lambda *a, **kw: pytest.fail("worker 執行緒不得直接送 Discord"))
+    monkeypatch.setattr(main.notify, "send_images_message",
                         lambda *a, **kw: pytest.fail("worker 執行緒不得直接送 Discord"))
     bot = _stall_bot(monkeypatch)
     bot._check_capacity_stall(10.0)
     _kind, meta = bot.log.records[0]
     assert meta["pct"] == 10 and meta["minutes"] == 15
+    # pending flag 帶正確值，等主迴圈消費
+    assert bot._capacity_stall_alert_pending == (10, 15)
 
 
 def test_capacity_stall_resets_outside_mining(monkeypatch):
@@ -1239,7 +1247,61 @@ def test_capacity_stall_resets_outside_mining(monkeypatch):
     bot = _stall_bot(monkeypatch, state=main.State.NEEDS_HUMAN)
     bot._check_capacity_stall(10.0)
     assert bot.log.records == [], "非 MINING 不得警報"
+    assert bot._capacity_stall_alert_pending is None
     assert bot._capacity_stall == (None, 10_000.0, False)
+
+
+def test_capacity_stall_notify_sends_screenshot_and_reentry_button(monkeypatch):
+    """主迴圈 _notify_capacity_stall 送截圖＋🏠 反應鈕；回礦未啟用＝不含 🏠。"""
+    sent = {}
+
+    def fake_send_images_with_id(token, ch, content, paths, timeout=30.0):
+        sent["content"] = content
+        sent["paths"] = paths
+        return True, "HTTP 200", "msg123"
+
+    def fake_add_reaction(token, ch, mid, emoji):
+        sent["reaction"] = (mid, emoji)
+        return True, "ok"
+
+    monkeypatch.setattr(main.notify, "send_images_message_with_id",
+                        fake_send_images_with_id)
+    monkeypatch.setattr(main.notify, "add_reaction", fake_add_reaction)
+    bot = make_fake_bot(
+        bind=["_notify_capacity_stall"],
+        _snapshot=lambda frame, label: "/tmp/fake.png",
+        _wait_snapshot_ready=lambda path, **kw: True,
+        _reentry_active=lambda: True,
+        _stuck_alert_mid=None, _stuck_seen={},
+        log_discord=_Rec())
+    bot._notify_capacity_stall("fake_frame", 38, 15)
+    assert "38%" in sent["content"] and "15 分鐘" in sent["content"]
+    assert "🏠" in sent["content"]
+    assert sent["reaction"] == ("msg123", "🏠")
+    assert bot._stuck_alert_mid == "msg123"
+
+
+def test_capacity_stall_notify_no_button_when_reentry_inactive(monkeypatch):
+    """回礦未啟用時只送截圖，不貼 🏠 反應。"""
+    sent = {}
+
+    def fake_send_images_with_id(token, ch, content, paths, timeout=30.0):
+        sent["content"] = content
+        return True, "HTTP 200", "msg456"
+
+    monkeypatch.setattr(main.notify, "send_images_message_with_id",
+                        fake_send_images_with_id)
+    monkeypatch.setattr(main.notify, "add_reaction",
+                        lambda *a, **kw: pytest.fail("回礦未啟用不該貼 🏠"))
+    bot = make_fake_bot(
+        bind=["_notify_capacity_stall"],
+        _snapshot=lambda frame, label: "/tmp/fake.png",
+        _wait_snapshot_ready=lambda path, **kw: True,
+        _reentry_active=lambda: False,
+        _stuck_alert_mid=None, _stuck_seen={},
+        log_discord=_Rec())
+    bot._notify_capacity_stall("fake_frame", 38, 15)
+    assert "🏠" not in sent["content"]
 
 
 # ── H072 進場面板色檢（chill 前鎬子已挖到稀有 礦）─────────────────────────────
@@ -1490,8 +1552,13 @@ def test_on_enter_harvesting_short_circuits_with_double_chill_message(monkeypatc
 
 def test_on_enter_harvesting_normal_flow_when_panel_empty(monkeypatch):
     """面板沒命中 → 不短路：_on_enter(HARVESTING) 回傳 None（正常流程）。"""
+    import pydirectinput
     from miningbot import harvester as harvester_mod
     import miningbot.capture as capture_mod
+
+    # 關掉 pydirectinput fail-safe——滑鼠停在螢幕角落時 key_up 會觸發
+    # FailSafeException 而非 fake bot 缺方法造成的 AttributeError，遮住測試意圖
+    monkeypatch.setattr(pydirectinput, "FAILSAFE", False)
 
     now = [1000.0]
     monkeypatch.setattr(main.time, "time", lambda: now[0])

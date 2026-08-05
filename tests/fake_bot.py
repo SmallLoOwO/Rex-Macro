@@ -111,6 +111,7 @@ def make_fake_bot(*, bind=(), **attrs):
     bot._mine_resetting = False
     bot._rr_ctx = None
     bot._pending_aim = None
+    bot._capacity_stall_alert_pending = None
     # 防掛機（_antiafk_tick 由 _await_web_action 呼叫；預設 0=未計時，
     # 第一次只設 timer 就 return，interval 900s 遠大於測試 mock 時間）
     bot._antiafk_last = 0.0
