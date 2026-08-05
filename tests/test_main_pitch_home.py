@@ -103,15 +103,20 @@ def test_rr_success_restores_yaw_from_cur_dir(monkeypatch):
 
 
 # ===== H048/H052：開場鏈俯仰歸位——重試與成敗只認凍結探針（2026-07-19）=====
-def _rr_open_gate_bot(monkeypatch, measured_results):
+def _rr_open_gate_bot(monkeypatch, measured_results, trigger="manual"):
     """開場鏈最小 Bot：俯仰量測按 measured_results 依序回，記錄 prepare/attempt/notify。"""
     bot = Bot.__new__(Bot)
     bot.logger = _LogRecorder()
     bot._focus_roblox = lambda: True
     bot._rr_open_first_ts = 0.0
+    bot._rr_open_last_ts = 0.0
+    bot._rr_click_eaten = False
+    bot._rr_drain_first_ts = 0.0
+    bot._rr_drain_last_cap = None
+    bot._rr_drain_stall = 0
     bot._click_surface_verified = lambda tag: False
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
-        episode_id=3, created_at=0.0, sticky_layer="L", trigger="manual")
+        episode_id=3, created_at=0.0, sticky_layer="L", trigger=trigger)
     bot._rr_ensure_ctx = lambda reroll: None
     bot._rr_pitch_back_px = None
     bot._pitch_offset_px = 0
@@ -139,6 +144,9 @@ def _rr_open_gate_bot(monkeypatch, measured_results):
     monkeypatch.setattr(main.capture, "grab", lambda: "FRAME")
     monkeypatch.setattr(main.capture, "crop", lambda f, region: f)
     monkeypatch.setattr(main.ocr, "read_depth_is_surface", lambda img, path: True)
+    if trigger == "reset":
+        # 容量預檢（H058）讀值——0% 通過門檻、不阻塞
+        monkeypatch.setattr(main.ocr, "read_capacity_pct", lambda img, path: 0.0)
     return bot
 
 
@@ -197,6 +205,37 @@ def test_rr_open_pitch_no_retry_when_ok(monkeypatch):
 
     assert len(attempts) == 1              # 生效即停，不重複拖
     assert not any("疑似被吃" in n for n in notes)
+
+
+# ===== 點擊被吃偵測：reset trigger + teleported=False → 跳過掃描（2026-08-05）=====
+def test_rr_open_click_eaten_reset_skips_sweep(monkeypatch):
+    """重置後 Go to surface 點擊被吃（_click_surface_verified 回 False）＋
+    trigger=reset → 跳過八方位掃描（玩家在錯誤地表位置，掃了必空），
+    設 _rr_click_eaten=True 讓 probe loop 用短間隔重探。"""
+    bot = _rr_open_gate_bot(monkeypatch, [(False, 2.0, 0.03)], trigger="reset")
+    bot._rr_open_episode()
+    assert bot.sweeps == []                # 沒走到掃描
+    assert bot._rr_click_eaten is True     # 旗標設上 → probe loop 用 3s 不是 20s
+    assert bot._pitch_offset_px == 0       # 沒做俯仰歸位（提早 return）
+
+
+def test_rr_open_click_eaten_manual_still_sweeps(monkeypatch):
+    """trigger=manual（非 reset）時 teleported=False 仍照舊走狀態錨→掃描。
+    H046(b)：手動回礦時人可能已在傳送板附近，按 Go to surface 畫面不變是正常的。"""
+    bot = _rr_open_gate_bot(monkeypatch, [(False, 2.0, 0.03)], trigger="manual")
+    bot._rr_open_episode()
+    assert bot.sweeps == [1]               # 照舊掃描
+    assert bot._rr_click_eaten is False    # 不設旗標
+
+
+def test_rr_open_teleport_ok_clears_click_eaten(monkeypatch):
+    """上一輪 click_eaten=True，這輪傳送成功 → 清旗標，照正常流程走。"""
+    bot = _rr_open_gate_bot(monkeypatch, [(False, 2.0, 0.03)], trigger="reset")
+    bot._rr_click_eaten = True             # 模擬上一輪被吃
+    bot._click_surface_verified = lambda tag: True  # 這輪成功
+    bot._rr_open_episode()
+    assert bot._rr_click_eaten is False    # 清了
+    assert bot.sweeps == [1]               # 正常掃描
 
 
 # ===== 重骰保留 session 仰角＋開場記帳同步（2026-07-19 使用者反映）=====
@@ -413,6 +452,7 @@ def _rr_drain_bot(monkeypatch, caps):
     bot._rr_drain_first_ts = 0.0
     bot._rr_drain_last_cap = None
     bot._rr_drain_stall = 0
+    bot._rr_click_eaten = False
     bot._rr_ctx = reentry_remote.RemoteReentryContext(
         episode_id=31, created_at=0.0, sticky_layer="L", trigger="reset")
     bot._rr_ensure_ctx = lambda reroll: None
@@ -470,12 +510,17 @@ def test_drain_release_starts_probe_budget_with_full_amount(monkeypatch):
     bot._rr_open_episode()                            # 容量 1% → 放行
     assert bot._rr_drain_first_ts == 0.0, "放行後要清等候狀態"
     assert bot._rr_open_first_ts > 0.0, "探測預算要到這一刻才起算（拿滿額度）"
-    assert bot.clicks == ["開場"] and bot.drags       # 真的開始回礦動作
+    assert bot.clicks == ["開場"]                     # 真的開始回礦動作（點擊已送出）
 
 
 def test_drain_release_proceeds_to_sweep(monkeypatch):
-    """等候結束＋開場閘全過 → 照舊拍八方位（等候層不改變原有放行行為）。"""
+    """等候結束＋開場閘全過 → 照舊拍八方位（等候層不改變原有放行行為）。
+
+    點擊成功（_click_surface_verified 回 True）才走到掃描—— 點擊被吃時
+    trigger=reset 會提早 return（見 test_rr_open_click_eaten_reset_skips_sweep）。
+    """
     bot = _rr_drain_bot(monkeypatch, [97.0, 1.0])
+    bot._click_surface_verified = lambda tag: bot.clicks.append(tag) or True
     bot._rr_open_episode()
     bot._rr_open_episode()
     assert bot.clicks == ["開場"] and bot.sweeps == [1]

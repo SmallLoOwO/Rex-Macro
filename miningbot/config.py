@@ -553,6 +553,10 @@ class Config:
     #   frac 補位；與 reentry_teleport_diff 取 OR。
     reentry_open_retry_wait_s: float = 20.0     # 開場探測：判「未傳送」後隔多久再點一次（H044 凍結中
     #   點擊無反應，點擊本身就是探針；被動凍結偵測已被量測否決——活著靜止畫面與凍結像素不可分）
+    reentry_click_retry_wait_s: float = 3.0      # 點擊被吃（_click_surface_verified 回 False）時的
+    #   重探間隔——不同於 reentry_open_retry_wait_s（20s，給 H044 凍結恢復用）。點擊被吃＝
+    #   遊戲活著但輸入沒進去，短間隔重試即可（2026-08-05 使用者觀測：重置後 Go to surface
+    #   點擊被吃 → bot 在錯誤地表位置八方位全空 → 每次都要重骰）。
     reentry_open_budget_s: float = 300.0        # 開場探測總預算（自 episode 首擊起算；實測凍結 1~2.5
     #   分鐘，300s 蓋過最壞觀測 2 倍）。用盡→通知一次附截圖，等 重骰/跳過/回礦
     reentry_open_capacity_max_pct: float = 5.0   # 開場容量閘（H045，僅 reset 觸發）：拍照前容量 OCR 須

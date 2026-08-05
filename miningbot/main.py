@@ -300,6 +300,7 @@ class Bot:
         self._rr_drain_first_ts = 0.0          # H066 重置收尾等候：首輪時刻（0=非等候中）
         self._rr_drain_last_cap = None         # H066：上一輪容量讀值（判有沒有在降）
         self._rr_drain_stall = 0               # H066：連續「沒再降」輪數
+        self._rr_click_eaten = False           # 點擊被吃旗標：True 時 probe loop 用短間隔重探
         self._rr_last_probe = (None, None, 0.0, 0.0)  # 最後一探讀值 (surface, cap, p_mean, p_frac)；give_up 通知附帶
         self._spawn_chill_notified = False        # spawn chill 去抖動：同一波 chill 只通知一次（_check_spawn_chill 在 chill 回落時重新武裝）
         self._last_heartbeat = time.time()
@@ -7693,9 +7694,11 @@ class Bot:
         # H044 開場探測：上一擊未傳送（first_ts 非 0）→ 依節奏重探/放棄。使用者指令優先
         #（重骰/跳過照常走 pending 消費；重骰失敗會回到這裡繼續計預算）。
         elif self._rr_open_first_ts and self._pending_reentry is None:
+            wait_s = (cfg.reentry_click_retry_wait_s if self._rr_click_eaten
+                      else cfg.reentry_open_retry_wait_s)
             act = reentry_remote.plan_open_retry(
                 self._rr_open_first_ts, time.time(),
-                cfg.reentry_open_retry_wait_s, cfg.reentry_open_budget_s,
+                wait_s, cfg.reentry_open_budget_s,
                 self._rr_open_last_ts)
             if act == "probe":
                 self._rr_busy = True
@@ -7734,6 +7737,8 @@ class Bot:
                 # H066：等候輪的 last_action 由 _rr_open_episode 寫（帶容量讀值），
                 # 這裡不可覆蓋成「等待指令」——那會謊報 bot 在等人。
                 pass
+            elif self._rr_open_first_ts and self._rr_click_eaten:
+                self.last_action = f"回礦 #{ctx.episode_id}：回到地表點擊被吃，重試中（已 {mins} 分）"
             elif self._rr_open_first_ts:
                 self.last_action = f"回礦開場探測中 #{ctx.episode_id}（畫面可能凍結，已 {mins} 分）"
             else:
@@ -7757,6 +7762,7 @@ class Bot:
         # 遙控器一直埋在上面。旗標制不依賴輪詢看到哪則訊息，競態消失。
         self._remote_repin.mark_pending()
         self._rr_open_first_ts = 0.0             # episode 收尾清探測狀態
+        self._rr_click_eaten = False             # 清點擊被吃旗標
         self._rr_drain_reset()                   # H066：收尾等候狀態也一併清
         # Task 4：episode 結束收走 embed 卡片（避免殘留一堆死卡）。放在 ctx 清除前，
         # 即使 ctx 已 None（防禦性呼叫）也能清掉殘留 embed。
@@ -8245,6 +8251,25 @@ class Bot:
         self._rr_open_last_ts = time.time()
         if teleported:
             time.sleep(1.0)                      # 傳送落地沉澱
+            self._rr_click_eaten = False
+        elif ctx is not None and ctx.trigger == "reset":
+            # 礦坑重置後遊戲把玩家送到隨機地表（遠離傳送板），「回到地表」
+            # 按鈕的唯一作用是將玩家傳送到傳送板附近。_click_surface_verified
+            # 偵測不到傳送（diff ≥12 / frac ≥0.05 全未達）＝點擊被吃→玩家還在
+            # 原位→八方位必掃不到面板。跳過掃描直接重探，避免 ~25s 白轉＋無用
+            # Discord 推圖（使用者 2026-08-05 觀測）。
+            self._rr_click_eaten = True
+            self.last_action = (
+                f"回礦 #{ctx.episode_id}：回到地表點擊可能被吃，"
+                f"{cfg.reentry_click_retry_wait_s:.0f}s 後重試")
+            self.logger.info(
+                "[RR#%s] 開場：回到地表 ×%d 皆未偵測傳送——點擊可能被吃，"
+                "跳過八方位掃描，%.0fs 後重探（預算剩 %.0fs）",
+                ctx.episode_id, cfg.reentry_click_retries,
+                cfg.reentry_click_retry_wait_s,
+                max(0.0, cfg.reentry_open_budget_s
+                    - (time.time() - self._rr_open_first_ts)))
+            return
         # H045/H046 開場狀態閘（點擊幀差不在條件內）：
         # (1) 凍結探針＝俯仰拖曳前後幀「逐位元相同」（probe_frozen 專用門檻；
         #     ⚠ 不可用 pitch_eaten_*——H046(a) 夜間地表拖曳 mean 0.93~5.13 被它鎖 300s）；

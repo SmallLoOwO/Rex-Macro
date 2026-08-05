@@ -344,6 +344,14 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `main.py` remains the main complexity hotspot and has intentional direct state
   assignments outside the central transition path.
 - Remote aim/re-entry and zoom need more live-game evidence than pure tests provide.
+- **Reentry click-eaten detection** (2026-08-05). 礦坑重置後遊戲把玩家送到隨機地表
+  （遠離傳送板），「Go to surface」按鈕傳送到傳送板附近。`_click_surface_verified`
+  偵測不到傳送＝點擊被吃，但舊版無視此信號繼續走狀態錨（只看 Depth=Surface，不分
+  正確/錯誤地表位置）→ 八方位掃描必空 → 每次要重骰。現 trigger=reset 且
+  `teleported=False` 時跳過掃描直接重探（`_rr_click_eaten` 旗標 → probe loop 用
+  `reentry_click_retry_wait_s`=3s 而非 20s）。trigger=manual 不受影響（H046(b)：
+  人可能已在傳送板附近）。**需實機驗證**：log 應見 `[RR#] 開場：回到地表 ×N 皆未
+  偵測傳送——點擊可能被吃` 後 3s 重探，而非 20s 後或白掃八方位。
 - `scan_confirm_mode` is now `enforce` (H073, 2026-08-02). harvest 168 實機：
   進場 D2 click 被吃、掃描沒觸發，但 `scan_confirm_mode` 原為 `off` 使
   `_confirm_scan` 永遠 return True → bot 無法分辨「沒稀有礦」與「掃描沒觸發」→
