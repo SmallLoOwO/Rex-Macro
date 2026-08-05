@@ -2457,3 +2457,17 @@ class TestPanelHandleStatusBar:
         """把手文字由 JS 從方位／狀態／連線組合，並在狀態變更時更新（marker）。"""
         html = _panel_html()
         assert 'updateHandle' in html
+
+
+class TestPanelDrawerExpandCollapse:
+    """ticket 05：把手上拉／點擊展開抽屜、再點收回。"""
+
+    def test_drawer_toggle_function_present(self):
+        html = _panel_html()
+        assert 'toggleDrawer' in html
+
+    def test_drawer_open_toggled_via_classlist(self):
+        """JS 用 classList 操作 drawer-open（CSS 已備 .drawer-open 規則）。"""
+        html = _panel_html()
+        assert 'classList' in html
+        assert "drawer-open" in html

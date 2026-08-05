@@ -1657,6 +1657,7 @@ const skipBtn = document.getElementById('skip');
 const statusLineEl = document.getElementById('status-line');
 const handleEl = document.getElementById('drawer-handle');
 const handleTextEl = handleEl ? handleEl.querySelector('.handle-text') : null;
+const sideEl = document.getElementById('side');
 const hintEl = document.getElementById('hint');
 const rcResumeBtn = document.getElementById('rc-resume');
 const rcPauseBtn = document.getElementById('rc-pause');
@@ -1703,6 +1704,14 @@ function updateHandle() {
   handleTextEl.textContent = parts.join(' · ') || 'MiningBot 介入面板';
   handleTextEl.style.color = STATUS_COLORS[_statusKind] || '#9ad';
 }
+
+// 把手點擊＝展開／收回抽屜（ticket 05）。CSS 已備 #side.drawer-open 規則。
+// 桌機 handleEl 為 null（把手 display:none）→ 不綁監聽器。
+function toggleDrawer() {
+  if (!sideEl) return;
+  sideEl.classList.toggle('drawer-open');
+}
+if (handleEl) handleEl.addEventListener('click', toggleDrawer);
 
 // ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
 // 玩家不會一直盯著這一頁。沒有這段，網頁介入等於「剛好有看到才有用」——
