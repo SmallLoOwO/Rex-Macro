@@ -445,6 +445,11 @@ class Config:
     harvest_entry_panel_check: bool = True
     panel_check_observe_target: int = 10    # 累積這麼多次進場面板判定後，由 agent session 主動問玩家
                                             # 是否切自動（不交人工、直接回 MINING）
+    # MINING 期間定期截背包（2026-08-05）：每 interval 截一次 backpack_review_region，
+    # 存到 <log_dir>/snapshots/backpack/，ring buffer 保留 max_keep 張。不發 Discord。
+    # 用途：面板色檢短路時取最近一張當「chill 前基準」附到 NEEDS_HUMAN 通知供玩家比對。
+    backpack_snapshot_interval_s: float = 30.0
+    backpack_snapshot_max_keep: int = 6          # ~3 分鐘歷史（30s × 6）
     detection_disabled_tiers: tuple = ()     # 偵測系統排除的階級（空 = 全偵測）；
                                              # 支援非連續選擇，如 ("Exotic",) = 排除 Exotic
 

@@ -398,6 +398,7 @@ class Bot:
         self._banner_hue: float | None = None   # 上一幀的 banner 文字色相（OpenCV 0..179）
         self._banner_color_changes: list = []   # [時間戳]：色相跳變的時刻（episode 級）
         self._panel_zeroed_at: float | None = None  # 面板歸零時刻（spec 2026-07-31）；None = 不信任面板
+        self._backpack_snap_last: float = 0.0  # 背包定期截圖上次時間（0 = 待拍第一張；MINING 期間每 interval 拍一次）
         self._episode_succeeded = False          # 本場已記過 HARVEST_SUCCESS（救援不得重複認領）
         self._entry_panel_gains: list = []       # 進場面板色檢命中的 礦名（H072；sweep 後 giveup reason 用）
         self._double_chill_detected: bool = False  # banner 色相偵測到兩則 chill（強制 bonus sweep + 全空交人工）
@@ -3623,6 +3624,10 @@ class Bot:
                 self.logger.warning("MINING 進場：面板歸零失敗 → 降級 NEEDS_HUMAN")
                 self._on_enter(State.NEEDS_HUMAN, frame)
                 return State.NEEDS_HUMAN
+            # 背包定期截圖（2026-08-05）：清舊 session 殘留 + 重置計時器，
+            # 讓第一張在 MINING 第一 tick 立刻拍（_backpack_snap_last=0 → maybe 必觸發）。
+            self._backpack_snap_clear()
+            self._backpack_snap_last = 0.0
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -3699,6 +3704,18 @@ class Bot:
                 self.log_harvest.info(
                     "[%s] 面板色檢命中 → 短路 NEEDS_HUMAN（略過 sweep%s）",
                     hid, "，double chill" if self._double_chill_detected else "")
+                # ★ 背包比對圖（2026-08-05）：取 chill 前最近的定期截圖 + 當下面板裁圖，
+                #   透過 image_groups 附到 NEEDS_HUMAN，讓玩家兩張圖比對判斷是否真的入帳。
+                self._needs_human_extra_meta = {"harvest_id": hid}
+                groups = self._build_panel_check_images(frame)
+                if groups:
+                    self._needs_human_extra_meta["image_groups"] = groups
+                # ★ spawn chill 抑制（2026-08-05）：短路把 state 設成 NEEDS_HUMAN 後，
+                #   主迴圈 line ~3143 的 _check_spawn_chill 會看到同一波 chill + NEEDS_HUMAN
+                #   → 發 "💎 spawn chill！" 假警報。設旗標讓同一波 chill 不再觸發；
+                #   chill 回落時 _check_spawn_chill 自然重武裝（line 1371），不影響下一波。
+                self._spawn_chill_notified = True
+                self.logger.info("面板色檢短路 → 抑制同一波 chill 的 spawn chill 通知")
                 self._on_enter(State.NEEDS_HUMAN, frame)
                 return State.NEEDS_HUMAN
             harvester.prepare_scan()            # 停止移動、置中鏡頭（裝備位置穩定）
@@ -4860,8 +4877,109 @@ class Bot:
             self._prechill, before_ts, cfg.prechill_min_age_s,
             cfg.prechill_cache_depth * cfg.prechill_cache_interval_s)
 
+    # ---- 背包定期截圖（2026-08-05）-----------------------------------------
+    @staticmethod
+    def _backpack_snap_dir() -> str:
+        """背包定期截圖的存放目錄：<log_dir>/snapshots/backpack/"""
+        return os.path.join(cfg.log_dir, "snapshots", "backpack")
+
+    @staticmethod
+    def _backpack_snap_path() -> str:
+        """生成本次截圖的路徑（含 epoch + HHMMSS 時間戳）。"""
+        now = time.time()
+        return os.path.join(
+            Bot._backpack_snap_dir(),
+            f"bp_{int(now)}_{time.strftime('%H%M%S', time.localtime(now))}.png")
+
+    def _backpack_snap_cleanup(self) -> None:
+        """Ring buffer：刪除超量舊檔（保留 max_keep 張最新的）。"""
+        d = self._backpack_snap_dir()
+        if not os.path.isdir(d):
+            return
+        files = [f for f in os.listdir(d) if f.startswith("bp_") and f.endswith(".png")]
+        excess = len(files) - cfg.backpack_snapshot_max_keep
+        if excess <= 0:
+            return
+        # 檔名含 epoch（bp_<epoch>_...），字串排序＝時間排序
+        files.sort()
+        for f in files[:excess]:
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+        self.logger.debug("背包截圖清理舊檔 %d -> %d", len(files), cfg.backpack_snapshot_max_keep)
+
+    def _backpack_snap_maybe(self, frame) -> None:
+        """MINING tick 呼叫：間隔到就截一次背包裁圖存檔（不發 Discord）。
+
+        進場時 _panel_zeroed_at 設好後由呼叫端把 _backpack_snap_last 重置為 0，
+        讓第一張在 MINING 進場後立刻拍（不必等一整個 interval）。
+        """
+        if cfg.backpack_snapshot_interval_s <= 0:
+            return
+        now = time.time()
+        if self._backpack_snap_last and (now - self._backpack_snap_last) < cfg.backpack_snapshot_interval_s:
+            return
+        self._backpack_snap_last = now
+        crop = capture.crop(frame, cfg.backpack_review_region)
+        path = self._backpack_snap_path()
+        os.makedirs(self._backpack_snap_dir(), exist_ok=True)
+        self._backpack_snap_cleanup()
+        # 非同步寫檔：走 snapshot 佇列不卡主迴圈（同 _enqueue_snapshot 模式）
+        if self._enqueue_raw_snapshot(crop, path):
+            self.logger.info("背包定期截圖 -> %s", path)
+
+    def _enqueue_raw_snapshot(self, frame, path: str) -> str | None:
+        """把 frame 寫到指定 path（非 label 自動產路徑），丟背景佇列。
+
+        與 _enqueue_snapshot 的差異：呼叫端自決路徑（backpack 定期截圖用自訂目錄+檔名）。
+        """
+        if not cfg.save_snapshots or frame is None:
+            return None
+        snap_dir = os.path.dirname(path)
+        label = os.path.basename(path)      # 用完整檔名當 label（佇列去重/優先序用）
+        if not diagnostics.snapshot_enqueue_allowed(
+                label, self._snap_q.qsize(), cfg.snapshot_queue_max,
+                cfg.snapshot_queue_critical_reserve):
+            self.logger.warning("snapshot 佇列保留/已滿，丟棄 %s", label)
+            return None
+        try:
+            payload = (frame.copy(), snap_dir, path, label)
+            self._snap_q.put_nowait(
+                (diagnostics.snapshot_priority(label), next(self._snap_seq), payload))
+        except queue.Full:
+            self.logger.warning("snapshot 佇列滿，丟棄 %s", label)
+            return None
+        return path
+
+    @staticmethod
+    def _latest_backpack_snap() -> str | None:
+        """取最近的背包定期截圖路徑（目錄為空回 None）。"""
+        d = Bot._backpack_snap_dir()
+        if not os.path.isdir(d):
+            return None
+        files = [f for f in os.listdir(d) if f.startswith("bp_") and f.endswith(".png")]
+        if not files:
+            return None
+        files.sort()          # bp_<epoch>_... 字串排序＝時間排序
+        return os.path.join(d, files[-1])
+
+    @staticmethod
+    def _backpack_snap_clear() -> None:
+        """清空背包定期截圖目錄（MINING 進場時呼叫，確保比對基準只來自本 session）。"""
+        d = Bot._backpack_snap_dir()
+        if not os.path.isdir(d):
+            return
+        for f in os.listdir(d):
+            if f.startswith("bp_") and f.endswith(".png"):
+                try:
+                    os.remove(os.path.join(d, f))
+                except OSError:
+                    pass
+
     def _tick_mining(self, frame):
         self._prechill_sample(frame)
+        self._backpack_snap_maybe(frame)           # 定期截背包（面板色檢短路時用來比對）
         if getattr(self, '_post_harvest_watch', 0) > 0:
             self._log_w_state("MINING post-harvest tick")
             self._post_harvest_watch -= 1
@@ -7359,6 +7477,28 @@ class Bot:
                 "%s 的紀錄與玩家確認是否切自動（不交人工、直接回 MINING）",
                 n, target, self._panel_check_observed_path())
         return gains
+
+    def _build_panel_check_images(self, frame) -> list:
+        """面板色檢短路時的比較圖（2026-08-05）：chill 前定期截圖 + 當下面板裁圖。
+
+        回傳 image_groups 格式 ``[(caption, [path, ...]), ...]``；取不到 chill 前截圖
+        時降級為只附當下一張。全部失敗回空 list（呼叫端走既有單張截圖路徑）。
+        """
+        hid = self.harvest.harvest_id if self.harvest else "?"
+        paths = []
+        pre = self._latest_backpack_snap()
+        if pre:
+            paths.append(pre)
+            self.log_harvest.info("[%s] 面板色檢命中 → 附背包比對圖（chill前=%s）", hid, pre)
+        else:
+            self.log_harvest.warning("[%s] 背包比對圖取不到 → 只附當下面板", hid)
+        # 當下面板裁圖（用 label 走 _hsnap_crop 存到 snapshots/，取回 path）
+        cur = self._hsnap_crop(frame, cfg.backpack_review_region, "panel_check_current")
+        if cur:
+            paths.append(cur)
+        if not paths:
+            return []
+        return [("背包比對（chill前 → 進場）", paths)]
 
     def _chill_reconcile(self, where: str, *, notify: bool = True) -> bool:
         """雙 chill 對帳（spec 2026-07-30）：響兩聲只進帳一顆就結案＝帳不平 → 交人工。
