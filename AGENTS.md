@@ -386,9 +386,13 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   mining directly). Requires `_panel_zeroed_at` to be set — if the panel clear at MINING
   entry failed (H070/H071), the check is bypassed entirely. Panel clear now retries
   (`panel_clear_max_retries`, 2026-08-04: re-does the full click→type→verify sequence
-  up to N times, matching `_rotate_verified`'s self-heal pattern), so persistent
-  failure is rarer. The manual `清空` command remains the fallback for when all retries
-  are exhausted.
+  up to N times, matching `_rotate_verified`'s self-heal pattern; 2026-08-05 raised
+  from 3→7 per user request "多增加點選的次數"). **When all retries are exhausted the
+  bot degrades to NEEDS_HUMAN** (2026-08-05, user-specified: "無論如何都要把它清空…
+  如果還是沒有清理成功，則直接轉交人工") — MINING entry, harvest-resume tail, and the
+  manual `清空` command all hand off instead of silently continuing with an untrusted
+  panel. The old "路 B 將跳過下一場" silent-skip behavior is removed: handing off
+  rebuilds the trust basis (player clears manually → `_panel_zeroed_at` set next round).
 - **Double-chill detection via banner color** (2026-08-02, threshold fixed 2026-08-04).
   Audio cannot count two near-simultaneous chills (1.5s rolling window merges them), but
   the top banner text is discrete with a unique random RGB per spawn message. During

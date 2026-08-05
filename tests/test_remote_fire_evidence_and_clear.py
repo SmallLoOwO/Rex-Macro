@@ -223,6 +223,50 @@ def test_consume_clear_panel_mining_releases_keys_then_clears(monkeypatch):
     assert "+mouse" in keys, "清空後必須重新 mouse_down()"
 
 
+def test_consume_clear_panel_mining_fail_degrades_to_needs_human(monkeypatch):
+    """MINING 時手動清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求）。
+
+    不重新 init_mining（保持放開 W/滑鼠方便玩家手動操作），通知不再說「路 B 將跳過」。
+    """
+    from miningbot import miner
+    keys = []
+    monkeypatch.setattr(main.ic, "key_up", lambda k: keys.append("-" + k))
+    monkeypatch.setattr(main.ic, "key_down", lambda k: keys.append("+" + k))
+    monkeypatch.setattr(main.ic, "mouse_up", lambda: keys.append("-mouse"))
+    monkeypatch.setattr(main.ic, "mouse_down", lambda: keys.append("+mouse"))
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(miner, "init_mining_sequence",
+                        lambda **k: keys.append("init"))
+    messages = []
+    monkeypatch.setattr(main.notify, "send_message",
+                        lambda *a, **k: messages.append(a[2]))
+    monkeypatch.setattr(main.capture, "grab", lambda: None)
+
+    nh_entered = []
+    bot = make_fake_bot(
+        bind=["_consume_clear_panel"],
+        state=State.MINING,
+        _panel_zeroed_at=None,
+        _clear_panel_filter=lambda: None,   # 不設 _panel_zeroed_at → 失敗
+        _rotate_verified=lambda *a, **k: True,
+        _human_reason=None,
+        human_cleared=True,
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        _alert=lambda msg: None,
+        _on_enter=lambda s, f: nh_entered.append(s),
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+    )
+    bot._consume_clear_panel()
+
+    assert State.NEEDS_HUMAN in nh_entered, "MINING 清空失敗必須降級 NEEDS_HUMAN"
+    assert "init" not in keys, "清空失敗不應重新 init_mining"
+    assert "+w" not in keys, "清空失敗不應重新按住 W（保持放開方便手動操作）"
+    assert any("手動清空" in m for m in messages), "通知必須提示手動清空"
+    assert not any("將跳過" in m for m in messages), "通知不再說「路 B 將跳過」"
+
+
 def test_consume_clear_panel_needs_human_skips_key_release(monkeypatch):
     """NEEDS_HUMAN 時沒按住 W/滑鼠——不必放開也不必 init。"""
     from miningbot import miner
@@ -251,7 +295,7 @@ def test_consume_clear_panel_needs_human_skips_key_release(monkeypatch):
 
 
 def test_consume_clear_panel_reports_result(monkeypatch):
-    """清空結果要回報 Discord：成功→路B可信任；失敗→路B將跳過。"""
+    """清空結果要回報 Discord：成功→路B可信任；失敗→提示手動清空。"""
     monkeypatch.setattr(main.ic, "key_up", lambda k: None)
     monkeypatch.setattr(main.ic, "key_down", lambda k: None)
     monkeypatch.setattr(main.ic, "mouse_up", lambda: None)
@@ -287,7 +331,7 @@ def test_consume_clear_panel_reports_result(monkeypatch):
     )
     bot2._consume_clear_panel()
     assert any("未確認" in m or "清空" in m for m in messages), "清空失敗也要回報"
-    assert any("將跳過" in m for m in messages), "失敗要附「路B將跳過」"
+    assert any("手動清空" in m for m in messages), "失敗要提示手動清空"
 
 
 # ── 4. _tick 消費 _pending_clear_panel（狀態閘）─────────────────────────────

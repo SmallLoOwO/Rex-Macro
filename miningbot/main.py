@@ -2910,6 +2910,23 @@ class Bot:
         self._startup_pitch_status = harvester.format_startup_pitch_status(
             cfg.sweep_pitch_center_back_px, homed, self._pitch_offset_px)
         self.logger.info("啟動仰角：%s", self._startup_pitch_status)
+        # 面板歸零（2026-08-04 使用者要求）：啟動時面板可能有上一 session 殘留的
+        # 白名單 礦——不清的話第一場 chill 的進場面板色檢會誤判「已進帳」。與
+        # _on_enter(MINING) 同一條路，init_mining_sequence 前清（LMB 按住後點不了 UI）。
+        self.last_action = "面板歸零（啟動）"
+        self._clear_panel_filter()
+        # 啟動時清空失敗不阻止啟動（背景執行緒尚未就緒），但通知 Discord 讓玩家知道
+        # 路 B 暫不可信——第一場 chill 前 _panel_zeroed_at=None 會使進場面板色檢跳過、
+        # 路 B 跳過（保守，交人工）。玩家可手動 `清空` 重建信任（2026-08-05）。
+        if getattr(self, "_panel_zeroed_at", None) is None:
+            self.logger.warning("啟動面板歸零失敗 → 路 B 暫不可信（_panel_zeroed_at=None）")
+            if cfg.discord_bot_token and cfg.discord_channel_id:
+                from . import notify
+                notify.send_message(
+                    cfg.discord_bot_token, cfg.discord_channel_id,
+                    f"⚠️ 啟動時背包面板清空失敗（已重試 "
+                    f"{getattr(self, '_panel_clear_attempts', 1)} 次）"
+                    f"→ 路 B 暫不可信，請手動 `清空` 或在第一場 chill 前清空面板")
         miner.init_mining_sequence(rotate=self._rotate_verified)
         threading.Thread(target=self._banner_ocr_loop, daemon=True).start()
         threading.Thread(target=self._snapshot_cleanup_once, daemon=True).start()
@@ -3595,6 +3612,16 @@ class Bot:
             # 等待期間人可能滾輪動過鏡頭、且 boost FOV 隨次數漂移——每輪開挖前歸一。
             self._zoom_normalize("MINING 入口")
             self._clear_panel_filter()                        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
+            # 清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求）：面板沒清乾淨時路 B
+            # 的信任基礎不存在——與其帶著 _panel_zeroed_at=None 繼續挖、下一場 chill
+            # 時路 B 靜默跳過（可能放生真稀有 礦），不如當場交人工讓玩家手動清空。
+            if getattr(self, "_panel_zeroed_at", None) is None:
+                self._human_reason = (
+                    f"背包面板清空失敗（已重試 {getattr(self, '_panel_clear_attempts', 1)} 次）"
+                    f"→ 請手動清空後按 Q 繼續")
+                self.logger.warning("MINING 進場：面板歸零失敗 → 降級 NEEDS_HUMAN")
+                self._on_enter(State.NEEDS_HUMAN, frame)
+                return State.NEEDS_HUMAN
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
@@ -4480,7 +4507,8 @@ class Bot:
         接回挖礦。NEEDS_HUMAN/RESET_WAIT 沒按住輸入，直接清。
 
         回報 Discord：清空成功（_panel_zeroed_at 非 None）→ 路 B 下一場可信任；
-        失敗 → 路 B 將跳過（同 _clear_panel_filter 的降級語意）。
+        失敗 → 交人工（2026-08-05 使用者要求：不再靜默跳過路 B，直接 NEEDS_HUMAN
+        讓玩家手動清空）。MINING 時不重新 init_mining（保持放開狀態方便玩家操作）。
         """
         from . import notify
         token, ch = cfg.discord_bot_token, cfg.discord_channel_id
@@ -4492,19 +4520,32 @@ class Bot:
         self._clear_panel_filter()
         zeroed = getattr(self, "_panel_zeroed_at", None) is not None
         attempts = getattr(self, "_panel_clear_attempts", 1)
-        if was_mining:
-            miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
-            ic.key_down("w"); ic.mouse_down()
         if zeroed:
+            if was_mining:
+                miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
+                ic.key_down("w"); ic.mouse_down()
             retry_note = f"（第 {attempts} 次重試成功）" if attempts > 1 else ""
             notify.send_message(
                 token, ch,
                 f"✅ 背包面板已清空{retry_note}（路 B 可信任下一場）")
         else:
-            notify.send_message(
-                token, ch,
-                f"⚠️ 背包面板清空未確認（已重試 {attempts} 次）"
-                f"（路 B 將跳過下一場）")
+            # 失敗 → 交人工（2026-08-05 使用者要求）：MINING 時已放開 W/滑鼠不重新
+            # init，方便玩家手動操作。通知文案不再說「路 B 將跳過」——交人工後路 B
+            # 的信任基礎由玩家手動清空重建，不存在「跳過」的語意。
+            if was_mining:
+                self._human_reason = (
+                    f"背包面板清空失敗（已重試 {attempts} 次）→ 請手動清空後按 Q 繼續")
+                self.state = State.NEEDS_HUMAN
+                self._on_enter(State.NEEDS_HUMAN, capture.grab())
+                notify.send_message(
+                    token, ch,
+                    f"⚠️ 背包面板清空未確認（已重試 {attempts} 次）"
+                    f"→ 已交人工，請手動清空（在篩選框打非匹配文字後按 Enter）")
+            else:
+                notify.send_message(
+                    token, ch,
+                    f"⚠️ 背包面板清空未確認（已重試 {attempts} 次）"
+                    f"→ 請手動清空（在篩選框打非匹配文字後按 Enter）")
 
     def _summarize_survey_ctx(self, ctx) -> str:
         """給 web client 介入面板顯示的 context 摘要（純文字）。
@@ -5422,10 +5463,15 @@ class Bot:
 
         **重試迴圈**（2026-08-04，使用者要求「與稀有挖礦一樣——一旦發現沒有清除就
         再次進行直到淨空」）：驗證不過時重新聚焦 → 重做整條 click→type→verify，上限
-        ``panel_clear_max_retries``（預設 3，共 4 次嘗試）。比照 ``_rotate_verified``
-        的 self-heal 模式。焦點拿不到或例外不重試（``retryable=False``）——前者重試
-        無益，後者 UI 狀態未知。舊版「不重試打字」的顧慮是 H047/H063 聊天框 toggle
-        翻面，但篩選框是文字輸入框不是 toggle，click 進去只會重新聚焦，不會翻面。
+        ``panel_clear_max_retries``（預設 7，共 8 次嘗試；2026-08-05 使用者要求增加）。
+        比照 ``_rotate_verified`` 的 self-heal 模式。焦點拿不到或例外不重試
+        （``retryable=False``）——前者重試無益，後者 UI 狀態未知。舊版「不重試打字」
+        的顧慮是 H047/H063 聊天框 toggle 翻面，但篩選框是文字輸入框不是 toggle，click
+        進去只會重新聚焦，不會翻面。
+
+        **清空失敗的後果**（2026-08-05 使用者要求）：重試耗盡後 ``_panel_zeroed_at``
+        留 None。呼叫端據此降級 NEEDS_HUMAN（MINING 進場／採集返工／手動清空指令），
+        不再帶著不信任的面板繼續挖——舊版「路 B 將跳過下一場」的靜默降級已移除。
         """
         for attempt in range(cfg.panel_clear_max_retries + 1):
             is_final = attempt >= cfg.panel_clear_max_retries
@@ -5443,7 +5489,7 @@ class Bot:
                     attempt + 1, cfg.panel_clear_max_retries + 1)
                 self._focus_roblox()
         self.logger.warning(
-            "面板歸零：重試 %d 次仍失敗 → 路 B 將跳過下一場",
+            "面板歸零：重試 %d 次仍失敗 → _panel_zeroed_at=None（呼叫端將降級交人工）",
             cfg.panel_clear_max_retries + 1)
 
     def _clear_panel_filter_once(self, *, save_snapshot: bool = True) -> tuple[bool, bool]:
@@ -5480,7 +5526,7 @@ class Bot:
             # 焦點回來後才生效，就是 8 次前進。
             if not self._focus_roblox():
                 self._panel_zeroed_at = None
-                self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（路 B 將跳過下一場）")
+                self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（_panel_zeroed_at=None）")
                 return False, False
             band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
             before = vision.filter_box_ink(band0)
@@ -5516,7 +5562,7 @@ class Bot:
 
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None
-                self.logger.info("面板歸零：rapidocr 不可用 → 跳過驗證（路 B 將不信任面板）")
+                self.logger.info("面板歸零：rapidocr 不可用 → 跳過驗證（_panel_zeroed_at=None）")
                 return False, False
 
             deadline = time.time() + cfg.panel_clear_verify_max_s
@@ -5570,7 +5616,7 @@ class Bot:
                     return False, True
         except Exception as e:
             self._panel_zeroed_at = None
-            self.logger.warning("面板歸零例外（路 B 將跳過）：%s", e)
+            self.logger.warning("面板歸零例外（_panel_zeroed_at=None）：%s", e)
             return False, False
         finally:
             # 脫離文字框改按 Enter（spec 01）：舊版點畫面中央是一次真的挖礦點擊，
@@ -7380,6 +7426,18 @@ class Bot:
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
         self._clear_panel_filter()        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
+        # 清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求：「稀有挖礦結束返工時，
+        # 發現沒有確實清除，也應該如清空背包面板一樣進行重複的行為」——重試已耗盡仍
+        # 失敗就交人工，而非帶著不信任的面板繼續挖）。呼叫端（_harvest_resume_mining /
+        # 遠端 fire 收尾）在呼叫後不再設 state，所以這裡改 state 安全。
+        if getattr(self, "_panel_zeroed_at", None) is None:
+            self.logger.warning("採集收尾：面板歸零失敗 → 降級 NEEDS_HUMAN")
+            self._human_reason = (
+                f"採集後背包面板清空失敗（已重試 {getattr(self, '_panel_clear_attempts', 1)} 次）"
+                f"→ 請手動清空後按 Q 繼續")
+            self.state = State.NEEDS_HUMAN
+            self._on_enter(State.NEEDS_HUMAN, capture.grab())
+            return
         miner.init_mining_sequence(log=self.logger.info, rotate=self._rotate_verified)
         # init 已在動畫後執行；仍保留 release→置中→鎬子→re-press 保險：動畫偶爾拖過 1s，
         # 且遊戲會認為 W「已按著」不觸發移動（log 實測 W=True 但角色不動）。

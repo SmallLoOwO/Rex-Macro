@@ -390,8 +390,9 @@ class Config:
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。
                                               # 只重讀不重打字：H047/H063 的「多試幾次會翻面」只針對聊天框 toggle，
                                               # 篩選框是文字輸入框不是 toggle——跨 attempt 的重做整條序列由下面 max_retries 管
-    panel_clear_max_retries: int = 3           # 清空未確認時重做整條 click→type→verify 的上限（2026-08-04 使用者要求：
-                                              # 「與稀有挖礦一樣，一旦發現沒有清除就再次進行直到淨空」）。0=舊行為一次定生死。
+    panel_clear_max_retries: int = 7           # 清空未確認時重做整條 click→type→verify 的上限（2026-08-04 使用者要求：
+                                              # 「與稀有挖礦一樣，一旦發現沒有清除就再次進行直到淨空」；2026-08-05 使用者要求
+                                              # 「多增加點選的次數」3→7）。0=舊行為一次定生死。耗盡後交人工（不再靜默跳過路 B）。
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
     # 列底色 → tier（wiki HSV 官方色碼 + 實機量測交叉驗證，2026-08-02）：
     # 全階級 wiki 色碼已收集（https://rex-reincarnated.fandom.com/wiki/Category:Tiers）

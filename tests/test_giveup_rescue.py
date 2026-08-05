@@ -1021,7 +1021,11 @@ def test_clear_zero_retries_matches_old_behavior(monkeypatch):
 
 
 def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
-    """插入點 A：_on_enter(MINING) 清空排在 init_mining_sequence 之前。"""
+    """插入點 A：_on_enter(MINING) 清空排在 init_mining_sequence 之前。
+
+    清空必須成功（_panel_zeroed_at 非 None），否則 MINING 進場降級 NEEDS_HUMAN
+    不會跑到 init。
+    """
     order = []
     bot = make_fake_bot(
         bind=["_on_enter"],
@@ -1054,7 +1058,10 @@ def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
 
 
 def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
-    """插入點 B：_resume_mining_tail 清空排在 init_mining_sequence 之前。"""
+    """插入點 B：_resume_mining_tail 清空排在 init_mining_sequence 之前。
+
+    清空必須成功（_panel_zeroed_at 非 None），否則收尾降級 NEEDS_HUMAN 不會跑到 init。
+    """
     order = []
     net_rots = 0
     bot = make_fake_bot(
@@ -1078,6 +1085,111 @@ def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
 
     bot._resume_mining_tail(net_rots)
     assert order.index("clear") < order.index("init")
+
+
+# ── 清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求）─────────────────────
+
+def test_on_enter_mining_clear_fail_degrades_to_needs_human(monkeypatch):
+    """_on_enter(MINING) 清空失敗（_panel_zeroed_at=None）→ 回傳 NEEDS_HUMAN，不 init。"""
+    init_called = []
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.miner, "init_mining_sequence",
+                        lambda **kw: init_called.append(True))
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+
+    nh_entered = []
+    bot = make_fake_bot(
+        bind=["_on_enter"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        human_cleared=True, _movement_check_due=False,
+        _movement_mode_checked=True,
+        _chill_edges=[], _aim_context=None,
+        _release_web_held_aim=lambda send=False: None,
+        _rr_ctx=None, _pending_reentry=None,
+        _mine_resetting=False,
+        _capacity_pct=None, _capacity_streak=0, _capacity_full_logged=False,
+        _post_harvest_watch=0,
+        _focus_roblox=lambda: True,
+        _zoom_normalize=lambda *_: None,
+        _clear_panel_filter=lambda: None,   # 不設 _panel_zeroed_at → 失敗
+        _rotate_verified=None,
+        _log_w_state=lambda *_: None,
+        _human_reason=None,
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        _alert=lambda msg: None,
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+    )
+    # 攔截遞迴 _on_enter(NEEDS_HUMAN) — 不跑真實 NEEDS_HUMAN 副作用（避免缺方法炸）
+    _orig = bot._on_enter
+
+    def _tracking(s, frame):
+        if s is State.NEEDS_HUMAN:
+            nh_entered.append(s)
+            bot.human_cleared = False
+            return State.NEEDS_HUMAN
+        return _orig(s, frame)
+    bot._on_enter = _tracking
+
+    result = bot._on_enter(State.MINING, _frame())
+    assert result is State.NEEDS_HUMAN, "清空失敗必須降級 NEEDS_HUMAN"
+    assert nh_entered, "必須跑 NEEDS_HUMAN 進場"
+    assert not init_called, "清空失敗不應 init_mining_sequence"
+    assert bot.human_cleared is False
+    assert "清空" in (bot._human_reason or "")
+
+
+def test_resume_mining_tail_clear_fail_degrades_to_needs_human(monkeypatch):
+    """_resume_mining_tail 清空失敗 → state=NEEDS_HUMAN，不 init。"""
+    init_called = []
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
+    monkeypatch.setattr(main.miner, "init_mining_sequence",
+                        lambda **kw: init_called.append(True))
+    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(main.harvester, "restore_view", lambda *a, **kw: None)
+
+    nh_entered = []
+    bot = make_fake_bot(
+        bind=["_resume_mining_tail"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        harvest=_harvest(), _mine_resetting=False,
+        _post_harvest_watch=0,
+        _log_w_state=lambda *_: None,
+        _rotate_verified=None,
+        _clear_panel_filter=lambda: None,   # 不設 _panel_zeroed_at → 失敗
+        state=State.MINING,
+        _human_reason=None,
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        _alert=lambda msg: None,
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+    )
+    _orig_on_enter = bot._on_enter
+
+    def _tracking_on_enter(s, frame):
+        if s is State.NEEDS_HUMAN:
+            nh_entered.append(s)
+            bot.human_cleared = False
+            return State.NEEDS_HUMAN
+        return _orig_on_enter(s, frame)
+    bot._on_enter = _tracking_on_enter
+    monkeypatch.setattr(main.capture, "grab", lambda: _frame())
+
+    bot._resume_mining_tail(0)
+    assert nh_entered, "清空失敗必須降級 NEEDS_HUMAN"
+    assert not init_called, "清空失敗不應 init_mining_sequence"
+    assert bot.state is State.NEEDS_HUMAN
+    assert "清空" in (bot._human_reason or "")
 
 
 # ── 容量停滯警報（spec 04）：只通知，絕不停機 ──────────────────────────────
