@@ -5103,8 +5103,11 @@ class Bot:
         進場 _confirm_scan 做「觸發後立刻驗＋retry」；本守門在 sweep 每方位持續
         補掃，確保掃描效果全程在線。
 
-        throttle（_scan_guard_at）：剛補過就不重複——D2 冷卻 ~30s，badge 若因
-        OCR 假陰性讀不到，連續補只在浪費冷卻等待時間。
+        補掃後**事後驗證**（2026-08-05）：補掃 click 被吃時 badge 不會出現——
+        舊版不驗就直接 return True，throttle（_scan_guard_at，radar_repeat_interval_s
+        =34s）隨即鎖死，剩餘方位全盲。現版比照 _confirm_scan：補掃後驗 badge，
+        仍缺就 refocus + retry 一次。兩次都失敗仍設 throttle（防每方位白等冷卻
+        36s），但留 warning log 讓 sweep 全空時可追溯到掃描效果中途失效。
         回傳 True＝剛補掃（呼叫端重抓幀）。
         """
         if self._scan_local_badge_present():
@@ -5112,11 +5115,27 @@ class Bot:
         last = getattr(self, "_scan_guard_at", 0.0)
         if time.time() - last < cfg.radar_repeat_interval_s:
             return False
-        self._scan_guard_at = time.time()
         hid = self.harvest.harvest_id if self.harvest else "?"
         self.log_harvest.info("[%s] scan guard: 無 Local 徽章 -> 補掃 D2", hid)
         self._await_scan_ready("scan-guard")
         self._run_scan()
+        if self._scan_local_badge_present():
+            self.log_harvest.info("[%s] scan guard: 補掃成功，Local 徽章已出現", hid)
+        else:
+            self.logger.warning(
+                "[%s] scan guard: 補掃後仍無 Local 徽章 -> refocus 重試一次", hid)
+            self._focus_roblox()
+            self._await_scan_ready("scan-guard-retry")
+            self._run_scan()
+            if self._scan_local_badge_present():
+                self.log_harvest.info(
+                    "[%s] scan guard: retry 成功，Local 徽章已出現", hid)
+            else:
+                self.logger.warning(
+                    "[%s] scan guard: 補掃 retry 後仍無 Local 徽章 -> "
+                    "本輪 sweep 掃描效果可能失效（剩餘方位可能全空）", hid)
+        # throttle 不管成功失敗都設：成功→防 OCR 假陰性 spam；失敗→防每方位白等冷卻 36s
+        self._scan_guard_at = time.time()
         # 預算從補掃**之後**才起算（同 _reharvest_sweep／_pitch_layer_transition）：
         # _await_scan_ready 最長等 radar_scan_wait_max_s(36s) + execute_scan 的 1.5s，
         # 不重置的話下一個 tick 的 elapsed_s 必定 > sweep_timeout_s(30s) → self-heal

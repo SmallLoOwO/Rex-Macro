@@ -105,13 +105,17 @@ def test_scan_guard_passes_when_badge_present(monkeypatch):
 
 
 def test_scan_guard_retriggers_when_badge_missing(monkeypatch):
-    """效果列無 Local 徽章 → 補掃 D2 再繼續（self-heal，不交人工）。"""
+    """效果列無 Local 徽章 → 補掃 D2 再繼續（self-heal，不交人工）。
+
+    badge 恆 False → 補掃後仍驗不到 → refocus retry 一次（比照 _confirm_scan）。
+    """
     retriggered = []
     bot = _make_bot(
         harvest=types.SimpleNamespace(harvest_id="168"),
         _scan_local_badge_present=lambda: False,
         _await_scan_ready=lambda where: retriggered.append(where),
         _run_scan=lambda: retriggered.append("run_scan"),
+        _focus_roblox=lambda: retriggered.append("focus"),
     )
     monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
     assert bot._harvest_scan_guard() is True
@@ -126,6 +130,7 @@ def test_scan_guard_throttles_repeat_retrigger(monkeypatch):
         _scan_local_badge_present=lambda: False,
         _await_scan_ready=lambda where: None,
         _run_scan=lambda: None,
+        _focus_roblox=lambda: None,
     )
     monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
     monkeypatch.setattr(main.time, "time", lambda: 1000.0)
@@ -151,6 +156,7 @@ def test_scan_guard_resets_sweep_budget_after_retrigger(monkeypatch):
         _await_scan_ready=lambda where: monkeypatch.setattr(
             main.time, "time", lambda: 1036.0),
         _run_scan=lambda: None,
+        _focus_roblox=lambda: None,
     )
     monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
     monkeypatch.setattr(main.time, "time", lambda: 1000.0)
@@ -168,6 +174,7 @@ def test_scan_guard_survives_missing_harvest(monkeypatch):
         _scan_local_badge_present=lambda: False,
         _await_scan_ready=lambda where: None,
         _run_scan=lambda: None,
+        _focus_roblox=lambda: None,
     )
     monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
     assert bot._harvest_scan_guard() is True
@@ -179,3 +186,69 @@ def test_scan_guard_at_initialised_in_init():
     import inspect
     src = inspect.getsource(Bot.__init__)
     assert "self._scan_guard_at" in src
+
+
+# ---- 補掃後事後驗證（2026-08-05：guard 補掃後不驗 badge → click 被吃時全盲）-----
+
+def test_scan_guard_verifies_badge_after_successful_rescan(monkeypatch):
+    """補掃後回頭驗 badge：badge 出現 → return True，不需要 retry。
+
+    舊版 guard 補掃後直接 return True，不驗 badge 是否真的出現。
+    新版比照 _confirm_scan：補掃後驗 badge，成功就不 retry。
+    """
+    badge_results = iter([False, True])   # 補掃前缺失 → 補掃後出現
+    actions = []
+    bot = _make_bot(
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: next(badge_results),
+        _await_scan_ready=lambda where: actions.append(where),
+        _run_scan=lambda: actions.append("run_scan"),
+        _focus_roblox=lambda: actions.append("focus"),
+    )
+    monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
+    assert bot._harvest_scan_guard() is True
+    assert actions.count("run_scan") == 1, "badge 出現就不該 retry"
+    assert "focus" not in actions, "badge 出現就不該 refocus"
+
+
+def test_scan_guard_retries_with_refocus_when_badge_still_absent(monkeypatch):
+    """補掃後 badge 仍缺失 → refocus + 等冷卻 + 重掃一次（比照 _confirm_scan retry）。"""
+    badge_results = iter([False, False, True])  # 缺失 → 補掃 → 仍缺失 → retry → 出現
+    actions = []
+    bot = _make_bot(
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: next(badge_results),
+        _await_scan_ready=lambda where: actions.append(where),
+        _run_scan=lambda: actions.append("run_scan"),
+        _focus_roblox=lambda: actions.append("focus"),
+    )
+    monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
+    assert bot._harvest_scan_guard() is True
+    assert actions.count("run_scan") == 2, "第一次失敗應 retry 一次"
+    assert actions.count("focus") == 1, "retry 應含 refocus"
+    assert "scan-guard-retry" in actions
+
+
+def test_scan_guard_logs_warning_when_both_attempts_fail(monkeypatch):
+    """補掃 + retry 都失敗 → 設 throttle（防每方位白等 36s）+ 留 warning log。
+
+    剩餘方位會全空，由 sweep 後的 giveup/RESWEEP 決策接手。
+    重點是不像舊版那樣靜默：log 要讓未來 agent 看得到「掃描效果中途失效」。
+    """
+    bot = _make_bot(
+        harvest=types.SimpleNamespace(harvest_id="168"),
+        _scan_local_badge_present=lambda: False,   # 永遠缺失
+        _await_scan_ready=lambda where: None,
+        _run_scan=lambda: None,
+        _focus_roblox=lambda: None,
+    )
+    monkeypatch.setattr(main.cfg, "radar_repeat_interval_s", 999)
+    monkeypatch.setattr(main.time, "time", lambda: 1000.0)
+
+    assert bot._harvest_scan_guard() is True
+    # throttle 已設：下一方位不會再等冷卻重試
+    monkeypatch.setattr(main.time, "time", lambda: 1001.0)
+    assert bot._harvest_scan_guard() is False
+    # 警告 log 留下證據（含「仍無 Local」或同等訊息）
+    warnings = [r for r in bot.logger.records if "仍無" in r or "retry" in r]
+    assert len(warnings) >= 1, "補掃全失敗必須留 warning 讓 log 可追溯"
