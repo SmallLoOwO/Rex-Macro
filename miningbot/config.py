@@ -385,6 +385,12 @@ class Config:
         default_factory=lambda: Region(0, 424, 226, 36))
     panel_clear_keystrokes: int = 4           # 打幾個 w；改用 key_press（90ms 間隔）後遊戲來得及讀，
                                               # 不需要像舊 typewrite（40ms）那樣過量送 8 個
+    panel_clear_clicks: int = 2               # 點擊篩選框的次數（2026-08-05 使用者要求：舊版只點 1 次，
+                                              # 遊戲忙碌時 click 被吃→字沒進 TextBox→清空白做。點 2 次
+                                              # 確保 focus）。
+    panel_clear_click_interval_s: float = 0.6 # 多次點擊之間的間隔（2026-08-05 使用者要求：「過快會變成
+                                              # 全選」）。Windows 預設 double-click time 500ms——間隔短於
+                                              # 此值時兩次 click 被當 double-click → 文字框全選文字）。
     panel_clear_settle_s: float = 0.3         # 打完到「抓第一張畫面」的等待。⚠ 不是「到 OCR」——
                                               # grab 在 OCR 之前，OCR 那 ~1.1s 完全不算 settle（舊註解寫反了）
     panel_clear_verify_max_s: float = 1.5     # 讀不到零點時最多重讀到這個秒數（單次 OCR ~1.1s ⇒ 至多 2 讀）。

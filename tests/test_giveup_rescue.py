@@ -761,11 +761,13 @@ def test_clear_ink_unchanged_but_panel_empty_still_counts_h071(monkeypatch):
 
 
 def test_clear_input_sequence_is_click_w_then_enter_h071c(monkeypatch):
-    """H071c：輸入序列只有 click → key_press w × N → Enter，不做任何清空動作。
+    """H071c：輸入序列只有 click(×N) → key_press w × N → Enter，不做任何清空動作。
 
     H071b 實機確認 typing alone 就能觸發 filter，不需要 Ctrl+A 或 backspace。
     H071c 改用 key_press（90ms 間隔）取代 typewrite（40ms），解決 harvest 153
     的 timing 問題（typewrite 太快、遊戲來不及讀）。這條測試守的是輸入序列。
+    2026-08-05：click 次數由 panel_clear_clicks 控制（預設 2），避免單次 click
+    被遊戲忙碌吃掉。
     """
     order = []
     bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
@@ -774,7 +776,7 @@ def test_clear_input_sequence_is_click_w_then_enter_h071c(monkeypatch):
     monkeypatch.setattr(main.ic, "key_up", lambda k: order.append("-" + k))
     monkeypatch.setattr(main.ic, "key_press", lambda k, **kw: order.append(k))
     bot._clear_panel_filter()
-    expected = ["click"] + ["w"] * cfg.panel_clear_keystrokes + ["enter"]
+    expected = ["click"] * cfg.panel_clear_clicks + ["w"] * cfg.panel_clear_keystrokes + ["enter"]
     assert order == expected
 
 
@@ -837,7 +839,7 @@ def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
-    assert clicks == [(119, 441)]                           # 只點篩選框，不再點畫面中央
+    assert clicks == [(119, 441)] * cfg.panel_clear_clicks  # 點篩選框 N 次（不再點畫面中央）
     expected_keys = ["w"] * cfg.panel_clear_keystrokes + ["enter"]
     assert keys == expected_keys                            # key_press w × N + Enter 脫離
     assert typed == []                                      # H071c：不再用 typewrite
@@ -914,7 +916,7 @@ def test_clear_verifies_before_restoring_focus(monkeypatch):
     """
     bot, clicks, _typed, keys, panel_ocr = _clear_bot(monkeypatch, header="NORMAL", names=[])
     bot._clear_panel_filter()
-    assert panel_ocr.clicks_at_ocr == [1], "OCR 當下只該點過篩選框那一下"
+    assert panel_ocr.clicks_at_ocr == [cfg.panel_clear_clicks], "OCR 當下只該點過篩選框（N 次 click）"
     assert keys[-1] == "enter", "驗完才按 Enter 脫離"
     assert "enter" not in keys[:-1], "Enter 只在最後送一次"
 

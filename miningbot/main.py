@@ -5532,6 +5532,13 @@ class Bot:
             before = vision.filter_box_ink(band0)
             before_w = vision.filter_box_text_width(band0)
             ic.click_at(*cfg.panel_filter_xy)
+            # 2026-08-05 使用者要求：點擊 2 次以上確保 focus——舊版只點 1 次，遊戲在
+            # post-harvest 忙碌時 click 被吃，後續打字全進了遊戲世界而非 TextBox。
+            # 間隔必須 > Windows double-click time（500ms），否則被當 double-click
+            # → 文字框全選文字（使用者提醒：「過快會變成全選」）。
+            for _ in range(cfg.panel_clear_clicks - 1):
+                time.sleep(cfg.panel_clear_click_interval_s)
+                ic.click_at(*cfg.panel_filter_xy)
             time.sleep(0.15)
             # H071c：用 key_press（90ms 間隔）取代 typewrite（40ms）。typewrite 太快，
             # 遊戲在 post-harvest 忙碌時來不及讀，w 進了遊戲世界而非 TextBox
