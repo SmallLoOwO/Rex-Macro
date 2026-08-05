@@ -1581,6 +1581,9 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
   }
   #drawer-handle .grip {
     flex: 0 0 auto; width: 26px; height: 4px; border-radius: 2px; background: #666; }
+  #drawer-handle .handle-text {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #side {
     position: fixed; left: 0; right: 0; bottom: 0;
     width: auto; max-width: none;
@@ -1606,7 +1609,7 @@ header { padding: 0.4rem 0.8rem; background: #222; border-bottom: 1px solid #444
     <div id="predict-mark"><span class="pm-label"></span></div>
   </div>
   <div id="side">
-    <div id="drawer-handle"><span class="grip"></span></div>
+    <div id="drawer-handle"><span class="grip"></span><span class="handle-text">MiningBot 介入面板</span></div>
     <div id="status-line">連線中…</div>
     <div id="remote-bar">
       <button id="rc-resume" type="button" title="繼續挖礦（等同按 Q）">&#9654;&#65039; 繼續</button>
@@ -1652,6 +1655,8 @@ const confirmBtn = document.getElementById('confirm');
 const voidBtn = document.getElementById('void');
 const skipBtn = document.getElementById('skip');
 const statusLineEl = document.getElementById('status-line');
+const handleEl = document.getElementById('drawer-handle');
+const handleTextEl = handleEl ? handleEl.querySelector('.handle-text') : null;
 const hintEl = document.getElementById('hint');
 const rcResumeBtn = document.getElementById('rc-resume');
 const rcPauseBtn = document.getElementById('rc-pause');
@@ -1679,9 +1684,24 @@ const CLICK_HINT = '手機：雙指 pinch-zoom + 拖曳；桌機：滾輪縮放 
 const CONFIRM_HINT = '這兩張是證據圖（點擊處／落點），可放大檢查——此時點畫面不會送出座標。確認後按下面的按鈕。';
 
 const STATUS_COLORS = { need: '#f0b232', ok: '#57f287', fail: '#ed4245', idle: '#888' };
+let _statusKind = 'idle';
 function setStatus(text, kind) {
   statusEl.textContent = text;
   statusEl.style.color = STATUS_COLORS[kind] || STATUS_COLORS.idle;
+  _statusKind = kind || 'idle';
+  updateHandle();
+}
+
+// 把手＝手機直向的狀態列（ticket 04）：方位 + 主狀態 + 連線組合成一行，
+// 顏色隨狀態 kind。桌機 handleTextEl 為 null（把手 display:none）→ no-op。
+function updateHandle() {
+  if (!handleTextEl) return;
+  const dir = (dirLabel.textContent && dirLabel.textContent !== '\\u2014') ? dirLabel.textContent : '';
+  const st = statusEl.textContent || '';
+  const conn = (ws && ws.readyState === 1) ? '' : '未連線';
+  const parts = [dir, st, conn].filter(Boolean);
+  handleTextEl.textContent = parts.join(' · ') || 'MiningBot 介入面板';
+  handleTextEl.style.color = STATUS_COLORS[_statusKind] || '#9ad';
 }
 
 // ── 通知：分頁標題閃爍 + 提示音 ──────────────────────────────────────────
@@ -1827,6 +1847,7 @@ function renderNav() {
     else if (seen.has(i)) d.className = 'seen';
     dotsEl.appendChild(d);
   }
+  updateHandle();
 }
 
 function showFrame(i) {
@@ -1980,6 +2001,7 @@ function connect() {
   };
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'command', payload: { cmd: 'request_status' } }));
+    updateHandle();
   };
   ws.onclose = () => {
     setStatus('WebSocket 斷線，5s 後重連…', 'fail');

@@ -2444,3 +2444,16 @@ class TestPanelMobilePortraitLayout:
         assert 'id="side"' in html
         assert 'id="main"' in html
         assert 'id="container"' in html
+
+
+class TestPanelHandleStatusBar:
+    """ticket 04：把手身兼狀態列——顯示方位／狀態／連線，並隨狀態更新。"""
+
+    def test_handle_has_status_text_element(self):
+        html = _panel_html()
+        assert 'handle-text' in html
+
+    def test_handle_update_function_present(self):
+        """把手文字由 JS 從方位／狀態／連線組合，並在狀態變更時更新（marker）。"""
+        html = _panel_html()
+        assert 'updateHandle' in html
