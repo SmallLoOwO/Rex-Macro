@@ -226,6 +226,18 @@ def test_annotate_queue_route_excludes_sweep_empty(tmp_path):
     assert "113_sweep_empty_dir0" in labels
 
 
+def test_annotate_queue_route_excludes_needs_human_guess_but_keeps_tracker(tmp_path):
+    """needs_human_%d_%d（find_tracker 猜的候選）不進 /annotate 佇列；
+    needs_human_tracker_%d_%d（已知 marker 位置）仍照常顯示。"""
+    client = _client(tmp_path, [
+        _rec("needs_human_1277_656", str(tmp_path / "guess.png"), 2.0),
+        _rec("202_needs_human_tracker_514_236", str(tmp_path / "tracker.png"), 1.0),
+    ])
+    ann = client.get("/annotate?queue=tier0").text
+    assert "tracker.png" in ann
+    assert "guess.png" not in ann
+
+
 def test_build_queue_carries_bot_verdict_and_mark():
     """佇列每列都帶 bot 當下判定與座標——標註頁靠它推症狀，不叫玩家猜。"""
     got = web_history.build_queue(
@@ -313,3 +325,21 @@ def test_build_queue_excludes_sweep_empty():
     assert "empty_up" not in stems
     assert "aim" in stems
     assert "seen" in stems
+
+
+def test_build_queue_excludes_needs_human_guess_but_keeps_tracker():
+    """needs_human_%d_%d＝bot 放棄前最後手段搜尋、find_tracker 猜的候選（可能低於
+    門檻甚至誤判），裁圖上還燒了青色方框＋edge 分數文字——跟 sweep_empty 同屬
+    「bot 已下定判定」的診斷輸出，標註不會回饋偵測器，且疊圖燒進像素跟 _aim.png
+    同問題（2026-08-06 使用者追加）。
+
+    needs_human_tracker_%d_%d 不排除：那是採集放棄時已知 marker 位置直接裁圖，
+    不是用猜的，仍是有意義的追蹤框證據。
+    """
+    got = web_history.build_queue(
+        [_rec("needs_human_1277_656", "a/guess.png", 1.0),
+         _rec("202_needs_human_tracker_514_236", "a/tracker.png", 2.0)],
+        tier=0, exists=lambda p: True, exclude_sweep_empty=True)
+    stems = [r["stem"] for r in got]
+    assert "guess" not in stems
+    assert "tracker" in stems

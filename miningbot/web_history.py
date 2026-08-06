@@ -92,7 +92,12 @@ def annotation_tier(label: str) -> int:
 # `d3_miss_N` 不算事後畫面——那是 `gone=False`（框還在、只是 D3 沒打中），
 # bot 確實接受了這個候選。
 # 2026-08-06 使用者：sweep_empty 是八方掃描的診斷比較地圖，標註無益——不排進佇列。
-_QUEUE_EXCLUDED_RE = re.compile(r"sweep_empty")
+# 同一天再追加 needs_human_%d_%d（bot 放棄前最後手段搜尋、find_tracker 猜的最佳候選，
+# 可能低於門檻甚至誤判，裁圖上還燒了青色方框＋edge 分數文字——跟 needs_human 一樣是
+# 「bot 已下定判定」的診斷輸出，標註不會回饋偵測器，且疊圖燒進像素跟 _aim.png 同問題）。
+# needs_human_tracker_%d_%d **不排除**：那是採集放棄時已知 marker 位置直接裁圖，
+# 不是 find_tracker 用猜的，仍是有意義的追蹤框證據——negative lookahead 排除它。
+_QUEUE_EXCLUDED_RE = re.compile(r"sweep_empty|needs_human_(?!tracker_)\d+_\d+")
 
 _VERDICT_AFTER_RE = re.compile(r"harvest_success|gone_unconfirmed|d3_after")
 _VERDICT_ACCEPTED_RE = re.compile(
@@ -184,6 +189,12 @@ def build_queue(records, annotated=(), tier=0, exists=None,
     ``sweep_empty`` 濾除（2026-08-06）：八方掃描的診斷比較地圖不排進佇列——
     bot 已經判定全空、存圖只供事後翻看，標了也無法回饋偵測迴圈（使用者：
     「這些本身就是用於比較地圖的，因此用於標注後似乎也沒有作用」）。
+
+    ``needs_human_%d_%d`` 濾除（同日追加）：bot 放棄前最後手段搜尋、find_tracker
+    猜的最佳候選（可能低於門檻甚至誤判），裁圖上還燒了青色方框＋edge 分數文字——
+    跟 sweep_empty 同屬「bot 已下定判定」的診斷輸出，且疊圖燒進像素跟 `_aim.png`
+    同問題。``needs_human_tracker_%d_%d`` **不排除**：那是採集放棄時已知 marker
+    位置直接裁圖，不是用猜的，仍是有意義的追蹤框證據。
 
     `tier` 收單一數字或一串數字（`(0, 2)`）。要一串是因為 tier0 全是 bot 什麼都
     沒接受的圖：實測索引裡 tier0 227 張有 220 張 `sweep_empty`，而「bot 接受了

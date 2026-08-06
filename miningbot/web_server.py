@@ -618,8 +618,9 @@ def create_app(
         接錯」那兩個症狀只在 tier2 出現得了——導覽列的入口因此改指這一串。
         認不得的 tier 字樣直接略過；全都認不得就退回 tier0。
 
-        2026-08-06：sweep_empty（八方掃描診斷比較地圖）從標註佇列濾除——
-        標註無益；/api/failures 仍照常顯示（agent 排錯需要）。
+        2026-08-06：sweep_empty（八方掃描診斷比較地圖）+ needs_human_%d_%d
+        （find_tracker 猜的放棄前候選，帶疊圖）從標註佇列濾除——都是「bot 已下定
+        判定」的診斷輸出，標註無益；/api/failures 仍照常顯示（agent 排錯需要）。
         """
         from miningbot.web_static import render_annotate_html
         rarity_choices = _rarity_choices_from_game_data()
