@@ -209,6 +209,7 @@ def test_consume_clear_panel_mining_releases_keys_then_clears(monkeypatch):
         _clear_panel_filter=lambda: (clear_called.append(True),
                                      setattr(bot, "_panel_zeroed_at", 9999.0)),
         _rotate_verified=lambda *a, **k: True,
+        _focus_roblox=lambda: True,
     )
     bot._consume_clear_panel()
 
@@ -249,6 +250,7 @@ def test_consume_clear_panel_mining_fail_degrades_to_needs_human(monkeypatch):
         _panel_zeroed_at=None,
         _clear_panel_filter=lambda: None,   # 不設 _panel_zeroed_at → 失敗
         _rotate_verified=lambda *a, **k: True,
+        _focus_roblox=lambda: True,
         _human_reason=None,
         human_cleared=True,
         _needs_human_extra_meta={},

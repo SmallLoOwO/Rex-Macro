@@ -4544,8 +4544,25 @@ class Bot:
         was_mining = self.state is State.MINING
         self.logger.info("清空背包面板指令（state=%s）", self.state.value)
         if was_mining:
+            # 徹底放開挖礦狀態（2026-08-06：比照採集成功收尾 _resume_mining_tail）。
+            # 舊版只 key_up+mouse_up+sleep(0.15)——兩個根因使清空永遠失敗（重試 8 次
+            # 同理全滅，因為 retry 只重新 focus 不清這些）：
+            # ① 修飾鍵卡住：init_mining_sequence 的 center_crosshair 連按兩次 Shift，
+            #   若第二次 keyUp 被遊戲吃掉→Shift 卡住→key_press("w") 變 Shift+W
+            #   →w 進了遊戲世界而非 TextBox。
+            # ② 游標鎖定：挖礦中 Roblox 用 LockCenter 釘游標在畫面中央，moveTo(119,441)
+            #   被遊戲每幀覆寫→click 落在中央不是篩選框。需要足夠時間讓遊戲退出挖礦模式。
             ic.key_up("w"); ic.mouse_up()
-            time.sleep(0.15)
+            ic.settle()                        # RELEASE_SETTLE 0.15s：放開按住鍵/滑鼠的沉澱
+            # 卡鍵清理：keyUp 對未按住的鍵是 no-op，一律放開無副作用。
+            for _mod in ("shift", "ctrl"):
+                try:
+                    ic.key_up(_mod)
+                except Exception:
+                    pass
+            self._focus_roblox()              # 顯式聚焦（同採集成功收尾 line 7034）
+            time.sleep(0.3)                    # 等遊戲退出挖礦模式、釋放游標鎖
+            self.logger.info("手動清空：已放開挖礦鍵+清修飾鍵+聚焦+等 0.3s → 進面板歸零")
         self._clear_panel_filter()
         zeroed = getattr(self, "_panel_zeroed_at", None) is not None
         attempts = getattr(self, "_panel_clear_attempts", 1)
@@ -5728,6 +5745,15 @@ class Bot:
                 self._panel_zeroed_at = None
                 self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（_panel_zeroed_at=None）")
                 return False, False
+            # 卡鍵清理（2026-08-06）：init_mining_sequence 的 center_crosshair 連按兩次
+            # Shift，若第二次 keyUp 被吃→Shift 卡住→key_press("w") 變 Shift+W 進遊戲
+            # 世界。重試時也跑這段（retry 舊版只 focus 不清修飾鍵＝重試全滅）。
+            # keyUp 對未按住的鍵是 no-op，一律放開無副作用。
+            for _mod in ("shift", "ctrl"):
+                try:
+                    ic.key_up(_mod)
+                except Exception:
+                    pass
             band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
             before = vision.filter_box_ink(band0)
             before_w = vision.filter_box_text_width(band0)
