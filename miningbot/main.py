@@ -5781,7 +5781,12 @@ class Bot:
             # 使用者以為 ▶️ 沒反應。比照 _consume_clear_panel 的修復（commit 1a248b2）：
             # 放開 W+滑鼠→settle→等遊戲退出挖礦模式。key_up/mouse_up 對未按住的鍵是
             # no-op，一律放開無副作用——從 MINING 手動清空路徑進來時也只是多 0.45s。
-            ic.key_up("w"); ic.mouse_up()
+            # 右鍵也要放（2026-08-07）：上面這段只放左鍵，但視角瞄準/俯仰歸位
+            # （aim_move／_drag_vertical，pitch_reset 底層）按住的是**右鍵**；那兩個
+            # 函式在此修復前沒有 try/finally，中途拋例外會讓右鍵卡在按住狀態，
+            # Roblox 的攝影機拖曳鎖定跟著卡住——只放左鍵救不回來，click_at 一樣會
+            # 落在鎖定中心而非篩選框。兩個按鍵都是 no-op-safe，一律放開無副作用。
+            ic.key_up("w"); ic.mouse_up(); ic.mouse_up("right")
             ic.settle()
             # 卡鍵清理（2026-08-06）：init_mining_sequence 的 center_crosshair 連按兩次
             # Shift，若第二次 keyUp 被吃→Shift 卡住→key_press("w") 變 Shift+W 進遊戲

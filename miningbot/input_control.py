@@ -34,12 +34,12 @@ def key_up(key: str):
     pydirectinput.keyUp(key)
     time.sleep(_STEP)
 
-def mouse_down():
-    pydirectinput.mouseDown()
+def mouse_down(button: str = "left"):
+    pydirectinput.mouseDown(button=button)
     time.sleep(_STEP)
 
-def mouse_up():
-    pydirectinput.mouseUp()
+def mouse_up(button: str = "left"):
+    pydirectinput.mouseUp(button=button)
     time.sleep(_STEP)
 
 def mouse_click(button: str = "left", hold: float = 0.0):
@@ -97,12 +97,23 @@ def aim_move(dx: int, dy: int):
     """細部瞄準：**按住右鍵**拖曳滑鼠來轉視角（REX 用右鍵按著調整方位），移完放開。
 
     單純 moveRel 不會轉視角（實測無效），一定要右鍵按著。
+
+    ``mouseUp`` 包 try/finally（2026-08-07）：中間任何一步拋例外都必須放開右鍵，
+    否則遊戲的攝影機拖曳鎖定（LockCenter）會卡住不放——後續任何 click_at 都會
+    落在鎖定中心而非目標座標，看起來像「點擊沒反應」，且面板清空之類只放開
+    左鍵的收尾動作救不回來（見 `_clear_panel_filter_once` 同批修復）。
     """
     pydirectinput.mouseDown(button="right")
-    time.sleep(0.04)
-    pydirectinput.moveRel(dx, dy, relative=True)
-    time.sleep(0.04)
-    pydirectinput.mouseUp(button="right")
+    try:
+        time.sleep(0.04)
+        pydirectinput.moveRel(dx, dy, relative=True)
+        time.sleep(0.04)
+    except Exception:
+        _log.warning("aim_move 中途例外，強制放開右鍵（避免攝影機拖曳鎖定卡死）",
+                     exc_info=True)
+        raise
+    finally:
+        pydirectinput.mouseUp(button="right")
     time.sleep(_STEP)
 
 # 連按兩次 Shift = 把滑鼠準心對準畫面中心點（瞄準前必做，偏移計算才正確）
@@ -141,14 +152,24 @@ def _drag_vertical(total_px: int, chunk: int = 75):
         time.sleep(cfg.pitch_drag_hold_settle_s)
         hold_budget = min(cfg.pitch_drag_hold_budget_px, remaining)
         pydirectinput.mouseDown(button="right")
-        time.sleep(0.04)
-        while hold_budget > 0:
-            step = min(chunk, hold_budget)
-            pydirectinput.moveRel(0, sign * step, relative=True)
-            time.sleep(0.03)
-            hold_budget -= step
-            remaining -= step
-        pydirectinput.mouseUp(button="right")
+        try:
+            time.sleep(0.04)
+            while hold_budget > 0:
+                step = min(chunk, hold_budget)
+                pydirectinput.moveRel(0, sign * step, relative=True)
+                time.sleep(0.03)
+                hold_budget -= step
+                remaining -= step
+        except Exception:
+            # try/finally（2026-08-07）：中途拋例外（例如 moveRel 罕見的 win32 呼叫
+            # 失敗）若不放開右鍵，Roblox 的攝影機拖曳鎖定會卡住不放，之後任何
+            # click_at 都會落在鎖定中心而非目標座標——跟面板清空「點了沒反應」
+            # 是同一種卡死，只放左鍵（ic.mouse_up()）救不回來。
+            _log.warning("_drag_vertical 中途例外，強制放開右鍵（避免攝影機拖曳鎖定卡死）",
+                        exc_info=True)
+            raise
+        finally:
+            pydirectinput.mouseUp(button="right")
         time.sleep(_STEP)
 
 def pitch_reset(down_px: int, back_px: int):

@@ -113,6 +113,47 @@ def test_drag_negative_direction(monkeypatch):
         assert all(dy < 0 for dy in h)
 
 
+# ===== 右鍵拖曳例外安全（2026-08-07）=====
+# aim_move/_drag_vertical 中途拋例外若不放開右鍵，Roblox 的攝影機拖曳鎖定
+# （LockCenter）會卡住不放——之後任何 click_at 都落在鎖定中心而非目標座標，
+# 面板清空只放左鍵的收尾動作救不回來（實機：panel_zero_failed 快照連兩次
+# 8 次重試全滅、面板紋風不動，且面板礦名沒有一個含 'w'，證明打字根本沒進
+# TextBox）。
+
+
+def test_drag_vertical_releases_right_button_when_moverel_raises(monkeypatch):
+    rec = _DragRecorder(monkeypatch)
+
+    def boom(dx, dy, relative=True):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ic.pydirectinput, "moveRel", boom)
+    try:
+        ic._drag_vertical(400)
+    except RuntimeError:
+        pass
+    ups = [e for e in rec.events if e[0] == "up"]
+    assert ups and ups[0][1] == "right", "moveRel 拋例外也要放開右鍵，否則卡死攝影機拖曳鎖定"
+
+
+def test_aim_move_releases_right_button_when_moverel_raises(monkeypatch):
+    events = []
+    monkeypatch.setattr(ic.pydirectinput, "mouseDown",
+                        lambda button=None: events.append(("down", button)))
+    monkeypatch.setattr(ic.pydirectinput, "mouseUp",
+                        lambda button=None: events.append(("up", button)))
+
+    def boom(dx, dy, relative=True):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ic.pydirectinput, "moveRel", boom)
+    monkeypatch.setattr(ic.time, "sleep", lambda t: None)
+    try:
+        ic.aim_move(10, 10)
+    except RuntimeError:
+        pass
+    ups = [e for e in events if e[0] == "up"]
+    assert ups and ups[0][1] == "right"
+
+
 def test_pitch_reset_saturate_then_back(monkeypatch):
     # 歸位語意不變：先下拉 clamp 飽和、再回拉 back（總注入量與舊版一致）
     rec = _DragRecorder(monkeypatch)

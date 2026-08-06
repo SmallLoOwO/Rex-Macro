@@ -784,6 +784,24 @@ def test_clear_input_sequence_is_click_w_then_enter_h071c(monkeypatch):
     assert order == expected
 
 
+def test_clear_releases_right_mouse_button_too(monkeypatch):
+    """2026-08-07：游標鎖定釋放不能只放左鍵。
+
+    aim_move/_drag_vertical（俯仰歸位底層）按住的是右鍵；那兩個函式在這批修復
+    前沒有 try/finally，中途拋例外會讓右鍵卡在按住狀態，Roblox 的攝影機拖曳
+    鎖定跟著卡住——只放左鍵（H070/2026-08-06 那版）救不回來，click_at 一樣會
+    落在鎖定中心而非篩選框。實機兩次 panel_zero_failed（2026-08-06 22:24/22:28）
+    面板紋風不動、8 個礦名沒有一個含 'w'，證明打字根本沒進 TextBox。
+    """
+    released = []
+    bot, *_ = _clear_bot(monkeypatch, header="NORMAL", names=[], ink_changes=False)
+    monkeypatch.setattr(main.ic, "mouse_up",
+                        lambda button="left": released.append(button))
+    bot._clear_panel_filter()
+    assert "left" in released and "right" in released, (
+        "面板歸零的游標釋放必須同時放開左右鍵")
+
+
 def test_filter_box_ink_changes_with_text():
     """`filter_box_ink` 要真的隨字量變（合成裁圖：多畫一筆就多一些亮像素）。"""
     import numpy as np

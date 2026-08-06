@@ -985,3 +985,89 @@ fallback` 接 `core形狀候選 ... -> OK`，而非直接退回放大手選。�
 位置明顯偏離框——代表某個 tier 的模板配到了錯誤位置，需要回頭檢查該 tier 是否其實
 不只一種外框（比照 Exotic 的前例）。`exotic_burst`／`exotic_cross`／`exotic_circle`
 三個變體模板各只有單一場次證據，信心低於 `exotic_octagon`，優先觀察這三個是否誤觸發。
+
+## H077（2026-08-07，使用者回報「每次清空背包都清不乾淨」）：面板清空的游標鎖定釋放
+只放左鍵，右鍵拖曳（俯仰/瞄準）中途拋例外沒有 try/finally，卡住的右鍵讓所有後續點擊
+落空
+
+### 一句話根因
+
+`_clear_panel_filter_once` 的游標釋放（a8dfca6，2026-08-06）只呼叫 `ic.mouse_up()`
+（`pydirectinput.mouseUp()` 預設 `button='primary'`＝左鍵），但 `aim_move`／
+`_drag_vertical`（`pitch_reset` 底層，俯仰歸位／瞄準漂移全靠它）按住的是**右鍵**，且
+這兩個函式在此修復前完全沒有 `try/finally`——中途任何一步拋例外，右鍵就永遠卡在按住
+狀態，Roblox 的攝影機拖曳鎖定跟著卡住，之後任何 `click_at` 都落在鎖定中心而非目標
+座標。只放左鍵的既有修復對這條路徑是 no-op。
+
+### 症狀與證據
+
+實機快照 `panel_zero_failed`（`snapshot_index.jsonl`）：2026-08-06 22:24:34 與
+22:28:03 相隔 3.5 分鐘、各自跑完一輪 8 次重試，**面板像素完全相同**（`Leprechaun 28
+/ Siogyne 242 / Cloverstone 1,239 / Imbollyx 1,183 / Fortunatum 5,176 / Celtisalt
+8,165 / Pyrisand 202 / Auriclase 4,873`，一個字元都沒變）。清空機制的原理是打字母
+`w` 觸發遊戲自己的篩選器重新整理（H071）——這 8 個礦名**沒有一個含 `w`**，若字元真的
+送進篩選框，遊戲篩選器會把全部 8 列濾掉；紋風不動代表兩輪合計最多 64 次按鍵、16 次
+點擊完全沒有送進 TextBox，是輸入沒送達，不是判斷錯誤。`game_data.classify_found_ore
+("Leprechaun")` 回 `('rare', tier='Exquisite')`——真的是白名單礦卡在面板上。2026-08-05
+11:28/11:30 的另一組 `panel_zero_failed` 同樣卡著 `Fortuitous`（rare/Exquisite）與
+`Feebrechaun`（rare/Exotic）。這兩次失敗都發生在 a8dfca6（17:47:50 commit、19:14-19:17
+重開後生效）之後，證明左鍵釋放不夠。
+
+### 根因分析
+
+`states.py` 的 `resolve_state_transition`：`NEEDS_HUMAN` 且 `human_cleared`（玩家按
+▶️）直接轉 `MINING`（不經 `HARVESTING`），對應 `main.py` `_on_enter(State.MINING)`
+（約 3614 行）跑 `_clear_panel_filter()`。`pydirectinput.mouseUp`/`mouseDown` 的
+`button` 參數預設是 `'primary'`（左鍵）——`ic.mouse_up()` 沿用這個預設，從未釋放右鍵。
+`input_control.aim_move`／`_drag_vertical` 用右鍵拖曳轉視角/歸位俯仰，`mouseDown` 與
+`mouseUp` 之間**沒有 try/finally**：`moveRel` 或任何一步拋例外（win32 呼叫失敗、執行
+緒被中斷）都會讓右鍵停在按下狀態，往後任何嘗試釋放「游標鎖定」的程式碼如果只放左鍵，
+救不回這個狀態。
+
+### 對策
+
+1. `input_control.aim_move`／`_drag_vertical`：`mouseDown(button="right")` 後的整段
+   包 `try/except/finally`，`finally` 一律 `mouseUp(button="right")`，`except` 額外
+   記一筆 WARNING（`aim_move 中途例外，強制放開右鍵` / `_drag_vertical 中途例外，強制
+   放開右鍵`）後 re-raise——沿用既有呼叫端的例外處理，只是保證右鍵一定被放開。
+2. `ic.mouse_up`/`ic.mouse_down` 加 `button: str = "left"` 參數（預設值保留所有既有
+   呼叫端行為不變）。
+3. `_clear_panel_filter_once` 的游標釋放序列加一行 `ic.mouse_up("right")`，與既有的
+   左鍵/W 釋放並列——兩個按鍵對「沒有真的按著」都是 no-op，一律放開無副作用。
+
+### 附帶修復：`miningbot.log` 死頻道（不是同一個 bug，但擋住了本次診斷）
+
+調查過程中發現 `miningbot.log`（`self.logger`，`_clear_panel_filter` 的所有 WARNING
+都寫在這裡）從 **2026-08-03 14:27:54 就完全停寫**，卡在 1,999,982 / 2,000,000 bytes
+（`maxBytes`），`backupCount=5` 卻連一個 `.1` 都沒生出來。根因：`setup_logging`
+對 `miningbot`／`uvicorn`／`websockets` 三個 logger **各自呼叫 `_make_file_handler`
+開了三份獨立的檔案 handle**，全部指向同一個 `miningbot.log`；其中一個先滾到
+`maxBytes` 觸發 `doRollover()` 要 rename 時，另外兩個 handle 還開著同一個檔——Windows
+上 rename 撞到還開啟的 handle 直接 `PermissionError`；`pythonw` 沒有 stderr，
+`logging.Handler.handleError` 靜默吞掉，之後四天所有 `self.logger` 呼叫（含本次面板
+清空失敗的 WARNING）全部消失，只能靠 `snapshot_index.jsonl` 與 `heartbeat.log` 的時間
+軸硬湊證據。已修：三個 logger 改共用同一個 `RotatingFileHandler` 實例（`setup_logging`
+內只 `_make_file_handler` 一次），不再各開一份檔案 handle。
+
+### 回歸
+
+`tests/test_input_control.py`：`test_drag_vertical_releases_right_button_when_moverel_raises`／
+`test_aim_move_releases_right_button_when_moverel_raises`（monkeypatch `moveRel` 拋
+例外，斷言 `mouseUp("right")` 仍被呼叫）。`tests/test_giveup_rescue.py`：
+`test_clear_releases_right_mouse_button_too`（斷言 `_clear_panel_filter` 同時放開
+`"left"` 與 `"right"`）。`tests/test_diagnostics.py`：
+`test_setup_logging_adopts_uvicorn_logger` 新增斷言收編 logger 與主 logger 共用同一個
+handler 實例；新增 `_reset_main_logger()` 供需要驗證「這次呼叫真的開了新檔」的測試
+重置主 logger（否則測試之間互相污染同一個 process-wide `logging.getLogger("miningbot")`
+單例）。全套 `uv run pytest -q` 2537 passed（log 修復後另外驗證，input_control/
+giveup_rescue 修復同批跑過）、`ruff check` clean。
+
+### ⚠ 待實機驗證
+
+下一次面板清空失敗時，`miningbot.log` 應該能正常看到 `面板歸零：...` 系列 WARNING
+（證明死頻道已修）。若清空仍然失敗，log 裡的墨量/字寬數字＋`panel_zero_failed`
+快照能直接判斷是否還是同一種「完全沒變」的輸入未送達模式；若面板礦名這次**有**變化
+（部分列消失/數量變動），代表右鍵不是（唯一）根因，需要回頭查 `_focus_roblox()` 的
+視窗焦點路徑。右鍵拖曳例外目前沒有實機重現樣本（`moveRel` 罕見失敗，回歸測試用強制
+raise 模擬）——這條 try/finally 是結構性補強而非已量測到的必然觸發點，先觀察下一輪
+`_log.warning("aim_move 中途例外...")`／`_drag_vertical 中途例外...` 有沒有真的出現。
