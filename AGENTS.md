@@ -413,6 +413,20 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   manual `清空` command all hand off instead of silently continuing with an untrusted
   panel. The old "路 B 將跳過下一場" silent-skip behavior is removed: handing off
   rebuilds the trust basis (player clears manually → `_panel_zeroed_at` set next round).
+- **H216 (2026-08-07, harvest 216): panel-clear retry loop went blind to a mine reset
+  that started mid-loop.** `_resume_mining_tail` only checks `_mine_resetting` once at
+  entry (H051); the panel-clear retry loop that runs right after (up to 8 attempts,
+  ~55s observed) never re-checks it, so a reset banner appearing partway through (the
+  countdown is only 24s) went unnoticed until retries exhausted, then unconditionally
+  downgraded to NEEDS_HUMAN with a "please clear it manually" message that was already
+  moot — the mine was resetting/cleared by then and the RESET_WAIT→REENTRY chain never
+  got a chance to take over. Fixed: `_clear_panel_filter` now checks `_mine_resetting`
+  between retries and stops early; `_resume_mining_tail` re-checks it after a failed
+  clear and routes to RESET_WAIT instead of NEEDS_HUMAN when true (same guard shape as
+  the existing entry check). **Needs live-game validation**: next harvest whose
+  panel-clear retries overlap a reset should log "面板歸零：礦坑重置 pending...→ 停止
+  重試" and "採集收尾：面板歸零失敗但礦坑重置 pending -> 回 RESET_WAIT", not a full
+  8-attempt run followed by NEEDS_HUMAN.
 - **Double-chill detection via banner color** (2026-08-02, threshold fixed 2026-08-04).
   Audio cannot count two near-simultaneous chills (1.5s rolling window merges them), but
   the top banner text is discrete with a unique random RGB per spawn message. During

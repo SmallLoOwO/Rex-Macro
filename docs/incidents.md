@@ -1071,3 +1071,78 @@ giveup_rescue 修復同批跑過）、`ruff check` clean。
 視窗焦點路徑。右鍵拖曳例外目前沒有實機重現樣本（`moveRel` 罕見失敗，回歸測試用強制
 raise 模擬）——這條 try/finally 是結構性補強而非已量測到的必然觸發點，先觀察下一輪
 `_log.warning("aim_move 中途例外...")`／`_drag_vertical 中途例外...` 有沒有真的出現。
+
+## H216（2026-08-07，harvest 216；使用者回報「容量 100 以上出現稀有礦，挖掘結束後
+就進回礦模式，導致後面的部分被動執行」）：面板歸零重試迴圈（~55s）中途礦坑才開始
+重置，重試耗盡後不重查旗標就硬降級 NEEDS_HUMAN，讓玩家收到誤導通知、回礦鏈沒接手
+
+### 一句話根因
+
+`_resume_mining_tail` 只在函式最頂端查一次 `self._mine_resetting`（H051 既有防線，
+過關就代表「呼叫當下礦坑還沒重置」），接著呼叫 `_clear_panel_filter()` 跑最多 8 次
+重試（每次 click→打字→settle→OCR 驗證→重新聚焦，實測 ~7s/次、合計可達 ~55s）。這段
+迴圈完全不查 `_mine_resetting`——礦坑重置横幅（24s 倒數）随時可能在重試期間才出現，
+迴圈渾然不覺，繼續對著即將/已經清場的畫面重試到用盡，最後不論此刻礦坑是否已經在
+重置，一律判定「清空失敗 → 降級 NEEDS_HUMAN」。
+
+### 症狀與證據（`miningbot.log` / `harvest.log`，MSIX LocalCache，2026-08-07）
+
+- `03:39:10` `EVENT HARVEST_SUCCESS {'harvest_id': '216', ...}`（Faedrine，Exquisite）。
+- `03:39:23`（HARVEST_SUCCESS 後 13s，面板清空重試才進行到 attempt 1）
+  `偵測到礦坑重置: 'The mine will reset in 24 seconds.'`——`_mine_resetting` 從此刻
+  起變 True，但清空迴圈已經在跑，不會再被檢查。
+- `03:39:28` ～ `03:40:18`：面板歸零重試 attempt 1～8 全部失敗（「面板列底色顯示還有
+  高階礦（H=128）→ 零點不成立」，礦名列表全程完全相同），耗時 **~55s**，遠超過
+  24s 的重置倒數。
+- `03:40:18` `面板歸零：重試 8 次仍失敗 → _panel_zeroed_at=None`；`03:40:19`
+  `採集收尾：面板歸零失敗 → 降級 NEEDS_HUMAN` + Discord ALERT「請手動清空後按 Q 繼續」
+  ——此時礦坑早已在清場/已重置，這則通知對玩家沒有可行動性，回礦鏈（RESET_WAIT →
+  reset_complete → REENTRY）也沒有機會接手。
+- 全程沒有任何 `STATE_CHANGE {'from_': 'HARVESTING', 'to': 'NEEDS_HUMAN', ...}` 事件
+  日誌——`_resume_mining_tail`／`_on_enter` 走的是既有「直接指定 `self.state`」的
+  降級模式（`main.py` CURRENT RISK AREAS 已知的直接狀態賦值路徑），不經
+  `resolve_state_transition` 的包裝紀錄，事後只能靠 `EVENT NEEDS_HUMAN`／`ALERT`
+  這類旁證拼時間軸。
+
+### 根因分析
+
+H051（`_resume_mining_tail` 頂端的 `if self._mine_resetting: ... return State.RESET_WAIT`）
+解決的是「呼叫 `_resume_mining_tail` 那一刻礦坑已經在重置」；但 2026-08-05 新增的
+面板清空重試＋NEEDS_HUMAN 降級（`panel_clear_max_retries` 7→8、清空失敗降級人工）
+是在那之後才加的一段可以長達 ~55s 的**阻塞**尾段，而且完全獨立於 `_mine_resetting`
+—— 期間讓出的唯一控制點是 `time.sleep`／同步 I/O，不會回到主 tick 檢查狀態轉移。
+H051 的檢查因此只覆蓋「進入前」的一瞬間，沒有覆蓋「迴圈執行中」的 ~55s 視窗，這視窗
+恰好比重置横幅的 24s 倒數還長，實機命中的機率不低。這是同一顆「阻塞尾段中途礦坑開始
+重置」的錯誤模式在新增的清空重試邏輯上重演，屬於「共享檢查點只設在入口、blocking
+子流程內部沒有重複檢查」的結構性問題。
+
+### 對策
+
+1. `_clear_panel_filter`（`main.py`）：每次重試失敗、判定 `retryable=True` 後，立刻
+   查一次 `self._mine_resetting`；若為 True，記一行 WARNING 並直接 `return`（不再重新
+   聚焦、不再進下一次 attempt）。停損效果等同「重試耗盡」（`_panel_zeroed_at` 維持
+   `None`），差別只是不用把整組重試都跑完才發現。
+2. `_resume_mining_tail`：`_clear_panel_filter()` 返回後、判定 `_panel_zeroed_at is None`
+   要降級的分支，先重查一次 `self._mine_resetting`——若 True，改走既有的
+   RESET_WAIT 分支（與函式頂端 H051 那段完全同構：`self.state = State.RESET_WAIT` +
+   `self._on_enter(State.RESET_WAIT, capture.grab())`），讓既有的
+   `reset_complete → REENTRY` 鏈接手，不再彈「請手動清空」的誤導通知。
+   `MINING` 入口（`_on_enter` 約 3654 行）與啟動時（約 2946 行）的兩個
+   `_clear_panel_filter()` 呼叫點維持原樣未動：前者在呼叫前一行就把
+   `_mine_resetting` 主動清 False（既有設計，見該處註解），後者是啟動時沒有進行中的
+   採集/回礦流程，兩者都不是本次窄化到的「重試期間才翻旗標」競態窗口。
+
+### 回歸
+
+`tests/test_giveup_rescue.py`：
+`test_clear_stops_retrying_when_mine_resetting`（重試迴圈中途翻旗標 → 只跑 1 次
+attempt、不重新聚焦）、
+`test_resume_mining_tail_clear_fail_with_reset_pending_goes_reset_wait`（清空失敗時
+`_mine_resetting=True` → `state=RESET_WAIT`，不是 `NEEDS_HUMAN`，且不 init）。
+
+### ⚠ 待實機驗證
+
+下一次「稀有礦收尾途中礦坑開始重置」時，log 應該看到「面板歸零：礦坑重置
+pending（attempt N/8）→ 停止重試」而非跑滿 8 次；緊接著應該是「採集收尾：面板歸零
+失敗但礦坑重置 pending -> 回 RESET_WAIT」而非「降級 NEEDS_HUMAN」，Discord 不該再收到
+「請手動清空後按 Q」這類此刻已經不可行動的通知，回礦鏈應該正常接手。

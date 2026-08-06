@@ -1035,6 +1035,32 @@ def test_clear_exception_does_not_retry(monkeypatch):
     assert keys == ["-w", "-shift", "-ctrl", "enter"], "只按一次 Enter（放開W+卡鍵清理+Enter）"
 
 
+def test_clear_stops_retrying_when_mine_resetting(monkeypatch):
+    """H216：重試迴圈中途礦坑開始重置 -> 停損，不耗到 max_retries 才發現。
+
+    面板在重置中被遊戲改動，繼續重試沒有意義；8 次重試（~55s）會吃掉比 24s 倒數
+    還長的時間（harvest 216 實錄）。偵測到後應立刻停止，讓呼叫端及早接手判斷。
+    """
+    monkeypatch.setattr(cfg, "panel_clear_max_retries", 5)
+    bot, clicks, typed, keys, ocr = _clear_bot(monkeypatch, header="NORMAL", names=["faedrine"])
+    orig_focus = bot._focus_roblox
+    focus_calls = []
+
+    def focus_then_trigger_reset():
+        focus_calls.append(1)
+        ok = orig_focus()
+        if len(focus_calls) == 1:
+            bot._mine_resetting = True   # 第一次 attempt 的驗證失敗後、重試前才翻旗標
+        return ok
+    bot._focus_roblox = focus_then_trigger_reset
+
+    bot._clear_panel_filter()
+
+    assert bot._panel_clear_attempts == 1, "偵測到重置後不該再嘗試第 2 次"
+    assert len(focus_calls) == 1, "不該為下一次重試重新聚焦"
+    assert bot._panel_zeroed_at is None
+
+
 def test_clear_zero_retries_matches_old_behavior(monkeypatch):
     """panel_clear_max_retries=0 時只做一次（舊行為）。"""
     monkeypatch.setattr(cfg, "panel_clear_max_retries", 0)
@@ -1216,6 +1242,59 @@ def test_resume_mining_tail_clear_fail_degrades_to_needs_human(monkeypatch):
     assert not init_called, "清空失敗不應 init_mining_sequence"
     assert bot.state is State.NEEDS_HUMAN
     assert "清空" in (bot._human_reason or "")
+
+
+def test_resume_mining_tail_clear_fail_with_reset_pending_goes_reset_wait(monkeypatch):
+    """H216（harvest 216，2026-08-07 實錄）：面板歸零重試（~55s）中途礦坑才開始重置——
+    收尾要回 RESET_WAIT，不能仍判 NEEDS_HUMAN。
+
+    進 `_resume_mining_tail` 時 `_mine_resetting` 還是 False（過了函式頂部 7723 的
+    檢查），`_clear_panel_filter` 的 8 次重試迴圈跑到一半礦坑才開始倒數重置；重試耗盡
+    後若不重查旗標，會硬彈「請手動清空後按 Q」——但礦坑已在重置/清場，回礦鏈也沒接手。
+    """
+    init_called = []
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
+    monkeypatch.setattr(main.miner, "init_mining_sequence",
+                        lambda **kw: init_called.append(True))
+    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(main.harvester, "restore_view", lambda *a, **kw: None)
+    monkeypatch.setattr(main.capture, "grab", lambda: _frame())
+
+    entered = []
+
+    def fail_clear_then_reset():
+        # 清空重試迴圈跑完（沒設 _panel_zeroed_at＝失敗）才把重置旗標翻 True，
+        # 模擬「重試期間礦坑開始重置」的時間點。
+        bot._mine_resetting = True
+
+    bot = make_fake_bot(
+        bind=["_resume_mining_tail"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        harvest=_harvest(), _mine_resetting=False,
+        _post_harvest_watch=0,
+        _log_w_state=lambda *_: None,
+        _rotate_verified=None,
+        _clear_panel_filter=fail_clear_then_reset,
+        state=State.MINING,
+        _human_reason=None,
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        _alert=lambda msg: None,
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+    )
+    bot._on_enter = lambda s, frame: entered.append(s)
+
+    bot._resume_mining_tail(0)
+
+    assert bot.state is State.RESET_WAIT, "重置 pending 時清空失敗要回 RESET_WAIT，不是 NEEDS_HUMAN"
+    assert entered == [State.RESET_WAIT]
+    assert not init_called, "清空失敗不應 init_mining_sequence"
 
 
 # ── 容量停滯警報（spec 04）：只通知，絕不停機 ──────────────────────────────
