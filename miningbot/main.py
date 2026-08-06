@@ -3153,6 +3153,7 @@ class Bot:
                         self._rr_notify(f"ℹ️ 回礦指令已忽略（{self.state.value} 優先轉 {decided.value}）")
                 elif decided is State.REENTRY and self.state is not State.REENTRY:
                     self._rr_trigger = "reset"
+                entered = None                       # _on_enter 回傳值（None=接受 decided）
                 if decided != self.state:
                     self.log.log("STATE_CHANGE", from_=self.state.value, to=decided.value)
                     # _on_enter 回傳降級目標（例：MINING 入口重新聚焦失敗 → NEEDS_HUMAN），
@@ -3180,8 +3181,17 @@ class Bot:
                 # 2026-07-26：原本這裡還會每 tick 呼叫 _update_status_messenger() 更新
                 # 一則獨立狀態訊息。狀態顯示已合併回遙控器卡（spec §7 A），改由 Discord
                 # 輪詢執行緒在 (paused, state) 變動時 PATCH，主迴圈不再做 Discord I/O。
-                if (_pre_iter_state is not State.NEEDS_HUMAN
-                        and self.state is State.NEEDS_HUMAN):
+                # 追加條件（2026-08-06）：_on_enter 降級到 NEEDS_HUMAN（例如 MINING 入口
+                # 面板清空失敗）時也要發 PING。原始邊沿條件 _pre_iter_state != NEEDS_HUMAN
+                # 在「NEEDS_HUMAN→MINING（使用者按 ▶️）→MINING 入口清空失敗→NEEDS_HUMAN」
+                # 這條路上不 fire（_pre_iter_state 已是 NEEDS_HUMAN），使用者按了繼續卻
+                # 收不到任何通知，以為按鈕沒反應。
+                _downgraded_to_needs_human = (
+                    entered is not None and entered is State.NEEDS_HUMAN
+                    and decided is not State.NEEDS_HUMAN)
+                if ((self.state is State.NEEDS_HUMAN)
+                        and (_pre_iter_state is not State.NEEDS_HUMAN
+                             or _downgraded_to_needs_human)):
                     try:
                         self._send_needs_human_ping(
                             harvest_id=self._needs_human_extra_meta.get("harvest_id"),
@@ -5764,6 +5774,15 @@ class Bot:
                 self._panel_zeroed_at = None
                 self.logger.warning("面板歸零：拿不到前景焦點 → 整條跳過（_panel_zeroed_at=None）")
                 return False, False
+            # 游標鎖定釋放（2026-08-06）：從 NEEDS_HUMAN 恢復挖礦時，_on_enter(NEEDS_HUMAN)
+            # 的 mouse_up 可能在 _on_enter(HARVESTING) 遞迴呼叫中發出但未被遊戲處理 →
+            # 游標仍被 LockCenter 釘在中央 → click_at(panel_filter_xy) 落在中央不是篩選框
+            # → 打字全進遊戲世界 → 面板清空重試 8 次全滅 → 降級 NEEDS_HUMAN 無通知 →
+            # 使用者以為 ▶️ 沒反應。比照 _consume_clear_panel 的修復（commit 1a248b2）：
+            # 放開 W+滑鼠→settle→等遊戲退出挖礦模式。key_up/mouse_up 對未按住的鍵是
+            # no-op，一律放開無副作用——從 MINING 手動清空路徑進來時也只是多 0.45s。
+            ic.key_up("w"); ic.mouse_up()
+            ic.settle()
             # 卡鍵清理（2026-08-06）：init_mining_sequence 的 center_crosshair 連按兩次
             # Shift，若第二次 keyUp 被吃→Shift 卡住→key_press("w") 變 Shift+W 進遊戲
             # 世界。重試時也跑這段（retry 舊版只 focus 不清修飾鍵＝重試全滅）。
@@ -5773,6 +5792,7 @@ class Bot:
                     ic.key_up(_mod)
                 except Exception:
                     pass
+            time.sleep(0.3)                    # 等遊戲退出挖礦模式、釋放游標鎖（同 1a248b2）
             band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
             before = vision.filter_box_ink(band0)
             before_w = vision.filter_box_text_width(band0)
