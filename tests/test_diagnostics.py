@@ -154,6 +154,23 @@ def _reset_adopted():
         lg.propagate = True
 
 
+def _reset_main_logger():
+    """把主 miningbot logger 還原成乾淨狀態。
+
+    2026-08-07：setup_logging 修好「三個 logger 各開一份 miningbot.log 檔案
+    handle」的 bug 後，主 logger 與收編的第三方 logger 共用同一個 handler
+    實例——這對 production 是正確行為（一個 process 只該有一份 handle），但
+    這個檔案裡的測試互相共用同一個 process-wide `logging.getLogger("miningbot")`
+    單例，前一個測試留下的 handler（指向前一個 tmp_path）若不清掉，後面驗證
+    「這次呼叫真的對自己的 tmp_path 開了新檔」的測試會撞到舊 handle 而讀不到
+    自己寫的內容。
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+        h.close()
+
+
 def test_setup_logging_adopts_uvicorn_logger(tmp_path):
     """uvicorn 的訊息必須進 miningbot.log。
 
@@ -164,11 +181,15 @@ def test_setup_logging_adopts_uvicorn_logger(tmp_path):
     於是答案整個蒸發。跟 H061「daemon thread 無聲死亡」同型。
     """
     _reset_adopted()
+    _reset_main_logger()          # 主 logger 現在跟收編 logger 共用 handler，須一併重置
     d = str(tmp_path / "logs_uvicorn")
     setup_logging(d, "INFO")
     uv = logging.getLogger("uvicorn")
     assert uv.handlers, "uvicorn logger 沒被收編——它的訊息會掉進沒有 handler 的 root"
     assert uv.propagate is False, "收編後不該再冒泡到無 handler 的 root"
+    assert uv.handlers[0] is logging.getLogger(LOGGER_NAME).handlers[0], (
+        "收編 logger 必須共用主 logger 的同一個 handler 實例——各自開一份檔案"
+        "handle 正是 miningbot.log 卡死不轉檔的根因（2026-08-07 修）")
 
     logging.getLogger("uvicorn.error").warning(
         "No supported WebSocket library detected.")
@@ -177,14 +198,17 @@ def test_setup_logging_adopts_uvicorn_logger(tmp_path):
     body = (tmp_path / "logs_uvicorn" / "miningbot.log").read_text(encoding="utf-8")
     assert "No supported WebSocket library detected." in body
     _reset_adopted()
+    _reset_main_logger()
 
 
 def test_setup_logging_adoption_is_idempotent(tmp_path):
     """重複呼叫不得重複掛 handler（每行訊息會被寫兩次）。"""
     _reset_adopted()
+    _reset_main_logger()
     d = str(tmp_path / "logs_idem")
     setup_logging(d, "INFO")
     n = len(logging.getLogger("uvicorn").handlers)
     setup_logging(d, "INFO")
     assert len(logging.getLogger("uvicorn").handlers) == n
     _reset_adopted()
+    _reset_main_logger()

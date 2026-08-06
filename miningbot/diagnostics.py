@@ -64,6 +64,19 @@ def setup_logging(log_dir: str, level: str) -> logging.Logger:
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s",
                             "%Y-%m-%d %H:%M:%S")
+    # 主檔 handler 只開一次、miningbot 主 logger 與收編的第三方 logger（uvicorn/
+    # websockets）共用同一個 RotatingFileHandler 實例（2026-08-07 修）：舊版三個
+    # logger 各自呼叫 _make_file_handler() 對 miningbot.log 開三份獨立檔案 handle，
+    # 各自追蹤自己的位元組數。其中一個先滾到 maxBytes 觸發 doRollover() 要
+    # rename miningbot.log -> .1 時，另外兩個 handle 還開著同一個檔——Windows 上
+    # rename 撞到還開啟的 handle 直接 PermissionError；pythonw 沒 stderr，
+    # logging.Handler.handleError 靜默吞掉，之後這個 logger 的每一筆訊息都消失。
+    # 實機案例：2026-08-03 14:27:54 miningbot.log 卡在 1,999,982/2,000,000
+    # bytes，backupCount=5 卻連 .1 都沒生出來，之後四天所有 self.logger 呼叫
+    # （含面板清空失敗的 WARNING）全部靜默消失，診斷只能靠快照時間軸硬湊。
+    already_configured = bool(logger.handlers)
+    main_handler = logger.handlers[0] if already_configured else _make_file_handler(
+        log_dir, "miningbot.log", fmt)
     # 第三方 logger 收編要在主 logger 的冪等 early-return **之前**做：這些函式庫
     # （uvicorn / websockets）的 logger 是獨立 tree，跟 miningbot logger 有沒有設定過
     # 無關。放在 early-return 之後的話，只要有人先呼叫過一次 setup_logging，
@@ -74,13 +87,13 @@ def setup_logging(log_dir: str, level: str) -> logging.Logger:
         if third.handlers:                   # 已設定過，跳過（冪等）
             continue
         third.propagate = False              # 不冒泡到無 handler 的 root
-        third.addHandler(_make_file_handler(log_dir, "miningbot.log", fmt))
+        third.addHandler(main_handler)       # 共用同一個 handler 實例，不再各開一份檔案
         # level 交給函式庫自己設，這裡不覆寫——uvicorn 已被
         # uvicorn.Config(log_level="warning") 壓到 warning，不會有每請求一行的噪音。
-    if logger.handlers:                      # root 已設定過就直接回傳（子 logger 同步冪等）
+    if already_configured:                   # root 已設定過就直接回傳（子 logger 同步冪等）
         return logger
     # 主檔 + stdout（主敘事）；pythonw 無 console（sys.stdout is None）→ 跳過 stdout handler
-    logger.addHandler(_make_file_handler(log_dir, "miningbot.log", fmt))
+    logger.addHandler(main_handler)
     if sys.stdout is not None:
         try:                                 # 讓主控台也能正確顯示中文（Windows 預設非 UTF-8）
             sys.stdout.reconfigure(encoding="utf-8")
