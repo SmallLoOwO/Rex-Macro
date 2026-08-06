@@ -420,13 +420,20 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   countdown is only 24s) went unnoticed until retries exhausted, then unconditionally
   downgraded to NEEDS_HUMAN with a "please clear it manually" message that was already
   moot — the mine was resetting/cleared by then and the RESET_WAIT→REENTRY chain never
-  got a chance to take over. Fixed: `_clear_panel_filter` now checks `_mine_resetting`
-  between retries and stops early; `_resume_mining_tail` re-checks it after a failed
-  clear and routes to RESET_WAIT instead of NEEDS_HUMAN when true (same guard shape as
-  the existing entry check). **Needs live-game validation**: next harvest whose
-  panel-clear retries overlap a reset should log "面板歸零：礦坑重置 pending...→ 停止
-  重試" and "採集收尾：面板歸零失敗但礦坑重置 pending -> 回 RESET_WAIT", not a full
-  8-attempt run followed by NEEDS_HUMAN.
+  got a chance to take over. **Fix (queue, don't abort — user-specified 2026-08-07):**
+  the panel-clear sequence is treated as an atomic action that always runs to its
+  natural end (success or retries exhausted) — it is never cut short mid-loop, since
+  stopping partway leaves the UI in an undefined state. `_resume_mining_tail` re-checks
+  `_mine_resetting` right after `_clear_panel_filter()` returns (success or failure
+  alike — a reset pending means don't resume mining either way) and routes to
+  RESET_WAIT instead of continuing/NEEDS_HUMAN when true. `decide_transition`'s
+  NEEDS_HUMAN branch got the same treatment: if the reset flag is set by the time the
+  player clears human (`human_cleared`), go to RESET_WAIT instead of MINING — MINING's
+  `_on_enter` would otherwise fire key/mouse input immediately and clear the reset
+  flag itself, decapitating the reset→reentry chain. **Needs live-game validation**:
+  a harvest whose panel-clear retries overlap a reset should run the full retry
+  sequence uninterrupted, then log "採集收尾：面板歸零跑完但礦坑重置 pending -> 回
+  RESET_WAIT" (success or failure) instead of "降級 NEEDS_HUMAN".
 - **Double-chill detection via banner color** (2026-08-02, threshold fixed 2026-08-04).
   Audio cannot count two near-simultaneous chills (1.5s rolling window merges them), but
   the top banner text is discrete with a unique random RGB per spawn message. During

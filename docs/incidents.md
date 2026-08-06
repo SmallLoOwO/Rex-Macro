@@ -1116,33 +1116,49 @@ H051 的檢查因此只覆蓋「進入前」的一瞬間，沒有覆蓋「迴圈
 重置」的錯誤模式在新增的清空重試邏輯上重演，屬於「共享檢查點只設在入口、blocking
 子流程內部沒有重複檢查」的結構性問題。
 
-### 對策
+### 對策（2026-08-07 使用者訂正版——排隊接續，不是中途打斷）
 
-1. `_clear_panel_filter`（`main.py`）：每次重試失敗、判定 `retryable=True` 後，立刻
-   查一次 `self._mine_resetting`；若為 True，記一行 WARNING 並直接 `return`（不再重新
-   聚焦、不再進下一次 attempt）。停損效果等同「重試耗盡」（`_panel_zeroed_at` 維持
-   `None`），差別只是不用把整組重試都跑完才發現。
-2. `_resume_mining_tail`：`_clear_panel_filter()` 返回後、判定 `_panel_zeroed_at is None`
-   要降級的分支，先重查一次 `self._mine_resetting`——若 True，改走既有的
-   RESET_WAIT 分支（與函式頂端 H051 那段完全同構：`self.state = State.RESET_WAIT` +
-   `self._on_enter(State.RESET_WAIT, capture.grab())`），讓既有的
-   `reset_complete → REENTRY` 鏈接手，不再彈「請手動清空」的誤導通知。
-   `MINING` 入口（`_on_enter` 約 3654 行）與啟動時（約 2946 行）的兩個
-   `_clear_panel_filter()` 呼叫點維持原樣未動：前者在呼叫前一行就把
-   `_mine_resetting` 主動清 False（既有設計，見該處註解），後者是啟動時沒有進行中的
-   採集/回礦流程，兩者都不是本次窄化到的「重試期間才翻旗標」競態窗口。
+第一版曾經在 `_clear_panel_filter` 的重試迴圈裡查到 `_mine_resetting` 就立刻
+`return` 提前中止。使用者指正：正確語意是「排隊」——清空序列是一個不該被腰斬的
+原子動作（打字/點擊/OCR 驗證都在進行中，中途跳出會停在不確定的 UI 狀態），礦坑重置
+只是排隊等它做完，**序列本身照跑到自然結束**（成功或重試耗盡都算），重置的因應留到
+序列結束後才處理；若那之後才發現 NEEDS_HUMAN（清空真的失敗，與重置無關），也要在
+玩家解除人工的那一刻重新檢查排隊中的重置旗標，而不是逕自回 MINING。三處修法：
+
+1. `_clear_panel_filter`：**不**在迴圈中途查旗標，維持原本「重試到成功或耗盡」的
+   單純迴圈；`_mine_resetting` 是否在期間翻 True 由呼叫端事後判斷。
+2. `_resume_mining_tail`：`_clear_panel_filter()` 呼叫完（不論成功或耗盡）**之後**，
+   立刻查一次 `self._mine_resetting`——若 True，一律轉 RESET_WAIT（與函式頂端 H051
+   那段同構：`self.state = State.RESET_WAIT` + `self._on_enter(State.RESET_WAIT, ...)`），
+   **不分清空成功或失敗**：就算這次清空剛好成功，重置 pending 時也不該接著
+   `init_mining_sequence` 對即將清場的畫面按 W 開挖。`MINING` 入口與啟動時的另外兩個
+   `_clear_panel_filter()` 呼叫點維持原樣：前者呼叫前一行就主動清 `_mine_resetting`
+   （既有設計），後者啟動時沒有進行中的採集流程，都不是本次窄化的競態窗口。
+3. `states.py` `decide_transition`（NEEDS_HUMAN 分支）：新增
+   `if o.human_cleared and o.mine_resetting: return State.RESET_WAIT`，排在
+   `manual_reentry` 之後、原本的 `human_cleared -> MINING` 之前——涵蓋「NEEDS_HUMAN
+   期間礦坑才開始重置、玩家之後按繼續解除」這條路：直接回 MINING 會讓
+   `_on_enter(MINING)` 立刻動鍵盤/滑鼠並清掉 `_mine_resetting` 旗標，回礦鏈斷頭；
+   改回 RESET_WAIT，`_on_enter(RESET_WAIT)` 既有的 `self.human_cleared = False`
+   （3881 行一帶，無條件執行）順便把旗標歸位，不需要額外清理。
 
 ### 回歸
 
 `tests/test_giveup_rescue.py`：
-`test_clear_stops_retrying_when_mine_resetting`（重試迴圈中途翻旗標 → 只跑 1 次
-attempt、不重新聚焦）、
-`test_resume_mining_tail_clear_fail_with_reset_pending_goes_reset_wait`（清空失敗時
-`_mine_resetting=True` → `state=RESET_WAIT`，不是 `NEEDS_HUMAN`，且不 init）。
+`test_clear_keeps_retrying_when_mine_resetting_flips_mid_loop`（旗標中途翻 True
+不打斷重試，跑滿 `max_retries+1` 次）、
+`test_resume_mining_tail_clear_fail_with_reset_pending_goes_reset_wait`（清空失敗＋
+`_mine_resetting=True` → `RESET_WAIT`，不是 `NEEDS_HUMAN`）、
+`test_resume_mining_tail_clear_success_but_reset_pending_goes_reset_wait`（清空這次
+成功了，但重置 pending 一樣要回 RESET_WAIT，不繼續 init_mining）。
+`tests/test_states.py`：
+`test_human_cleared_during_reset_goes_reset_wait_not_mining`（NEEDS_HUMAN 解除時
+`mine_resetting=True` → `RESET_WAIT`；旗標為 False 或未解除人工皆行為不變）。
 
 ### ⚠ 待實機驗證
 
-下一次「稀有礦收尾途中礦坑開始重置」時，log 應該看到「面板歸零：礦坑重置
-pending（attempt N/8）→ 停止重試」而非跑滿 8 次；緊接著應該是「採集收尾：面板歸零
-失敗但礦坑重置 pending -> 回 RESET_WAIT」而非「降級 NEEDS_HUMAN」，Discord 不該再收到
-「請手動清空後按 Q」這類此刻已經不可行動的通知，回礦鏈應該正常接手。
+下一次「稀有礦收尾途中礦坑開始重置」時，面板歸零應該照跑完整重試序列（不會提早
+中止），log 看到序列結束後的「採集收尾：面板歸零跑完但礦坑重置 pending -> 回
+RESET_WAIT」（清空失敗或成功皆可能觸發），而不是「降級 NEEDS_HUMAN」；Discord 不該
+收到「請手動清空後按 Q」這類此刻已經不可行動的通知。若清空真的因為與重置無關的原因
+失敗、進了 NEEDS_HUMAN，且玩家解除時礦坑已在重置，應直接轉 RESET_WAIT 而非 MINING。

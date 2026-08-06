@@ -5718,6 +5718,11 @@ class Bot:
         **清空失敗的後果**（2026-08-05 使用者要求）：重試耗盡後 ``_panel_zeroed_at``
         留 None。呼叫端據此降級 NEEDS_HUMAN（MINING 進場／採集返工／手動清空指令），
         不再帶著不信任的面板繼續挖——舊版「路 B 將跳過下一場」的靜默降級已移除。
+
+        **不因 `_mine_resetting` 中途變 True 而提早中止**（H216，2026-08-07 使用者
+        訂正）：這段序列一旦開始就跑到自然結束（成功或重試耗盡），礦坑重置只是排隊
+        等它跑完——由呼叫端（`_resume_mining_tail`）在序列結束後才查旗標決定要不要
+        轉 RESET_WAIT。中途硬中止過（曾經的版本）會讓序列停在不確定的 UI 狀態。
         """
         for attempt in range(cfg.panel_clear_max_retries + 1):
             is_final = attempt >= cfg.panel_clear_max_retries
@@ -5729,14 +5734,6 @@ class Bot:
                 return
             if not retryable:
                 return  # 焦點/例外：重試無益
-            if self._mine_resetting:
-                # H216：礦坑重置 pending 時繼續重試沒有意義（面板在重置中被遊戲改動，
-                # 8 次重試會吃掉比 24s 倒數還長的時間）——停損，讓呼叫端走 RESET_WAIT
-                # 而非硬耗到重試用盡才發現。_panel_zeroed_at 維持 None，效果同「重試耗盡」。
-                self.logger.warning(
-                    "面板歸零：礦坑重置 pending（attempt %d/%d）→ 停止重試",
-                    attempt + 1, cfg.panel_clear_max_retries + 1)
-                return
             if not is_final:
                 self.logger.warning(
                     "面板歸零未確認（attempt %d/%d）→ 重新聚焦後重做整條序列",
@@ -7736,20 +7733,22 @@ class Bot:
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
         self._clear_panel_filter()        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
+        # H216（2026-08-07，harvest 216 實錄＋使用者訂正）：清空序列（可長達 ~55s）
+        # 排隊等它自然跑完（成功或重試耗盡）——不中途打斷。序列結束後才重查
+        # _mine_resetting：7728 進來時可能還沒重置，序列跑的這段期間礦坑才開始倒數。
+        # 一旦此刻是 True，不論清空成不成功都不能繼續挖（成功也一樣——馬上要
+        # init_mining_sequence 按 W/滑鼠，對著即將清場的畫面挖沒有意義），改走與 7728
+        # 同一條 RESET_WAIT 分支，讓 reset_complete → REENTRY 鏈接手。
+        if self._mine_resetting:
+            self.logger.info("採集收尾：面板歸零跑完但礦坑重置 pending -> 回 RESET_WAIT（不繼續挖礦）")
+            self.state = State.RESET_WAIT
+            self._on_enter(State.RESET_WAIT, capture.grab())
+            return
         # 清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求：「稀有挖礦結束返工時，
         # 發現沒有確實清除，也應該如清空背包面板一樣進行重複的行為」——重試已耗盡仍
         # 失敗就交人工，而非帶著不信任的面板繼續挖）。呼叫端（_harvest_resume_mining /
         # 遠端 fire 收尾）在呼叫後不再設 state，所以這裡改 state 安全。
         if getattr(self, "_panel_zeroed_at", None) is None:
-            # H216：面板歸零重試(~55s)期間礦坑才開始重置——進迴圈前的 7723 檢查已經
-            # 過關，旗標在重試中途才翻 True。不重查就直接交人工，會在礦坑倒數/清場中
-            # 彈出「請手動清空後按 Q」，玩家還沒回應礦坑已重置完畢，回礦鏈也沒接手。
-            # 比照 7723 同一條 RESET_WAIT 導向：重置 pending 優先於面板不信任。
-            if self._mine_resetting:
-                self.logger.info("採集收尾：面板歸零失敗但礦坑重置 pending -> 回 RESET_WAIT（不降級人工）")
-                self.state = State.RESET_WAIT
-                self._on_enter(State.RESET_WAIT, capture.grab())
-                return
             self.logger.warning("採集收尾：面板歸零失敗 → 降級 NEEDS_HUMAN")
             self._human_reason = (
                 f"採集後背包面板清空失敗（已重試 {getattr(self, '_panel_clear_attempts', 1)} 次）"

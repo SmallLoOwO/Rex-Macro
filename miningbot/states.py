@@ -44,6 +44,8 @@ def decide_transition(state: State, o: Observation) -> State:
     if state is State.NEEDS_HUMAN:
         if o.manual_reentry and o.auto_reenter:   # 手動優先於 human_cleared（更明確的意圖）
             return State.REENTRY
+        if o.human_cleared and o.mine_resetting:  # H216：人工解除時礦坑已在重置，別回 MINING
+            return State.RESET_WAIT               # 空挖一輪——_on_enter(MINING) 會馬上動鍵/清旗標
         return State.MINING if o.human_cleared else State.NEEDS_HUMAN
     if state is State.RESET_WAIT:
         if o.chill_audio and o.chill_text:   # 例外：重置期間意外出現稀有 → 強制採集

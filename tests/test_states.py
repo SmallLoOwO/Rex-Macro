@@ -42,6 +42,19 @@ def test_human_stays_until_cleared():
     assert decide_transition(State.NEEDS_HUMAN, obs()) == State.NEEDS_HUMAN
     assert decide_transition(State.NEEDS_HUMAN, obs(human_cleared=True)) == State.MINING
 
+def test_human_cleared_during_reset_goes_reset_wait_not_mining():
+    # H216：人工卡在 NEEDS_HUMAN 期間礦坑開始重置，玩家按繼續解除——直接回 MINING
+    # 會讓 _on_enter(MINING) 馬上動鍵盤/滑鼠、清掉 _mine_resetting 旗標，回礦鏈斷頭。
+    # 改回 RESET_WAIT 讓既有 reset_complete → REENTRY 鏈接手。
+    assert decide_transition(State.NEEDS_HUMAN,
+                             obs(human_cleared=True, mine_resetting=True)) == State.RESET_WAIT
+    # 旗標沒設時行為不變（不誤觸發）
+    assert decide_transition(State.NEEDS_HUMAN,
+                             obs(human_cleared=True, mine_resetting=False)) == State.MINING
+    # 沒按繼續，重置旗標本身不該把人踢出 NEEDS_HUMAN（still 等人工）
+    assert decide_transition(State.NEEDS_HUMAN,
+                             obs(mine_resetting=True)) == State.NEEDS_HUMAN
+
 def test_mining_reset_goes_to_reset_wait():
     assert decide_transition(State.MINING, obs(mine_resetting=True)) == State.RESET_WAIT
 
