@@ -167,6 +167,8 @@ class Config:
     d1_selected_greenness_min: float = 5.0       # greenness=平均G-平均(R+B)/2 ≥ 此值＝槽位選中(裝備中)；實測 選中≈+9.8~+11.5、未選中≈-1.4~0 → 5.0 兩側夾
     d2_slot_region: Region = field(default_factory=lambda: Region(864, 998, 54, 58))  # slot 2（掃描器）內部；2026-07-29 全螢幕校準（slot1 x798-852、pitch 66 → slot2 x864-918；H065）
     d2_selected_greenness_min: float = 5.0       # 同 d1 慣例；實測 slot2 選中≈+10.5、未選中≈+1.5（掃描器圖示帶微綠，但 up/d3/down 三個不同場景幀量出來分毫不差＝UI 固定屬性）→ 5.0 兩側夾（H065）
+    d3_slot_region: Region = field(default_factory=lambda: Region(930, 998, 54, 58))  # slot 3（D3 傳送器）內部；2026-08-06 新增——slot1 x798、slot2 x864、pitch 66 → slot3 x930；harvest 207 D3 按鍵被吃從未裝備
+    d3_selected_greenness_min: float = 5.0       # 同 d1/d2 慣例；hotbar 選中底色轉綠是 UI 固定屬性（H065 實測跨場景幀分毫不差），門檻沿用 5.0；需實機校準確認
 
     # 音訊
     chill_audio_path: str = "assets/chill_reference.wav"  # 單一參考（後備；chill_refs 夾為空時用）

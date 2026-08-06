@@ -1163,7 +1163,14 @@ class Bot:
             time.monotonic(), self._last_d3_fire_at, cfg.d3_cooldown_s)
 
     def _fire_d3_at(self, x: int, y: int) -> bool:
-        """Run the single canonical D3 sequence, stamping cooldown at the shot."""
+        """Run the single canonical D3 sequence, stamping cooldown at the shot.
+
+        ★ D3 slot 裝備確認（2026-08-06 harvest 207）：比照 D1/D2 的 slot_selected
+        守門（H065）。harvest 207 實機 3 發全部 log ``fired`` 但追蹤框從未消失——
+        使用者目視確認 D3 從未裝備，按 ``"2"→"3"`` 的按鍵被吃。舊版盲按盲點，
+        click 落在未裝備狀態 → 無效操作。現按 ``"3"`` 後讀 slot 3 底色確認裝備；
+        未裝備則重試一次，再不行就放棄開火（return False，不盲打）。
+        """
         remaining = self._d3_cooldown_remaining()
         if remaining > 0:
             self.log_harvest.info("D3 cooldown blocked shot at (%d,%d): %.2fs left",
@@ -1173,6 +1180,18 @@ class Bot:
         time.sleep(0.15)
         ic.key_press("3")
         time.sleep(0.3)
+        # ★ slot 3 裝備確認（比照 D1 miner.py、D2 harvester.py H065 守門模式）
+        if not vision.slot_selected(capture.grab(), cfg.d3_slot_region,
+                                    cfg.d3_selected_greenness_min):
+            self.log_harvest.warning(
+                "D3 slot 未裝備——按鍵疑似被吃，重試 slot 3")
+            ic.key_press("3")
+            time.sleep(0.3)
+            if not vision.slot_selected(capture.grab(), cfg.d3_slot_region,
+                                        cfg.d3_selected_greenness_min):
+                self.log_harvest.warning(
+                    "D3 slot 二次確認仍失敗——放棄開火（不盲打）")
+                return False
         self._last_d3_fire_at = time.monotonic()
         ic.click_at(int(x), int(y), hold=0.4)
         time.sleep(0.5)

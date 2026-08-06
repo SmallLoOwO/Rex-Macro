@@ -4,7 +4,7 @@ import time
 import cv2
 import numpy as np
 
-from miningbot import main, remote_aim
+from miningbot import main, remote_aim, vision, capture
 from miningbot.main import Bot
 
 
@@ -30,6 +30,9 @@ def test_shared_d3_cooldown_starts_immediately_before_hold_click(monkeypatch):
     monkeypatch.setattr(main.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(main.time, "sleep", lambda seconds: actions.append(("sleep", seconds)))
     monkeypatch.setattr(main.ic, "key_press", lambda key: actions.append(("key", key)))
+    # D3 slot 裝備確認守門（2026-08-06 harvest 207）：模擬 slot 3 已正確裝備
+    monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
+    monkeypatch.setattr(main.vision, "slot_selected", lambda *a, **k: True)
 
     def click(x, y, hold):
         assert bot._last_d3_fire_at == now[0]
@@ -51,6 +54,65 @@ def test_shared_d3_cooldown_starts_immediately_before_hold_click(monkeypatch):
     now[0] = 110.0
     assert bot._fire_d3_at(640, 480) is True
     assert len(actions) == 12
+
+
+def test_d3_slot_not_equipped_aborts_after_retry(monkeypatch):
+    """harvest 207：按 "3" 被吃 → slot_selected False → 重試一次仍失敗 → 放棄開火。
+
+    不盲打：_fire_d3_at 回 False，不記 cooldown、不 click。
+    """
+    bot = Bot.__new__(Bot)
+    bot._last_d3_fire_at = None
+    bot.log_harvest = _LogRecorder()
+    actions = []
+
+    monkeypatch.setattr(main.cfg, "d3_cooldown_s", 10.0)
+    monkeypatch.setattr(main.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(main.time, "sleep", lambda s: actions.append(("sleep", s)))
+    monkeypatch.setattr(main.ic, "key_press", lambda key: actions.append(("key", key)))
+    monkeypatch.setattr(main.ic, "click_at", lambda *a, **k: actions.append(("click", *a, k.get("hold"))))
+    monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
+    monkeypatch.setattr(main.vision, "slot_selected", lambda *a, **k: False)
+
+    assert bot._fire_d3_at(640, 480) is False
+    # 按了 "2" 和兩次 "3"（初始+重試），但沒有 click（slot 從未裝備）
+    assert actions == [
+        ("key", "2"), ("sleep", 0.15),
+        ("key", "3"), ("sleep", 0.3),
+        ("key", "3"), ("sleep", 0.3),
+    ]
+    # 沒有 click 也沒有記 cooldown（不是真的開火）
+    assert bot._last_d3_fire_at is None
+
+
+def test_d3_slot_retries_then_succeeds(monkeypatch):
+    """第一次 slot_selected False → 重試按 "3" → 第二次 True → 正常開火。"""
+    bot = Bot.__new__(Bot)
+    bot._last_d3_fire_at = None
+    bot.log_harvest = _LogRecorder()
+    actions = []
+    slot_results = iter([False, True])
+
+    monkeypatch.setattr(main.cfg, "d3_cooldown_s", 10.0)
+    monkeypatch.setattr(main.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(main.time, "sleep", lambda s: actions.append(("sleep", s)))
+    monkeypatch.setattr(main.ic, "key_press", lambda key: actions.append(("key", key)))
+    monkeypatch.setattr(main.capture, "grab", lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
+    monkeypatch.setattr(main.vision, "slot_selected", lambda *a, **k: next(slot_results))
+
+    def click(x, y, hold):
+        assert bot._last_d3_fire_at == 100.0
+        actions.append(("click", x, y, hold))
+
+    monkeypatch.setattr(main.ic, "click_at", click)
+
+    assert bot._fire_d3_at(640, 480) is True
+    assert actions == [
+        ("key", "2"), ("sleep", 0.15),
+        ("key", "3"), ("sleep", 0.3),
+        ("key", "3"), ("sleep", 0.3),         # 重試 slot 3
+        ("click", 640, 480, 0.4), ("sleep", 0.5),
+    ]
 
 
 def test_aim_renderer_matches_candidates_by_exact_snapshot_path(tmp_path, monkeypatch):
