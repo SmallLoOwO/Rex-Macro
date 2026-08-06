@@ -390,7 +390,24 @@ bbox (1032, 108,  6, 17) area  57.0
 
 單獨把 `tracker_shape_soft_edge` 往下調到 0.33/0.34 而不補任何第三軸——已量測會誤收岩層。
 
-## D10（2026-07-31，harvest 128/119 玩家標註）：`detect_tracker_core` 只認飽和綠，淡薄荷框與藍菱星框的核心整組看不到
+## D10（2026-07-31，harvest 128/119 玩家標註）：`detect_tracker_core` 只認飽和綠，淡薄荷框與藍菱星框的核心整組看不到 → **已解決（2026-08-06）**
+
+### 解法（91 張玩家標註 fixture 補齊負樣本後）
+
+當時卡住的原因是「淡薄荷放寬 S 下限會不會把去飽和霧狀綠地形一起放進來」「藍菱星棕心
+會不會跟泥土地形同色帶」——兩邊都缺負樣本。2026-08-06 的 91 張玩家標註（`/annotate`
+覆蓋 20 個場次的漏判）補齊了負樣本：81 張 `decoy`/`empty` 標籤的負例掃過新門檻，
+假陽性數維持 2（既有 H057 同色地形殘留，非本次改動引入，見 `test_detect_tracker_core_decoy_empty_false_hit_rate_not_regressed`）。
+
+`tracker_core_profiles` 的兩側夾（S 下限 150→125；新增 red/brown/white_blue/magenta
+四色系）與量測全記在 `config.py` 該欄位註解。淡薄荷＝這裡的 green S=128~130 那批；
+藍菱星棕心＝這裡的 `brown` profile（harvest 119/153 兩個獨立場次）。
+
+另發現候選揀選的獨立 bug（harvest 197）：region 內同時有兩個合法候選時，舊版選
+「面積最大」而非「離 region 中心最近」——region 本身就是玩家選定的粗格，中心優先
+才符合 premise。已修（`vision.detect_tracker_core`）。
+
+### 原始症狀（保留存檔）
 
 ### 症狀
 
@@ -788,3 +805,40 @@ aspect=0.93（閘 1.60-3.00），碎片化到無法成形。
 
 **降 V_lo 是淨負值**——背景噪音淹沒連通元件，反而打掉原先能偵測的板子。門檻不動；
 `auto_54_success` 加入 `_D14_KNOWN_GAPS`（原 `_D14_ASPECT_GAP` 更名）以 warning 可見化。
+
+## D15（2026-08-06，91 張玩家標註 fixture 標註驅動微調的殘留）：`detect_tracker_core` 同色黏連仍會爆 `max_area`；一張素材本身不可信
+
+前情：這批標註原本被誤判為「玩家瞎標、素材不可信」（`.scratch/annotation-trust-audit/issues/01-annotation-trust-audit.md` 的初稿假說）——實際肉眼核對後推翻，83% 的
+「偵測器不同意」絕大多數是偵測器真 bug（D10 已解決部分）。這條記錄核對後**仍然存在**
+的兩個殘留缺口，不在本次修復範圍內。
+
+### 殘留一：同色地形把框「黏」成超大 blob，直接撞 `max_area` 出局
+
+`harvest 158`（`20260801_151933_604194600_000013_158_sweep_empty_dir4`）：框心清楚可見，
+但整個 green mask 在該點附近連成一塊 **50922px** 的單一輪廓（`min_area`~`max_area` 開窗
+是 80~1800），比真框心（256~663）大了近百倍——同一格內框與背景綠色地形無縫相接，
+`cv2.findContours(RETR_EXTERNAL)` 從外圍看就是一坨，形狀確認前就先被 `area>max` 擋掉。
+
+跟 H057（`find_tracker` 已修）是同一類「同色黏連」，但 `find_tracker` 靠的是 V-submask
+二次分割救援（超大輪廓時用 V 通道再切一次找亮核心），`detect_tracker_core` 目前**沒有**
+這個救援路徑——它是後來為「玩家已選定粗格」的場景寫的簡化版，設計上沒抄這段。
+
+**不現在修**：加救援需要新的合成/實機兩側夾（V 通道切割门檻），且只有這一張 fixture
+覆蓋此情境，證據不夠。移植 H057 的 V-submask 邏輯到 `detect_tracker_core` 是可行方向，
+下次收到同類 fixture（`detect_tracker_core` 回 `None` 但 log 顯示某候選 `rej(area>max)`
+且面積遠超 1800）時再動手。
+
+### 殘留二：`harvest 152` 的 `sweep_empty_dir5` 素材本身壞掉，不是偵測器的錯
+
+`20260801_101310_405304000_000012_152_sweep_empty_dir5`：玩家標 `false_negative`（觀察
+`ore`），但肉眼看那張裁圖整片是**聊天/通知面板疊字**（"...your trusted... the button
+on... panel...miniscence event!...to Wintburg!..."），畫面裡沒有任何追蹤框——annotation
+座標 (160,135) 落在文字中間。同一場次的 `dir4`（`sweep_confirmed_dir4_1168_463`）才是
+真正的框，`dir5` 這張很可能是聊天面板剛好在擷取瞬間蓋住畫面。
+
+這張最初量到的 HSV（H≈23，橘色）差點被誤當成第三種未覆蓋色系提案——但它與 30 張
+`decoy` 負例裡最近的一批（H≈25，7+ 個獨立命中）只隔 2°，夾不出兩側，兩件事互相印證：
+**樣本本身不可信，不是門檻該往哪調的問題**。
+
+**處置**：不動這張 fixture 的標籤（沒有覆審 UI 可以覆寫，也不在本次範圍），只記錄在此
+供下次同類「單張怎麼看都夾不出兩側」時先去肉眼核對來源幀，別急著加 profile。

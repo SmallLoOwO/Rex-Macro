@@ -141,3 +141,30 @@ hotbar 看似該進 `Bot._tracker_exclusions()`（比照 H068 的聊天／礦石
 兩側**：hotbar 展開成 10 格時橫跨 x 628~1290、y 988~1065，而 H026 的真框就在
 (1288,1020)（`assets/bottom_edge_tracker_scene.png`，`tracker_margin_frac` 0.10→0.02
 正是為了收回它）——同一塊螢幕區域兩邊都要。維持現況，記在 D06 誤收側。
+
+## 2026-08-06 玩家標註第三批（`20260801_173352_*`~`20260806_*`，79 組）：D10 色系缺口的兩側夾負樣本
+
+補了 D10 當時缺的東西：81 張 `decoy`/`empty` 負例，讓 D10 記的兩個「不敢加 profile」
+疑慮（淡薄荷會不會混進霧狀綠地形、藍菱星棕心會不會混進泥土地形）第一次有兩側夾的
+材料可查。結論見 `docs/open-detection-issues.md` D10（已解決）。
+
+⚠ **這批的初稿判讀是錯的**：`.scratch/annotation-trust-audit/issues/01-annotation-trust-audit.md`
+單靠 `detect_tracker_core` 重放的「83% 不同意」數字就假設是玩家在暗幀上瞎標——沒有
+肉眼看過任何一張裁圖。實際打開來看，`false_negative`／`sweep_confirmed` 兩類幾乎每張
+框都清楚可見、標註座標也大致對；不同意的真正原因是偵測器本身：
+
+- **色系覆蓋**：`detect_tracker_core` 舊版只認飽和綠（S≥150），這批素材首度證實框心
+  至少還有 4 種顏色（red／brown／white_blue／magenta，每色對應不同 tier），外加同一
+  green 色系裡 S 只有 128~130 的淡色變體。見 config.py `tracker_core_profiles` 註解。
+- **候選揀選**：region 內同時有兩個合法候選時，舊版選「面積最大」而非「離中心最近」，
+  harvest 197 因此選錯（見 `vision.detect_tracker_core`）。
+- **同色黏連殘留**（harvest 158，未修，見 D15）：框心跟地形連成一塊超大 blob 直接被
+  `max_area` 擋掉，是 H057 那類問題但 `detect_tracker_core` 沒有 V-submask 救援。
+- **壞素材**（harvest 152 `sweep_empty_dir5`，見 D15）：裁圖整片是聊天面板疊字，
+  annotation 沒對到任何追蹤框——單張怎麼量都夾不出兩側時，先肉眼核對來源幀，
+  不要急著寫新 profile。
+
+新色系每色的兩側夾（真值 vs 最近負例的 H/S/V 距離）與挑選 fixture 的理由，都寫在
+`tests/test_vision.py` 的 `test_detect_tracker_core_{green_low_saturation,red,brown,
+white_blue,magenta}_profile_hit` 與 `test_detect_tracker_core_decoy_empty_false_hit_rate_not_regressed`
+（後者鎖住新增色系後假陽性數不得超過既有的 2）。

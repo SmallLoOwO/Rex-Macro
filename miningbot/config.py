@@ -658,9 +658,27 @@ class Config:
     # --- 手動瞄準精定位（harvest 101；2026-07-21 spec）：玩家選粗格後限縮該格做特徵偵測，
     # 命中即自動開火框真正中心；抓不到退回放大手選。偵測器色 profile 漸進擴充（現僅綠）。---
     tracker_core_profiles: list = field(
-        default_factory=lambda: [("green", (40, 150, 150), (85, 255, 255))])
+        default_factory=lambda: [
+            ("green", (40, 125, 150), (85, 255, 255)),
+            ("red", (0, 150, 180), (5, 255, 255)),
+            ("brown", (10, 100, 100), (19, 220, 200)),
+            ("white_blue", (100, 10, 220), (120, 45, 255)),
+            ("magenta", (160, 80, 90), (179, 170, 180)),
+        ])
         # [(name, hsv_lo, hsv_hi)]；非覆蓋色系遇到→偵測 None→退回放大手選（永不誤射）。
         # 新色 fixture 到手才加（兩側夾，比照 tuning-from-incidents）。
+        # 2026-08-06 標註驅動微調（91 張玩家標註 fixture，見 docs/open-detection-issues.md）：
+        # green S 下限 150→125——11 個獨立場次（harvest 128/138/147/148/150/159/161/198/199/
+        # 205/207）真值 S 128~130 被舊門檻擋掉；decoy/empty 同色系負例最低 S=176（已在舊門檻
+        # 之上，非新引入風險）。
+        # 新增四色系，每色至少一個 production sweep_confirmed/harvest_success 實機真值（肉眼核
+        # 對圖片，非單靠像素取樣猜測）：
+        #   red        H≈0/S≈185/V≈250（harvest 145）vs 最近負例 H=10/S=251/V=64——V 隔開
+        #   brown      H≈14/S≈160/V≈147（harvest 119、153 兩個獨立場次）vs 最近負例 H=25——隔 11°
+        #   white_blue H≈110/S≈25/V≈255（harvest 162，Transcendent）vs 負例最高 S 僅 44 且 V=29
+        #   magenta    H≈171/S≈121/V≈131（harvest 196，Enigmatic）vs 最近負例 H=128——隔 43°
+        # harvest 152 量到的 H≈23 橘色候選**不採用**：肉眼核對該 fixture 其實是聊天面板疊字
+        # （annotation 座標沒對到追蹤框，樣本本身不可信），且與 decoy 負例只隔 2°夾不出兩側。
     tracker_core_min_area: int = 80             # 框面積下限（cell 原生解析度；綠框實測 256）
     tracker_core_max_area: int = 1800           # 框面積上限：亮綠「地形」與框心同色且大塊實心，
         # 被格邊裁成近方形後 ar/extent/border 三關全過（101 dir1/2/3 實測 4918/15043/17268/25631），

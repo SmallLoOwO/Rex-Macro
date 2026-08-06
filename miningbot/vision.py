@@ -689,7 +689,8 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
     hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2GRAY)
     kernel = np.ones((3, 3), np.uint8)
-    best = None   # (area, cx, cy, name, border_frac)
+    region_cx, region_cy = W / 2.0, H / 2.0
+    best = None   # (dist2_to_center, area, cx, cy, name, border_frac)
     for prof in profiles:
         name, lo, hi = prof[0], prof[1], prof[2]
         mask = cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
@@ -736,11 +737,16 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
             if log is not None:
                 log("core候選 (%d,%d) name=%s area=%d ar=%.2f ext=%.2f border=%.2f -> OK"
                     % (cx, cy, name, int(area), ar, extent, border_frac))
-            if best is None or area > best[0]:
-                best = (area, cx, cy, name, border_frac)
+            dist2 = (cx - region_cx) ** 2 + (cy - region_cy) ** 2
+            # 挑離 region 中心最近的候選，不是面積最大的——呼叫端傳入的 region 是玩家選定
+            # 的粗格（cell），premise 是目標大致在格心；面積最大在同格出現兩個合法候選時
+            # 會選錯（harvest 197 實測：真框 area=256 在中心，另一塊地形 area=416 在邊緣
+            # 被 best 選走）。
+            if best is None or dist2 < best[0]:
+                best = (dist2, area, cx, cy, name, border_frac)
     if best is None:
         return None
-    _, cx, cy, name, border_frac = best
+    _, _, cx, cy, name, border_frac = best
     return (cx, cy, name, border_frac)
 
 

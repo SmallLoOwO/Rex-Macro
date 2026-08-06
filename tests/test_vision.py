@@ -1036,6 +1036,115 @@ def test_detect_tracker_core_oversized_blob_rejected():
     region2 = np.zeros((270, 320, 3), np.uint8)
     _draw_core(region2, 160, 135, half=16, with_border=True, bg=200)  # 33×33=1089 ≤1800
     assert detect_tracker_core(region2, _GREEN_PROFILE) is not None
+
+
+# --- 2026-08-06 標註驅動微調：91 張玩家標註 fixture 重放 detect_tracker_core，83% 找不到
+# 框。肉眼核對（非單靠像素取樣）證實多數是偵測器真 bug，不是玩家瞎標——crop 都清楚可見框。
+# 兩類根因：①green profile S 下限 150 太嚴，多個場次的框心飽和度只有 128~130；
+# ②候選揀選用「面積最大」而非「離 region 中心最近」，region 內同時有兩個合法候選（真框＋
+# 地形/雜物）時常選錯。另外三色系（red/brown/white_blue/magenta）此前完全沒覆蓋 profile。
+# 詳見 config.py tracker_core_profiles 註解與 docs/open-detection-issues.md。
+from miningbot.config import DEFAULT as _tuning_cfg
+
+
+def _detect_with_default_profiles(region_bgr):
+    return detect_tracker_core(
+        region_bgr, _tuning_cfg.tracker_core_profiles,
+        min_area=_tuning_cfg.tracker_core_min_area,
+        max_area=_tuning_cfg.tracker_core_max_area,
+        ar_lo=_tuning_cfg.tracker_core_ar_lo, ar_hi=_tuning_cfg.tracker_core_ar_hi,
+        extent_min=_tuning_cfg.tracker_core_extent_min,
+        border_margin=_tuning_cfg.tracker_core_border_margin,
+        border_dark_max=_tuning_cfg.tracker_core_border_dark_max,
+        border_dark_frac_min=_tuning_cfg.tracker_core_border_dark_frac_min)
+
+
+def _read_aim_png(stem):
+    return cv2.imread(f"{_AIM_FIX}/{stem}.png")
+
+
+def test_detect_tracker_core_green_low_saturation_hit():
+    # harvest 159（sweep_confirmed，production 已confirmed 真框）：框心 S≈130，
+    # 舊門檻 S≥150 完全找不到；11 個獨立場次同一模式，兩側夾見 config.py。
+    crop = _read_aim_png(
+        "20260801_173352_480345600_000040_159_sweep_confirmed_dir3_1351_590")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "green"
+    assert abs(r[0] - 160) <= 20 and abs(r[1] - 135) <= 20
+
+
+def test_detect_tracker_core_red_profile_hit():
+    # harvest 145（sweep_confirmed）：紅心＋金框，舊版無 red profile 完全偵測不到。
+    crop = _read_aim_png(
+        "20260731_143827_081064000_000014_145_sweep_confirmed_dir6_1128_635")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "red"
+    assert abs(r[0] - 160) <= 20 and abs(r[1] - 135) <= 20
+
+
+def test_detect_tracker_core_brown_profile_hit():
+    # harvest 119（d3_miss，玩家標 false_negative）：藍鑽框＋棕心，舊版無 brown profile。
+    crop = _read_aim_png("20260728_165359_569807500_000037_119_d3_miss_1")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "brown"
+    assert abs(r[0] - 160) <= 25 and abs(r[1] - 135) <= 25
+
+
+def test_detect_tracker_core_white_blue_profile_hit():
+    # harvest 162（sweep_confirmed，Transcendent 階）：藍鑽框＋近白心，舊版無此 profile。
+    crop = _read_aim_png(
+        "20260801_183849_112070000_000175_162_sweep_confirmed_dir2_1458_497")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "white_blue"
+    assert abs(r[0] - 160) <= 20 and abs(r[1] - 135) <= 20
+
+
+def test_detect_tracker_core_magenta_profile_hit():
+    # harvest 196（sweep_confirmed，Enigmatic 階）：黃綠星框＋紫心，舊版無此 profile。
+    crop = _read_aim_png(
+        "20260805_132536_614315700_000056_196_sweep_confirmed_dir3_1481_669")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "magenta"
+    assert abs(r[0] - 160) <= 20 and abs(r[1] - 135) <= 20
+
+
+def test_detect_tracker_core_decoy_empty_false_hit_rate_not_regressed():
+    # 兩側夾守門：81 張 decoy/empty 負例（玩家觀察「像礦但不是」／「什麼都沒有」）掃過新
+    # 五色 profile，已知舊 green-only profile 就有 2 張假陽性（H057 家族同色地形，
+    # 非本次改動引入）。新增四色系＋放寬 green S 下限後，假陽性數不得增加——否則代表
+    # 某個新色系或 S 門檻夾到了本該拒收的東西。
+    import glob as _glob
+    import json as _json
+    hits = []
+    for p in sorted(_glob.glob(f"{_AIM_FIX}/*.json")):
+        d = _json.load(open(p, encoding="utf-8"))
+        if d.get("observation") not in ("decoy", "empty"):
+            continue
+        stem = os.path.basename(p)[:-5]
+        crop = cv2.imread(f"{_AIM_FIX}/{stem}.png")
+        if crop is None:
+            continue
+        if _detect_with_default_profiles(crop) is not None:
+            hits.append(stem)
+    assert len(hits) <= 2, f"新增假陽性: {hits}"
+
+
+def test_detect_tracker_core_picks_candidate_nearest_center_not_largest_area():
+    # harvest 197（sweep_empty_dir4，玩家標 false_negative）：真框 (161,135) area=256 在
+    # region 中心，另一塊綠地形 (37,178) area=416 在邊緣——舊版「面積最大」選錯邊緣那塊；
+    # region 本身就是玩家選定的粗格，premise 是目標在格心附近，中心優先才對。
+    crop = _read_aim_png("20260805_134759_423430700_000072_197_sweep_empty_dir4")
+    assert crop is not None
+    r = _detect_with_default_profiles(crop)
+    assert r is not None and r[2] == "green"
+    assert abs(r[0] - 161) <= 15 and abs(r[1] - 135) <= 15
+
+
 # --- H057（2026-07-20 harvest 097）：同色黏連救援＋confirmed 重錨 ---
 # 097 dir4：亮綠追蹤框 (983,435) 貼上受光綠牆 → RETR_EXTERNAL 把框和牆接成一條
 # 爆 area/bbox 閘的大輪廓（bbox 493x85、area 14620），真框在形狀確認前就出局；

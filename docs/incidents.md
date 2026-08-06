@@ -827,3 +827,76 @@ fixture 位置慣例：
 - `tests/test_vision.py`：`banner_text_hue` 4 項（暗底 None／綠色色相／紅藍區分／像素不足 None）
 - `tests/test_harvester.py`：`decide_bonus_empty` 2 項（False→RESUME／True→HUMAN）
 - ⚠ **待實機驗證**：panel check 命中後看到 sweep 跑（非直接 giveup）；double chill 場次看到 `banner 色相跳變` log + 強制 bonus sweep。低飽和隨機色（~5-10%）抓不到時退回層 A sweep 保護，不會更差。
+
+## H075（2026-08-06；標註驅動微調，91 張玩家標註 fixture）：`detect_tracker_core` 只認飽和綠且揀選候選用面積最大，被誤判成「玩家標註不可信」
+
+### 症狀
+
+玩家在 `/annotate` 累積 91 張未進版控標註（覆蓋 20 個場次），離線重放
+`detect_tracker_core` 只有 33/204（16%）跟玩家一致。前一輪分析（`.scratch/
+annotation-trust-audit/issues/01-annotation-trust-audit.md`）在**沒有看過任何一張
+裁圖**的前提下，把 83% 不同意歸因成「玩家在暗幀上瞎標」，並規劃了一整套人工覆審 UI
+＋語料信任閘要先擋住 tuning 迴圈。肉眼核對後這個假說是錯的：抽查的 `sweep_confirmed`
+（production 已 confirmed 的真框）與 `false_negative`（玩家標「看得到框」）幾乎每張
+框都清楚可見、標註座標也大致落在框上。
+
+### 一句話根因
+
+`detect_tracker_core` 的 `tracker_core_profiles` 只有一個 green profile（S≥150），
+且候選揀選用「面積最大」而非「離 region 中心最近」——兩者疊加，讓大量真框（尤其是
+低飽和綠、以及紅／棕／近白／紫四種完全沒覆蓋的色系）在合法場景下偵測不到，被誤判為
+標註品質問題。
+
+### 量測（91 張標註 fixture 重放，按場次去重）
+
+| 現象 | 場次數 | 說明 |
+|---|---|---|
+| green S 只有 128~130（舊門檻 S≥150） | 11（harvest 128/138/147/148/150/159/161/198/199/205/207） | 淡薄荷框心 |
+| 色系完全未覆蓋 | 4（harvest 145 red／119+153 brown／162 white_blue／196 magenta） | 肉眼核對過裁圖，四色系都是清楚可辨的框 |
+| green 色系內、面積正確但候選揀選選錯 | 1（harvest 197） | region 中心 area=256 的真框輸給邊緣 area=416 的地形 |
+| 同色地形黏連成超大 blob，撞 `max_area` 出局 | 1（harvest 158，未修，見 D15） | 跟 H057 同類，`detect_tracker_core` 沒有 V-submask 救援 |
+| 素材本身壞掉（聊天面板疊字，非追蹤框） | 1（harvest 152 dir5，見 D15） | 差點被誤當第三種橘色系，跟 decoy 負例只隔 2° 夾不出兩側才發現不對 |
+
+兩側夾（新色系 vs 81 張 `decoy`/`empty` 負例的最近距離）：
+
+| profile | 真值 H/S/V | 最近負例 H/S/V | 分隔方式 |
+|---|---|---|---|
+| green（S 下限下修） | 57~63 / **128~130** / 200~255 | 57 / **245** / 49；59 / 177~255 / 39~144 | S 缺口 [125,150) 內無負例落點 |
+| red（新增） | 0 / 185 / 250 | 10 / 251 / **64** | V 隔開（暗） |
+| brown（新增） | 14 / 160 / 147 | 25 / 224 / 122 | H 隔 11° |
+| white_blue（新增） | 110 / **25** / 255 | 126~128 / 44 / **29** | V 隔開（暗），S 也窄 |
+| magenta（新增） | 171 / 121 / 131 | 128 / 44 / 29 | H 隔 43° |
+
+harvest 152 的 H≈23 橘色候選**不採用**：與 decoy 負例（H≈25，7+ 個獨立命中）只隔 2°，
+且肉眼核對來源幀後發現那張裁圖根本不是追蹤框（聊天面板疊字），樣本本身不可信。
+
+### 修復
+
+1. `config.py` `tracker_core_profiles`：green S 下限 150→125；新增 red／brown／
+   white_blue／magenta 四色系（各附兩側夾註解）。
+2. `vision.detect_tracker_core`：候選揀選從「面積最大」改「離 region 中心最近」——
+   region 是玩家選定的粗格，premise 是目標在格心附近，不是「畫面裡最大的合法候選」。
+3. 兩張問題 fixture（harvest 158 同色黏連、harvest 152 壞素材）記入
+   `docs/open-detection-issues.md` D15，不在本次修復範圍。
+4. 91 張玩家標註 fixture 隨本次修復一併 commit 進 `tests/fixtures/aim/`。
+
+### 沒有做的事（原 spec 的 Phase 2/3）
+
+原 spec 規劃的「人工覆審 UI」＋「未覆審素材不得參與 tuning」信任閘，在根因查明後
+不再是優先項——真正擋住 tuning 迴圈的是偵測器色系覆蓋不全，不是標註品質。若之後真的
+出現大量肉眼確認的錯標（不是這次查到的偵測器 bug 類型），再評估要不要做那套機制。
+
+### 回歸
+
+`tests/test_vision.py` 新增 8 項：5 個色系命中（含既有 green 場景）、1 個候選揀選
+（`test_detect_tracker_core_picks_candidate_nearest_center_not_largest_area`）、1 個
+假陽性率守門（`test_detect_tracker_core_decoy_empty_false_hit_rate_not_regressed`，
+鎖住 81 張 decoy/empty 負例掃過新五色 profile 後假陽性數 ≤2，不得比修復前更差）。
+全部用 91 張批次裡的實機 fixture，不是合成圖。
+
+### ⚠ 待實機驗證
+
+下一輪手動瞄準（`手動`／grid 路徑）遇到非綠色系或低飽和綠框時，log 應出現
+`AIM 限縮偵測命中` 而非 `AIM 限縮偵測 None cell=...（待補色系 profile）`。反指標：
+新色系命中後開火位置明顯偏離框——代表某個新 bracket 夾太寬，收了色系相近但位置不對
+的雜物，需要回頭縮 bracket。

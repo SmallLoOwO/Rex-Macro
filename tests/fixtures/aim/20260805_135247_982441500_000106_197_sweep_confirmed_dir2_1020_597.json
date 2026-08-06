@@ -1,0 +1,19 @@
+{
+  "annotation": {
+    "cx": 160,
+    "cy": 135,
+    "size": 50,
+    "type": "square"
+  },
+  "category": "aim",
+  "image": "20260805_135247_982441500_000106_197_sweep_confirmed_dir2_1020_597.png",
+  "mineral": null,
+  "observation": "decoy",
+  "related_incident": null,
+  "source": {
+    "kind": "manual"
+  },
+  "symptom": "should_reject_failed",
+  "tier": null,
+  "variant": null
+}
