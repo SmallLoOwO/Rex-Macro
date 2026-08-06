@@ -30,6 +30,7 @@
 | [`chat_ui/`](chat_ui/README.md) | **已退役**——舊的輸入列提示字 OCR 路徑（被 H047 取代） | 無 |
 | [`chill/`](chill/README.md) | chill 音訊參考與負樣本（H040/H060） | `test_add_chill_ref.py` |
 | [`effect_row/`](effect_row/README.md) | D2 雷達效果列判讀（Local／CaveSkim／D4 已用） | `test_effect_row_fixtures.py` |
+| [`markers/`](markers/README.md) | `detect_tracker_core` 形狀 fallback 的外框模板，按 tier 分組（H076） | `test_vision.py` |
 | [`menu/`](menu/README.md) | Roblox 設定選單 Movement Mode 循環 | `test_roblox_menu.py` |
 | [`panel/`](panel/README.md) | 左下 NORMAL 背包面板名字欄剖析（交人工前救援路 B／雙 chill 對帳） | `test_panel_fixtures.py` |
 | [`panel_tiers/`](panel_tiers/README.md) | 面板列底色的階級色相（`TIER_HUES` 實機依據，含固定取樣協議；D13） | `test_panel_tier_hues.py` |

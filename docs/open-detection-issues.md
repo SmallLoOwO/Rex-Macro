@@ -407,6 +407,22 @@ bbox (1032, 108,  6, 17) area  57.0
 「面積最大」而非「離 region 中心最近」——region 本身就是玩家選定的粗格，中心優先
 才符合 premise。已修（`vision.detect_tracker_core`）。
 
+### 續：色彩清單追不上新道具，加了形狀 fallback（2026-08-06 同日）
+
+補完 91 張標註才發現更根本的事：**內心方塊顏色不是 tier 決定的，同一 tier 換道具就換
+內心色**（Transcendent 藍菱星配過棕/白/暗三種心）——色彩 profile 清單註定永遠追著新
+道具的新內心色跑，跟一開始「新色 fixture 到手才加」的權衡是同一種「漏了才補」被動姿態。
+反過來，**外框樣式在同一 tier 內固定**（按 91 張標註肉眼核對：Transcendent 恆藍菱星、
+Exquisite 恆薄荷凹星，Exotic 例外有 4 種——推測是特定道具各自帶圖標）。
+
+`detect_tracker_core` 新增 `shape_templates` 參數：色彩 profile **完全零候選**時（不是
+候選被面積/形狀/黑邊濾掉那種，那個留給下面的 D15），改用外框模板邊緣比對兜底，色相
+無關。模板按 tier 分組裁自這批標註，存 `tests/fixtures/markers/`（進版控，不是
+`assets/markers/`——後者整個被 gitignore，新樣本放那裡等於下次 clone 就 skip）。
+兩側夾：81 張 decoy/empty 負例掃過形狀 fallback 只 1 張假陽性（跟色彩路徑同一張已知
+H057 家族殘留，非新引入）。細節與 tier↔外框對照表見
+`tests/fixtures/markers/README.md`。
+
 ### 原始症狀（保留存檔）
 
 ### 症狀

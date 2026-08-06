@@ -662,12 +662,32 @@ def find_tracker_near(frame_bgr, center_xy, radius_px, *, frame_margin_frac=0.0,
     return mapped
 
 
+def _dark_border_frac(gray, x, y, bw, bh, W, H, border_margin, border_dark_max):
+    """bbox 外側 border_margin 寬環帶裡，gray≤border_dark_max 的像素佔比。
+
+    真框黑邊判定共用邏輯，被 `detect_tracker_core` 的色彩候選與形狀 fallback 候選共用——
+    兩條路徑挑出候選的方式不同（HSV contour vs 模板邊緣比對），但「候選是不是真的有黑邊」
+    這關要求一致，不該分開兩份會漂的複製。
+    """
+    rx0 = max(0, x - border_margin)
+    ry0 = max(0, y - border_margin)
+    rx1 = min(W, x + bw + border_margin)
+    ry1 = min(H, y + bh + border_margin)
+    ring = np.ones((ry1 - ry0, rx1 - rx0), dtype=bool)
+    ring[max(0, border_margin):max(0, border_margin) + bh,
+         max(0, border_margin):max(0, border_margin) + bw] = False
+    ring_pixels = gray[ry0:ry1, rx0:rx1][ring]
+    return float(np.mean(ring_pixels <= border_dark_max)) if ring_pixels.size > 0 else 0.0
+
+
 def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
                         max_area: int = 1800,
                         ar_lo: float = 0.6, ar_hi: float = 1.7,
                         extent_min: float = 0.6, border_margin: int = 6,
                         border_dark_max: int = 70,
-                        border_dark_frac_min: float = 0.15, log=None):
+                        border_dark_frac_min: float = 0.15,
+                        shape_templates=None, shape_threshold: float = 0.60,
+                        shape_scales=(0.6, 0.8, 1.0, 1.2, 1.4), log=None):
     """限縮區域內找追蹤框「實心亮色中心」的真正中心（harvest 101 spec §6）。
 
     與 find_tracker 的差別：find_tracker 對「尖刺太陽星框＋實心亮綠中心＋綠地形背景」這類
@@ -682,8 +702,16 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
     面積上下限：框心是**小塊**（實測 256～663）；亮綠地形同色但大塊（≥4918），會過
     ar/extent/border 三關並以最大面積蓋掉同格真框→用 max_area 夾掉（見 config 兩側夾）。
     profiles=[]（未覆蓋色系）→ None（永不誤射；靠退路放大手選兜底）。
+
+    ``shape_templates`` 給的是**形狀 fallback**（2026-08-06，H076，H075 標註驅動微調後續）：
+    色彩 profile **完全零候選**時才啟用——候選存在但被 area/ar/extent/border 濾掉的
+    （例：同色黏連成超大 blob）不算，那是另一種救援（V-submask，見
+    `docs/open-detection-issues.md` D15），不共用這條路徑。色相無關地對 region 跑外框模板
+    邊緣比對（`_best_edge_match_sized`），命中位置再過同一套黑邊環帶檢查——跟色彩候選
+    同一套安全關卡，不因為沒有色彩兜底就放寬。多模板/多尺度中選 edge 分數最高者；
+    分數不到 `shape_threshold` 一律 None（沒把握就退回放大手選，不猜）。
     """
-    if region_bgr is None or region_bgr.size == 0 or not profiles:
+    if region_bgr is None or region_bgr.size == 0 or (not profiles and not shape_templates):
         return None
     H, W = region_bgr.shape[:2]
     hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
@@ -691,6 +719,7 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
     kernel = np.ones((3, 3), np.uint8)
     region_cx, region_cy = W / 2.0, H / 2.0
     best = None   # (dist2_to_center, area, cx, cy, name, border_frac)
+    had_color_candidate = False  # 面積過 min_area 的色彩候選，不管後面哪關把它濾掉
     for prof in profiles:
         name, lo, hi = prof[0], prof[1], prof[2]
         mask = cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
@@ -700,6 +729,7 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
             area = cv2.contourArea(c)
             if area < min_area:
                 continue
+            had_color_candidate = True
             if area > max_area:
                 # 亮綠地形：同色大塊實心，被格邊裁成近方形後 ar/extent/border 全過，且面積
                 # 遠大於真框心→best 會蓋掉同格真框朝地形開火（101 dir1/2/3 實測）。
@@ -717,17 +747,8 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
             extent = area / (bw * bh)
             if extent < extent_min:
                 continue
-            # 黑邊環帶：bbox 外側 border_margin 寬的環（擴張框 − 原框），clamp 在 region 內。
-            rx0 = max(0, x - border_margin)
-            ry0 = max(0, y - border_margin)
-            rx1 = min(W, x + bw + border_margin)
-            ry1 = min(H, y + bh + border_margin)
-            ring = np.ones((ry1 - ry0, rx1 - rx0), dtype=bool)
-            ring[max(0, border_margin):max(0, border_margin) + bh,
-                 max(0, border_margin):max(0, border_margin) + bw] = False
-            ring_pixels = gray[ry0:ry1, rx0:rx1][ring]
-            border_frac = (float(np.mean(ring_pixels <= border_dark_max))
-                           if ring_pixels.size > 0 else 0.0)
+            border_frac = _dark_border_frac(gray, x, y, bw, bh, W, H,
+                                            border_margin, border_dark_max)
             if border_frac < border_dark_frac_min:
                 if log is not None:
                     log("core候選 (%d,%d) name=%s area=%d ar=%.2f ext=%.2f border=%.2f -> rej(border)"
@@ -745,8 +766,61 @@ def detect_tracker_core(region_bgr, profiles, *, min_area: int = 80,
             if best is None or dist2 < best[0]:
                 best = (dist2, area, cx, cy, name, border_frac)
     if best is None:
+        # 形狀 fallback 只在色彩「零候選」時才碰——面積過 min_area 但被 max_area/ar/extent/
+        # border 濾掉的候選，本身已經有色彩+形狀資訊可用，該走 D15 那條 V-submask 救援
+        # （尚未實作），不跟形狀 fallback 共用；否則兩個各自兩側夾的機制混在一起，出問題時
+        # 分不清是哪條線失準（2026-08-06 使用者原話：混一起「一個機制扛兩種責任」）。
+        if shape_templates and not had_color_candidate:
+            if log is not None:
+                log("core: 色彩零候選，嘗試形狀 fallback")
+            return _detect_tracker_core_shape_fallback(
+                region_bgr, gray, W, H, shape_templates, shape_threshold, shape_scales,
+                border_margin, border_dark_max, border_dark_frac_min, log)
         return None
     _, _, cx, cy, name, border_frac = best
+    return (cx, cy, name, border_frac)
+
+
+def _detect_tracker_core_shape_fallback(region_bgr, gray, W, H, shape_templates,
+                                        shape_threshold, shape_scales,
+                                        border_margin, border_dark_max,
+                                        border_dark_frac_min, log):
+    """`detect_tracker_core` 色彩 profile 零候選時的形狀比對兜底（2026-08-06）。
+
+    91 張玩家標註肉眼核對後發現：同一 tier 的框外框樣式固定（Transcendent 恆藍菱星、
+    Exquisite 恆薄荷凹星…），但內心色不固定——色彩 profile 清單天生追不上新道具的新內心
+    色，形狀才是穩定特徵。模板來自 `tests/fixtures/markers/*_tracker_real.png`（按 tier
+    分組裁出，見該目錄 README），production 執行時讀 `assets/markers/`（機器本地，同一批
+    檔案）。
+    """
+    region_cx, region_cy = W / 2.0, H / 2.0
+    scene_e = _canny(region_bgr)
+    sh, sw = scene_e.shape[:2]
+    best = None   # (dist2_to_center, cx, cy, name, border_frac)
+    for name, tmpl in shape_templates.items():
+        val, loc, tw, th = _best_edge_match_sized(
+            scene_e, sh, sw, template_outline_edges(tmpl), shape_scales, min_px=12)
+        if loc is None or val < shape_threshold:
+            continue
+        cx, cy = loc
+        x, y = cx - tw // 2, cy - th // 2
+        border_frac = _dark_border_frac(gray, x, y, tw, th, W, H,
+                                        border_margin, border_dark_max)
+        if border_frac < border_dark_frac_min:
+            if log is not None:
+                log("core形狀候選 (%d,%d) name=%s edge=%.2f border=%.2f -> rej(border)"
+                    % (cx, cy, name, val, border_frac))
+            continue
+        if log is not None:
+            log("core形狀候選 (%d,%d) name=%s edge=%.2f border=%.2f -> OK"
+                % (cx, cy, name, val, border_frac))
+        dist2 = (cx - region_cx) ** 2 + (cy - region_cy) ** 2
+        # 跟色彩路徑同一個 tie-break：region 是玩家選定的粗格，中心優先於分數。
+        if best is None or dist2 < best[0]:
+            best = (dist2, cx, cy, name, border_frac)
+    if best is None:
+        return None
+    _, cx, cy, name, border_frac = best
     return (cx, cy, name, border_frac)
 
 

@@ -6795,7 +6795,10 @@ class Bot:
             extent_min=cfg.tracker_core_extent_min,
             border_margin=cfg.tracker_core_border_margin,
             border_dark_max=cfg.tracker_core_border_dark_max,
-            border_dark_frac_min=cfg.tracker_core_border_dark_frac_min)
+            border_dark_frac_min=cfg.tracker_core_border_dark_frac_min,
+            shape_templates=self._shape_templates,
+            shape_threshold=cfg.tracker_core_shape_threshold,
+            shape_scales=cfg.tracker_core_shape_scales)
         if not hit:
             # 未覆蓋色系／框不在格內：另記 miss label（補色系 profile 的 fixture 來源）
             self._hsnap_crop(frame, region, f"aim_core_miss_dir{tgt_dir}_{cell}")

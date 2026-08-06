@@ -1145,6 +1145,112 @@ def test_detect_tracker_core_picks_candidate_nearest_center_not_largest_area():
     assert abs(r[0] - 161) <= 15 and abs(r[1] - 135) <= 15
 
 
+# --- 2026-08-06 形狀 fallback：色彩 profile 零候選時，改用 tier 對應的外框模板兜底 ---
+# 91 張標註肉眼核對後發現：內心色不是 tier 決定的（同 tier 換道具就換色），但外框樣式
+# 固定——色彩清單永遠追不上新道具的新內心色，形狀才是穩定特徵。模板見
+# tests/fixtures/markers/README.md（按 tier 分組裁出，Exotic 一階底下就有 4 種外框）。
+_MARKERS_FIX = "tests/fixtures/markers"
+
+
+def _load_test_shape_templates():
+    import glob as _glob
+    out = {}
+    for p in sorted(_glob.glob(f"{_MARKERS_FIX}/*.png")):
+        name = os.path.basename(p)[:-4]
+        t = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+        if t is not None and t.ndim == 3 and t.shape[2] == 3:
+            out[name] = t
+    return out
+
+
+_SHAPE_TPL = _load_test_shape_templates()
+
+
+def _detect_shape_only(region_bgr):
+    # profiles=[] 模擬「色彩清單完全沒覆蓋到」的未來場景——形狀 fallback 必須獨立成立，
+    # 不能偷偷靠色彩候選撐著。
+    return detect_tracker_core(
+        region_bgr, [],
+        min_area=_tuning_cfg.tracker_core_min_area,
+        max_area=_tuning_cfg.tracker_core_max_area,
+        ar_lo=_tuning_cfg.tracker_core_ar_lo, ar_hi=_tuning_cfg.tracker_core_ar_hi,
+        extent_min=_tuning_cfg.tracker_core_extent_min,
+        border_margin=_tuning_cfg.tracker_core_border_margin,
+        border_dark_max=_tuning_cfg.tracker_core_border_dark_max,
+        border_dark_frac_min=_tuning_cfg.tracker_core_border_dark_frac_min,
+        shape_templates=_SHAPE_TPL,
+        shape_threshold=_tuning_cfg.tracker_core_shape_threshold,
+        shape_scales=_tuning_cfg.tracker_core_shape_scales)
+
+
+def test_detect_tracker_core_shape_fallback_requires_templates():
+    assert _SHAPE_TPL, "tests/fixtures/markers/ 模板沒載到，形狀 fallback 測試組全部失去意義"
+
+
+@pytest.mark.parametrize("stem,expected_xy", [
+    ("20260801_183849_112070000_000175_162_sweep_confirmed_dir2_1458_497", (160, 135)),  # transcendent 藍菱星
+    ("20260805_134629_714838700_000070_197_sweep_accepted_dir3_1593_608", (160, 135)),   # exquisite 薄荷凹星
+    ("20260805_132536_614315700_000056_196_sweep_confirmed_dir3_1481_669", (160, 135)),  # enigmatic 尖刺星
+    ("20260805_161533_231297000_000172_198_sweep_confirmed_dir3_1397_526", (160, 135)),  # exotic 圓角八邊環
+    ("20260801_173352_480345600_000040_159_sweep_confirmed_dir3_1351_590", (160, 135)),  # exotic 尖刺爆閃
+    ("20260731_143827_081064000_000014_145_sweep_confirmed_dir6_1128_635", (160, 135)),  # exotic 細十字菱形
+    ("20260806_154051_374180500_000025_207_d3_gone_unconfirmed", (160, 135)),            # exotic 圓形爆閃
+])
+def test_detect_tracker_core_shape_fallback_hits_each_tier_shape(stem, expected_xy):
+    # 色彩 profiles=[]（模擬未來新色）時，形狀 fallback 仍要能靠外框獨立命中——
+    # 這批全是 detect_tracker_core 色彩路徑今天也認得的場次，這裡刻意繞過色彩驗證形狀本身成立。
+    crop = _read_aim_png(stem)
+    assert crop is not None
+    r = _detect_shape_only(crop)
+    assert r is not None, f"{stem} 形狀 fallback 沒命中"
+    ex, ey = expected_xy
+    assert abs(r[0] - ex) <= 25 and abs(r[1] - ey) <= 25
+
+
+def test_detect_tracker_core_shape_fallback_decoy_empty_false_hit_rate():
+    # 兩側夾：81 張 decoy/empty 負例掃過形狀 fallback（profiles=[] 逼它只能靠外框+黑邊
+    # 判斷），實測只有 1 張假陽性（harvest 133，跟色彩路徑既有的 2 張假陽性是同一張
+    # fixture——H057 家族同色/同形地形，非本次改動新引入的失效模式）。上限抓 2 留一點
+    # 餘裕，真的變差會立刻紅燈。
+    import glob as _glob
+    import json as _json
+    hits = []
+    for p in sorted(_glob.glob(f"{_AIM_FIX}/*.json")):
+        d = _json.load(open(p, encoding="utf-8"))
+        if d.get("observation") not in ("decoy", "empty"):
+            continue
+        stem = os.path.basename(p)[:-5]
+        crop = cv2.imread(f"{_AIM_FIX}/{stem}.png")
+        if crop is None:
+            continue
+        if _detect_shape_only(crop) is not None:
+            hits.append(stem)
+    assert len(hits) <= 2, f"形狀 fallback 假陽性: {hits}"
+
+
+def test_detect_tracker_core_shape_fallback_does_not_touch_filtered_color_candidate():
+    # harvest 158（D15，同色黏連成 50922px 超大 blob，被 max_area 濾掉）：形狀 fallback
+    # 只在色彩「零候選」時才碰，這張有候選（只是被濾掉）——不該被形狀 fallback 撿走。
+    # 修 detect_tracker_core 時第一版沒分辨「零候選」跟「候選被濾掉」，這張意外被形狀
+    # fallback 救回（border_frac 剛好壓線通過 0.213 vs 門檻 0.15），範圍跟使用者當初
+    # 定案的界線不符——D15 的救援要走 V-submask，不跟形狀 fallback 混在一起兩側夾。
+    crop = _read_aim_png("20260801_151933_604194600_000013_158_sweep_empty_dir4")
+    assert crop is not None
+    r = detect_tracker_core(
+        crop, _tuning_cfg.tracker_core_profiles,
+        min_area=_tuning_cfg.tracker_core_min_area,
+        max_area=_tuning_cfg.tracker_core_max_area,
+        ar_lo=_tuning_cfg.tracker_core_ar_lo, ar_hi=_tuning_cfg.tracker_core_ar_hi,
+        extent_min=_tuning_cfg.tracker_core_extent_min,
+        border_margin=_tuning_cfg.tracker_core_border_margin,
+        border_dark_max=_tuning_cfg.tracker_core_border_dark_max,
+        border_dark_frac_min=_tuning_cfg.tracker_core_border_dark_frac_min,
+        shape_templates=_SHAPE_TPL,
+        shape_threshold=_tuning_cfg.tracker_core_shape_threshold,
+        shape_scales=_tuning_cfg.tracker_core_shape_scales)
+    assert r is None, f"D15 案例不該被形狀 fallback 撿走，卻回傳 {r}"
+
+
 # --- H057（2026-07-20 harvest 097）：同色黏連救援＋confirmed 重錨 ---
 # 097 dir4：亮綠追蹤框 (983,435) 貼上受光綠牆 → RETR_EXTERNAL 把框和牆接成一條
 # 爆 area/bbox 閘的大輪廓（bbox 493x85、area 14620），真框在形狀確認前就出局；

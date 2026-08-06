@@ -900,3 +900,88 @@ harvest 152 的 H≈23 橘色候選**不採用**：與 decoy 負例（H≈25，7
 `AIM 限縮偵測命中` 而非 `AIM 限縮偵測 None cell=...（待補色系 profile）`。反指標：
 新色系命中後開火位置明顯偏離框——代表某個新 bracket 夾太寬，收了色系相近但位置不對
 的雜物，需要回頭縮 bracket。
+
+## H076（2026-08-06，H075 續；使用者提問「都是因為已經有固定顏色才被記錄進去，之後
+遇到沒遇到的礦物是否又會出現問題」）：色彩清單追不上新道具，`detect_tracker_core` 加形狀 fallback
+
+### 一句話根因
+
+H075 補完的色彩清單（green/red/brown/white_blue/magenta）只解決「這批 91 張標註裡出現
+過的內心色」，使用者當面點出結構性問題：**內心方塊顏色不是 tier 決定的，同一 tier 換
+道具就換內心色**（Transcendent 藍菱星量到棕/白/暗三種心）——色彩清單註定永遠追著新
+道具的新內心色跑，跟一開始「新色 fixture 到手才加」是同一種被動姿態，換湯不換藥。
+
+### 設計（grill-me 逐輪敲定，見對話記錄）
+
+1. **觸發時機**：色彩 profile 全部零候選時才進形狀 fallback；候選存在但被
+   area/ar/extent/border 濾掉的（例：harvest 158 同色黏連超大 blob）不算——那是 D15
+   的 V-submask 救援範疇，不共用這條路徑，用 `had_color_candidate` 旗標把兩者分開
+   （第一版沒分，harvest 158 意外被形狀 fallback 撿走，border_frac 剛好壓線 0.213
+   通過 0.15 門檻，範圍跟定案的界線不符，已補 `had_color_candidate` 修正＋回歸測試鎖住）。
+2. **兩段式**：不是對整張裁圖硬跑模板比對，而是重用既有 `_best_edge_match_sized`／
+   `template_outline_edges`（`find_marker` 已驗證過的同一套色相無關 edge 比對），
+   命中位置再過同一套黑邊環帶 `_dark_border_frac`（跟色彩候選共用同一份，避免兩處
+   會漂的複製）確認——不是另開一條比對邏輯。
+3. **開火**：命中即開火，不加兩幀穩定性複驗，門檻照兩側夾量測值定（`shape_threshold=
+   0.60`，比 `find_tracker` 的 `tracker_shape_threshold` 高——沒有色彩兩側夾撐腰，
+   出手前要求更確定）。使用者原話：「歪打正著射擊中總比什麼都沒拿到好」。
+4. **模板來源**：91 張標註肉眼核對後按 `tier` 分組（不是按內心色 HSV——同色跨 tier、
+   同 tier 跨色，兩者是分開變化的維度，用色彩分群會把不同外框的素材混在一起）。
+   量到 Transcendent／Exquisite／Enigmatic 各恆一種外框，Exotic 一階內量到 4 種
+   （推測特定道具各自帶圖標）。裁 7 張新模板：
+   `transcendent_diamond`／`exquisite_star`／`enigmatic_spikystar`／`exotic_octagon`
+   （主流款）／`exotic_burst`／`exotic_cross`／`exotic_circle`。
+
+### 位置決定：模板進 `tests/fixtures/markers/`，不是 `assets/markers/`
+
+既有 5 張形狀模板（`exotic_tracker_real.png` 等）放在 `assets/markers/`——整個目錄被
+`.gitignore` 排除，是機器本地素材；既有 `find_tracker` 形狀測試已經用
+`if not os.path.exists(...): pytest.skip()` 容忍缺席（全測試套件裡 23 個 skip 有一部分
+來源正是這裡）。`tuning-from-incidents` skill 明講這是要避免的舊坑：「不可放
+assets/，別台機器 clone 下來測試就 skip，無樣本的修復＝下次必迴歸」。新模板改放
+`tests/fixtures/markers/`（進版控），production 執行時仍讀 `assets/markers/`——新增
+模板時另外複製一份過去（純檔案複製，不進 git，使用者確認要做）。
+
+`_load_marker_templates()`（`main.py`）對 `assets/markers/*.png` 是**盲 glob**，這 7 張
+複製過去後會自動被 `find_tracker` 的 `self._shape_templates` 一併吃到——不是只有
+`detect_tracker_core` 用得到。分數只會增不會減（`best_outline_match` 取多模板 max），
+理論上不會讓既有真陽性變陰性，只可能讓某個原本卡在門檻下的候選過閘；已跑全測試套件
+驗證無新增失敗（見下方回歸）。
+
+### 量測（91 張標註 fixture）
+
+| 模板 | tier | 自我比對 edge（來源幀，非跨場次） | 場次證據 |
+|---|---|---|---|
+| `transcendent_diamond` | Transcendent | 0.994 | 139/153/162（3 場一致） |
+| `exquisite_star` | Exquisite | 1.000 | 128/147/148/197/205（5 場一致） |
+| `enigmatic_spikystar` | Enigmatic | 0.998 | 196（1 場） |
+| `exotic_octagon` | Exotic（主流） | 1.000 | 138/158/161/198/199（5 場一致） |
+| `exotic_burst` | Exotic（變體） | 0.963 | 159（1 場） |
+| `exotic_cross` | Exotic（變體） | 0.997 | 145（1 場） |
+| `exotic_circle` | Exotic（變體） | 未獨立量測（回歸測試已收，僅自我比對數字沒印） | 207（1 場） |
+
+⚠ 這是模板對**自己裁出來源那張圖**的比對分數，證明裁圖/載入管線本身沒問題，不是
+跨場次泛化能力的量測——`exquisite_star`／`exotic_octagon` 各有 5 場一致，換另一場
+測應該也高；但 `exotic_burst`／`exotic_cross`／`exotic_circle` 只有單一場次來源，
+換到別的幀會多準完全沒把握，這正是下方「待實機驗證」要盯的重點。
+
+兩側夾：81 張 decoy/empty 負例掃過形狀 fallback（`profiles=[]` 逼它只能靠外框+黑邊）
+只 1 張假陽性（harvest 133），跟色彩路徑既有的假陽性是同一張 fixture——H057 家族
+同色/同形地形殘留，非本次新引入的失效模式。
+
+### 回歸
+
+`tests/test_vision.py` 新增 10 項：模板載入健檢 1、7 個外框樣式各自形狀命中 1（用
+`profiles=[]` 逼形狀路徑獨立成立，不偷靠色彩候選；Exotic 4 種變體全收）、假陽性率
+守門 1（≤2）、D15 範圍邊界守門 1（harvest 158 不得被形狀 fallback 撿走）。全部用
+91 張批次裡的實機 fixture。
+`uv run pytest -q` 全數通過（含既有 `find_tracker` 回歸，驗證新模板混進
+`self._shape_templates` 沒有引入新失敗）。
+
+### ⚠ 待實機驗證
+
+下一輪手動瞄準遇到色彩清單沒覆蓋的新道具時，log 應出現 `core: 色彩零候選，嘗試形狀
+fallback` 接 `core形狀候選 ... -> OK`，而非直接退回放大手選。反指標：形狀命中後開火
+位置明顯偏離框——代表某個 tier 的模板配到了錯誤位置，需要回頭檢查該 tier 是否其實
+不只一種外框（比照 Exotic 的前例）。`exotic_burst`／`exotic_cross`／`exotic_circle`
+三個變體模板各只有單一場次證據，信心低於 `exotic_octagon`，優先觀察這三個是否誤觸發。

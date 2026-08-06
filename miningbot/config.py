@@ -691,6 +691,13 @@ class Config:
     tracker_core_border_margin: int = 6         # 黑邊環帶寬度（bbox 外側 margin px）
     tracker_core_border_dark_max: int = 70      # 「暗」像素 gray 上限（黑邊判定）
     tracker_core_border_dark_frac_min: float = 0.15  # 環帶暗像素佔比下限（綠框實測 0.35、空格 0）
+    tracker_core_shape_threshold: float = 0.60  # 形狀 fallback edge 門檻（2026-08-06，H076）：
+        # 色彩 profile 零候選時才用；比 find_tracker 的 tracker_shape_threshold（見下方）高，
+        # 因為沒有色彩兩側夾撐腰，出手前要求更確定。單一數字槓桿，之後有更多實機負樣本
+        # 再視情況調整（見 tests/fixtures/markers/README.md）。
+    tracker_core_shape_scales: tuple = (0.6, 0.8, 1.0, 1.2, 1.4)  # 模板多尺度搜尋網格，
+        # 同 tracker_shape_scales 家族但獨立宣告——這條路徑的裁圖尺寸固定 320×270，
+        # 跟 find_tracker 的全幀 320px ROI 不是同一個縮放基準，不能直接共用同一個 tuple。
     remote_aim_zoom_margin_frac: float = 0.15   # grid_cell_region 裁格對稱餘裕（頂緣 clamp y0=0）
     remote_aim_fine_grid: int = 6               # 放大圖細網格 6×6（同回礦 reentry_remote_fine_cols）
     remote_aim_fov_recheck_max: int = 2         # 退路 FOV 作廢重發上限（boost 變 FOV 即作廢重發，不依賴 D5）

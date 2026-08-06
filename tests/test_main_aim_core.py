@@ -25,6 +25,7 @@ def _bare_bot():
     bot.logger = _LogRecorder()
     bot.log_harvest = bot.logger
     bot._reveal_chat = lambda: True        # H064：純 I/O（移游標＋抓幀），這裡不驗
+    bot._shape_templates = {}              # 形狀 fallback 模板（H076）；這裡測編排邏輯不測形狀比對
     return bot
 
 
