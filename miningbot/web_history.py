@@ -91,6 +91,9 @@ def annotation_tier(label: str) -> int:
 #
 # `d3_miss_N` 不算事後畫面——那是 `gone=False`（框還在、只是 D3 沒打中），
 # bot 確實接受了這個候選。
+# 2026-08-06 使用者：sweep_empty 是八方掃描的診斷比較地圖，標註無益——不排進佇列。
+_QUEUE_EXCLUDED_RE = re.compile(r"sweep_empty")
+
 _VERDICT_AFTER_RE = re.compile(r"harvest_success|gone_unconfirmed|d3_after")
 _VERDICT_ACCEPTED_RE = re.compile(
     r"_accepted|sweep_confirmed|d3_fire|aim_fire|d3_miss|_fired")
@@ -162,7 +165,8 @@ def annotated_stems(*dirs: str | None) -> set:
 _AIM_OVERLAY_SUFFIX = "_aim.png"
 
 
-def build_queue(records, annotated=(), tier=0, exists=None) -> list:
+def build_queue(records, annotated=(), tier=0, exists=None,
+                exclude_sweep_empty=False) -> list:
     """快照記錄 → 指定 tier（可多個）的標註佇列（純函式）。
 
     排序：`written_at` 由新到舊——最近的失敗最可能還沒被修掉，先標它的資訊量最高。
@@ -174,8 +178,12 @@ def build_queue(records, annotated=(), tier=0, exists=None) -> list:
     早就被 `snapshot_max_total_mb` 從最舊刪掉了。實測 500 列裡 339 列是死連結，
     玩家一路翻過去全是破圖。不傳＝維持舊行為（測試與純資料呼叫端不受影響）。
 
-    疊圖濾除：`<原檔>_aim.png`（畫了格線/DIR 標頭的複本）一律不進佇列，不論
+     疊圖濾除：`<原檔>_aim.png`（畫了格線/DIR 標頭的複本）一律不進佇列，不論
     乾淨原幀還在不在（見上方註解）。
+
+    ``sweep_empty`` 濾除（2026-08-06）：八方掃描的診斷比較地圖不排進佇列——
+    bot 已經判定全空、存圖只供事後翻看，標了也無法回饋偵測迴圈（使用者：
+    「這些本身就是用於比較地圖的，因此用於標注後似乎也沒有作用」）。
 
     `tier` 收單一數字或一串數字（`(0, 2)`）。要一串是因為 tier0 全是 bot 什麼都
     沒接受的圖：實測索引裡 tier0 227 張有 220 張 `sweep_empty`，而「bot 接受了
@@ -196,6 +204,8 @@ def build_queue(records, annotated=(), tier=0, exists=None) -> list:
         if path.endswith(_AIM_OVERLAY_SUFFIX):
             continue
         label = str(record.get("label") or "")
+        if exclude_sweep_empty and _QUEUE_EXCLUDED_RE.search(label):
+            continue                    # sweep_empty＝診斷比較地圖，標註無益
         row_tier = annotation_tier(label)
         if row_tier not in wanted:
             continue
@@ -220,11 +230,13 @@ def build_queue(records, annotated=(), tier=0, exists=None) -> list:
 
 
 def annotation_queue(snapshot_index_path: str, fixtures_dir: str | None = None,
-                     tier=0, negatives_dir: str | None = None) -> list:
+                     tier=0, negatives_dir: str | None = None,
+                     exclude_sweep_empty: bool = False) -> list:
     """`build_queue` 的 I/O 版：讀索引 + 掃已標註目錄去重 + 濾掉檔案已不在的列。"""
     return build_queue(_iter_snapshot_records(snapshot_index_path),
                        annotated_stems(fixtures_dir, negatives_dir), tier,
-                       exists=os.path.isfile)
+                       exists=os.path.isfile,
+                       exclude_sweep_empty=exclude_sweep_empty)
 
 
 def label_kind(label: str) -> str:

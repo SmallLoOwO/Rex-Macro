@@ -617,6 +617,9 @@ def create_app(
         什麼都沒接受的圖（實測 227 張裡 220 張 `sweep_empty`），「bot 接受了但
         接錯」那兩個症狀只在 tier2 出現得了——導覽列的入口因此改指這一串。
         認不得的 tier 字樣直接略過；全都認不得就退回 tier0。
+
+        2026-08-06：sweep_empty（八方掃描診斷比較地圖）從標註佇列濾除——
+        標註無益；/api/failures 仍照常顯示（agent 排錯需要）。
         """
         from miningbot.web_static import render_annotate_html
         rarity_choices = _rarity_choices_from_game_data()
@@ -626,7 +629,8 @@ def create_app(
             tiers = [int(part[4:]) for part in queue.split(",")
                      if part.startswith("tier") and part[4:].isdigit()]
             rows = annotation_queue(snapshot_index_path, fixtures_dir,
-                                    tiers or [0], negatives_dir=negatives_dir)
+                                    tiers or [0], negatives_dir=negatives_dir,
+                                    exclude_sweep_empty=True)
         return Response(
             content=render_annotate_html(
                 episode_id=episode or "",

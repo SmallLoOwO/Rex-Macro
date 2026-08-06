@@ -60,7 +60,10 @@ _SYMPTOM_VALUES: frozenset[str | None] = frozenset(
 # 順帶保住 2 vs 3 的資訊：`decoy`（有東西但不是礦框）與 `empty`（真的空）在
 # bot 拒絕時都是真陰性 `no_target`，但 `observation` 欄位仍原樣存進 json——
 # 「像礦的地形」是調門檻最值錢的硬負樣本，跟空幀不是同一種負樣本。
-OBSERVATIONS: tuple[str, ...] = ("ore", "decoy", "empty", "unsure")
+# 2026-08-06 使用者要求移除「不確定」按鈕（幾乎不會用到）。SYMPTOM_BY_OBSERVATION
+# 不再含 ``"unsure"`` 鍵——``symptom_from_observation`` 對未認得的 observation 一律
+# 回 ``"unknown"``（含舊資料裡的 ``"unsure"``），行為與舊 dict 查出來的值完全相同。
+OBSERVATIONS: tuple[str, ...] = ("ore", "decoy", "empty")
 
 SYMPTOM_BY_OBSERVATION: dict[str, dict[str, str | None]] = {
     # 有礦框：bot 接受＝判對（對照組，symptom 留空）；沒接受＝漏判
@@ -69,7 +72,6 @@ SYMPTOM_BY_OBSERVATION: dict[str, dict[str, str | None]] = {
     "decoy": {"accepted": "should_reject_failed", "rejected": "no_target"},
     # 什麼都沒有：bot 接受＝誤判；沒接受＝真陰性
     "empty": {"accepted": "false_positive", "rejected": "no_target"},
-    "unsure": {"accepted": "unknown", "rejected": "unknown"},
 }
 
 

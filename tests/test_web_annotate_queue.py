@@ -22,7 +22,7 @@ def _rec(label, path, ts):
 def test_queue_keeps_only_requested_tier():
     """tier0＝掃描全空／框被拒／瞄準失敗；聊天／背包那些成熟流程不進佇列。"""
     got = web_history.build_queue([
-        _rec("113_sweep_empty", "a/sweep.png", 3.0),
+        _rec("113_aim_fail", "a/sweep.png", 3.0),
         _rec("chat_open_fail_x", "a/chat.png", 2.0),
         _rec("120_rare_found", "a/rare.png", 1.0),
     ])
@@ -32,16 +32,16 @@ def test_queue_keeps_only_requested_tier():
 def test_queue_sorts_newest_first():
     """最近的失敗最可能還沒被修掉，先標它資訊量最高。"""
     got = web_history.build_queue([
-        _rec("a_sweep_empty", "a/old.png", 1.0),
-        _rec("b_sweep_empty", "a/new.png", 9.0),
+        _rec("a_aim_fail", "a/old.png", 1.0),
+        _rec("b_aim_fail", "a/new.png", 9.0),
     ])
     assert [r["stem"] for r in got] == ["new", "old"]
 
 
 def test_queue_puts_records_without_timestamp_last():
     got = web_history.build_queue([
-        _rec("a_sweep_empty", "a/none.png", None),
-        _rec("b_sweep_empty", "a/dated.png", 1.0),
+        _rec("a_aim_fail", "a/none.png", None),
+        _rec("b_aim_fail", "a/dated.png", 1.0),
     ])
     assert [r["stem"] for r in got] == ["dated", "none"]
 
@@ -49,22 +49,22 @@ def test_queue_puts_records_without_timestamp_last():
 def test_queue_drops_already_annotated():
     """不去重的話每次進佇列都從第一張重來。"""
     got = web_history.build_queue(
-        [_rec("a_sweep_empty", "a/done.png", 1.0),
-         _rec("b_sweep_empty", "a/todo.png", 2.0)],
+        [_rec("a_aim_fail", "a/done.png", 1.0),
+         _rec("b_aim_fail", "a/todo.png", 2.0)],
         annotated={"done"})
     assert [r["stem"] for r in got] == ["todo"]
 
 
 def test_queue_dedupes_repeated_index_rows():
     got = web_history.build_queue([
-        _rec("a_sweep_empty", "a/x.png", 1.0),
-        _rec("a_sweep_empty", "a/x.png", 2.0),
+        _rec("a_aim_fail", "a/x.png", 1.0),
+        _rec("a_aim_fail", "a/x.png", 2.0),
     ])
     assert len(got) == 1
 
 
 def test_queue_skips_records_without_path():
-    assert web_history.build_queue([{"label": "sweep_empty", "written_at": 1.0}]) == []
+    assert web_history.build_queue([{"label": "aim_fail", "written_at": 1.0}]) == []
 
 
 def test_annotated_stems_scans_nested_fixture_dirs(tmp_path):
@@ -85,7 +85,7 @@ def test_annotation_queue_reads_index_and_fixtures(tmp_path):
     (tmp_path / "todo.png").write_bytes(b"x")
     (tmp_path / "done.png").write_bytes(b"x")
     index.write_text("\n".join(json.dumps(r) for r in [
-        _rec("113_sweep_empty", str(tmp_path / "todo.png"), 2.0),
+        _rec("113_aim_fail", str(tmp_path / "todo.png"), 2.0),
         _rec("114_aim_fail", str(tmp_path / "done.png"), 1.0),
     ]) + "\n", encoding="utf-8")
     fixtures = tmp_path / "fx"
@@ -98,7 +98,7 @@ def test_annotation_queue_reads_index_and_fixtures(tmp_path):
 def test_annotation_queue_tolerates_broken_index_lines(tmp_path):
     index = tmp_path / "snapshot_index.jsonl"
     (tmp_path / "x.png").write_bytes(b"x")
-    index.write_text(json.dumps(_rec("a_sweep_empty", str(tmp_path / "x.png"), 1.0))
+    index.write_text(json.dumps(_rec("a_aim_fail", str(tmp_path / "x.png"), 1.0))
                      + '\n{"label": "part', encoding="utf-8")
     assert len(web_history.annotation_queue(str(index), None)) == 1
 
@@ -176,7 +176,7 @@ def _client(tmp_path, records):
 
 def test_annotate_queue_route_renders_queue(tmp_path):
     client = _client(tmp_path, [
-        _rec("113_sweep_empty", str(tmp_path / "a.png"), 2.0),
+        _rec("113_aim_fail", str(tmp_path / "a.png"), 2.0),
         _rec("120_rare_found", str(tmp_path / "b.png"), 1.0),
     ])
     body = client.get("/annotate?queue=tier0").text
@@ -185,7 +185,7 @@ def test_annotate_queue_route_renders_queue(tmp_path):
 
 
 def test_annotate_without_queue_param_is_unchanged(tmp_path):
-    client = _client(tmp_path, [_rec("113_sweep_empty", str(tmp_path / "a.png"), 1.0)])
+    client = _client(tmp_path, [_rec("113_aim_fail", str(tmp_path / "a.png"), 1.0)])
     body = client.get("/annotate").text
     assert 'id="queue-bar"' not in body
 
@@ -193,12 +193,11 @@ def test_annotate_without_queue_param_is_unchanged(tmp_path):
 def test_annotate_queue_route_accepts_multiple_tiers(tmp_path):
     """`?queue=tier0,tier2`：bot 全拒的圖與 bot 已接受的圖排在同一串。
 
-    2026-07-31 使用者回報「給予的圖片大部分只有 1 與 4」——實測索引 tier0 227 張
-    有 220 張 `sweep_empty`（bot 什麼都沒接受），而「接受了但接錯」只有 tier2
-    舉得出例子；只排 tier0 的話那兩種症狀玩家一輩子遇不到。
+    sweep_empty 已從佇列濾除（2026-08-06），但 tier0 仍有 aim_fail / _rejected 等。
+    tier2 的 sweep_accepted 才是「接受了但接錯」的語料來源。
     """
     client = _client(tmp_path, [
-        _rec("113_sweep_empty", str(tmp_path / "a.png"), 2.0),
+        _rec("113_aim_fail", str(tmp_path / "a.png"), 2.0),
         _rec("138_sweep_accepted_dir4_947_520", str(tmp_path / "c.png"), 3.0),
         _rec("120_rare_found", str(tmp_path / "b.png"), 1.0),
     ])
@@ -208,15 +207,30 @@ def test_annotate_queue_route_accepts_multiple_tiers(tmp_path):
 
 
 def test_annotate_queue_route_bad_tier_falls_back_to_tier0(tmp_path):
-    client = _client(tmp_path, [_rec("113_sweep_empty", str(tmp_path / "a.png"), 1.0)])
+    client = _client(tmp_path, [_rec("113_aim_fail", str(tmp_path / "a.png"), 1.0)])
     assert "a.png" in client.get("/annotate?queue=nonsense").text
+
+
+def test_annotate_queue_route_excludes_sweep_empty(tmp_path):
+    """sweep_empty 不出現在 /annotate 佇列（但 /api/failures 仍可看到）。"""
+    client = _client(tmp_path, [
+        _rec("113_sweep_empty_dir0", str(tmp_path / "swp.png"), 2.0),
+        _rec("113_aim_fail", str(tmp_path / "aim.png"), 1.0),
+    ])
+    ann = client.get("/annotate?queue=tier0").text
+    assert "aim.png" in ann
+    assert "swp.png" not in ann
+    # failures 頁（agent 用）仍照常顯示
+    fail = client.get("/api/failures").json()
+    labels = [i["label"] for i in fail["items"]]
+    assert "113_sweep_empty_dir0" in labels
 
 
 def test_build_queue_carries_bot_verdict_and_mark():
     """佇列每列都帶 bot 當下判定與座標——標註頁靠它推症狀，不叫玩家猜。"""
     got = web_history.build_queue(
         [_rec("138_sweep_accepted_dir4_947_520", "hit.png", 2.0),
-         _rec("137_sweep_empty_dir4", "empty.png", 1.0)],
+         _rec("137_sweep_seen_once_dir4", "empty.png", 1.0)],
         tier=(0, 2), exists=lambda p: True)
     by_stem = {r["stem"]: r for r in got}
     assert by_stem["hit"]["verdict"] == "accepted"
@@ -243,8 +257,8 @@ if __name__ == "__main__":       # pragma: no cover
 def test_build_queue_filters_dead_links():
     """retention 刪掉的快照不該排在佇列裡（實測 500 列 339 張是死連結）。"""
     got = web_history.build_queue(
-        [_rec("a_sweep_empty", "exists.png", 1.0),
-         _rec("b_sweep_empty", "gone.png", 2.0)],
+        [_rec("a_aim_fail", "exists.png", 1.0),
+         _rec("b_aim_fail", "gone.png", 2.0)],
         exists=lambda p: p == "exists.png")
     assert [r["stem"] for r in got] == ["exists"]
 
@@ -252,8 +266,8 @@ def test_build_queue_filters_dead_links():
 def test_build_queue_overlay_deduped_when_clean_exists():
     """`_aim.png` 疊圖在乾淨原幀也在佇列時丟掉（同一幀的第二次複本）。"""
     got = web_history.build_queue(
-        [_rec("a_sweep_empty", "shot.png", 1.0),
-         _rec("a_sweep_empty", "shot_aim.png", 2.0)],
+        [_rec("a_aim_fail", "shot.png", 1.0),
+         _rec("a_aim_fail", "shot_aim.png", 2.0)],
         exists=lambda p: True)
     assert [r["stem"] for r in got] == ["shot"]
 
@@ -262,7 +276,7 @@ def test_build_queue_overlay_filtered_even_when_clean_gone():
     """疊圖畫了格線燒進像素、裁出來一定是壞語料——乾淨原幀在不在都不排進佇列
     （2026-07-30 前會留下當「聊勝於無」的紀錄，使用者確認不需要，改無條件濾）。"""
     got = web_history.build_queue(
-        [_rec("a_sweep_empty", "shot_aim.png", 1.0)],
+        [_rec("a_aim_fail", "shot_aim.png", 1.0)],
         exists=lambda p: True)
     assert got == []
 
@@ -277,3 +291,25 @@ def test_annotation_queue_negatives_dir_dedup(tmp_path):
     (neg / "neg_done.json").write_text("{}", encoding="utf-8")
     stems = web_history.annotated_stems(str(fx), str(neg))
     assert "done" in stems and "neg_done" in stems
+
+
+# ---- sweep_empty 濾除（2026-08-06）--------------------------------------
+
+def test_build_queue_excludes_sweep_empty():
+    """sweep_empty＝八方掃描診斷比較地圖，標註無益，不排進佇列。
+
+    使用者：「這些本身就是用於比較地圖的，因此用於標注後似乎也沒有作用」。
+    涵蓋標準層（sweep_empty_dirN）、俯仰層（sweep_empty_up_dirN）。
+    其他 tier0（aim_fail、seen_once）仍照常排進。
+    """
+    got = web_history.build_queue(
+        [_rec("113_sweep_empty_dir0", "a/empty.png", 1.0),
+         _rec("113_sweep_empty_up_dir3", "a/empty_up.png", 2.0),
+         _rec("113_aim_fail", "a/aim.png", 3.0),
+         _rec("113_sweep_seen_once_dir4", "a/seen.png", 4.0)],
+        tier=0, exists=lambda p: True, exclude_sweep_empty=True)
+    stems = [r["stem"] for r in got]
+    assert "empty" not in stems
+    assert "empty_up" not in stems
+    assert "aim" in stems
+    assert "seen" in stems

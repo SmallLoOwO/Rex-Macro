@@ -529,12 +529,12 @@ def render_annotate_html(
     if queue:
         queue_bar = ('<div id="queue-bar">佇列模式：<span id="queue-pos"></span>'
                      '　<code>j</code>/<code>k</code> 上下張・'
-                     '<code>1</code>-<code>4</code> 選你看到什麼・'
+                     '<code>1</code>-<code>3</code> 選你看到什麼・'
                      '<code>Enter</code> 送出並跳下一張・'
                      '<code>Ctrl</code>+<code>Z</code> 還原上一張</div>')
     elif queue_mode:
         queue_bar = ('<div id="queue-bar" class="empty">佇列是空的——目前沒有'
-                     '待標註的快照（掃描全空／框被拒／瞄準失敗／已接受的候選），'
+                     '待標註的快照（框被拒／瞄準失敗／已接受的候選），'
                      '或全都標過了</div>')
     else:
         queue_bar = ""
@@ -628,20 +628,18 @@ header code {{ background: #333; padding: 0.1rem 0.4rem; border-radius: 3px; }}
     <h2>bot 當下判定</h2>
     <div id="botline"></div>
 
-    <h2>你看到什麼</h2>
+    <h2>你看到什麼 <span style="color:#f44;font-size:0.8rem">*必填</span></h2>
     <div id="observations">
       <button type="button" data-obs="ore">1　有礦框／追蹤目標</button>
       <p class="obs-hint">畫面裡真的有一個礦的追蹤框——框出它。</p>
       <button type="button" data-obs="decoy">2　有東西，但不是礦框</button>
       <p class="obs-hint">亮綠地形、裝備、UI 之類「長得像框」的東西——框出它。這種硬負樣本對調門檻最有用。</p>
-      <button type="button" data-obs="empty">3　什麼都沒有</button>
-      <p class="obs-hint">整張圖沒有目標也沒有像框的東西，不必框。</p>
-      <button type="button" data-obs="unsure" class="active">4　不確定</button>
-      <p class="obs-hint">看不出來、不想憑肉眼猜，之後有更多資訊再回頭標。</p>
+      <button type="button" data-obs="empty" id="obs-empty">3　什麼都沒有</button>
+      <p class="obs-hint" id="obs-empty-hint">整張圖沒有目標也沒有像框的東西，不必框。</p>
     </div>
     <p id="derived"></p>
 
-    <h2 id="tiers-head">稀有度（低 → 高）</h2>
+    <h2 id="tiers-head">稀有度（低 → 高） <span id="tiers-required" style="color:#f44;font-size:0.8rem;display:none">*必填</span></h2>
     <p id="tiers-lock" class="obs-hint"></p>
     <div id="tiers">{tier_btns or '<span class="hint">（game_data 無 tier）</span>'}</div>
     <p id="sticky-note"></p>
@@ -666,12 +664,15 @@ let zoom = 1.0;
 let pan = [0, 0];
 let selRect = null;       // {{ x, y, size }} in natural img coords
 let activeTier = null;
-// 選擇跨張記憶（2026-07-30）：大多數待標快照是「什麼都沒有」，玩家選過一次後
+// 選擇跨張記憶（2026-07-30）：大多數待標快照是同類型，玩家選過一次後
 // 下一張直接帶上次的選擇，不必每張重選。localStorage 是瀏覽器原生、純前端、
 // 免改後端。tier 不記——它是「畫面裡那個礦」的屬性，每張不同，
 // 記了反而無聲套用錯誤稀有度。
+// 2026-08-06：「不確定」按鈕已移除；舊 localStorage 殘留 'unsure' 視為未選。
+// 觀察必填——沒選就不能送出（防止空資料）。
 const OBS_KEY = 'annotate.observation';
-let activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
+let activeObs = localStorage.getItem(OBS_KEY);
+if (activeObs === 'unsure') activeObs = null;
 
 // 症狀不由玩家挑：（你看到什麼 × bot 當下判定）推出來。這張表由 Python 端的
 // web_annotation.SYMPTOM_BY_OBSERVATION 直接渲染下來，只有一份定義。
@@ -712,9 +713,16 @@ const preloaded = new Set();
 function updateSubmitGate() {{
   const btn = document.getElementById('submit');
   if (!btn) return;
-  const blocked = !imgReady || submitting;
+  let blocked = !imgReady || submitting;
+  let reason = '';
+  // 觀察必填 + 選「有礦框」時稀有度必填（2026-08-06 使用者要求——防止空資料）
+  if (!blocked && !activeObs) {{
+    blocked = true; reason = '請先選「你看到什麼」';
+  }} else if (!blocked && activeObs === 'ore' && !activeTier) {{
+    blocked = true; reason = '選了有礦框——還要選稀有度';
+  }}
   btn.disabled = blocked;
-  btn.textContent = blocked ? '載入中…' : '送出標註';
+  btn.textContent = blocked ? (reason || '載入中…') : '送出標註';
 }}
 
 // 背景預載：顯示第 i 張時暖機後 5 張。玩家按 Enter 時圖已在 browser cache
@@ -731,7 +739,9 @@ function preloadAhead() {{
 }}
 
 function derivedSymptom() {{
-  const column = SYMPTOM_BY_OBS[activeObs] || SYMPTOM_BY_OBS.unsure;
+  if (!activeObs) return null;
+  const column = SYMPTOM_BY_OBS[activeObs];
+  if (!column) return null;
   // 只認 'accepted'；沒記判定的一律走 rejected 那欄（見 symptom_from_observation）
   let s = column[bot.verdict === 'accepted' ? 'accepted' : 'rejected'];
   // 邊界：d3_miss_N 的 label 帶 verdict=accepted 但沒有座標（_N 是 attempt 編號，
@@ -767,8 +777,9 @@ function renderBotLine() {{
   botlineEl.className = cls;
   if (derivedEl) {{
     const s = derivedSymptom();
-    derivedEl.innerHTML = '會記成：<b>'
-      + (s ? SYMPTOM_LABELS[s] : '對照組——bot 判對了') + '</b>';
+    derivedEl.innerHTML = !activeObs
+      ? '<b>請先選「你看到什麼」</b>'
+      : '會記成：<b>' + (s ? SYMPTOM_LABELS[s] : '對照組——bot 判對了') + '</b>';
   }}
 }}
 
@@ -791,6 +802,24 @@ function renderQueuePos() {{
     + (queue[qIndex].label || '');
 }}
 
+// bot 已接受的候選：只可能是礦框或像礦的東西——「什麼都沒有」不成立，按鈕藏掉
+// （2026-08-06 使用者：label 已記 accepted，不用叫玩家猜能不能選 empty）。
+// 若玩家上一張選了 empty、這張變 accepted，清掉選擇讓他重選。
+function applyObsVisibility() {{
+  const isAccepted = bot.verdict === 'accepted';
+  const emptyBtn = document.getElementById('obs-empty');
+  const emptyHint = document.getElementById('obs-empty-hint');
+  if (emptyBtn) emptyBtn.style.display = isAccepted ? 'none' : '';
+  if (emptyHint) emptyHint.style.display = isAccepted ? 'none' : '';
+  if (isAccepted && activeObs === 'empty') {{
+    activeObs = null;
+    localStorage.removeItem(OBS_KEY);
+    document.querySelectorAll('#observations button')
+      .forEach((b) => b.classList.remove('active'));
+    applyObsGating();
+  }}
+}}
+
 function showQueueItem(i) {{
   if (!queue.length || !img) return;
   qIndex = (i + queue.length) % queue.length;
@@ -803,6 +832,7 @@ function showQueueItem(i) {{
   selRect = null; sel.style.display = 'none';
   bot = {{ verdict: item.verdict, x: item.x, y: item.y }};
   resetToolbar(item.episode);  // 同一場沿用稀有度，換場清空
+  applyObsVisibility();          // bot 接受→隱藏「什麼都沒有」
   renderBotLine();
   applyBotMark();
   renderQueuePos();
@@ -1003,17 +1033,17 @@ document.addEventListener('keydown', (e) => {{
   if (e.key === 'j') {{ showQueueItem(qIndex + 1); e.preventDefault(); }}
   else if (e.key === 'k') {{ showQueueItem(qIndex - 1); e.preventDefault(); }}
   else if (e.key === 'Enter') {{ submitAnnotation(); e.preventDefault(); }}
-  else if (e.key >= '1' && e.key <= '4') {{
+  else if (e.key >= '1' && e.key <= '3') {{
     const btns = document.querySelectorAll('#observations button');
     const b = btns[Number(e.key) - 1];
-    if (b) {{ b.click(); e.preventDefault(); }}
+    if (b && b.style.display !== 'none') {{ b.click(); e.preventDefault(); }}
   }}
 }});
 
 // ── toolbar：tier / observation 單選切換 ────────────────────────────
 // tier 允許再點一次已選的按鈕取消（deselect）——先前點了就卡死選不掉，
-// 玩家點錯稀有度或想改標「沒東西」都無法回到未選狀態。symptom 永遠要有現役值
-// （預設「不確定」），不開放取消到空，佇列/送出邏輯都假設它恆不為 null。
+// 玩家點錯稀有度或想改標「沒東西」都無法回到未選狀態。observation 不開放取消
+// 到空（2026-08-06 起必填，送出鍵在未選時鎖住）。
 function bindSingleSelect(containerId, setter, opts) {{
   const deselectable = !!(opts && opts.deselectable);
   const btns = document.querySelectorAll(`#${{containerId}} button`);
@@ -1033,12 +1063,14 @@ function bindSingleSelect(containerId, setter, opts) {{
 bindSingleSelect('tiers', (b) => {{
   activeTier = b ? (b.dataset.tier || null) : null;
   renderSticky();
+  updateSubmitGate();  // 稀有度選了才解鎖送出（ore 時必填）
 }}, {{ deselectable: true }});
 bindSingleSelect('observations', (b) => {{
   activeObs = b.dataset.obs;
   localStorage.setItem(OBS_KEY, activeObs);  // 跨張記憶：下一張帶上來
   renderBotLine();                            // 推出來的症狀即時更新
   applyObsGating();                           // 非「有礦框」→ 稀有度鎖住並清空
+  updateSubmitGate();                         // 觀察選了才解鎖送出
 }});
 
 // 症狀與稀有度互斥（使用者 2026-07-31）：稀有度是「畫面裡那顆礦」的屬性，
@@ -1052,7 +1084,9 @@ function applyObsGating() {{
   }});
   if (!isOre) activeTier = null;
   const lock = document.getElementById('tiers-lock');
-  if (lock) lock.textContent = isOre ? '' : '（只有選「1 有礦框」時才標稀有度）';
+  if (lock) lock.textContent = isOre ? '（必填）' : '（只有選「1 有礦框」時才標稀有度）';
+  const req = document.getElementById('tiers-required');
+  if (req) req.style.display = isOre ? '' : 'none';
   renderSticky();
 }}
 
@@ -1069,7 +1103,9 @@ function resetToolbar(episode) {{
       .forEach((b) => b.classList.remove('active'));
   }}
   curEpisode = ep;
-  activeObs = localStorage.getItem(OBS_KEY) || 'unsure';
+  // 舊 localStorage 可能存 'unsure'（按鈕已移除）→ 視為未選
+  activeObs = localStorage.getItem(OBS_KEY);
+  if (activeObs === 'unsure') activeObs = null;
   document.querySelectorAll('#observations button')
     .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
   applyObsGating();
@@ -1087,10 +1123,10 @@ function renderSticky() {{
     + '——換場自動清空，點同一顆按鈕可取消';
 }}
 
-// 首載入也要同步：HTML 裡 'unsure' 按鈕硬寫了 class="active"，但若 localStorage
-// 記的是別的選擇，按鈕高亮跟 activeObs 會不一致。
+// 首載入也要同步：按鈕高亮跟 activeObs 一致；verdict 決定 empty 按鈕可不可見。
 document.querySelectorAll('#observations button')
   .forEach((b) => b.classList.toggle('active', b.dataset.obs === activeObs));
+applyObsVisibility();
 renderBotLine();
 applyBotMark();
 applyObsGating();
@@ -1109,6 +1145,14 @@ async function submitAnnotation() {{
   if (submitting) return;                       // POST 進行中，靜默忽略（防同張重複送出）
   if (!imgReady) {{                              // 圖片還沒載入完——不讓玩家盲送
     statusEl.textContent = '圖片還在載入中…';
+    return;
+  }}
+  if (!activeObs) {{                             // 觀察必填（2026-08-06）
+    statusEl.textContent = '請先選「你看到什麼」';
+    return;
+  }}
+  if (activeObs === 'ore' && !activeTier) {{     // 有礦框時稀有度必填
+    statusEl.textContent = '選了「有礦框」——還要選稀有度';
     return;
   }}
   const symptom = derivedSymptom();

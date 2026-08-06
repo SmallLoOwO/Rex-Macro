@@ -83,7 +83,7 @@ def test_render_annotate_html_has_no_variant_buttons():
 
 
 def test_render_annotate_html_tier_locked_unless_observation_is_ore():
-    """症狀互斥：選 2/3/4 時稀有度按鈕 disabled 並清空選擇（不只送出時丟掉）。"""
+    """症狀互斥：選 2/3 時稀有度按鈕 disabled 並清空選擇（不只送出時丟掉）。"""
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
     assert "function applyObsGating()" in html
     gating = html.split("function applyObsGating()")[1].split("\n}")[0]
@@ -118,31 +118,34 @@ def test_render_annotate_html_ctrl_z_undoes_last_submit():
 
 
 def test_render_annotate_html_asks_what_you_see_not_which_symptom():
-    """玩家只回答「看到什麼」，四顆按鈕整句白話、不出現 FN/FP 術語。
+    """玩家只回答「看到什麼」，三顆按鈕整句白話、不出現 FN/FP 術語。
 
     使用者原話（2026-07-29）：「症狀內容不夠明確 不知道 fn fp 是甚麼」；
     （2026-07-31）：「給予的圖片大部分只有 1 與 4，所以我也不知道 2 與 3 的
     差別，並且 bot 有沒有接受……腳本在記錄圖片的時候應該就會有了」——症狀改成
     由（看到什麼 × bot 判定）推導，玩家不再挑症狀。
+    2026-08-06：「不確定」按鈕已移除（幾乎不會用到）。
     """
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
     block = html.split('<div id="observations">')[1].split("<p id=")[0]
     assert "有礦框" in block
     assert "不是礦框" in block
     assert "什麼都沒有" in block
-    assert "不確定" in block
+    assert "不確定" not in block
     assert "FN" not in block and "FP" not in block
 
 
 def test_render_annotate_html_observation_buttons_cover_the_mapping():
-    """四顆按鈕的 data-obs 必須就是 SYMPTOM_BY_OBSERVATION 的鍵，一個不漏。
+    """三顆按鈕的 data-obs 必須就是 SYMPTOM_BY_OBSERVATION 的鍵，一個不漏。
 
     少一顆＝那一列推導永遠觸不到（例如 decoy 沒了就再也標不出「該拒沒拒」）。
+    2026-08-06：unsure 按鈕移除後 dict 也不含 unsure，鍵與按鈕仍一對一。
     """
     from miningbot.web_annotation import SYMPTOM_BY_OBSERVATION
     html = render_annotate_html("007", "/snap.png", (["Mythic"], ["原色"]))
     for obs in SYMPTOM_BY_OBSERVATION:
         assert f'data-obs="{obs}"' in html
+    assert 'data-obs="unsure"' not in html
 
 
 def test_render_annotate_html_submit_posts_to_api_annotate():
