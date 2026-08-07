@@ -5,6 +5,7 @@ import math
 import time
 import logging
 import ctypes
+import ctypes.wintypes
 import json
 import subprocess
 import threading
@@ -430,6 +431,9 @@ class Bot:
         # 清空重試計數（2026-08-04）：_clear_panel_filter 每次跑完設成實際 attempt 數，
         # _consume_clear_panel 拿來寫 Discord 回報（「第 N 次重試成功」／「已重試 N 次」）。
         self._panel_clear_attempts = 0
+        # 卡死偵測（H079，2026-08-08）：面板列表+篩選框連續兩次逐字不變時發警告，
+        # 見 _clear_panel_filter_once。每輪 _clear_panel_filter 重新歸零。
+        self._panel_clear_prev_signature = None
         # Discord `重開` 指令（2026-08-03）：只在暫停時生效；輪詢執行緒設旗標，
         # 主迴圈消費（spawn relauncher + _quit）。布林於 GIL 下原子（同 _pending_clear_panel）。
         self._pending_restart = False
@@ -5731,6 +5735,7 @@ class Bot:
         等它跑完——由呼叫端（`_resume_mining_tail`）在序列結束後才查旗標決定要不要
         轉 RESET_WAIT。中途硬中止過（曾經的版本）會讓序列停在不確定的 UI 狀態。
         """
+        self._panel_clear_prev_signature = None   # H079 卡死偵測：本輪重試序列重新起算
         for attempt in range(cfg.panel_clear_max_retries + 1):
             is_final = attempt >= cfg.panel_clear_max_retries
             zeroed, retryable = self._clear_panel_filter_once(save_snapshot=is_final)
@@ -5821,6 +5826,11 @@ class Bot:
             for _ in range(cfg.panel_clear_clicks - 1):
                 time.sleep(cfg.panel_clear_click_interval_s)
                 ic.click_at(*cfg.panel_filter_xy)
+            # 游標實際落點回讀（H079）：click_at 內部先 moveTo 再點，正常應停在目標座標。
+            # 只是「座標記錄」不能證明點擊真的被遊戲收到——H079 實測過完全對準
+            # (119,441) 仍打不進 TextBox，落點只用來排除「根本沒點對地方」這一種可能。
+            _cursor_pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(_cursor_pt))
             time.sleep(0.15)
             # H071c：用 key_press（90ms 間隔）取代 typewrite（40ms）。typewrite 太快，
             # 遊戲在 post-harvest 忙碌時來不及讀，w 進了遊戲世界而非 TextBox
@@ -5844,10 +5854,15 @@ class Bot:
             # 座標也記——「點沒中」要能拿它跟 panel_zero_failed 裁圖對照。
             ink_changed = after != before
             self.logger.info(
-                "面板歸零：點 (%d,%d) 打 %d 個 w｜篩選框 ink %d→%d、字寬 %d→%dpx（%s）",
+                "面板歸零：點 (%d,%d) 打 %d 個 w｜篩選框 ink %d→%d、字寬 %d→%dpx（%s）｜游標落點 (%d,%d)",
                 cfg.panel_filter_xy[0], cfg.panel_filter_xy[1],
                 cfg.panel_clear_keystrokes, before, after, before_w, after_w,
-                "有變" if ink_changed else "沒變，多半是顯示已壓縮飽和")
+                "有變" if ink_changed else "沒變，多半是顯示已壓縮飽和",
+                _cursor_pt.x, _cursor_pt.y)
+            if (_cursor_pt.x, _cursor_pt.y) != tuple(cfg.panel_filter_xy):
+                self.logger.warning(
+                    "面板歸零：游標落點 (%d,%d) 偏離目標 (%d,%d) → click_at 座標可能被吃或飄移",
+                    _cursor_pt.x, _cursor_pt.y, cfg.panel_filter_xy[0], cfg.panel_filter_xy[1])
 
             if not ocr.rapidocr_available():
                 self._panel_zeroed_at = None
@@ -5895,6 +5910,17 @@ class Bot:
                         "面板零點不成立：標頭 %s、列數 %d（%s）讀 %d 次、篩選框墨量 %s",
                         header or "讀不到", len(names), "、".join(names) or "空", reads,
                         "有變" if ink_changed else "沒變")
+                    # 卡死偵測（H079）：連續兩次重試的「面板列表＋篩選框墨量」逐字相同，
+                    # 代表這次重試對遊戲畫面完全沒有任何可觀察影響——不是「還沒濾乾淨」
+                    # （那樣至少字寬/ink 或列序該有變化），而是這次點擊/打字對 TextBox
+                    # 沒有產生任何效果。純粹重複同一套點擊在這個狀態下無法自癒，
+                    # 需要別的復原手段（例如關閉重開面板）而非再重試。
+                    _sig = (tuple(names), after, after_w)
+                    if _sig == self._panel_clear_prev_signature:
+                        self.logger.warning(
+                            "面板歸零：連續兩次嘗試面板列表與篩選框完全逐字相同（游標落點見上一行）"
+                            "→ 疑似 TextBox 失去互動，非單純還沒濾乾淨（H079）")
+                    self._panel_clear_prev_signature = _sig
                     # 裁圖含標頭＋篩選框＋前 8 列：w 有沒有進 TextBox 一眼可辨。
                     # 只在最後一次重試存（save_snapshot）——不洗快照。
                     if save_snapshot:
