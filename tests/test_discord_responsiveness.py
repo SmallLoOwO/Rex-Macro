@@ -398,6 +398,7 @@ def _bare_repin_bot(monkeypatch, state=State.MINING):
     monkeypatch.setattr("miningbot.main.cfg.discord_repin_quiet_s", 4.0)
     bot = Bot.__new__(Bot)
     bot.state = state
+    bot.paused = False
     bot._remote_message_id = "remote-message"
     bot._rr_embed_mid = None
     bot._rr_ctx = None
@@ -431,6 +432,19 @@ def test_repin_tick_debounces_until_channel_quiet(monkeypatch):
     bot._repin_tick([], 106.0)                          # 安靜滿 4.0s → 重貼
     assert bot.reposted == ["remote"]
     bot._repin_tick([], 120.0)                          # clear 後不再重複
+    assert bot.reposted == ["remote"]
+
+
+def test_repin_tick_skips_repost_while_paused(monkeypatch):
+    """2026-08-07：暫停中（含校準強制暫停）不刪舊貼新遙控器，避免跟校準卡搶頻道底。"""
+    bot = _bare_repin_bot(monkeypatch)
+    bot.paused = True
+    bot._repin_tick([{"id": "newer"}], 100.0)
+    bot._repin_tick([], 106.0)                          # 安靜滿 4.0s，換平常會重貼
+    assert bot.reposted == []
+    assert bot._remote_repin.pending is True            # 旗標保留，恢復後補一次到位
+    bot.paused = False
+    bot._repin_tick([], 106.1)
     assert bot.reposted == ["remote"]
 
 

@@ -1072,6 +1072,55 @@ giveup_rescue 修復同批跑過）、`ruff check` clean。
 raise 模擬）——這條 try/finally 是結構性補強而非已量測到的必然觸發點，先觀察下一輪
 `_log.warning("aim_move 中途例外...")`／`_drag_vertical 中途例外...` 有沒有真的出現。
 
+## H078（2026-08-07；使用者回報「遙控器的釘底刪貼在校準時跟校準卡起衝突」）：`_repin_tick`
+從未檢查 `self.paused`，暫停（含校準強制暫停）中仍照常刪舊貼新遙控器
+
+### 一句話根因
+
+`_repin_tick` 的釘底防抖只看 `frozen`（是否在 REENTRY），從未檢查 `self.paused`；
+`_calib_start` 用 `_pause()` 強制暫停進校準模式，但校準卡本身也是「刪舊貼新」釘底
+（`_repost_calib_embed`，每次 ⬆️⬇️ 調角都貼一張新截圖），兩張卡同時在搶頻道底、輪流
+互踢對方上去。
+
+### 症狀
+
+使用者操作校準卡調俯仰角時，遙控器每隔 `discord_repin_quiet_s` 安靜窗就被重新
+刪貼一次（校準卡自己貼的截圖算「新訊息」，觸發 `_remote_repin.mark_pending()`），
+把校準卡擠上去，接著校準卡下次操作又把自己重新刪貼到底，兩者反覆互搶頻道底部。
+
+### 根因分析
+
+`_repin_tick`（`main.py`）：
+
+```python
+quiet = cfg.discord_repin_quiet_s
+if not frozen and self._remote_repin.due(now, quiet):
+    self._repost_remote_control()
+```
+
+`frozen` 只表示「是否在 REENTRY」，校準不是 REENTRY（`_calib_start` 甚至在 REENTRY
+中被拒），所以 `frozen=False` 恆成立、遙控器釘底完全不受校準影響。而 `_pause()` 設的
+`self.paused` 從未被這段邏輯讀取——校準會強制暫停，卻沒有因為暫停而讓遙控器安靜下來。
+
+### 修復
+
+`_repin_tick` 的重貼判斷加 `not self.paused`：
+
+```python
+if not frozen and not self.paused and self._remote_repin.due(now, quiet):
+    self._repost_remote_control()
+```
+
+`mark_pending`/`note_activity` 不受影響（旗標照樣累積），暫停中只是不真的刪貼；
+恢復（`_resume()`／校準 ❌ 離場）後下一輪安靜窗一到就補一次到位，不會漏補。REENTRY
+的回礦卡（`_rr_repin`）不受此閘影響——REENTRY 中 ▶️/⏸️ 語意是「跳過」不是真暫停，
+且校準本來就拒進 REENTRY，兩者不會同時發生，不需要疊加閘門。
+
+### 回歸
+
+`tests/test_discord_responsiveness.py::test_repin_tick_skips_repost_while_paused`：
+暫停中安靜窗到期不重貼、旗標保留；恢復後下一輪立刻補貼。
+
 ## H216（2026-08-07，harvest 216；使用者回報「容量 100 以上出現稀有礦，挖掘結束後
 就進回礦模式，導致後面的部分被動執行」）：面板歸零重試迴圈（~55s）中途礦坑才開始
 重置，重試耗盡後不重查旗標就硬降級 NEEDS_HUMAN，讓玩家收到誤導通知、回礦鏈沒接手

@@ -2177,6 +2177,13 @@ class Bot:
         連發期間不反覆刪貼，安靜後一次到位。REENTRY 中遙控器旗標不因新訊息立
         （釘底由回礦卡接手），改由 _rr_finalize 收尾主動立；回礦卡照舊受
         _rr_busy 擋（發圖/指令執行中不搬卡，掃完下一輪一次到位）。
+
+        暫停中（含校準——`_calib_start` 強制 `_pause()`）不執行遙控器的刪舊貼新
+        （2026-08-07 使用者回報）：校準卡本身也走「刪貼」釘底（`_repost_calib_embed`），
+        每次調角度都貼新截圖，兩張卡搶頻道底輪流互踢；暫停中沒人在看遙控器要不要墊底，
+        旗標照樣累積（`mark_pending`/`note_activity` 不受影響），恢復後安靜窗一到就補
+        一次到位。REENTRY 的回礦卡不受此閘影響——REENTRY 中 ▶️/⏸️ 語意是「跳過」不是
+        真暫停（見遙控器 embed 文案），校準也拒進 REENTRY，兩者不會同時發生。
         """
         frozen = self.state is State.REENTRY
         if msgs:
@@ -2190,7 +2197,7 @@ class Bot:
                     and newest != self._rr_embed_mid):
                 self._rr_repin.mark_pending()
         quiet = cfg.discord_repin_quiet_s
-        if not frozen and self._remote_repin.due(now, quiet):
+        if not frozen and not self.paused and self._remote_repin.due(now, quiet):
             self._repost_remote_control()
         if (frozen and self._rr_ctx is not None and not self._rr_busy
                 and self._rr_ctx.phase == "awaiting_cmd"
