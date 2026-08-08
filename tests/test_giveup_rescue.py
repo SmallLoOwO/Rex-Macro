@@ -1287,6 +1287,54 @@ def test_clear_runs_before_init_in_on_enter_mining(monkeypatch):
     assert order.index("clear") < order.index("init")
 
 
+def test_on_enter_mining_resets_stuck_and_boost_stall_timers(monkeypatch):
+    """_on_enter(MINING) 重新按住 W 後，卡住/boost 停滯計時器要歸零（2026-08-08）。
+
+    不歸零的話這些時間戳沿用進場前（NEEDS_HUMAN/REENTRY/HARVESTING 等待期間，可能
+    長達數十分鐘）的舊值——_check_boost_stall 會在回 MINING 第一個 tick 就把那段
+    等待時間當「boost 沒重上」誤報；卡住偵測同理一進場就已經逼近門檻。實機 log 132
+    筆 boost-stall 警告幾乎全是這型假警報。
+    """
+    import time as _t
+    bot = make_fake_bot(
+        bind=["_on_enter"],
+        logger=_Rec(), _panel_zeroed_at=None,
+        human_cleared=True, _movement_check_due=False,
+        _movement_mode_checked=True,
+        _chill_edges=[], _aim_context=None,
+        _release_web_held_aim=lambda send=False: None,
+        _rr_ctx=None, _pending_reentry=None,
+        _mine_resetting=False,
+        _capacity_pct=None, _capacity_streak=0, _capacity_full_logged=False,
+        _post_harvest_watch=0,
+        _focus_roblox=lambda: True,
+        _zoom_normalize=lambda *_: None,
+        _clear_panel_filter=lambda: setattr(bot, "_panel_zeroed_at", 9999.0),
+        _rotate_verified=None,
+        _log_w_state=lambda *_: None,
+        # 進場前的舊值——來自很久以前，模擬長時間待在別的 state
+        _last_boost=1000.0, _last_progress=1000.0,
+        _stuck_notified=True, _boost_stall_notified=True,
+        _prev_frame=_frame(1))
+    monkeypatch.setattr(main.miner, "init_mining_sequence", lambda **kw: None)
+    monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "key_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
+    monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
+    monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
+    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+
+    before = _t.time()
+    bot._on_enter(State.MINING, _frame())
+
+    assert bot._last_boost >= before
+    assert bot._last_progress >= before
+    assert bot._stuck_notified is False
+    assert bot._boost_stall_notified is False
+    assert bot._prev_frame is None
+
+
 def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
     """插入點 B：_resume_mining_tail 清空排在 init_mining_sequence 之前。
 

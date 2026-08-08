@@ -23,6 +23,21 @@ def dispatch_event(f: EventFlags):
         return "USE_D4"
     return None
 
+def counts_as_progress(action: str | None) -> bool:
+    """該 action 能否代表角色真的在移動（供卡住偵測用）。
+
+    USE_D5/USE_D4/SCAN/CAVE 都是冷卻計時到了就按的單次點擊，跟 W 有沒有讓角色
+    前進毫無關係——冷卻計時器持續跑不代表移動沒卡住。只有 REFOCUS 會重跑
+    init_mining_sequence（重新按住 W）才是移動真的恢復。
+
+    2026-08-01 01:16-01:53 實機：D5 每次冷卻到期照常觸發「mining: boost 消失 -> 重上
+    D5」，但同一段時間內 STUCK（60s 無進度）連續跳了 8 次——D5 的 action 不是 None
+    這件事，正在讓卡住偵測的計時器不斷被重置，把單一段長時間卡住切成一段段勉強低於
+    門檻的假象、拖慢通報。修前 `_tick_mining` 用 `action is not None` 判斷有無進度，
+    現在只認 REFOCUS。
+    """
+    return action == "REFOCUS"
+
 def cooldown_ready(icon_present: bool, since_last_press: float, grace_s: float) -> bool:
     """工具是否就緒可用：右下角冷卻圖示「不在」= 冷卻好了。
 
