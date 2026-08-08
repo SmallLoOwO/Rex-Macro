@@ -740,6 +740,30 @@ def test_panel_header_ignores_non_header_text():
     assert panel_header(boxes, DEFAULT.panel_row_min_y, _PANEL_HEADERS) is None
 
 
+# ── 分頁循環（H187，2026-08-08）────────────────────────────────────────────
+
+def test_next_panel_tab_normal_to_ionized():
+    from miningbot.harvester import next_panel_tab
+    assert next_panel_tab("NORMAL") == "IONIZED"
+
+
+def test_next_panel_tab_ionized_to_spectral():
+    from miningbot.harvester import next_panel_tab
+    assert next_panel_tab("IONIZED") == "SPECTRAL"
+
+
+def test_next_panel_tab_spectral_wraps_to_normal():
+    from miningbot.harvester import next_panel_tab
+    assert next_panel_tab("SPECTRAL") == "NORMAL"
+
+
+def test_next_panel_tab_unknown_current_returns_none():
+    """current 讀不到／OCR 誤讀 → None，呼叫端不能繼續用它猜下一步。"""
+    from miningbot.harvester import next_panel_tab
+    assert next_panel_tab(None) is None
+    assert next_panel_tab("garbage") is None
+
+
 def test_panel_is_zeroed_true_for_normal_empty():
     from miningbot.harvester import panel_is_zeroed
     assert panel_is_zeroed("NORMAL", [], "NORMAL") is True

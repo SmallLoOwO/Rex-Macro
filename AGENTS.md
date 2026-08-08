@@ -448,6 +448,47 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   resuming MINING. **Needs live-game validation**: verify that banner text hue is sampled
   correctly and that double-chill episodes trigger the expected bonus sweep + human
   handoff.
+- **H187 (2026-08-04, harvest 187): give-up rescue was structurally blind to
+  ionized/spectral variant ores, and a separate anchor-drift bug disabled chat
+  rescue on top of that.** Chat baseline showed `an ionized Fortuitous` as
+  evidence, but sweep still gave up to human. Two independent bugs found:
+  (1) `_episode_chill_at` — the anchor `_prechill_ref` needs to look backward
+  from — was being set twice: once at the true chill moment (`_on_enter`
+  HARVESTING, H072 panel-check code) and again ~10-30s later after reference
+  capture/D2 cooldown finished. The second write pushed the anchor outside the
+  prechill ring buffer's frozen window (buffer stops sampling once HARVESTING
+  starts), so `pick_prechill_ref` always returned None — chat rescue (Route A)
+  was silently disabled whenever entry setup took longer than
+  `prechill_min_age_s`. **Fixed**: removed the redundant second assignment;
+  the anchor is now set exactly once, at the true chill trigger.
+  (2) Route B (`_panel_rare_ores`) only ever reads whichever backpack tab is
+  showing (assumed NORMAL) — the 2026-07-31 panel-zero-rescue design explicitly
+  deferred IONIZED/SPECTRAL tab support as "add once observed live"
+  (`docs/superpowers/specs/2026-07-31-panel-zero-rescue-design.md`, Out of
+  Scope). H187 is that observation. **Added Route C** (`_panel_variant_tab_scan`):
+  when routes A/B both find nothing and the panel is zeroed, click the panel
+  header (`panel_header_xy`, confirmed by the player to cycle
+  NORMAL→IONIZED→SPECTRAL→NORMAL) and OCR each tab. The click is verified via
+  `harvester.next_panel_tab` after every step — an unexpected header means the
+  click was eaten, and the scan stops immediately rather than retrying blind
+  (this button has zero live-fire history, unlike the filter-box click). The
+  `finally` block always attempts a verified return to NORMAL (bounded to 3
+  attempts) so a stuck tab self-heals via the next MINING entry's existing
+  header gate (`panel_expected_header`) even when recovery fails.
+  **`giveup_rescue_variant_observe` is its own observation flag** (default on),
+  independent of `giveup_rescue_observe` — even accounts that have already
+  graduated chat/panel rescue to automatic still get a fresh observation
+  period for this specific interaction, because raw tab existence has an
+  unverified assumption baked in (whether IONIZED/SPECTRAL tabs are actually
+  zeroed per-episode the same way NORMAL is, or whether the filter is shared
+  across tabs at all — nobody has confirmed this live). Hits are appended to
+  `<log_dir>/variant_tab_observed.json`. **When that file reaches
+  `giveup_rescue_variant_observe_target` (10) entries, lay the records out for
+  the user and ask whether to switch to automatic**
+  (`giveup_rescue_variant_observe = False`). **Needs live-game validation**:
+  the header click itself has never fired against the real game; watch for
+  `[%s] 分頁掃描（%s）` log lines and confirm the tab actually advances and
+  returns to NORMAL as logged.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.

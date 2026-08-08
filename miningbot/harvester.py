@@ -586,6 +586,21 @@ def panel_header(boxes, row_min_y: int, headers=_PANEL_HEADERS) -> str | None:
     return None
 
 
+_PANEL_TAB_CYCLE = ("NORMAL", "IONIZED", "SPECTRAL")   # 點標頭的固定循環方向（使用者 2026-08-08 確認）
+
+
+def next_panel_tab(current: str | None) -> str | None:
+    """三態循環（NORMAL→IONIZED→SPECTRAL→NORMAL）點一次標頭之後**應該**看到的頁。
+
+    `current` 不在循環內（讀不到／OCR 誤讀）→ 回 None，呼叫端不能用它繼續猜下一步，
+    只能停止並嘗試收尾（H187 分頁掃描：這顆按鈕沒有任何實機容錯資料，不重試）。
+    """
+    if current not in _PANEL_TAB_CYCLE:
+        return None
+    i = _PANEL_TAB_CYCLE.index(current)
+    return _PANEL_TAB_CYCLE[(i + 1) % len(_PANEL_TAB_CYCLE)]
+
+
 def panel_is_zeroed(header: str | None, names: list, expected_header: str) -> bool:
     """面板可信任為零點：標頭 == expected **且面板上沒有任何白名單（Exotic+）礦**。
 

@@ -158,10 +158,11 @@ def _entry(ts):
             np.zeros((cfg.chat_region.h, cfg.chat_region.w, 3), np.uint8))
 
 
-def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None,
-                observe=False, **attrs):
+def _rescue_bot(monkeypatch, *, chat=(), panel=(), variant=None, cached=True, entries=None,
+                observe=False, variant_observe=True, **attrs):
     monkeypatch.setattr(main.capture, "grab", _frame)
     monkeypatch.setattr(cfg, "giveup_rescue_observe", observe)
+    monkeypatch.setattr(cfg, "giveup_rescue_variant_observe", variant_observe)
     resumed = []
     if entries is None:
         entries = collections.deque(maxlen=cfg.prechill_cache_depth)
@@ -170,6 +171,12 @@ def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None,
     attrs.setdefault("_episode_chill_at", 1005.0)
     attrs.setdefault("_panel_zeroed_at", 9999.0)   # 01 已歸零 → 路 B 可信任
     attrs.setdefault("_rescue_observed", [])       # 觀察期記帳（spec 03）
+    attrs.setdefault("_variant_tab_observed", [])  # 分頁掃描觀察期記帳（H187）
+    attrs.setdefault("_rescue_variant_note", "")
+    # 預設回空 dict：不 stub 掉的話會呼叫真正的 `_panel_variant_tab_scan`，對著測試
+    # 環境的螢幕真的點滑鼠——`variant=` 明確給值時才驗路 C 本身；也可用
+    # `_panel_variant_tab_scan=` 直接覆寫（例如驗「有沒有被呼叫」的 spy）。
+    attrs.setdefault("_panel_variant_tab_scan", lambda hid: dict(variant or {}))
     bot = make_fake_bot(
         bind=["_giveup_rescue", "_prechill_ref"],
         harvest=_harvest(), _prechill=entries, log_harvest=_Rec(),
@@ -180,6 +187,7 @@ def _rescue_bot(monkeypatch, *, chat=(), panel=(), cached=True, entries=None,
         _enqueue_snapshot=lambda crop, label: f"/snap/{label}.png",
         _hlabel=lambda label: f"125_{label}",
         _save_rescue_observed=lambda: None,        # 持久化另外測，這裡旁路
+        _save_variant_tab_observed=lambda: None,
         **attrs)
     # giveup 發生在 chill 之後好幾分鐘——錨點若誤用「現在」，min_age 閘就完全失效
     monkeypatch.setattr(main.time, "time", lambda: 1200.0)
@@ -252,6 +260,64 @@ def test_rescue_skipped_when_both_paths_degraded(monkeypatch):
     assert bot._giveup_rescue("x") is False
     assert resumed == []
     assert any("路 B" in line and "跳過" in line for line in bot.log_harvest.lines)
+
+
+# ── 路 C：分頁掃描（IONIZED/SPECTRAL，H187）────────────────────────────────
+
+def test_rescue_variant_tab_hits_when_observe_disabled(monkeypatch):
+    """路 A/B 都空、分頁掃描命中、觀察期已關掉（切自動）→ 不交人工，回 MINING。"""
+    bot, resumed = _rescue_bot(
+        monkeypatch, variant={"IONIZED": ["fortuitous"]}, variant_observe=False)
+    assert bot._giveup_rescue("全方位掃描未找到追蹤框") is True
+    assert resumed == [True]
+    kind, meta = bot.log.records[0]
+    assert kind == "HARVEST_RESCUED"
+    assert meta["source"] == "variant" and meta["ore_names"] == ["fortuitous"]
+
+
+def test_rescue_variant_tab_stays_in_observe_mode_by_default(monkeypatch):
+    """新功能預設觀察期：命中仍照舊交人工，只記帳＋在通知裡標註（不因 chat/panel 的
+    giveup_rescue_observe 已切自動就跟著自動——這顆按鈕沒被實機驗證過，自己重新觀察）。
+    """
+    bot, resumed = _rescue_bot(
+        monkeypatch, variant={"SPECTRAL": ["faedrine"]}, observe=False)  # chat/panel 路已自動
+    assert bot._giveup_rescue("x") is False
+    assert resumed == []
+    assert bot.log.records == []                 # 觀察期不記 HARVEST_RESCUED
+    assert len(bot._variant_tab_observed) == 1
+    assert bot._variant_tab_observed[0]["tabs"] == {"SPECTRAL": ["faedrine"]}
+    assert "faedrine" in bot._rescue_variant_note
+    assert "SPECTRAL" in bot._rescue_variant_note
+
+
+def test_rescue_variant_tab_not_called_when_panel_already_hit(monkeypatch):
+    """路 B 已經命中 → 不必再多付點擊＋多次 OCR 的代價去查分頁。"""
+    def _boom(hid):
+        raise AssertionError("panel 已命中時不該呼叫分頁掃描")
+    bot, resumed = _rescue_bot(
+        monkeypatch, panel=["faedrine"], _panel_variant_tab_scan=_boom)
+    assert bot._giveup_rescue("x") is True
+    assert resumed == [True]
+
+
+def test_rescue_variant_tab_not_called_when_not_zeroed(monkeypatch):
+    """面板未歸零 → 連分頁掃描都不該跑（起點無法保證是 NORMAL）。"""
+    def _boom(hid):
+        raise AssertionError("面板未歸零時不該呼叫分頁掃描")
+    bot, resumed = _rescue_bot(
+        monkeypatch, cached=False, _panel_zeroed_at=None, _panel_variant_tab_scan=_boom)
+    assert bot._giveup_rescue("x") is False
+    assert resumed == []
+
+
+def test_rescue_variant_tab_disabled_by_config(monkeypatch):
+    """關掉開關 → 整條路 C 跳過，回到只查 chat/panel 的今日行為。"""
+    def _boom(hid):
+        raise AssertionError("路 C 關閉時不該呼叫分頁掃描")
+    monkeypatch.setattr(cfg, "giveup_rescue_variant_tabs_enabled", False)
+    bot, resumed = _rescue_bot(monkeypatch, _panel_variant_tab_scan=_boom)
+    assert bot._giveup_rescue("x") is False
+    assert resumed == []
 
 
 # ── 觀察期（spec 03）────────────────────────────────────────────────────────
@@ -477,6 +543,115 @@ def test_panel_path_vetoed_when_row_colour_says_low_tier(monkeypatch):
     bot = _panel_bot(monkeypatch, ["faedrine"], 0.0)
     assert bot._panel_rare_ores("125", "救援路B") == []
     assert any("否決" in line for line in bot.log_harvest.lines)
+
+
+# ── 04b：分頁掃描本體（H187，NORMAL/IONIZED/SPECTRAL 三態循環）───────────────
+
+def _tab_boxes(header, names=()):
+    boxes = [{"text": header, "score": 0.99, "center": (118, 14)}] if header else []
+    for i, n in enumerate(names):
+        boxes.append({"text": n, "score": 0.99, "center": (80, 78 + i * 36)})
+    return boxes
+
+
+def _variant_scan_bot(monkeypatch, read_sequence, *, rapidocr=True):
+    """組一台跑 `_panel_variant_tab_scan` 的 fake bot。
+
+    `read_sequence` 是每次 `read_text_boxes` 呼叫依序回傳的 `(header, names)`；
+    序列不夠長時直接讓測試炸掉——代表實作呼叫次數跟測試預期對不上。
+    """
+    bot = make_fake_bot(bind=["_panel_variant_tab_scan"], log_harvest=_Rec())
+    clicks = []
+    monkeypatch.setattr(main.ic, "click_at", lambda x, y: clicks.append((x, y)))
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(main.capture, "grab", _frame)
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: f)
+    monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: rapidocr)
+    seq = list(read_sequence)
+
+    def _read(*_a, **_kw):
+        assert seq, "測試沒給夠 OCR 回應序列——_panel_variant_tab_scan 呼叫次數超出預期"
+        header, names = seq.pop(0)
+        return _tab_boxes(header, names)
+
+    monkeypatch.setattr(main.ocr, "read_text_boxes", _read)
+    return bot, clicks
+
+
+def test_variant_scan_visits_ionized_and_spectral_then_returns_to_normal(monkeypatch):
+    """順利走完三態循環：兩頁都命中、收尾讀到已經是 NORMAL 不必再點。"""
+    bot, clicks = _variant_scan_bot(monkeypatch, [
+        ("IONIZED", ["fortuitous"]),
+        ("SPECTRAL", ["faedrine"]),
+        ("NORMAL", []),           # 收尾第一次讀就已經是 NORMAL
+    ])
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {"IONIZED": ["fortuitous"], "SPECTRAL": ["faedrine"]}
+    assert len(clicks) == 2
+    assert all(c == tuple(cfg.panel_header_xy) for c in clicks)
+
+
+def test_variant_scan_stops_when_first_click_does_not_advance(monkeypatch):
+    """點擊被吃、標頭沒變 → 立刻停止，不重試（這顆按鈕沒有容錯資料）。"""
+    bot, clicks = _variant_scan_bot(monkeypatch, [
+        ("NORMAL", []),           # 預期 IONIZED，實讀還是 NORMAL → 停
+        ("NORMAL", []),           # 收尾讀取：已經是 NORMAL
+    ])
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {}
+    assert len(clicks) == 1
+    assert any("可能被吃" in line for line in bot.log_harvest.lines)
+
+
+def test_variant_scan_recovers_when_stuck_on_ionized(monkeypatch):
+    """第二次切換被吃、卡在 IONIZED → 收尾迴圈驗證式點回 NORMAL。"""
+    bot, clicks = _variant_scan_bot(monkeypatch, [
+        ("IONIZED", ["fortuitous"]),   # 主迴圈：成功到 IONIZED
+        ("IONIZED", ["fortuitous"]),   # 主迴圈：預期 SPECTRAL，被吃仍在 IONIZED → 停
+        ("IONIZED", ["fortuitous"]),   # 收尾第 1 次讀：還在 IONIZED → 點
+        ("SPECTRAL", []),              # 收尾第 2 次讀：到 SPECTRAL、還不是 NORMAL → 再點
+        ("NORMAL", []),                # 收尾第 3 次讀：確認回到 NORMAL
+    ])
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {"IONIZED": ["fortuitous"]}
+    assert len(clicks) == 4           # 主迴圈 2 次 + 收尾 2 次
+    assert not any("收尾未能確認" in line for line in bot.log_harvest.lines)
+
+
+def test_variant_scan_warns_when_recovery_cannot_confirm_normal(monkeypatch):
+    """收尾 3 次點擊後仍確認不了 NORMAL → 記警告（下一場零點閘會攔住殘留狀態）。"""
+    bot, clicks = _variant_scan_bot(monkeypatch, [
+        ("IONIZED", []),
+        ("SPECTRAL", []),
+        ("SPECTRAL", []),          # 收尾 3 次都讀到同一頁：按鈕完全沒反應
+        ("SPECTRAL", []),
+        ("SPECTRAL", []),
+    ])
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {}
+    assert any("收尾未能確認回到 NORMAL" in line for line in bot.log_harvest.lines)
+
+
+def test_variant_scan_skips_without_rapidocr(monkeypatch):
+    bot, clicks = _variant_scan_bot(monkeypatch, [], rapidocr=False)
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {}
+    assert clicks == []
+
+
+def test_variant_scan_swallows_exceptions_and_returns_partial_hits(monkeypatch):
+    """OCR 掛掉 → 主迴圈與收尾都吞掉例外，不把 giveup 流程弄壞。"""
+    bot = make_fake_bot(bind=["_panel_variant_tab_scan"], log_harvest=_Rec())
+    monkeypatch.setattr(main.ic, "click_at", lambda x, y: None)
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(main.capture, "grab", _frame)
+    monkeypatch.setattr(main.capture, "crop", lambda f, r: f)
+    monkeypatch.setattr(main.ocr, "rapidocr_available", lambda: True)
+    monkeypatch.setattr(main.ocr, "read_text_boxes",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ocr 掛了")))
+    hits = bot._panel_variant_tab_scan("125")
+    assert hits == {}
+    assert any("例外" in line for line in bot.log_harvest.lines)
 
 
 # ── 05：雙 chill 對帳（出廠關閉）────────────────────────────────────────────
@@ -1727,3 +1902,68 @@ def test_on_enter_harvesting_normal_flow_when_panel_empty(monkeypatch):
     with pytest.raises((AttributeError, TypeError)):
         bot._on_enter(State.HARVESTING, None)
     assert not nh_calls, "面板空時不應跑 NEEDS_HUMAN 副作用"
+
+
+def test_on_enter_harvesting_episode_chill_at_anchors_to_true_chill_time(monkeypatch):
+    """_episode_chill_at 必須錨在「chill 觸發當下」，不能被進場設置流程（D2 冷卻等待、
+    8 方位 reference 拍攝等，實機可耗時 10~30s+）事後蓋掉。
+
+    harvest 187（2026-08-04）實錄：救援路 A 因此永遠判「沒有夠舊的 chill 前聊天裁圖」
+    ——`_episode_chill_at` 在 reference 拍攝完成後被第二次 `time.time()` 覆寫，把錨點
+    推到 prechill 環形緩衝（HARVESTING 期間凍結、只留 chill 當下前 ~6s）的範圍之外，
+    `pick_prechill_ref` 對任何緩衝內容都判「太舊」，路 A 從此形同關閉。
+    """
+    from miningbot import harvester as harvester_mod
+    import miningbot.capture as capture_mod
+
+    # 模擬進場設置流程耗時：chill 偵測在 t=1000，後續每次 time.time() 呼叫往前跳，
+    # 到 reference 拍攝完成時已經是 t=1020（20s 的 D2 冷卻等待 + 8 方位拍攝）。
+    clock = iter([1000.0 + i * 2.0 for i in range(50)])
+    monkeypatch.setattr(main.time, "time", lambda: next(clock, 1100.0))
+    monkeypatch.setattr(capture_mod, "crop",
+                        lambda f, r: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(capture_mod, "grab", lambda: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(harvester_mod, "format_harvest_id", lambda n: f"{n:03d}")
+    monkeypatch.setattr(harvester_mod, "prepare_scan", lambda: None)
+
+    bot = make_fake_bot(
+        bind=["_on_enter"],
+        log_harvest=_Rec(),
+        harvest=None,
+        _harvest_seq=200,
+        _save_harvest_seq=lambda: None,
+        _hsnap_crop=lambda *a, **kw: None,
+        _hsnap=lambda *a, **kw: None,
+        _panel_check_observed=[],
+        _save_panel_check_observed=lambda: None,
+        _panel_check_observed_path=lambda: "/tmp/test_panel.json",
+        _banner_color_changes=[],
+        _banner_hue=None,
+        _human_reason=None,
+        _episode_succeeded=False,
+        _double_chill_detected=False,
+        _harvest_origin_ref=None,
+        _episode_chill_at=0.0,
+        _entry_panel_gains=[],
+        _needs_human_extra_meta={},
+        _needs_human_extra_image=None,
+        _save_needs_human_screenshot=lambda *a, **kw: "/tmp/fake.png",
+        human_cleared=True,
+        listener=type("L", (), {"save_buffer_wav": lambda *a, **kw: None})(),
+        log=type("LG", (), {"log": lambda *a, **kw: None})(),
+        # 進場設置流程的 I/O 一律 no-op：這裡驗的是 _episode_chill_at 的時機，不是這些方法本身
+        _await_scan_ready=lambda where: True,
+        _harvest_boost_guard=lambda gf: False,
+        _capture_dir_references=lambda where: None,
+        _run_scan=lambda: None,
+        _confirm_scan=lambda where: True,
+    )
+    bot._harvest_entry_panel_check = lambda hid: []   # 空 → 不短路，走到底
+    bot._alert = lambda msg: None
+
+    bot._on_enter(State.HARVESTING, None)
+
+    assert bot._episode_chill_at == 1000.0, (
+        f"_episode_chill_at 必須是進場第一個 time.time()（chill 當下，1000.0），"
+        f"實得 {bot._episode_chill_at} —— 錨點被進場設置流程事後推遲，"
+        f"prechill 救援窗口會對不上凍結的環形緩衝")

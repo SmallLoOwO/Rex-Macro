@@ -408,6 +408,13 @@ class Bot:
         # 進場面板色檢觀察期（H072，2026-08-02）：命中照樣交人工，只記帳；累計到目標次數後
         # 問玩家是否切自動（不交人工、直接回 MINING）。比照 rescue observe 模式。
         self._panel_check_observed: list = self._load_panel_check_observed()
+        # 分頁掃描觀察期（H187，2026-08-08）：救援路 A/B 都沒命中時，點面板標頭循環
+        # NORMAL→IONIZED→SPECTRAL 查變體礦（H039/H041 已證實 ionized/spectral 變體只會
+        # 被動進聊天，chat 若已淡出/超出快取窗，NORMAL-only 的路 B 對它們全盲）。這顆
+        # 標頭按鈕沒有任何實機驗證資料，獨立於 giveup_rescue_observe 另開觀察期——命中
+        # 照樣交人工，只記帳＋在通知裡標註，累計到目標次數後問玩家是否切自動。
+        self._variant_tab_observed: list = self._load_variant_tab_observed()
+        self._rescue_variant_note = ""           # 交人工訊息的分頁掃描註記（每次命中覆寫）
         # 容量停滯偵測（spec 04）：(last_pct, last_change_at, alerted)；只在 MINING 期間推進
         self._capacity_stall: tuple = (None, time.time(), False)
         # 容量停滯警報 pending：worker 設 (pct, minutes)、主迴圈消費送 Discord（截圖＋🏠 鈕）。
@@ -3615,6 +3622,34 @@ class Bot:
         except Exception as e:
             self.logger.error("面板色檢觀察期紀錄存檔失敗: %s", e)
 
+    def _variant_tab_observed_path(self) -> str:
+        """分頁掃描觀察期紀錄檔（H187）。放 log_dir——runtime evidence。"""
+        return os.path.join(cfg.log_dir, "variant_tab_observed.json")
+
+    def _load_variant_tab_observed(self) -> list:
+        """載入分頁掃描歷次判定（跨 session 累計）。壞檔→空清單。"""
+        import json
+        try:
+            with open(self._variant_tab_observed_path(), "r", encoding="utf-8") as f:
+                v = json.load(f)
+            if isinstance(v, list):
+                if v:
+                    self.logger.info("分頁掃描觀察期紀錄載入：已累積 %d 次判定（目標 %d）",
+                                     len(v), cfg.giveup_rescue_variant_observe_target)
+                return v
+            return []
+        except Exception:
+            return []
+
+    def _save_variant_tab_observed(self):
+        """把分頁掃描紀錄寫回檔案；失敗只記 log。"""
+        import json
+        try:
+            with open(self._variant_tab_observed_path(), "w", encoding="utf-8") as f:
+                json.dump(self._variant_tab_observed, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error("分頁掃描觀察期紀錄存檔失敗: %s", e)
+
     def _on_enter(self, s, frame) -> State | None:
         """進入狀態 s 的副作用（screenshot / log / 按鍵）。
 
@@ -3808,8 +3843,11 @@ class Bot:
             # **chill** 早這麼久」。用 giveup 當下的時間當錨會讓那道閘完全失效——episode
             # 常跑好幾分鐘，任何快取都「夠舊」，於是永遠取到最新那筆＝礦已被挖掉的那一幀
             # ＝差分恆為 0。`_harvest_start` 不能用：sweep 完成時會被重設成 D3 階段起點。
-            self._episode_chill_at = time.time()
-            self._episode_succeeded = False
+            # ⚠ H187（2026-08-08）：曾在這裡重設 `_episode_chill_at = time.time()`，把錨點
+            # 從真正的 chill 當下（line ~3713）推遲到 reference 拍攝完成之後（實機可再晚
+            # 10~30s）。prechill 環形緩衝在 HARVESTING 期間凍結、只留 chill 前 ~6s 的樣本，
+            # 錨點一晚就落到緩衝範圍外，`pick_prechill_ref` 對任何內容都判「太舊」——救援
+            # 路 A 從此形同關閉。錨點只能設一次，就在 chill 剛觸發的地方，不要在這裡重設。
         if s is State.REENTRY:
             # 入口聚焦失敗 → 降級 NEEDS_HUMAN（兩種模式共用）：REENTRY 全程都在
             # 送鍵/點擊，焦點不在 Roblox 上會全部送錯視窗、白白燒光 reroll 次數。
@@ -6024,6 +6062,68 @@ class Bot:
         # 先前只因 `_panel_zeroed_at` 恆為 None（歸零驗證實機必失敗）才沒爆。
         return ores
 
+    def _panel_variant_tab_scan(self, hid: str) -> dict:
+        """點面板標頭循環 NORMAL→IONIZED→SPECTRAL，查兩頁各自的白名單礦名（H187）。
+
+        只在救援路 A／路 B 都沒命中、面板已歸零（起點必為 NORMAL）時由 `_giveup_rescue`
+        呼叫。三態循環方向固定（使用者 2026-08-08 確認），所以每點一次都用
+        `harvester.next_panel_tab` 算「現在應該看到什麼」——讀到別的值代表點擊被吃或
+        翻頁翻過頭，立刻停止、不重試：這顆按鈕跟 `_clear_panel_filter` 的篩選框不同，
+        從沒被實機驗證過任何容錯資料，盲目重試的風險未知。
+
+        無論中途停在哪裡，`finally` 一定嘗試點回 NORMAL（週期 3，最多點 3 次、每次都
+        重讀確認）——不保證成功，但下一場 `_clear_panel_filter` 的標頭閘本來就會抓到
+        沒歸位的殘留狀態，是既有的自癒路徑。
+
+        回傳 ``{tab: [ore_names]}``，只收有命中的頁。任何例外都吞掉、回空 dict——這條路
+        是救援的加值路徑，壞了不能把 giveup 流程弄壞（比照 `_giveup_rescue` 本體）。
+        """
+        hits: dict = {}
+        if not ocr.rapidocr_available():
+            self.log_harvest.info("[%s] 分頁掃描：rapidocr 不可用 → 跳過", hid)
+            return hits
+        current = "NORMAL"        # 呼叫端保證面板已歸零 → 起點必為 NORMAL
+        try:
+            for _ in range(2):    # 只需要走到 IONIZED、SPECTRAL 兩頁
+                ic.click_at(*cfg.panel_header_xy)
+                time.sleep(cfg.panel_tab_click_settle_s)
+                crop = capture.crop(capture.grab(), cfg.backpack_review_region)
+                boxes = ocr.read_text_boxes(crop)
+                header = harvester.panel_header(boxes, cfg.panel_row_min_y)
+                expected = harvester.next_panel_tab(current)
+                if header != expected:
+                    self.log_harvest.warning(
+                        "[%s] 分頁掃描：點擊後標頭讀到 %s（預期 %s）→ 切換可能被吃，停止掃描",
+                        hid, header or "讀不到", expected)
+                    break
+                current = header
+                rows = harvester.parse_panel_rows(
+                    boxes, cfg.panel_name_col_max_x, cfg.panel_row_min_y,
+                    cfg.panel_name_min_letters)
+                ores = harvester.rare_panel_ores([n for n, _ in rows])
+                self.log_harvest.info(
+                    "[%s] 分頁掃描（%s）：列數 %d，白名單礦名 %s",
+                    hid, current, len(rows), ores or "無")
+                if ores:
+                    hits[current] = ores
+        except Exception as e:
+            self.log_harvest.warning("[%s] 分頁掃描例外：%s", hid, e)
+        finally:
+            try:
+                for _ in range(3):   # 週期 3：3 次點擊保證繞回原點，中途讀到 NORMAL 就停
+                    crop = capture.crop(capture.grab(), cfg.backpack_review_region)
+                    boxes = ocr.read_text_boxes(crop)
+                    if harvester.panel_header(boxes, cfg.panel_row_min_y) == "NORMAL":
+                        break
+                    ic.click_at(*cfg.panel_header_xy)
+                    time.sleep(cfg.panel_tab_click_settle_s)
+                else:
+                    self.log_harvest.warning(
+                        "[%s] 分頁掃描：收尾未能確認回到 NORMAL——下一場面板零點閘會攔住", hid)
+            except Exception:
+                pass
+        return hits
+
     def _giveup_rescue(self, reason: str) -> bool:
         """交人工前救援：判「這顆礦其實在 chill 之前就被鎬子挖走了」（spec 2026-07-30）。
 
@@ -6066,7 +6166,44 @@ class Bot:
                 panel_names = []
             else:
                 panel_names = self._panel_rare_ores(hid, "救援路B")
+            # ── 路 C：分頁掃描（IONIZED/SPECTRAL，H187）── 只在路 A/B 都沒命中時才跑，
+            # 這條路要點擊＋多次 OCR，比另外兩條路貴很多，值得跑的前提是前兩路已經放棄。
+            variant_names: list = []
             if not (chat_names or panel_names):
+                variant_hits = {}
+                if (cfg.giveup_rescue_variant_tabs_enabled
+                        and getattr(self, "_panel_zeroed_at", None) is not None):
+                    variant_hits = self._panel_variant_tab_scan(hid)
+                elif cfg.giveup_rescue_variant_tabs_enabled:
+                    self.log_harvest.info(
+                        "[%s] 交人工前救援 路 C：面板未歸零 → 跳過", hid)
+                variant_flat = [n for names in variant_hits.values() for n in names]
+                if variant_flat and cfg.giveup_rescue_variant_observe:
+                    # 獨立觀察期：這顆標頭按鈕從沒被實機驗證過，命中先只記錄＋在通知裡
+                    # 標註，不讓它免除人工——即使一般救援（路 A/B）已經切自動
+                    # （giveup_rescue_observe=False），這條新路仍要自己重新走一輪觀察。
+                    self._variant_tab_observed.append({
+                        "harvest_id": hid, "tabs": variant_hits,
+                        "giveup_reason": reason, "at": time.time()})
+                    self._save_variant_tab_observed()
+                    n = len(self._variant_tab_observed)
+                    target = cfg.giveup_rescue_variant_observe_target
+                    self._rescue_variant_note = (
+                        f"🔎 分頁掃描觀察中（第 {n}/{target} 次）：{'/'.join(variant_hits)} 頁"
+                        f"發現白名單礦「{'、'.join(variant_flat)}」——可能是這場的礦，"
+                        f"請對照畫面人工核對")
+                    self.logger.info(
+                        "[%s] 分頁掃描命中（%s）：%s——獨立觀察中（第 %d/%d 次），照舊交人工",
+                        hid, "/".join(variant_hits), "、".join(variant_flat), n, target)
+                    if n >= target:
+                        self.logger.info(
+                            "分頁掃描觀察期已累積 %d 次判定（目標 %d）：請 agent session 攤開 "
+                            "%s 的紀錄與玩家確認是否切自動（cfg.giveup_rescue_variant_observe=False）",
+                            n, target, self._variant_tab_observed_path())
+                    # 觀察期不參與下面的命中判定——仍然交人工，只是通知更清楚。
+                else:
+                    variant_names = variant_flat
+            if not (chat_names or panel_names or variant_names):
                 return False
             paths = [p for p in (
                 self._enqueue_snapshot(pre_chat, self._hlabel("rescue_pre_chat")) if pre_chat is not None else None,
@@ -6077,9 +6214,12 @@ class Bot:
         except Exception as e:                  # 救援本身絕不能把 giveup 弄壞
             self.log_harvest.warning("[%s] 交人工前救援例外（維持交人工）：%s", hid, e)
             return False
+        # variant_names 只在 chat_names/panel_names 都空時才可能非空（見上面的 gating），
+        # 三者互斥，維持 source 既有的 chat／panel／both 三值語意，只新增 variant 一值。
         source = ("both" if (chat_names and panel_names)
-                  else ("chat" if chat_names else "panel"))
-        ore_names = list(dict.fromkeys(chat_names + panel_names))
+                  else ("chat" if chat_names else
+                        ("panel" if panel_names else "variant")))
+        ore_names = list(dict.fromkeys(chat_names + panel_names + variant_names))
         observing = bool(cfg.giveup_rescue_observe)
         self.log.log("HARVEST_RESCUED", harvest_id=hid, source=source,
                      ore_names=ore_names, giveup_reason=reason, observed=observing,
@@ -6144,11 +6284,13 @@ class Bot:
                 harvester.restore_view(self.harvest.net_rotations, rotate=self._rotate_verified)
                 self.harvest.net_rotations = 0
 
-        # 觀察期註記（spec 03）：救援本來會判「已進帳」而略過人工，但觀察中照樣叫人。
-        # 把那句話帶進玩家看得到的原因裡，他才能當場對照 bot 判得對不對。
-        note = getattr(self, "_rescue_observe_note", "")
-        self._human_reason = f"{reason}\n{note}" if note else reason
+        # 觀察期註記（spec 03 ＋ H187 分頁掃描）：救援本來會判「已進帳」而略過人工，但
+        # 觀察中照樣叫人。把那句話帶進玩家看得到的原因裡，他才能當場對照 bot 判得對不對。
+        notes = [n for n in (getattr(self, "_rescue_observe_note", ""),
+                             getattr(self, "_rescue_variant_note", "")) if n]
+        self._human_reason = "\n".join([reason, *notes]) if notes else reason
         self._rescue_observe_note = ""      # 一次性：下一場沒命中就不該還掛著上一場的字
+        self._rescue_variant_note = ""
         frame = capture.grab()              # 轉回後重抓（tracker_view 路徑沒轉回＝面對框現況）
 
         # 兩條路徑都附「聊天/背包前後對比」分組（H015：D3 超時只送框裁圖、而框已消失＝圖上

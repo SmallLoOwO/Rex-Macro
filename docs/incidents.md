@@ -1211,3 +1211,102 @@ H051 的檢查因此只覆蓋「進入前」的一瞬間，沒有覆蓋「迴圈
 RESET_WAIT」（清空失敗或成功皆可能觸發），而不是「降級 NEEDS_HUMAN」；Discord 不該
 收到「請手動清空後按 Q」這類此刻已經不可行動的通知。若清空真的因為與重置無關的原因
 失敗、進了 NEEDS_HUMAN，且玩家解除時礦坑已在重置，應直接轉 RESET_WAIT 而非 MINING。
+
+## H187（2026-08-04，harvest 187；使用者回報「聊天已觸發挖到稀有礦、但是變體狀態，
+應檢查對應背包分頁再決定要不要交人工」）：交人工前救援對變體礦（ionized/spectral）
+結構性全盲，外加一顆獨立的錨點漂移 bug 把聊天路也一併廢掉
+
+### 一句話根因
+
+兩個獨立問題疊加：①`_episode_chill_at`（救援路 A 的 prechill 環形緩衝要往回找的錨點）
+在同一次 `_on_enter(HARVESTING)` 裡被寫了兩次，第二次落在 reference 拍攝＋D2 冷卻
+等待（實機 10~30s+）之後，把錨點推出緩衝的凍結窗口，`pick_prechill_ref` 對任何內容
+都判「太舊」——路 A 從此形同關閉。②救援路 B（`_panel_rare_ores`）只讀目前顯示的
+NORMAL 頁，2026-07-31 的面板歸零救援設計就明講「三頁循環（IONIZED/SPECTRAL）」是
+刻意的 Out of Scope，理由是「要同時成立三件事機率複合，實機看到異色漏判再加」——
+H187 三件事同時成立：D3 目標是異色版（聊天顯示 `an ionized Fortuitous`）、它在 chill
+前就可能已被鎬子挖走、路 A 又被①廢掉——正是設計文件預留的觸發條件。
+
+### 症狀與證據（`harvest.log.1`/`harvest.log.2`，MSIX LocalCache，2026-08-04）
+
+- `19:18:44` `[187] 面板讀取（對帳）：列數 8，白名單礦名 無` — HARVESTING 進場面板色檢
+  乾淨，正常走 sweep。
+- `19:18:48`～`19:26:34`：標準層＋up 層反覆 8 方位掃描，中間兩次 D3 開火
+  （`19:23:53`、`19:25:42`）都判 `verify harvest: ... no-new ... -> RESWEEP`。
+- `19:24:06` 開火後補跑的基準 OCR（`19:23:53` 那次的 11.3s 後）一次讀到 12 行，含
+  `small_lo has found Faedrine`、`small_lo has found an ionized Fortuitous` 等多筆
+  found 行——但這些行在**第一次**基準截圖裡就已存在（H054：baseline 已見過的行不算
+  這次的新證據），verify 正確判定 `no-new`，繼續 RESWEEP，本身沒有錯判。
+- `19:27:25`／`19:29:24`：兩層 8 方位全空，`19:29:25` 進 giveup。
+- `19:29:26` `[187] 交人工前救援 路 A：沒有夠舊的 chill 前聊天裁圖（快取 6 筆）→ 跳過`
+  ——快取滿版（6 筆）卻「沒有夠舊的」，是①的直接症狀：`_episode_chill_at` 被
+  entry 設置流程事後覆寫，`pick_prechill_ref` 的搜尋窗口對不上緩衝內容。
+- `19:29:33` `[187] 面板讀取（救援路B）：列數 8，白名單礦名 無，底色白名單列 無`
+  ——路 B 只查得到 NORMAL 頁；`an ionized Fortuitous` 若真的在背包，只會出現在
+  IONIZED 頁，NORMAL 頁自然讀不到。兩路都沒證據，交人工。
+
+### 根因分析
+
+①的兩次賦值分別來自不同世代的 commit：`d0a004c`（2026-07-30 交人工前救援初版）在
+當時的位置寫了一次（那時位置早，接近 chill 觸發點）；`de7bd7f`（2026-08-04 H072
+進場面板色檢）在**更早**的位置插入了一整段新流程（進場面板色檢、prepare_scan、
+D2 冷卻等待、`_reveal_chat`、boost 守門、8 方位 reference 拍攝），並在這段新流程
+**之前**也寫了一次 `_episode_chill_at = time.time()`（同時複製了 `_episode_succeeded
+= False`，也變成重複賦值）。結果原本那次寫入被推到新流程**之後**，兩次賦值之間
+夾了 10~30s 的阻塞 I/O，語意從「chill 當下」漂移成「entry 設置完成當下」。
+prechill 環形緩衝在 HARVESTING 期間凍結（`_prechill_sample` 只在 `_tick_mining`
+呼叫），緩衝內容永遠對應**真正**的 chill 時刻，錨點一旦漂移超過
+`prechill_min_age_s`+`prechill_cache_depth`×`prechill_cache_interval_s` 的窗口
+（預設 3~9s），`pick_prechill_ref` 對緩衝裡任何一筆都會判「太舊」（`entry[0] <
+oldest`），不會漏判成功但會全滅。
+
+②是 2026-07-31 面板歸零救援設計文件明確記錄的已知缺口（見該文件 Out of Scope 一節），
+當時的理由是「異色版本要踩到這個 bug 得同時成立三件事，機率複合」；H187 就是三件事
+同時成立的實錄，設計文件本來就預期「實機看到異色漏判再加」。
+
+### 對策（2026-08-08）
+
+- ①：刪掉重複的第二次 `_episode_chill_at = time.time()`（連同重複的
+  `_episode_succeeded = False`），只保留 H072 那次早期賦值，並在原位置留 comment
+  說明教訓，避免未來又在中間插入慢流程時被複製一次。
+- ②：新增救援路 C（`Bot._panel_variant_tab_scan`）：路 A/B 都沒命中、面板已歸零時，
+  點面板標頭（`panel_header_xy`，使用者確認一循環 NORMAL→IONIZED→SPECTRAL→NORMAL）
+  查兩頁的白名單礦名。每次點擊後用 `harvester.next_panel_tab` 算「應該看到什麼」，
+  讀到別的值就代表切換被吃，立刻停止不重試（這顆按鈕沒有任何實機容錯資料，跟
+  `_clear_panel_filter` 的篩選框不同）。`finally` 一律嘗試驗證式點回 NORMAL（週期 3，
+  最多 3 次），失敗也有下一場 `panel_expected_header` 閘自癒。
+  **獨立觀察期**（`giveup_rescue_variant_observe`，預設開）：即使一般救援（路 A/B）
+  已經切自動，路 C 命中仍照樣交人工，只記進 `<log_dir>/variant_tab_observed.json`
+  並在通知裡標註——這顆互動完全沒有實機資料，且「IONIZED/SPECTRAL 頁是否也跟 NORMAL
+  一樣每場歸零」尚未證實，比照 `giveup_rescue_observe`／`panel_check_observe` 的
+  既有模式，先觀察再問玩家是否切自動。
+
+### 回歸
+
+`tests/test_giveup_rescue.py`：
+`test_on_enter_harvesting_episode_chill_at_anchors_to_true_chill_time`（模擬 entry
+設置耗時，斷言 `_episode_chill_at` 停在最早那次 `time.time()`，不被事後推遲）；
+`test_rescue_variant_tab_hits_when_observe_disabled`／
+`test_rescue_variant_tab_stays_in_observe_mode_by_default`／
+`test_rescue_variant_tab_not_called_when_panel_already_hit`／
+`test_rescue_variant_tab_not_called_when_not_zeroed`／
+`test_rescue_variant_tab_disabled_by_config`（路 C 接線與獨立觀察期）；
+`test_variant_scan_visits_ionized_and_spectral_then_returns_to_normal`／
+`test_variant_scan_stops_when_first_click_does_not_advance`／
+`test_variant_scan_recovers_when_stuck_on_ionized`／
+`test_variant_scan_warns_when_recovery_cannot_confirm_normal`／
+`test_variant_scan_skips_without_rapidocr`／
+`test_variant_scan_swallows_exceptions_and_returns_partial_hits`（`_panel_variant_tab_scan`
+本體：驗證式點擊、click-eaten 立即停止、收尾自癒、例外吞掉）。
+`tests/test_harvester.py`：
+`test_next_panel_tab_normal_to_ionized`／`test_next_panel_tab_ionized_to_spectral`／
+`test_next_panel_tab_spectral_wraps_to_normal`／
+`test_next_panel_tab_unknown_current_returns_none`（三態循環純函式）。
+
+### ⚠ 待實機驗證
+
+`panel_header_xy` 的點擊從未在實機跑過——下一次路 A/B 都沒命中、面板已歸零的 giveup
+應該看到 `[%s] 分頁掃描（%s）：列數 %d，白名單礦名 %s` 這組 log，且分頁真的有切換
+（標頭 OCR 讀到 IONIZED/SPECTRAL）並在收尾點回 NORMAL。若命中，通知裡應該看到
+「🔎 分頁掃描觀察中」字樣；累積到 `giveup_rescue_variant_observe_target`（10）筆後
+attach 給玩家決定是否切自動。

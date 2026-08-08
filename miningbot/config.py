@@ -402,6 +402,20 @@ class Config:
                                               # 「與稀有挖礦一樣，一旦發現沒有清除就再次進行直到淨空」；2026-08-05 使用者要求
                                               # 「多增加點選的次數」3→7）。0=舊行為一次定生死。耗盡後交人工（不再靜默跳過路 B）。
     panel_expected_header: str = "NORMAL"     # 標頭閘：讀到 IONIZED/SPECTRAL 一律不信任面板
+
+    # 分頁掃描（H187，2026-08-08）：救援路 A/B 都沒命中時，點面板標頭查 IONIZED/SPECTRAL
+    # 分頁——H039/H041 已證實 ionized/spectral 變體礦只會被動進聊天，聊天淡出或超出
+    # prechill 快取窗（路 A 的天花板）時，只查 NORMAL 頁的路 B 對它們全盲。harvest 187
+    # 實錄：chat 曾顯示 `an ionized Fortuitous`，但救援路 A 因快取時機 bug 被跳過（已修，
+    # 見 _episode_chill_at 附近 comment）、路 B 只查 NORMAL 頁找不到 → 誤交人工。
+    panel_header_xy: tuple = (118, 408)       # 標頭點擊座標（沿用 2026-07-31 全螢幕量測；
+                                              # 使用者 2026-08-08 確認：點一下循環 NORMAL→IONIZED→SPECTRAL→NORMAL）
+    panel_tab_click_settle_s: float = 0.5     # 點標頭到 OCR 讀取前的等待
+    giveup_rescue_variant_tabs_enabled: bool = True   # 關掉即整條跳過，回到只查 NORMAL 頁
+    # 獨立觀察期：這顆標頭按鈕沒有任何實機驗證資料，即使 giveup_rescue_observe 已經
+    # 切自動，分頁掃描命中也照樣交人工——只記帳＋在通知裡標註，累計到目標次數後問玩家。
+    giveup_rescue_variant_observe: bool = True
+    giveup_rescue_variant_observe_target: int = 10
     # 列底色 → tier（wiki HSV 官方色碼 + 實機量測交叉驗證，2026-08-02）：
     # 全階級 wiki 色碼已收集（https://rex-reincarnated.fandom.com/wiki/Category:Tiers）
     #
