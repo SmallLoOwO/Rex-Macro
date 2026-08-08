@@ -1,4 +1,4 @@
-from miningbot.miner import dispatch_event, EventFlags, cooldown_ready
+from miningbot.miner import dispatch_event, EventFlags, cooldown_ready, counts_as_progress
 from miningbot.config import DEFAULT
 
 def flags(**kw):
@@ -104,3 +104,29 @@ def test_plan_d4_resetting_skips_regardless():
                    resetting=True) == "skip"
     assert plan_d4(kept=False, matched=False, unknown_confirmed=True,
                    resetting=True) == "skip"
+
+
+# --- counts_as_progress：卡住偵測不該被冷卻計時動作洗掉（2026-08-08）---------
+# 實機 2026-08-01 01:16-01:53：D5 冷卻到期照常觸發，但同段時間 STUCK（60s 無進度）
+# 連跳 8 次——D4/D5/D2 是計時到了就按，跟 W 有沒有讓角色前進無關；只有 REFOCUS
+# 會重新按住 W，才是移動真的恢復。
+def test_use_d5_does_not_count_as_progress():
+    assert counts_as_progress("USE_D5") is False
+
+
+def test_use_d4_does_not_count_as_progress():
+    assert counts_as_progress("USE_D4") is False
+
+
+def test_scan_and_cave_do_not_count_as_progress():
+    assert counts_as_progress("SCAN") is False
+    assert counts_as_progress("CAVE") is False
+
+
+def test_no_action_does_not_count_as_progress():
+    assert counts_as_progress(None) is False
+
+
+def test_refocus_counts_as_progress():
+    # REFOCUS 會跑 init_mining_sequence 重新按住 W，移動真的重新開始
+    assert counts_as_progress("REFOCUS") is True

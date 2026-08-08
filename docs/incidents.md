@@ -1491,3 +1491,76 @@ no-op）——整段episode 沒有任何一次真的會影響游標狀態的動�
 自行重繪」這個替代解釋是否才是主因——兩個假說目前都有各自的證據，尚未能互相
 排除，這次修復是根據程式碼可驗證的具體缺口下手，比繼續臆測游戲內部行為更值得
 優先一試。
+
+## H082（2026-08-08，使用者回報「W 有時會中斷、角色卡在原地，但 D4/D5/D1 都正常運作」）：STUCK 卡住偵測被 D4/D5/D2 冷卻動作持續重置，把長時間卡住切成一段段假象、通報被拖慢甚至永遠不出現；`_check_boost_stall` 診斷本身也因跨 state 沒歸零而幾乎全是假警報
+
+### 現象
+
+使用者觀察：角色停在原地不動（W 沒有效果），但 Discord/log 顯示 D4（事件刷新）、
+D5（boost 重上）、D1（鎬子裝備）仍按表操課、正常觸發。
+
+### 調查過程
+
+1. `input_control.key_down/key_up('w')` 已在 2026-07-25（commit a84378e）加過追蹤
+   log，當時只確認「沒有 commit 在 MINING 路徑直接釋放 W」，根因未定。本輪對
+   MSIX LocalCache 實機 log（`miningbot.log`/`.log.1`，涵蓋 2026-07-29~08-08）重新
+   比對：
+   - 所有 bot 自己呼叫 `key_up('w')` 到下一次 `key_down('w')` 的間隔全部 ≤12s
+     （242 筆配對，中位數 3s）——bot 自己的邏輯每次放開都會再按回去，不是
+     「忘記重壓」的問題。
+   - `_check_boost_stall`（同一輪加的診斷）2026-08-01~08-03 共留下 132 筆警報，
+     但抽查多筆都對得上「MINING → REENTRY/NEEDS_HUMAN/RESET_WAIT → 回 MINING」
+     的 state 切換邊界，`_last_boost` 沒有跟著歸零，回 MINING 第一個 tick 就把
+     等待期間的分鐘數當成「boost 沒重上」誤報（部分甚至讀到 init 用的 `0.0`
+     時間戳，算出 `1785600996s`）——這個為了抓本事故而加的診斷，實際上被自己的
+     假警報淹沒，兩週內沒有留下一筆可信的「MINING 全程卡住」證據。
+2. 換方向查 STUCK（`cfg.stuck_region` 中央畫面幀差、`stuck_timeout_s=60s`）：
+   `actions.log` 對照 `miningbot.log` 抓到一段乾淨的實機重現—— 2026-08-01
+   01:15:44~01:53:41（>37 分鐘）：D5「boost 消失 -> 重上 D5」每隔數分鐘正常
+   觸發（01:15:44／01:19:14／01:29:19／01:34:37／01:37:38／01:46:21／01:50:49／
+   01:52:39），同一段時間 `EVENT STUCK {'reason': '60.0s 無進度'}` 連續跳了 8 次
+   （01:16:48／01:20:41／01:31:12／01:35:41／01:38:57／01:47:24／01:51:52／
+   01:53:41）。兩者的間隔對得上：`_tick_mining` 的卡住偵測寫的是
+   `if diff >= threshold or action is not None: 歸零`，D5/D4/D2 觸發時
+   `action` 不是 `None`，於是每次冷卻到期就把 STUCK 的 `_last_progress`/
+   `_stuck_notified` 一起重置——即使角色其實完全沒有移動。這段最終在
+   01:54:50 因為礦坑重置轉 REENTRY 才自然解除，過程中 STUCK 沒有促成任何自動
+   回復（`_notify_stuck` 純通知，不會重按 W）。
+
+### 一句話根因
+
+`_tick_mining` 把「這幀有沒有執行任何動作」跟「角色有沒有在移動」畫上等號：
+D4（事件）/D5（boost）/D2（掃描/削洞）都是冷卻計時到了就按的單次點擊，跟 W 有沒有
+讓角色前進毫無關係，但只要它們一觸發，`action is not None` 就重置卡住計時器，
+把 STUCK 的通報拖慢、切碎，甚至在冷卻間隔剛好 <60s 時整段吃掉不報。
+
+### 修復
+
+`miner.py` 加純函式 `counts_as_progress(action)`：只有 `"REFOCUS"`（會重跑
+`init_mining_sequence`、真正重新按住 W）算移動恢復，`USE_D5`/`USE_D4`/`SCAN`/
+`CAVE`/`None` 都不算。`_tick_mining` 的卡住偵測改用它取代 `action is not None`。
+
+同時修 `_check_boost_stall` 的假警報根源：`_on_enter(State.MINING)` 裡
+`miner.init_mining_sequence(...)`（剛重新按住 W）之後，把 `_last_boost`／
+`_last_progress`／`_stuck_notified`／`_boost_stall_notified` 歸零、
+`_prev_frame` 設 `None`——避免這些計時器沿用進場前（可能長達數十分鐘的
+NEEDS_HUMAN/REENTRY/HARVESTING 等待）的舊時間戳。
+
+### 回歸
+
+- `tests/test_miner.py`：`counts_as_progress` 對 `USE_D5`/`USE_D4`/`SCAN`/
+  `CAVE`/`None`/`REFOCUS` 六種輸入的正向與鏡像斷言。
+- `tests/test_giveup_rescue.py::test_on_enter_mining_resets_stuck_and_boost_stall_timers`：
+  `_on_enter(MINING)` 前塞入很久以前的舊時間戳／`True`旗標，驗證進場後五個欄位
+  都被歸零/重置。
+
+### 待實機驗證
+
+這是純決策邏輯修復，不改任何視覺門檻，不需要新 fixture。但「W 到底為什麼會被
+放掉」這個更底層的問題本身仍未解——本輪只確認了 bot 自己的按鍵邏輯沒有錯，且
+找到「現有安全網被自己的維護動作蓋住」這個確定成立的獨立 bug。下次再撞到角色
+卡住時，預期能看到 STUCK 在更接近真正卡住的時間點觸發（不再被 D4/D5 的冷卻節奏
+切碎/延後），`_check_boost_stall` 的假警報也應該大幅減少——如果修復後仍然乾淨
+地重現「D4/D5 正常但角色不動」且 STUCK 有正確觸發，下一步就該加一層更直接的
+訊號（例如定期用 `GetAsyncKeyState(VK_W)` 核對 W 在 OS 層是否真的還按著、或
+Roblox 是否吞掉了持續按住的鍵），而不是繼續猜測。

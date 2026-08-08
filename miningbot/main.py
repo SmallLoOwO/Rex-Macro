@@ -3794,6 +3794,18 @@ class Bot:
             self._backpack_snap_clear()
             self._backpack_snap_last = 0.0
             miner.init_mining_sequence(rotate=self._rotate_verified)  # 從其他狀態回來，重新握住 W + 左鍵
+            # 卡住/boost 停滯計時器歸零（2026-08-08）：上面幾行剛重新按住 W，此刻才是
+            # 這輪移動真正的起點。不歸零的話沿用進場前（NEEDS_HUMAN/REENTRY/HARVESTING
+            # 等待期間，可能長達數十分鐘）的舊時間戳，_check_boost_stall 會在回 MINING
+            # 第一個 tick 就用那段等待時間當「boost 沒重上」誤報（實機 log 132 筆
+            # boost-stall 警告幾乎全是這型假警報，真正卡住反而被淹沒）；_last_progress
+            # 同理會讓卡住偵測一進場就已經逼近門檻。_prev_frame=None 讓卡住偵測下一幀
+            # 重新起算差異基準，避免拿等待期間的舊幀跟剛歸位的新視角比較出巨大假差異。
+            self._last_boost = time.time()
+            self._last_progress = time.time()
+            self._stuck_notified = False
+            self._boost_stall_notified = False
+            self._prev_frame = None
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
             # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
@@ -5278,11 +5290,14 @@ class Bot:
         elif action is None:
             self.last_action = "挖礦中"
 
-        # 卡住偵測：用中央遊戲區判斷（避開左下狀態小窗）
+        # 卡住偵測：用中央遊戲區判斷（避開左下狀態小窗）。D4/D5/D2 是冷卻計時到了就按，
+        # 跟 W 有沒有讓角色前進無關——只有 REFOCUS（重新按住 W）才算移動真的恢復
+        # （miner.counts_as_progress；2026-08-01 01:16-01:53 實機 D5 正常按但連續
+        # 8 次 STUCK，根因即冷卻動作把這裡的計時器一直重置）。
         cur = capture.crop(frame, cfg.stuck_region)
         if self._prev_frame is not None:
             diff = vision.frame_mean_diff(cur, self._prev_frame)
-            if diff >= cfg.stuck_frame_diff_threshold or action is not None:
+            if diff >= cfg.stuck_frame_diff_threshold or miner.counts_as_progress(action):
                 self._last_progress = time.time()
                 self._stuck_notified = False
                 self._stuck_alert_mid = None       # 進度恢復＝卡住解除，🏠 作廢

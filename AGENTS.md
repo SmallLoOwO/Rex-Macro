@@ -357,6 +357,20 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
 - `main.py` remains the main complexity hotspot and has intentional direct state
   assignments outside the central transition path.
 - Remote aim/re-entry and zoom need more live-game evidence than pure tests provide.
+- **STUCK 卡住偵測被 D4/D5/D2 冷卻動作掩蓋**（H082，2026-08-08）。使用者回報「W 有時
+  中斷、角色卡原地，但 D4/D5/D1 都正常運作」——`_tick_mining` 舊版把「這幀有沒有
+  執行任何動作」跟「角色有沒有在移動」畫等號（`action is not None` 就重置卡住計時
+  器），D4/D5/D2 是冷卻到了就按、跟移動無關，卻持續把 60s 無進度的通報切碎/延後。
+  實機 2026-08-01 01:15-01:53 抓到乾淨重現：D5 每隔數分鐘正常觸發，同時 STUCK 連
+  跳 8 次，最後靠礦坑重置轉 REENTRY 才解除（STUCK 本身純通知，不會重按 W）。已改
+  `miner.counts_as_progress`（只認 REFOCUS）＋`_on_enter(MINING)` 歸零
+  `_last_boost`/`_last_progress`/`_stuck_notified`/`_boost_stall_notified`/
+  `_prev_frame`（原本沿用進場前的舊時間戳，讓 `_check_boost_stall` 兩週內 132 筆
+  警報幾乎全是假警報）。純決策修復、不動視覺門檻。**需實機驗證**：下次角色卡住時
+  STUCK 應更快在接近真正卡住的時間點觸發、不再被 D4/D5 節奏切碎；若修復後仍乾淨
+  重現「D4/D5 正常但角色不動」且 STUCK 有正確觸發，下一步該加 OS 層
+  `GetAsyncKeyState(VK_W)` 核對，而非繼續猜測 Windows/Roblox 是否吞鍵。見
+  `docs/incidents.md` H082。
 - **Reentry click-eaten detection** (2026-08-05). 礦坑重置後遊戲把玩家送到隨機地表
   （遠離傳送板），「Go to surface」按鈕傳送到傳送板附近。`_click_surface_verified`
   偵測不到傳送＝點擊被吃，但舊版無視此信號繼續走狀態錨（只看 Depth=Surface，不分
