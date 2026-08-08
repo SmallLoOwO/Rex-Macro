@@ -413,21 +413,24 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   manual `清空` command all hand off instead of silently continuing with an untrusted
   panel. The old "路 B 將跳過下一場" silent-skip behavior is removed: handing off
   rebuilds the trust basis (player clears manually → `_panel_zeroed_at` set next round).
-  **H079/H080 (2026-08-08): the "panel is trustworthy for the whole episode after one
-  successful clear" premise is broken.** `_episode_panel_gains`/`_panel_rare_ores` do
-  a pure presence check with no re-verification; a permanently-held Exotic+ ore
-  (Clovara, growing via passive pickaxe: 8→10 across one day) kept reappearing on the
-  panel within minutes of a verified `殘留 0 列：空` clear, re-triggering this
-  short-circuit on essentially every chill for the same static ore — not a rare fluke.
-  Same two harvests also reproduced a panel-clear TextBox lockup (H079: box stops
-  responding to any input — click, type, select-all, delete; live-tested against the
-  running game, ruled out coordinate drift, right-button lock, latency, box overflow)
-  specifically on the resume path that follows this short-circuit's NEEDS_HUMAN → Q,
-  while clears via normal harvest-success resume or fresh boot succeeded 2/2 same day —
-  correlation only (2 samples), not yet proven causal. Neither is fixed; see
-  `docs/incidents.md` H080 and `docs/open-detection-issues.md` D16 before touching
-  `_episode_panel_gains`, `_clear_panel_filter`, or the `_on_enter(HARVESTING)` →
-  `_on_enter(NEEDS_HUMAN)` recursive-call path.
+  **H079/H080 (2026-08-08, user-confirmed root cause): the NORMAL panel re-sorts/
+  re-renders itself continuously, independent of the search filter or any bot input —
+  "cleared" is a one-frame snapshot, not a durable state.** 5 periodic backpack
+  screenshots 30s apart, zero bot interaction between them, show a different row order
+  every single time; `_panel_zeroed_at` from a verified `殘留 0 列：空` clear does not
+  mean the panel stays that way — a permanently-held Exotic+ ore (Clovara, growing via
+  passive pickaxe: 8→10 across one day) cycled back into the visible top rows within
+  ≤4 minutes of a verified clear, re-triggering `harvest_entry_panel_check`'s
+  short-circuit on essentially every chill for the same static ore. **User direction:
+  the presence-check threshold/logic in `_episode_panel_gains` stays as-is** — the fix
+  belongs on the "does `_panel_zeroed_at` still reflect reality right now" side, not
+  the check itself. Same finding also puts H079's "TextBox lost interaction" conclusion
+  in doubt: 8 retries ~7-13s apart sampling a panel that naturally doesn't repaint for
+  tens of seconds to minutes can look identical to a genuinely stuck box at this
+  sampling rate — don't trust the H079 log signal alone until the panel's own
+  repaint trigger/period is known. Nothing fixed yet; see `docs/incidents.md` H080
+  before touching `_episode_panel_gains`, `_clear_panel_filter`, or `_panel_zeroed_at`
+  freshness.
 - **H216 (2026-08-07, harvest 216): panel-clear retry loop went blind to a mine reset
   that started mid-loop.** `_resume_mining_tail` only checks `_mine_resetting` once at
   entry (H051); the panel-clear retry loop that runs right after (up to 8 attempts,
