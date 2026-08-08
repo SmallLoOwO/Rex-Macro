@@ -1361,11 +1361,18 @@ def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):
     monkeypatch.setattr(main.ic, "mouse_up", lambda *_: None)
     monkeypatch.setattr(main.ic, "mouse_down", lambda *_: None)
     monkeypatch.setattr(main.ic, "center_crosshair", lambda: None)
-    monkeypatch.setattr(main.miner, "ensure_pickaxe", lambda: False)
+    monkeypatch.setattr(main.miner, "ensure_pickaxe",
+                        lambda: order.append("ensure_pickaxe") or False)
     monkeypatch.setattr(main.time, "sleep", lambda *_: None)
 
     bot._resume_mining_tail(net_rots)
     assert order.index("clear") < order.index("init")
+    # H083：面板清空的 UI click 前必須先確保鎬子裝備，否則 D3 開火後仍裝備 D3 時
+    # 左鍵疑似被武器吃掉，篩選框 TextBox 收不到 click（harvest 228 實機連續 8 次
+    # 重試全滅，游標落點精準但篩選框內容從未改變）。
+    assert order.index("ensure_pickaxe") < order.index("clear"), (
+        "面板清空前必須先呼叫 ensure_pickaxe 切回鎬子（H083）"
+    )
 
 
 # ── 清空失敗 → 降級 NEEDS_HUMAN（2026-08-05 使用者要求）─────────────────────
