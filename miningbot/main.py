@@ -566,6 +566,17 @@ class Bot:
         # RapidOCR／tesserocr 預熱：與音訊載入/HUD 倒數/聚焦重疊，UI 前置檢查不再踩冷 init。
         # 2026-07-10 移到 __init__（原在 run() 尾，排在 UI 檢查之後才啟動，首個 UI 檢查自己
         # 踩 6~11s 冷 init；_get_rapid_engine/_get_tess_api 有鎖冪等，未裝時快速失敗一次）。
+        # ★ tesserocr 依賴 cysignals，signal handler 只能在「主直譯器的主執行緒」註冊一次；
+        #   背景執行緒 import 會丟 ValueError('signal only works in main thread of the
+        #   main interpreter')，而 _get_tess_api 對 import 失敗是永久 latch——一旦背景
+        #   執行緒撞到，之後主執行緒任何正常呼叫都直接被擋死，OCR 整場退化成 pytesseract
+        #   （每次 +2.5s，2026-08-08 harvest 218 sweep 8 方位拖到 266s 才查到這裡）。
+        #   先在主執行緒把 import 做一次（sys.modules 快取，之後任何執行緒重複 import
+        #   都是免費的），背景執行緒只負責之後真正花時間的 PyTessBaseAPI() 冷 init。
+        try:
+            import tesserocr  # noqa: F401
+        except Exception:
+            pass
         threading.Thread(target=ocr.rapidocr_available, daemon=True).start()
         threading.Thread(target=ocr.tesserocr_available, args=(cfg.tesseract_path,), daemon=True).start()
         self._init_discord_messengers()
