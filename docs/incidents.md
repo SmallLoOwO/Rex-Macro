@@ -1600,3 +1600,79 @@ Roblox 是否吞掉了持續按住的鍵），而不是繼續猜測。
 直接證據，而非只能從旁證推論；若卡住但這條完全沒出現，代表問題出在別處
 （例如 Roblox 內部收到鍵但角色仍不動、或問題其實不在 W 而在別的機制），
 方向要往回打，不要繼續往「鍵被吃掉」這個假說深挖。
+
+## H083（2026-08-09，harvest 228 實機；使用者回報「挖到稀有礦之後，有一個環節會讓滑鼠沒有聚焦在 Roblox 中，腳本無法清空背包」）：`_resume_mining_tail` 在切回鎬子（D1）之前就跑面板清空，D3 仍裝備時左鍵疑似被武器吃掉，UI click 進不了篩選框 TextBox
+
+### 現象與 log 證據
+
+harvest 228（03:52:39 HARVEST_SUCCESS，D3 開火成功採到 Arachnophyte Exquisite）之後
+的面板歸零序列連續 8 次重試全部失敗，最終降級 NEEDS_HUMAN（03:54:52）：
+
+```
+03:52:57 面板歸零：點 (119,441) 打 4 個 w｜篩選框 ink 437→437、字寬 184→184px（沒變…）
+03:53:04 面板列底色顯示還有高階礦（H=128）→ 零點不成立
+03:53:19 面板歸零：連續兩次嘗試面板列表與篩選框完全逐字相同…疑似 TextBox 失去互動（H079）
+（以上重複到 attempt 8/8，08:54:44 起）
+03:54:44 面板歸零：重試 8 次仍失敗 → _panel_zeroed_at=None
+03:54:52 EVENT NEEDS_HUMAN 採集後背包面板清空失敗（已重試 8 次）
+```
+
+8 次重試的篩選框 ink/字寬/面板列表（arachnophyte、cleavelite、weevil、duatwist、
+sugarmuck、gildice、cloverstone、plentium）逐字元不變，`GetCursorPos` 回讀每次都
+精準落在 `(119,441)`（目標座標本身沒有偏移/被吃）。診斷當下直接截取實機畫面
+（PowerShell/mss 現場截圖，非重放 fixture）：篩選框裡確實塞滿了一長串 `w`（可見
+是真的有字進去），但下面的礦物列表完全沒有被篩選掉——與 8 次重試 log 記載的
+`arachnophyte/cleavelite/weevil/...` 逐字相符。同一張截圖的 hotbar 顯示 **slot 3
+（D3 武器）仍是選中狀態**（綠底高亮），不是預期的 slot 1（鎬子）。
+
+### 根因
+
+`_resume_mining_tail`（`main.py:8028`）的執行順序：
+
+```
+harvester.restore_view(...)          # 轉回原方位
+self.state = State.MINING
+self._clear_panel_filter()           # ← 面板清空的 UI click 在這裡
+...
+miner.init_mining_sequence(...)      # ← 鎬子（D1）在這裡才切回
+```
+
+D3 開火（`_fire_d3_at`，`main.py:1258`）用 `"2"→"3"` 裝備 slot 3 開火，開火後**沒有
+任何一步切回 D1**——鎬子重新裝備要等到 `_clear_panel_filter()` 跑完（成功或 8 次
+重試耗盡）之後的 `init_mining_sequence()` 才會做。也就是說：每一次正常採集成功的
+面板清空嘗試，角色手上實際拿的都還是 D3，不是鎬子。`click_at(119,441)` 把 OS
+游標真的移到目標像素並送出左鍵（cursor 回讀為證），但 D3 裝備時左鍵疑似被武器的
+`Activated` 處理掉，沒有走到 2D GUI 的 TextBox 命中測試——鍵盤打的 `w` 因此進了遊戲
+世界（或被忽略），從未進入篩選框，篩選功能自然不會被觸發。這與使用者原始描述
+「有一個環節讓滑鼠沒有聚焦在 Roblox 中」吻合，只是精確地說：滑鼠聚焦的是 Roblox
+視窗本身沒錯（`_focus_roblox()` 全程回報成功），聚焦不到的是**面板篩選框這個 UI
+元件**，因為武器攔截了點擊。
+
+### 為什麼 H081 的「其餘路徑必成功」假說被推翻
+
+H081 認為「一般採集成功收尾」這條路徑必成功，理由是本場 HARVESTING 進場已跑過
+`prepare_scan()`（含 `center_crosshair()`）與真實右鍵拖曳，跟 H079/H080 卡死的
+`_harvest_entry_panel_check` 短路路徑（整場沒有任何鍵鼠動作）不同。harvest 228
+是這條「必成功」路徑本身的反例：卡死的不是「有沒有做過鍵鼠動作」，而是「這場的
+最後一個動作是不是 D3 開火」——`_harvest_entry_panel_check` 短路路徑從未開過火，
+自然也不會撞到這個成因；一般採集成功收尾**每次都剛開過 D3 火**，理論上每次都該
+中招，只是先前沒有一次巧合抓到現場截圖去確認 hotbar 狀態，光看 log 只看得到跟
+H079 一樣的「逐字不變」訊號，被歸類成同一種「TextBox 失去互動」不明原因。
+
+### 修復
+
+`_resume_mining_tail` 在呼叫 `_clear_panel_filter()` 之前先呼叫既有的
+`miner.ensure_pickaxe()`（`miner.py:108`，已有的 slot_selected 安全門，未裝備才按
+`"1"`，不會誤把已裝備的鎬子 toggle 收起——同 H065 的守門模式）。改的是共用尾段，
+`_remote_fire_success` 等其他呼叫端經同一個 `_resume_mining_tail` 一併受益，不必
+分別修。`init_mining_sequence` 內部原本也會做一次 `_ensure_pickaxe`，這裡提前補一次
+純粹是把「换回鎬子」搬到面板清空之前，讓武器不再攔截點擊；`init_mining_sequence`
+那次仍保留（採集後補按 D1 切回鎬子的既有保險段落，防 pickup 動畫吃掉這次的按鍵）。
+
+### 待實機驗證
+
+下一次正常 D3 採集成功後，面板歸零 log 應該在第一次嘗試就成立（`面板零點成立`），
+不再需要多次重試；且清空前應能看到新增的「面板清空前補按 D1 切回鎬子」這行。若
+仍然卡在 8 次重試全滅，代表「D3 裝備攔截點擊」不是唯一成因，需要回頭檢視 H080
+的「面板自行重繪」假說是否才是主因——兩個假說目前都有各自的證據，這次修復是
+根據 hotbar 截圖 + log 逐字比對能直接驗證的具體缺口下手。

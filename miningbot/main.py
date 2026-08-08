@@ -8044,6 +8044,13 @@ class Bot:
             return
         self.state = State.MINING
         self._post_harvest_watch = 3     # 進入 MINING 後前 3 tick 記錄 W 狀態
+        # D3 開火後鎬子換回在 init_mining_sequence（下面）才做，但面板歸零的 UI click
+        # 在那之前跑——武器仍是 D3（harvest 228，2026-08-09 實機：連續 8 次重試逐字
+        # 相同，篩選框 ink/字寬/面板列表完全沒變、游標落點卻精準落在 (119,441)，且
+        # 卡住當下 hotbar 截圖證實 slot 3 仍選中；D3 裝備時左鍵疑似被武器吃掉，UI click
+        # 沒進 TextBox）。清空前先確保鎬子裝備，讓左鍵落在 GUI 而非武器上。
+        if miner.ensure_pickaxe():
+            self.logger.info("採集收尾：面板清空前補按 D1 切回鎬子（D3 開火後尚未切換）")
         self._clear_panel_filter()        # 面板歸零（spec 2026-07-31）：init 前清，LMB 按住後點不了 UI
         # H216（2026-08-07，harvest 216 實錄＋使用者訂正）：清空序列（可長達 ~55s）
         # 排隊等它自然跑完（成功或重試耗盡）——不中途打斷。序列結束後才重查
