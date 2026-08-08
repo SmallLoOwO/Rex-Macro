@@ -87,6 +87,7 @@ _REMOTE_SNAP_EMOJI = "📷"     # 即時截圖回傳（2026-07-17 需求：唯�
 _REMOTE_CLEAR_EMOJI = "🧹"   # 手動清空背包面板（等同 `清空` 指令；只寫旗標，主迴圈消費）
 _WEB_ESCALATE_EMOJI = "🔀"    # 2026-07-27：網頁等待提醒訊息上的「立刻改用 Discord」反應
 _WEB_SKIP_EMOJI = "⏭️"       # 2026-08-03：回礦網頁等待提醒上的「跳過回挖礦」反應
+_D4_SKIP_EMOJI = "⏭️"        # 2026-08-08：D4 keep 事件通知上的「這次跳過」反應（不動 keep 清單）
 
 
 def _tier_usage(bad_input: str, valid_tiers) -> str:
@@ -334,6 +335,13 @@ class Bot:
         self._activity_present = False               # 上次偵測到的 D4 冷卻圖示在否（節流間沿用）
         self._keep_ores: set[str] = self._load_keep_ores()  # D4 保留清單（持久化；Discord !keep 修改）
         self._d4_unknown_at = 0.0                    # D4 事件文字認不得的 hold 起點（0=沒在 hold；雙樣本確認用）
+        # D4 keep 事件通知（2026-08-08）：骰到 keep 清單事件時通知一次，掛 ⏭️ 供玩家
+        # 一次性跳過（右鍵刷新，keep 清單本身不動）。同一顆事件持續被加強只通知一次，
+        # 靠 _d4_keep_notified_ore 記帳（比對事件名，換了才重通知）。
+        self._d4_keep_notified_ore: str | None = None
+        self._d4_keep_alert_mid: str | None = None    # 通知訊息 id；⏭️ 觸發後歸 None（一次性）
+        self._d4_keep_seen: dict[str, int] = {}        # ⏭️ 反應數基線
+        self._d4_skip_pending = False                  # 玩家按 ⏭️ -> 下次 D4 動作改一次性刷新
         self._last_discord_msg_id: str | None = None  # Discord 命令輪詢基準（首次只記錄不處理）
         self._poll_fail_logged_at = 0.0               # 輪詢失敗警告節流（60s 一則，避免斷網洗版）
         # Discord !list 表情分頁追蹤（都在 poll 執行緒上讀寫，無跨執行緒競爭）
@@ -1049,17 +1057,77 @@ class Bot:
             self._snapshot(frame, "d4_unknown")
             return
         self._d4_unknown_at = 0.0
-        if verdict == "keep":
+        if verdict == "keep" and self._d4_skip_pending:
+            # 玩家在通知上按了 ⏭️：這一輪不加強，改右鍵刷新——僅這次，keep 清單不動，
+            # 下次骰到同一顆事件仍會照樣保留（見 _notify_d4_keep）。
+            self._d4_skip_pending = False
+            self.logger.info("D4: %s 在 keep 清單但玩家 ⏭️ 跳過本次 -> 右鍵刷新", ev["ore"])
+            self.log_act.info("mining: D4 keep 事件被 ⏭️ 跳過 -> 右鍵刷新 (%s)", ev["ore"])
+            self.last_action = f"跳過保留: {ev['ore']}"
+            miner.use_activity()
+            self._d4_keep_notified_ore = None
+            self._d4_keep_alert_mid = None
+        elif verdict == "keep":
             self.logger.info("D4: 保留事件 %s（在 keep 清單中）", ev["ore"])
             self.last_action = f"保留事件: {ev['ore']}"
             miner.use_activity_keep()
+            if ev["ore"] != self._d4_keep_notified_ore:
+                self._d4_keep_notified_ore = ev["ore"]
+                self._notify_d4_keep(ev)
         else:
             self.log_act.info("mining: 刷新事件 -> D4 右鍵 (%s) text=%r",
                               ev["ore"] if ev else "未知/無事件", event_text[:80])
             self.last_action = "刷新事件(D4)"
             miner.use_activity()
+            # 當前事件不在 keep 分支：清掉通知記帳＋作廢殘留的 ⏭️ 意圖，避免它晚點
+            # 誤套到一顆不相干的未來 keep 事件上（比照 _stuck_alert_mid 離開語境即作廢）。
+            self._d4_keep_notified_ore = None
+            self._d4_keep_alert_mid = None
+            self._d4_skip_pending = False
         self.stats["rerolls"] += 1
         self._last_activity = time.time()
+
+    def _notify_d4_keep(self, ev: dict) -> None:
+        """D4 骰到 keep 清單事件時通知一次，掛 ⏭️ 供玩家一次性跳過（2026-08-08）。
+
+        「一次即可」：同一顆事件持續被 D4 加強（每次冷卻好都會再進 keep 分支）只在
+        呼叫端 ore 名變化時才會呼叫本函式，這裡不重複判斷。⏭️ 不動 keep 清單本身，
+        只讓下一次 D4 動作改成右鍵刷新——比照 _notify_stuck 的 🏠 一次性反應鈕模式。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        text = (f"🎲 D4 骰到保留清單事件：**{ev['ore']}**（效果 {game_data.duration_str(ev)}）\n"
+                f"已自動加強保留；這次不需要可點 {_D4_SKIP_EMOJI} 一次性跳過"
+                "（不會把它從 keep 清單移除，下次骰到仍會照樣保留）")
+        ok, detail, mid = notify.send_message_with_id(token, ch, text)
+        self.log_discord.info("D4 keep 通知 -> %s (mid=%s, ore=%s)", detail, mid, ev["ore"])
+        if not (ok and mid):
+            return
+        added, _ = notify.add_reaction(token, ch, mid, _D4_SKIP_EMOJI)
+        self._d4_keep_alert_mid = mid
+        self._d4_keep_seen = {_D4_SKIP_EMOJI: 1 if added else 0}
+
+    def _poll_d4_keep_reaction(self):
+        """輪詢 D4 keep 通知的 ⏭️：新點擊 -> 排 pending flag，下次 D4 動作消費。
+
+        Discord 輪詢執行緒：只寫旗標，絕不碰 input_control（RULE 9，遊戲輸入只在主迴圈）。
+        """
+        from . import notify
+        token, ch = cfg.discord_bot_token, cfg.discord_channel_id
+        mid = self._d4_keep_alert_mid
+        if not mid:
+            return
+        message = notify.fetch_message(token, ch, mid)
+        if message is None:
+            return
+        self._d4_keep_seen, increments = notify.find_reaction_increments(
+            message, self._d4_keep_seen, (_D4_SKIP_EMOJI,))
+        if not increments:
+            return
+        _, delta = increments[0]
+        self._d4_skip_pending = True
+        self._d4_keep_alert_mid = None    # 一次性：觸發後按鈕作廢（訊息留著）
+        self.log_discord.info("D4 keep %s 反應 +%d -> 下次 D4 動作一次性跳過", _D4_SKIP_EMOJI, delta)
 
     # ---- 提醒與快照 ---------------------------------------------------------
     def _alert(self, message: str):
@@ -1952,6 +2020,8 @@ class Bot:
             self._poll_calib_reactions()
         if self._list_message_id:
             self._poll_list_reactions()
+        if getattr(self, "_d4_keep_alert_mid", None):
+            self._poll_d4_keep_reaction()
         # 1b. 狀態同步：暫停/挖 礦狀態變了就原地編輯遙控器（PATCH，不推播）。
         # 只用 (paused, state) 當觸發條件避免高頻 PATCH 撞 rate limit；last_action 只在真的
         # PATCH 時順帶刷新（不在觸發條件內，否則每次 last_action 變都會 PATCH）。
