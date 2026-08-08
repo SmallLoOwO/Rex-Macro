@@ -32,7 +32,9 @@ def main():
              font=("Microsoft JhengHei", 13)).pack(expand=True)
     splash.update()                       # 強制繪製（不呼叫 mainloop）
 
-    # 重型 import 在此發生（splash 可見）——numpy/cv2/scipy/pyaudiowpatch 等
+    # 重型 import 在此發生（splash 可見）——numpy/cv2/scipy 等。pyaudiowpatch 不在
+    # 此列：它延後到 audio.LoopbackCapture._run() 才 import（背景音訊執行緒首次呼叫時），
+    # splash 階段完全沒載到它（2026-08-08 tesserocr 主執行緒 bug 排查時順手核對到）。
     try:
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from miningbot.main import main as bot_main
