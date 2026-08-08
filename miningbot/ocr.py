@@ -801,17 +801,23 @@ def _get_tess_api(tesseract_path: str | None):
         return api
     try:
         import tesserocr
-    except Exception:
+    except Exception as e:
         _tesserocr_unavailable = True   # 真的沒裝 → 永久退回 pytesseract（正確；import 失敗才 latch）
+        logging.getLogger("miningbot").warning(
+            "tesserocr import 失敗，永久退回 pytesseract: %r（thread=%s）",
+            e, threading.current_thread().name)
         return None
     d = _resolve_tessdata(tesseract_path)
     try:
         api = tesserocr.PyTessBaseAPI(path=d) if d else tesserocr.PyTessBaseAPI()
-    except Exception:
+    except Exception as e:
         # ★ 不再對「init 失敗」永久 latch（2026-07-07 對策）：init 失敗多半是「這次沒給對
         #   tessdata path」而非 tesserocr 壞掉——舊版一次 pathless 呼叫就把 tesserocr 全程停用、
         #   之後連帶正確 path 的呼叫也回 None（實測：available() 無參數→latch→available(path) 也 False）。
         #   只有「找到了合法 tessdata 卻仍 init 失敗」＝安裝真的壞了，才永久退回避免每次拋例外。
+        logging.getLogger("miningbot").warning(
+            "tesserocr PyTessBaseAPI init 失敗（path=%s, latch=%s）: %r（thread=%s）",
+            d, d is not None, e, threading.current_thread().name)
         if d is not None:
             _tesserocr_unavailable = True
         return None
