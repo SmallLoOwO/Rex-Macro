@@ -1303,10 +1303,18 @@ oldest`），不會漏判成功但會全滅。
 `test_next_panel_tab_spectral_wraps_to_normal`／
 `test_next_panel_tab_unknown_current_returns_none`（三態循環純函式）。
 
-### ⚠ 待實機驗證
+### ⚠ 待實機驗證（點擊機制已於 2026-08-08 實機驗證，仍待驗證的是零點假設）
 
-`panel_header_xy` 的點擊從未在實機跑過——下一次路 A/B 都沒命中、面板已歸零的 giveup
-應該看到 `[%s] 分頁掃描（%s）：列數 %d，白名單礦名 %s` 這組 log，且分頁真的有切換
-（標頭 OCR 讀到 IONIZED/SPECTRAL）並在收尾點回 NORMAL。若命中，通知裡應該看到
-「🔎 分頁掃描觀察中」字樣；累積到 `giveup_rescue_variant_observe_target`（10）筆後
-attach 給玩家決定是否切自動。
+**已驗證**（2026-08-08，玩家站在 Surface、Mine Capacity 0%、無 bot 在跑，安全純 UI
+點擊）：唯讀探測腳本（跑完即丟，未進版控）連點 3 次 `panel_header_xy`，
+`harvester.panel_header` OCR 讀到的標頭與 `harvester.next_panel_tab` 的預測逐步吻合
+（NORMAL→IONIZED→SPECTRAL→NORMAL），三頁各自的礦物列表也不同（截圖對照確認非同一頁
+誤讀），收尾第 3 次點擊確實回到與起點一模一樣的 NORMAL 列表。點擊/OCR/驗證式循環
+三件事都成立。
+
+**仍待驗證**：IONIZED/SPECTRAL 頁是否也跟 NORMAL 一樣「每場 MINING 進場歸零」——這次
+的活人帳號兩頁都是累積多時的完整庫存（沒有經過 `_clear_panel_filter` 那套歸零流程），
+無法驗證存在性判準的前提。這正是 `giveup_rescue_variant_observe` 觀察期還開著的原因：
+下一次路 A/B 都沒命中、面板已歸零的真實 giveup，應該看到 `[%s] 分頁掃描（%s）：列數
+%d，白名單礦名 %s` 這組 log；若命中，通知裡應該看到「🔎 分頁掃描觀察中」字樣；累積到
+`giveup_rescue_variant_observe_target`（10）筆後 attach 給玩家決定是否切自動。

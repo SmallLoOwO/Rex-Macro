@@ -485,10 +485,16 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   `<log_dir>/variant_tab_observed.json`. **When that file reaches
   `giveup_rescue_variant_observe_target` (10) entries, lay the records out for
   the user and ask whether to switch to automatic**
-  (`giveup_rescue_variant_observe = False`). **Needs live-game validation**:
-  the header click itself has never fired against the real game; watch for
-  `[%s] 分頁掃描（%s）` log lines and confirm the tab actually advances and
-  returns to NORMAL as logged.
+  (`giveup_rescue_variant_observe = False`). **The header click itself is
+  live-verified** (2026-08-08, player idle at Surface, no bot running): 3
+  real clicks at `panel_header_xy` cycled NORMAL→IONIZED→SPECTRAL→NORMAL,
+  `harvester.panel_header` OCR matched `harvester.next_panel_tab`'s prediction
+  at every step, and the panel round-tripped back to the exact original
+  NORMAL row list. **Still unverified**: whether IONIZED/SPECTRAL actually
+  get zeroed per-episode the same way NORMAL does (the live probe only
+  confirmed the click/cycle mechanics, not the zero-point assumption behind
+  a real rescue hit) — that's what `giveup_rescue_variant_observe` is still
+  guarding against.
 - Machine-local PNG/WAV assets are not guaranteed in a fresh checkout; preflight
   must warn explicitly.
 - Historical HANDOFF/design files are evidence, not a current backlog.
