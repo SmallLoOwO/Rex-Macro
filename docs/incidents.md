@@ -1564,3 +1564,39 @@ NEEDS_HUMAN/REENTRY/HARVESTING 等待）的舊時間戳。
 地重現「D4/D5 正常但角色不動」且 STUCK 有正確觸發，下一步就該加一層更直接的
 訊號（例如定期用 `GetAsyncKeyState(VK_W)` 核對 W 在 OS 層是否真的還按著、或
 Roblox 是否吞掉了持續按住的鍵），而不是繼續猜測。
+
+### 續：OS 層直接核對（2026-08-08，同日）
+
+上面「待實機驗證」提到的下一步已經加上，還沒等下次撞到再決定：
+
+- `input_control.py` 新增 `_w_held`（模組級旗標，`key_down/key_up('w')` 同步更新，
+  記 bot 自己認為現在該不該按著）、`w_should_be_down()`（回傳這個意圖）、
+  `w_actually_down()`（直接呼叫 `GetAsyncKeyState(0x57)` 問 Windows 現在真的按著沒）。
+  **踩坑**：`GetAsyncKeyState` 的 Win32 簽章回傳 `SHORT`（16-bit），但 ctypes 對
+  `windll` 函式預設 `restype` 是 `c_int`（32-bit）——不明講的話「按著」時的高位元
+  `0x8000` 會被讀成 `+32768`（正數）而非負數，`state < 0` 這個慣用判斷就永遠不成立、
+  整條檢查表面上跑得動、實際上恆假。已在模組載入時明講
+  `GetAsyncKeyState.restype = ctypes.c_short`。
+- `main.Bot._check_w_os_state`：MINING 且未暫停時，若 `w_should_be_down()` 為真但
+  `w_actually_down()` 為假 → 警告一次（`[w-dropped]`），鎖住到下次核對一致才解鎖，
+  避免每個 tick 洗頻道。掛在 `_tick_mining`，與 `_check_boost_stall` 同一行旁邊。
+  `_on_enter(MINING)` 重新按住 W 之後一併歸零 `_w_drop_notified`，跟另外五個計時器
+  同一批（同一個「進場前的舊狀態不該沿用」道理）。
+
+### 回歸（續）
+
+- `tests/test_input_control.py`：`key_down/key_up('w')` 對 `_w_held`
+  的讀寫、其他鍵不影響它、`w_actually_down()` 對 `GetAsyncKeyState` 回傳值的
+  正負號判讀（含直接驗證查詢的是 `_VK_W`）。
+- `tests/test_w_dropped_warning.py`：`_check_w_os_state` 的警報/鎖住/解鎖/
+  paused／非 MINING 不檢查——結構比照 `test_boost_stall_warning.py`。
+- `tests/test_giveup_rescue.py::test_on_enter_mining_resets_stuck_and_boost_stall_timers`
+  加驗 `_w_drop_notified` 也被歸零。
+
+### 待實機驗證（續）
+
+這條純粹是多加一個訊號來源，不改變任何既有行為（警報不會觸發任何自動動作）。
+下次角色卡住時，若 log 出現 `[w-dropped]`，就是「W 被外力放掉」第一次有 OS 層
+直接證據，而非只能從旁證推論；若卡住但這條完全沒出現，代表問題出在別處
+（例如 Roblox 內部收到鍵但角色仍不動、或問題其實不在 W 而在別的機制），
+方向要往回打，不要繼續往「鍵被吃掉」這個假說深挖。

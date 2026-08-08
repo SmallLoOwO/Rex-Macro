@@ -1315,6 +1315,7 @@ def test_on_enter_mining_resets_stuck_and_boost_stall_timers(monkeypatch):
         # 進場前的舊值——來自很久以前，模擬長時間待在別的 state
         _last_boost=1000.0, _last_progress=1000.0,
         _stuck_notified=True, _boost_stall_notified=True,
+        _w_drop_notified=True,
         _prev_frame=_frame(1))
     monkeypatch.setattr(main.miner, "init_mining_sequence", lambda **kw: None)
     monkeypatch.setattr(main.ic, "key_up", lambda *_: None)
@@ -1333,6 +1334,7 @@ def test_on_enter_mining_resets_stuck_and_boost_stall_timers(monkeypatch):
     assert bot._stuck_notified is False
     assert bot._boost_stall_notified is False
     assert bot._prev_frame is None
+    assert bot._w_drop_notified is False
 
 
 def test_clear_runs_before_init_in_resume_mining_tail(monkeypatch):

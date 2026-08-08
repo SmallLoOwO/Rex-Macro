@@ -310,6 +310,9 @@ class Bot:
         # boost 沒到期警報（2026-07-25）：MINING 且未暫停時 boost 連續 > boost_stall_warn_s 沒重上
         # = 遊戲時間可能凍結／焦點丟失／偵測誤判。一次警報後鎖住，恢復（boost 重上）才解鎖，避免洗頻道。
         self._boost_stall_notified = False
+        # W 鍵 OS 層落差警報（H082 續，2026-08-08）：bot 認為 W 該按著，但 Windows
+        # GetAsyncKeyState 顯示已放開——鍵被遊戲/系統吃掉的直接證據。同樣一次警報後鎖住。
+        self._w_drop_notified = False
         self._last_activity = 0.0                    # 上次按 D4 刷新的時間（定時用）
         self._last_d3_fire_at: float | None = None  # session 級；實際 hold-click 當下起算
         self._last_boost_check = 0.0                 # boost 偵測節流：上次真的 edge-match 的時間
@@ -3806,6 +3809,7 @@ class Bot:
             self._stuck_notified = False
             self._boost_stall_notified = False
             self._prev_frame = None
+            self._w_drop_notified = False        # 剛重新按住 W，之前的落差警報作廢
         if s is State.HARVESTING:
             # 本輪採集配一個編號（001…），貫穿 log/快照檔名/Discord，供事後一鍵搜查誤判。
             # 先建 HarvestState 帶上編號，後續 _hsnap/_hsnap_crop 才能讀到本輪 id。
@@ -5099,6 +5103,29 @@ class Bot:
             # 恢復了（boost 又被重上）→ 解鎖，允許下次再警報
             self._boost_stall_notified = False
 
+    def _check_w_os_state(self):
+        """MINING 中核對 Windows 層 W 鍵真實狀態（H082 續，2026-08-08）。
+
+        `ic.key_down/key_up('w')` 只記 bot 自己送出指令當下的意圖——遊戲或 Windows
+        把這個持續按住的鍵吃掉，pydirectinput 收不到任何回報，`_w_held` 不會跟著變。
+        這裡直接問 `GetAsyncKeyState`：bot 認為現在該按著，但 OS 層已經沒按著，就是
+        「W 被外力放掉」的直接證據，而非 bot 主動 `key_up`（H082 已排除後者：bot 自己
+        呼叫 key_up 到下次 key_down 全部 ≤12s，不是這個問題）。
+        """
+        if self.paused or self.state is not State.MINING:
+            self._w_drop_notified = False
+            return
+        if not ic.w_should_be_down():
+            return
+        if ic.w_actually_down():
+            self._w_drop_notified = False
+            return
+        if not self._w_drop_notified:
+            self.logger.warning(
+                "[w-dropped] bot 認為 W 應該按著，但 Windows GetAsyncKeyState 顯示"
+                "已放開——鍵可能被遊戲/系統吃掉，非 bot 主動 key_up")
+            self._w_drop_notified = True
+
     def _prechill_sample(self, frame) -> None:
         """MINING 每 prechill_cache_interval_s 存一組 chill 前聊天裁圖（路 A 用）。
 
@@ -5234,6 +5261,7 @@ class Bot:
             self._log_w_state("MINING post-harvest tick")
             self._post_harvest_watch -= 1
         self._check_boost_stall(time.time())        # boost 久沒到期＝遊戲可能凍結
+        self._check_w_os_state()                     # W 在 OS 層是否真的還按著（H082 續）
         flags = miner.EventFlags(
             boost_expired=self._boost_needs_refresh(frame),
             activity_event=self._activity_ready(frame),   # D4：冷卻好就右鍵刷新事件

@@ -8,6 +8,17 @@ import ctypes
 # 每秒都會跑、量太大且對挖礦前進無影響。logger 走 miningbot 命名空間，與 main 共用設定。
 _log = logging.getLogger("miningbot.input_control")
 
+# W 鍵 OS 層真實狀態核對（H082 續，2026-08-08）：key_down/key_up('w') 只記 bot 自己
+# 送出的意圖，遊戲或 Windows 把這個按鍵吃掉不會回報任何訊號給 pydirectinput。
+# _w_held 記「bot 認為現在該不該按著」，w_actually_down() 直接問 Windows
+# GetAsyncKeyState——兩者對不上就是「W 被外力放掉」的直接證據（非 bot 主動 key_up）。
+_w_held = False
+_VK_W = 0x57
+# GetAsyncKeyState 的 Win32 簽章回傳 SHORT（16-bit）。ctypes 對 windll 函式預設
+# restype 是 c_int（32-bit）——若不明講，「按著」時的高位元 0x8000 會被讀成
+# +32768（正數）而非負數，`state < 0` 這個判斷就永遠不成立。必須顯式指定。
+ctypes.windll.user32.GetAsyncKeyState.restype = ctypes.c_short
+
 # 之前輸入太快、遊戲來不及讀，導致 W 沒按下、Shift 沒置中等。整體放慢。
 pydirectinput.PAUSE = 0.04                 # 每個 pydirectinput 動作後的間隔
 _STEP = 0.06                               # 我們自己每個動作後再多等一下
@@ -23,16 +34,29 @@ def key_press(key: str, delay: float = 0.09):
     time.sleep(delay)
 
 def key_down(key: str):
+    global _w_held
     if key == "w":
         _log.info("key_down('w')")
+        _w_held = True
     pydirectinput.keyDown(key)
     time.sleep(_STEP)
 
 def key_up(key: str):
+    global _w_held
     if key == "w":
         _log.info("key_up('w')")
+        _w_held = False
     pydirectinput.keyUp(key)
     time.sleep(_STEP)
+
+def w_should_be_down() -> bool:
+    """bot 上次呼叫 key_down/key_up('w') 認為現在該不該按著（意圖，非 OS 實測）。"""
+    return _w_held
+
+def w_actually_down() -> bool:
+    """Windows 層 W 鍵目前是否真的按著（GetAsyncKeyState，非 bot 自己的意圖記錄）。"""
+    state = ctypes.windll.user32.GetAsyncKeyState(_VK_W)
+    return state < 0
 
 def mouse_down(button: str = "left"):
     pydirectinput.mouseDown(button=button)

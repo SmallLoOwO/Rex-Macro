@@ -197,3 +197,56 @@ def test_click_at_below_top_strip_leaves_cursor_alone(monkeypatch):
     events = _click_recorder(monkeypatch)
     ic.click_at(1425, 836)                       # Movement Mode 右箭頭
     assert [e for e in events if e[0] == "to"] == [("to", 1425, 836)]
+
+
+# ===== W 鍵 OS 層真實狀態核對（H082 續，2026-08-08）=====
+# key_down/key_up('w') 只記 bot 自己送出的意圖；w_actually_down() 直接問 Windows
+# GetAsyncKeyState，兩者對不上就是「W 被外力放掉」的證據，而非 bot 主動 key_up。
+
+
+def test_key_down_w_sets_should_be_down(monkeypatch):
+    monkeypatch.setattr(ic.pydirectinput, "keyDown", lambda key: None)
+    monkeypatch.setattr(ic.pydirectinput, "keyUp", lambda key: None)
+    monkeypatch.setattr(ic.time, "sleep", lambda t: None)
+    ic.key_up("w")            # 正規化起始狀態
+    ic.key_down("w")
+    assert ic.w_should_be_down() is True
+
+
+def test_key_up_w_clears_should_be_down(monkeypatch):
+    monkeypatch.setattr(ic.pydirectinput, "keyDown", lambda key: None)
+    monkeypatch.setattr(ic.pydirectinput, "keyUp", lambda key: None)
+    monkeypatch.setattr(ic.time, "sleep", lambda t: None)
+    ic.key_down("w")
+    ic.key_up("w")
+    assert ic.w_should_be_down() is False
+
+
+def test_other_keys_do_not_affect_w_should_be_down(monkeypatch):
+    monkeypatch.setattr(ic.pydirectinput, "keyDown", lambda key: None)
+    monkeypatch.setattr(ic.pydirectinput, "keyUp", lambda key: None)
+    monkeypatch.setattr(ic.time, "sleep", lambda t: None)
+    ic.key_down("w")
+    ic.key_down("shift")
+    ic.key_up("shift")
+    assert ic.w_should_be_down() is True
+    ic.key_up("w")             # 收尾：不留污染狀態給其他測試
+
+
+def test_w_actually_down_true_when_high_bit_set(monkeypatch):
+    # GetAsyncKeyState 按著時回傳最高位為 1 的負數（SHORT）
+    monkeypatch.setattr(ctypes.windll.user32, "GetAsyncKeyState", lambda vk: -32767)
+    assert ic.w_actually_down() is True
+
+
+def test_w_actually_down_false_when_not_pressed(monkeypatch):
+    monkeypatch.setattr(ctypes.windll.user32, "GetAsyncKeyState", lambda vk: 0)
+    assert ic.w_actually_down() is False
+
+
+def test_w_actually_down_queries_vk_w(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ctypes.windll.user32, "GetAsyncKeyState",
+                        lambda vk: seen.append(vk) or 0)
+    ic.w_actually_down()
+    assert seen == [ic._VK_W]

@@ -366,10 +366,13 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   `miner.counts_as_progress`（只認 REFOCUS）＋`_on_enter(MINING)` 歸零
   `_last_boost`/`_last_progress`/`_stuck_notified`/`_boost_stall_notified`/
   `_prev_frame`（原本沿用進場前的舊時間戳，讓 `_check_boost_stall` 兩週內 132 筆
-  警報幾乎全是假警報）。純決策修復、不動視覺門檻。**需實機驗證**：下次角色卡住時
-  STUCK 應更快在接近真正卡住的時間點觸發、不再被 D4/D5 節奏切碎；若修復後仍乾淨
-  重現「D4/D5 正常但角色不動」且 STUCK 有正確觸發，下一步該加 OS 層
-  `GetAsyncKeyState(VK_W)` 核對，而非繼續猜測 Windows/Roblox 是否吞鍵。見
+  警報幾乎全是假警報）。純決策修復、不動視覺門檻。同日已加 OS 層直接核對：
+  `input_control.w_should_be_down()`/`w_actually_down()`（`GetAsyncKeyState`；
+  注意 `restype` 要明講 `c_short`，不然預設 `c_int` 會讓「按著」判斷恆假）＋
+  `Bot._check_w_os_state`，bot 認為 W 該按著但 OS 說沒按著就記 `[w-dropped]`。
+  **需實機驗證**：下次角色卡住時 STUCK 應更快在接近真正卡住的時間點觸發、不再被
+  D4/D5 節奏切碎；若同時出現 `[w-dropped]`，才是「鍵被外力放掉」第一次的 OS 層
+  直接證據；若卡住但這條沒出現，代表問題不在鍵被吃，方向要往回打。見
   `docs/incidents.md` H082。
 - **Reentry click-eaten detection** (2026-08-05). 礦坑重置後遊戲把玩家送到隨機地表
   （遠離傳送板），「Go to surface」按鈕傳送到傳送板附近。`_click_surface_verified`
