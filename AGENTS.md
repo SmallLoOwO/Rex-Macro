@@ -428,9 +428,20 @@ Windows workspace. Re-run through the approved `uv` path before diagnosing code.
   in doubt: 8 retries ~7-13s apart sampling a panel that naturally doesn't repaint for
   tens of seconds to minutes can look identical to a genuinely stuck box at this
   sampling rate — don't trust the H079 log signal alone until the panel's own
-  repaint trigger/period is known. Nothing fixed yet; see `docs/incidents.md` H080
-  before touching `_episode_panel_gains`, `_clear_panel_filter`, or `_panel_zeroed_at`
-  freshness.
+  repaint trigger/period is known. See `docs/incidents.md` H080 before touching
+  `_episode_panel_gains`, `_clear_panel_filter`, or `_panel_zeroed_at` freshness.
+  **H081 fix (2026-08-08, needs live validation): `_clear_panel_filter_once` now
+  calls `ic.center_crosshair()` right before clicking the filter box.** The
+  NEEDS_HUMAN→MINING resume path (`toggle_pause_action` → `'clear_human'` →
+  `decide_transition` → `_on_enter(MINING)`) never called it, unlike `_resume()`
+  (the *paused*→resume Q-handler, `main.py:10318`) which already has this exact
+  fix for "user tabbed to Discord and back, cursor drifted" — the scenario
+  NEEDS_HUMAN exists to create. The two paths that always succeeded (normal
+  harvest-success resume, fresh boot) both already exercise a real mouse/keyboard
+  action affecting cursor state before reaching the clear (`prepare_scan()` or
+  `pitch_reset`); the short-circuit path never does. Two competing explanations
+  (H080's panel-repaint theory vs. this cursor-recenter gap) aren't yet mutually
+  excluded — this fix targets the one with a concrete code-level gap.
 - **H216 (2026-08-07, harvest 216): panel-clear retry loop went blind to a mine reset
   that started mid-loop.** `_resume_mining_tail` only checks `_mine_resetting` once at
   entry (H051); the panel-clear retry loop that runs right after (up to 8 attempts,

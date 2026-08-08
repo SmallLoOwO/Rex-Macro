@@ -5922,6 +5922,19 @@ class Bot:
                     ic.key_up(_mod)
                 except Exception:
                     pass
+            # 游標重新置中（H081）：NEEDS_HUMAN→MINING（Q 清人工旗標）這條路徑經
+            # `decide_transition` 純函式直接判 State.MINING，從未呼叫 `_resume()`
+            # ——後者對「暫停中按 Q」早就有這段修復（`相機不動≠游標不動，使用者切去
+            # Discord/瀏覽器...不重置會讓後續瞄準偏移」，見 `_resume` 註解），但 NEEDS_
+            # HUMAN 走的是 `_on_enter(MINING)` 通用區塊，裡面完全沒有這一步。NEEDS_
+            # HUMAN 的存在意義就是要玩家去看 Discord 訊息再按 Q，正是同一種「切出去
+            # 又切回來」情境，卻沒套用已知修復。H079/H080 實機 log：兩次面板清空重試
+            # 8/8 全滅，都恰好發生在「短路→NEEDS_HUMAN→Q 恢復」這條路徑（2/2），一般
+            # 採集成功收尾／開機兩條路徑各自在別處已經真的按下過右鍵（pitch_reset／
+            # D3 瞄準）或走過 `prepare_scan()`（含 center_crosshair），2/2 皆成功。加在
+            # `_clear_panel_filter_once`（而非個別呼叫端）讓每個入口統一受益，
+            # 對已經正常的路徑只是多花 ~0.24s 雙擊 Shift，無副作用。**待實機驗證**。
+            ic.center_crosshair()
             time.sleep(0.3)                    # 等遊戲退出挖礦模式、釋放游標鎖（同 1a248b2）
             band0 = capture.crop(capture.grab(), cfg.panel_filter_band)
             before = vision.filter_box_ink(band0)

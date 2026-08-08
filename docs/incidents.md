@@ -1435,3 +1435,59 @@ baseline 做差分而非單純 presence check；或是想辦法確認篩選在 c
 - H079 卡死偵測的「連續兩次逐字相同」訊號，鑑於上述發現，需要重新檢視是否誤把
   「面板本來就沒在動」當成「TextBox 死掉」——下次撞到時同時比對面板重繪週期的
   觀察結果，而不是照單全收 H079 的舊結論。
+
+## H081（2026-08-08，使用者訂正方向「重試八次都未成功，需要找到主因」）：`_clear_panel_filter` 缺少游標重新置中，與 `_resume()` 早已修過的同一個場景（切去 Discord/瀏覽器再切回）沒套用到 NEEDS_HUMAN→MINING 這條路
+
+### 一句話根因
+
+按 Q 清除 NEEDS_HUMAN 時，`toggle_pause_action`（`states.py:139-140`）回傳
+`'clear_human'`，只設 `human_cleared=True`，讓下一輪 `decide_transition` 判成
+`State.MINING`，經 `_on_enter(State.MINING, frame)` 通用區塊（`_zoom_normalize` →
+`_clear_panel_filter()`）處理——**這整條路徑沒有任何一步重新置中游標**。對照
+「暫停中按 Q」的 `_resume()`（`main.py:10318-10351`），裡面明講：「相機不動≠游標
+不動，使用者切去 Discord／瀏覽器、`_focus_roblox` 重聚焦都不會把準心拉回中心，
+不重置會讓後續瞄準偏移計算歪」，並確實呼叫 `ic.center_crosshair()`（雙擊 Shift）。
+NEEDS_HUMAN 存在的目的就是要玩家切去 Discord 看訊息、按 Q 回來——跟 `_resume()`
+註解描述的場景一模一樣，卻是唯一沒有套用這個已知修復的 Q-恢復路徑。
+
+### 為什麼只有這條路徑會撞到
+
+其餘兩條「清空成功」路徑都在到達 `_clear_panel_filter` 之前，已經真的執行過一次
+會影響游標/攝影機的鍵鼠動作：
+
+- 一般採集成功收尾（`_resume_mining_tail`）：本場 HARVESTING 進場時跑過
+  `harvester.prepare_scan()`（內含 `center_crosshair()`），後續 D3 瞄準/俯仰歸位
+  也都是真實的右鍵拖曳。
+- bot 開機：`_pitch_home_mining` 走 `_pitch_drag_verified` → `ic.pitch_reset`，
+  底層是真實右鍵拖曳。
+
+`_harvest_entry_panel_check` 短路整場跳過 `prepare_scan()`／D2／D3／俯仰，
+`_on_enter(NEEDS_HUMAN)` 也只有 `ic.mouse_up()`（左鍵，且從未按下過所以是
+no-op）——整段episode 沒有任何一次真的會影響游標狀態的動作，直到清空嘗試點下去
+才第一次跟這個問題碰頭。H079/H080 的 2/2 卡死 vs. 其餘路徑 2/2 成功，正好對應
+「有沒有在清空前做過一次會影響游標的真實動作」。
+
+### 修復
+
+在 `_clear_panel_filter_once`（而非個別呼叫端）的游標鎖定釋放區塊加一行
+`ic.center_crosshair()`，緊接在既有的修飾鍵清理之後、`click_at` 之前——所有呼叫端
+（MINING 進場、`_resume_mining_tail`、手動 `清空` 指令）統一受益，對已經正常的
+路徑只多花一次雙擊 Shift（~0.24s），無副作用。四條既有測試斷言精確鍵序的用例
+（`test_clear_input_sequence_is_click_w_then_enter_h071c`、
+`test_clear_sets_timestamp_when_normal_and_empty`、
+`test_clear_sets_none_on_exception`、`test_clear_exception_does_not_retry`）
+同步補上 `["shift", "shift"]` 這段。
+
+### 回歸
+
+沿用上述四條既有測試（斷言更新，非新增邏輯分支）——`center_crosshair()` 是既有
+函式，這裡只是多一個呼叫點，沒有新的判斷邏輯需要獨立測試。
+
+### 待實機驗證
+
+下一次面板色檢短路→NEEDS_HUMAN→Q 恢復時，log 應該看到「面板歸零：點 (x,y) 打 N
+個 w」那行**在第一次嘗試就成立**（`面板零點成立`），不再需要 8 次重試。若仍然
+失敗，代表游標重新置中不是唯一或不是真正的成因，需要回頭檢視 H080 提出的「面板
+自行重繪」這個替代解釋是否才是主因——兩個假說目前都有各自的證據，尚未能互相
+排除，這次修復是根據程式碼可驗證的具體缺口下手，比繼續臆測游戲內部行為更值得
+優先一試。

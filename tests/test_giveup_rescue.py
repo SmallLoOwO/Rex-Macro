@@ -952,7 +952,9 @@ def test_clear_input_sequence_is_click_w_then_enter_h071c(monkeypatch):
     monkeypatch.setattr(main.ic, "key_press", lambda k, **kw: order.append(k))
     bot._clear_panel_filter()
     # 2026-08-06：click 前先放開 W+滑鼠（防游標鎖定）→放開修飾鍵（防 Shift+W）
+    # →H081：雙擊 Shift 重新置中準心（NEEDS_HUMAN→MINING 這條路徑沒有其他機會做這件事）
     expected = (["-w", "-shift", "-ctrl"]
+                + ["shift", "shift"]
                 + ["click"] * cfg.panel_clear_clicks
                 + ["w"] * cfg.panel_clear_keystrokes
                 + ["enter"])
@@ -1037,8 +1039,9 @@ def test_clear_sets_timestamp_when_normal_and_empty(monkeypatch):
     assert bot._panel_zeroed_at == 9999.0
     assert ocr.calls == 1                                   # 只 OCR 一次
     assert clicks == [(119, 441)] * cfg.panel_clear_clicks  # 點篩選框 N 次（不再點畫面中央）
-    expected_keys = ["-w", "-shift", "-ctrl"] + ["w"] * cfg.panel_clear_keystrokes + ["enter"]
-    assert keys == expected_keys                            # 卡鍵清理 + key_press w × N + Enter 脫離
+    expected_keys = (["-w", "-shift", "-ctrl"] + ["shift", "shift"]
+                      + ["w"] * cfg.panel_clear_keystrokes + ["enter"])
+    assert keys == expected_keys      # 卡鍵清理 + 置中準心(H081) + key_press w × N + Enter 脫離
     assert typed == []                                      # H071c：不再用 typewrite
 
 
@@ -1066,7 +1069,8 @@ def test_clear_sets_none_on_exception(monkeypatch):
     bot._clear_panel_filter()
     assert bot._panel_zeroed_at is None
     assert any("click boom" in line for line in bot.logger.lines)
-    assert keys == ["-w", "-shift", "-ctrl", "enter"], "例外路徑也必須脫離文字框（放開W+卡鍵清理+Enter）"
+    assert keys == ["-w", "-shift", "-ctrl", "shift", "shift", "enter"], (
+        "例外路徑也必須脫離文字框（放開W+卡鍵清理+置中準心(H081)+Enter）")
 
 
 def test_clear_accepts_low_tier_rows(monkeypatch):
@@ -1207,7 +1211,8 @@ def test_clear_exception_does_not_retry(monkeypatch):
     bot, _clicks, _typed, keys, _ocr = _clear_bot(monkeypatch, exc="boom")
     bot._clear_panel_filter()
     assert bot._panel_clear_attempts == 1, "例外不得重試"
-    assert keys == ["-w", "-shift", "-ctrl", "enter"], "只按一次 Enter（放開W+卡鍵清理+Enter）"
+    assert keys == ["-w", "-shift", "-ctrl", "shift", "shift", "enter"], (
+        "只按一次 Enter（放開W+卡鍵清理+置中準心(H081)+Enter）")
 
 
 def test_clear_keeps_retrying_when_mine_resetting_flips_mid_loop(monkeypatch):
