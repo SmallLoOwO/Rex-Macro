@@ -45,3 +45,14 @@ desktop.ini
 .tmp079/
 # script(1) 意外錄製檔
 /typescript
+
+# ── 發布清理（2026-08-09：公開上傳前排除工作暫存）──
+# AI agent 的一次性分析腳本、probe 截圖、montage 等
+.scratch/
+# 臨時重放腳本
+_tmp_replay_core.py
+# 隨手丟的雜檔
+/a
+/images.jpeg
+# Claude Code 本地設定（含個人權限偏好）
+.claude/settings.local.json

@@ -1,0 +1,21 @@
+{
+  "annotation": {
+    "cx": 1177,
+    "cy": 456,
+    "size": 50,
+    "type": "square"
+  },
+  "image": "auto_71_fail.png",
+  "mineral": null,
+  "related_incident": null,
+  "source": {
+    "episode_id": "71",
+    "episode_result": "fail",
+    "kind": "auto",
+    "timestamp": "2026-08-05T09:06:21+08:00",
+    "verify": "failed"
+  },
+  "symptom": "unknown",
+  "tier": null,
+  "variant": null
+}

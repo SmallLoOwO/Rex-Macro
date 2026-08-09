@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"uv run python .scratch/tb_bracket.py 2>&1\",\"timeout\":60000,\"description\":\"Run two-sided bracket eval across hue floors\"}",
+  "error": "Exit code 2\nC:\\Users\\puppy\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\\python.exe: can't open file 'C:\\\\Users\\\\puppy\\\\OneDrive\\\\Desktop\\\\�L�᪺���q�C��\\\\tests\\\\fixtures\\\\reentry\\\\teleport_board\\\\.scratch\\\\tb_bracket.py': [Errno 2] No such file or directory",
+  "timestamp": "2026-08-02T15:03:43.377Z",
+  "retry_count": 1
+}

@@ -1,0 +1,21 @@
+{
+  "annotation": {
+    "cx": 812,
+    "cy": 474,
+    "size": 50,
+    "type": "square"
+  },
+  "image": "auto_46_success.png",
+  "mineral": null,
+  "related_incident": null,
+  "source": {
+    "episode_id": "46",
+    "episode_result": "success",
+    "kind": "auto",
+    "timestamp": "2026-08-01T20:40:59+08:00",
+    "verify": "descended"
+  },
+  "symptom": null,
+  "tier": null,
+  "variant": null
+}
