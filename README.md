@@ -1,3 +1,5 @@
+**English** | [繁體中文](README.zh-TW.md)
+
 # 🪦 Boring Mining Game — Roblox REX Full Auto-Miner
 
 > **This game held my Roblox window hostage.**
@@ -66,6 +68,13 @@ None of these can be bought — every single one is a craft recipe requiring
 materials from deep-layer mining and rare drops. That's the whole point: by
 the time you have all four, the game has nothing left to offer except more
 mining, and that's exactly the part this bot takes off your hands.
+
+> **Can I use different items?** The hotkey assignments (which key = D2/D3/D4/D5)
+> are configurable in `miningbot/config.py`. However, **nearly all detection
+> logic, timing chains, and state machine behavior is hardcoded around these
+> specific four items** — their cooldown durations, visual indicators, scanner
+> behavior, and boost mechanics. Swapping in different gear would require
+> substantial code changes throughout `miningbot/`, not just a config edit.
 
 ## ⚠ The UI Is in Chinese
 
@@ -154,8 +163,7 @@ button flow — whichever responds first wins. See
 same Python interpreter that launches the bot** (`啟動挖礦bot.bat` uses `pythonw`
 = Microsoft Store Python, which is a separate environment from `.venv`). If
 missing, the bot still mines normally — it just disables the web UI and notes it
-in `miningbot.log` and the Discord startup message (see `docs/incidents.md`
-H061).
+in `miningbot.log` and the Discord startup message.
 
 ## Logging & Debugging
 
@@ -185,7 +193,7 @@ OCR, coordinate, or visual threshold changes require two-sided regression with
 real fixtures; default tests never operate Roblox, Discord, or physical audio
 devices.
 
-Read `AGENTS.md` first (the single source of truth for operating conventions).
+Read `AGENTS.md` for operating conventions and runtime rules.
 
 ## Project Structure
 
@@ -193,7 +201,7 @@ Read `AGENTS.md` first (the single source of truth for operating conventions).
 miningbot/        Core code (state machine, harvest, vision, audio, re-entry, web UI)
 tests/            Unit tests + tracked fixture regressions
 assets/           JSON datasets + documentation
-docs/             Reference docs, incident records, historical designs
+docs/             Reference docs, incident records
 ```
 
 ## Credits — Open Source Projects
