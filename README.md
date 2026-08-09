@@ -1,18 +1,18 @@
 **English** | [繁體中文](README.zh-TW.md)
 
-# 🪦 Boring Mining Game — Roblox REX Full Auto-Miner
+# 🪦 Boring Mining Game — REx: Reincarnated Full Auto-Miner
 
 > **This game held my Roblox window hostage.**
 >
-> REX is a fully manual mining game. There is no auto-mine, no idle mode, no
-> AFK progress. Every ore, every swing — that's your finger on the button. You
-> can't play anything else while it runs. Want to jump into Blade Ball? Can't —
-> REX is still mining. Want to hang out in Brookhaven? Can't — the ore isn't
-> done yet. You leave it mining, you can't play anything else. Step away for a
-> bathroom break? Zero yield while you're gone — the game doesn't mine for you.
-> Walk away for 20 minutes? Roblox kicks you for inactivity. Come back and your
-> character is stuck, the boost expired, the rare ore despawned — hours wasted
-> for nothing.
+> REx: Reincarnated is a fully manual mining game. There is no auto-mine, no
+> idle mode, no AFK progress. Every ore, every swing — that's your finger on
+> the button. You can't play anything else while it runs. Want to jump into
+> Grow a Garden? Can't — REx is still mining. Want to hang out in Brookhaven
+> with friends? Can't — the ore isn't done yet. Step away for a bathroom break?
+> Zero yield while you're gone — the game doesn't mine for you. And if anything
+> goes wrong while you're away — your character gets stuck, the boost expires,
+> a rare ore despawns — you might not find out for hours. That's not a bad
+> session, that's a whole evening just... gone.
 >
 > And the crafting system? Late-game items demand materials that take **tens to
 > hundreds of hours** of continuous, non-stop mining to gather. A single endgame
@@ -24,15 +24,16 @@
 > and be done with it?
 >
 > **That's this project.** You leave the bot running on this PC. It mines, it
-> refreshes boosts, it hunts rare ores — when it hears the chill audio cue it
-> scans all eight directions, fires D3, captures the ore, screenshots the proof,
-> and sends it to your Discord. You can even tap the screen directly from your
-> phone's browser to fire or click the teleport board.
+> refreshes boosts, it hunts rare ores — when it hears the **chill** cue (the
+> distinct sound the game plays when a rare ore spawns nearby) it scans all
+> eight directions, fires D3, captures the ore, screenshots the proof, and sends
+> it to your Discord. You can even tap the screen directly from your phone's
+> browser to fire or click the teleport board.
 >
 > And then you go play something else. Because Roblox only lets you open one
 > window — but who says the ore in that window has to be mined by *you*?
 >
-> And let's be honest — by the time you've sunk hundreds of hours into REX,
+> And let's be honest — by the time you've sunk hundreds of hours into REx,
 > there's nothing left to do but mine. The quests are done, the progression
 > is flat, the excitement is gone, and the only thing that still matters is
 > squeezing out a few more rare ores while you stare at the wall. This bot
@@ -40,18 +41,31 @@
 > offer and just wants the ore without the soul-crushing grind.
 >
 > ⚠ **I am no longer maintaining this project.** The code is here for everyone
-> who's been held hostage by REX. Fork it, modify it, make it yours. The
+> who's been held hostage by REx. Fork it, modify it, make it yours. The
 > coordinates are calibrated for 1920×1080 fullscreen — if your resolution
 > differs you'll need to recalibrate, but at least the logic is all here.
 
 ---
 
+## At a Glance
+
+| Question | Answer |
+|---|---|
+| **Can I sleep with this running?** | Mostly yes. It mines, boosts, and harvests on its own. Mine resets and rare-ore pickups may need a quick Discord tap. |
+| **How often does it need me?** | Depends on luck. Some sessions run hours unattended; others ping you every 20–40 minutes for a harvest decision. |
+| **What happens when something goes wrong?** | It logs everything, screenshots the evidence, and pings your Discord. Worst case it pauses and waits for you. |
+| **Do I need to be a programmer?** | **Yes.** This is a developer-grade tool, not a one-click installer. You need basic command-line familiarity and a Python environment. |
+
+<!-- TODO: Add screenshots — bot mining, Discord harvest notification, web UI intervention panel -->
+
+---
+
 ## What Is This
 
-A Windows-only Python 3.11+ automation bot for Roblox REX. Core pipeline: mining,
-D5 boost maintenance, D4 event keep/reroll, chill audio detection, rare-ore
-sweep/aim/harvest, chat verification, Discord remote control, and manual / remote /
-experimental automatic mine re-entry.
+A Windows-only Python 3.11+ automation bot for [REx: Reincarnated](https://www.roblox.com/games/8549934015/REx-Reincarnated).
+Core pipeline: mining, D5 boost maintenance, D4 event keep/reroll, chill audio
+detection, rare-ore sweep/aim/harvest, chat verification, Discord remote control,
+and manual / remote / experimental automatic mine re-entry.
 
 `miningbot/main.py` is the state machine and I/O orchestration core; pure decision
 logic is split across `states.py`, `harvester.py`, `miner.py`, `game_data.py`, and
@@ -59,11 +73,17 @@ related modules.
 
 ## Required In-Game Items (Late-Game Only)
 
-**This bot is designed for late-game players.** The tools it automates — D2
-through D5 — are not starter gear. They are endgame items that must be
-**crafted** from rare materials you'll only obtain after significant
-progression. If you're still early-game, this bot won't help you — come back
-when you've crafted all four.
+**This bot is designed for late-game players.** What does "late-game" mean here?
+You should already:
+
+- Have access to **deep layers** (7000m+)
+- Know what the **chill** sound is — the distinct audio cue the game plays when a
+  rare ore spawns nearby
+- Have enough materials to **craft** all four tools below (or already own them)
+- Understand the game's boost, scanner, and event mechanics
+
+If you're still early-game, this bot won't help you — come back when you've
+progressed far enough to craft all four.
 
 You need these equipped on hotkeys D2–D5 before the bot can function:
 
@@ -115,6 +135,10 @@ The **code logic, identifiers, and log keys are in English** — only user-facin
 text is Chinese.
 
 ## Installation
+
+> ⚠ **This is not a one-click app.** You need Python 3.11+, a terminal, and
+> basic comfort with command-line tools. If you've never used a command line
+> before, the setup will be painful.
 
 1. Install Python 3.11+, Tesseract OCR, and run Roblox at **1920×1080 fullscreen**
    (coordinate baseline since 2026-07-28; the old baseline was a maximized window
