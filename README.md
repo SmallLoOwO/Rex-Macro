@@ -69,12 +69,16 @@ materials from deep-layer mining and rare drops. That's the whole point: by
 the time you have all four, the game has nothing left to offer except more
 mining, and that's exactly the part this bot takes off your hands.
 
-> **Can I use different items?** The hotkey assignments (which key = D2/D3/D4/D5)
-> are configurable in `miningbot/config.py`. However, **nearly all detection
-> logic, timing chains, and state machine behavior is hardcoded around these
-> specific four items** — their cooldown durations, visual indicators, scanner
-> behavior, and boost mechanics. Swapping in different gear would require
-> substantial code changes throughout `miningbot/`, not just a config edit.
+> **Want to use different items, or remove some entirely?** The code is yours
+> to modify. You can strip out any D2–D5 subsystem you don't need (e.g. remove
+> the D4 keep/reroll logic if you don't have a Lucidium Locator), or swap in
+> weaker alternatives. For example, D5 ([Bucket of Sealed Whispers](https://rex-reincarnated.fandom.com/wiki/Bucket_of_Sealed_Whispers))
+> can be replaced with the weaker [Reaper Bucket](https://rex-reincarnated.fandom.com/wiki/Reaper_Bucket)
+> — you'd just need to adjust the boost cooldown and duration parameters in
+> `config.py` and `miner.py`. The bot is modular enough to run without any
+> subset of these. **But the default code assumes all four are equipped**, so
+> removing or swapping an item means finding and updating the relevant logic
+> in `miningbot/` — it's not just a config flip.
 
 ## ⚠ The UI Is in Chinese
 

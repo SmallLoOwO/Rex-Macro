@@ -59,11 +59,15 @@ Discord 遙控，以及手動／遠端／實驗性自動回礦。
 掉落物。這就是重點：等你四件都有了，這遊戲除了繼續挖礦也沒別的事
 能做了，而那正好就是這個 bot 幫你省掉的部分。
 
-> **可以換成別的物品嗎？** 快捷鍵的對應（哪個鍵 = D2/D3/D4/D5）可以在
-> `miningbot/config.py` 裡改。但是**幾乎所有偵測邏輯、時間鏈和狀態機
-> 行為都寫死在這四件物品上**——它們的冷卻時間、視覺指示器、掃描器
-> 行為、boost 機制全綁定的。換成不同的裝備需要在整個 `miningbot/` 裡
-> 大幅改程式碼，不是改個設定就好。
+> **想換成別的物品，或直接移除某些功能？** 程式碼是你的，隨你改。你可以
+> 把不需要的 D2–D5 子系統整個拿掉（例如沒有 Lucidium Locator 就移除 D4
+> 的保留/重骰邏輯），也可以換成弱化版替代品。例如 D5（[Bucket of Sealed
+> Whispers](https://rex-reincarnated.fandom.com/wiki/Bucket_of_Sealed_Whispers)）
+> 可以換成弱化版的 [Reaper Bucket](https://rex-reincarnated.fandom.com/wiki/Reaper_Bucket)，
+> 只需要調整 `config.py` 和 `miner.py` 裡的 boost 冷卻與持續時間參數。這個
+> bot 夠模組化，少幾件也能跑。**但預設程式碼假設四件全裝**，所以要移除或
+> 替換物品的話，需要自己去 `miningbot/` 裡找到相關邏輯來改——不是改個設定
+> 就好的事。
 
 ## ⚠ 介面是中文的
 
