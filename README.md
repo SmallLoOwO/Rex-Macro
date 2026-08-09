@@ -20,6 +20,13 @@
 > And then you go play something else. Because Roblox only lets you open one
 > window — but who says the ore in that window has to be mined by *you*?
 >
+> And let's be honest — by the time you've sunk hundreds of hours into REX,
+> there's nothing left to do but mine. The quests are done, the progression
+> is flat, the excitement is gone, and the only thing that still matters is
+> squeezing out a few more rare ores while you stare at the wall. This bot
+> is for that player. The one who's already seen everything the game has to
+> offer and just wants the ore without the soul-crushing grind.
+>
 > ⚠ **I am no longer maintaining this project.** The code is here for everyone
 > who's been held hostage by REX. Fork it, modify it, make it yours. The
 > coordinates are calibrated for 1920×1080 fullscreen — if your resolution
@@ -37,6 +44,28 @@ experimental automatic mine re-entry.
 `miningbot/main.py` is the state machine and I/O orchestration core; pure decision
 logic is split across `states.py`, `harvester.py`, `miner.py`, `game_data.py`, and
 related modules.
+
+## Required In-Game Items (Late-Game Only)
+
+**This bot is designed for late-game players.** The tools it automates — D2
+through D5 — are not starter gear. They are endgame items that must be
+**crafted** from rare materials you'll only obtain after significant
+progression. If you're still early-game, this bot won't help you — come back
+when you've crafted all four.
+
+You need these equipped on hotkeys D2–D5 before the bot can function:
+
+| Key | Item | What It Does | Wiki |
+|---|---|---|---|
+| **D2** | Cybernetium Radar | Scans for rare-ore trackers within range | [Wiki](https://rex-reincarnated.fandom.com/wiki/Cybernetium_Radar) |
+| **D3** | Laser Scope | Aims and fires at detected trackers to harvest rare ore | [Wiki](https://rex-reincarnated.fandom.com/wiki/Laser_Scope) |
+| **D4** | Lucidium Locator | Event radar — the bot uses it to decide keep/reroll on random events | [Wiki](https://rex-reincarnated.fandom.com/wiki/Lucidium_Locator) |
+| **D5** | Bucket of Sealed Whispers | Mining boost — increases speed and FOV; the bot auto-refreshes it on cooldown | [Wiki](https://rex-reincarnated.fandom.com/wiki/Bucket_of_Sealed_Whispers) |
+
+None of these can be bought — every single one is a craft recipe requiring
+materials from deep-layer mining and rare drops. That's the whole point: by
+the time you have all four, the game has nothing left to offer except more
+mining, and that's exactly the part this bot takes off your hands.
 
 ## ⚠ The UI Is in Chinese
 
