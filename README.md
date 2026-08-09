@@ -4,15 +4,15 @@
 
 > **This game held my Roblox window hostage.**
 >
-> REx: Reincarnated is a fully manual mining game. There is no auto-mine, no
-> idle mode, no AFK progress. Every ore, every swing — that's your finger on
-> the button. You can't play anything else while it runs. Want to jump into
-> Grow a Garden? Can't — REx is still mining. Want to hang out in Brookhaven
-> with friends? Can't — the ore isn't done yet. Step away for a bathroom break?
-> Zero yield while you're gone — the game doesn't mine for you. And if anything
-> goes wrong while you're away — your character gets stuck, the boost expires,
-> a rare ore despawns — you might not find out for hours. That's not a bad
-> session, that's a whole evening just... gone.
+> REx: Reincarnated is a mining game. Technically there's a Roblox bug that
+> lets you idle-mine — hold W and walk away, your character keeps swinging.
+> But D5 boost? That doesn't press itself. Without someone actively refreshing
+> D5, you're mining at base speed with zero bonus yield and no FOV expansion.
+> The bug gives you the swing, not the payoff. And rare ores still need
+> manual scanning, aiming, and firing — step away for too long and a rare ore
+> despawns while you're gone. You can't play anything else while it runs.
+> Want to jump into Grow a Garden? Can't — REx is still holding your window.
+> Want to hang out in Brookhaven with friends? Can't — the ore isn't done yet.
 >
 > And the crafting system? Late-game items demand materials that take **tens to
 > hundreds of hours** of continuous, non-stop mining to gather. A single endgame
@@ -51,10 +51,10 @@
 
 | Question | Answer |
 |---|---|
-| **Can I sleep with this running?** | Mostly yes. It mines, boosts, and harvests on its own. Mine resets and rare-ore pickups may need a quick Discord tap. |
-| **How often does it need me?** | Depends on luck. Some sessions run hours unattended; others ping you every 20–40 minutes for a harvest decision. |
+| **Can I sleep with this running?** | **No.** This is an assistant, not a full autopilot. It lets you step away from the keyboard, but you should check in every 20–30 minutes. |
+| **How often does it need me?** | Every 20–30 minutes — to verify harvests, handle mine resets, and catch anything unexpected. |
 | **What happens when something goes wrong?** | It logs everything, screenshots the evidence, and pings your Discord. Worst case it pauses and waits for you. |
-| **Do I need to be a programmer?** | **Yes.** This is a developer-grade tool, not a one-click installer. You need basic command-line familiarity and a Python environment. |
+| **Do I need to be a programmer?** | **Depends.** If your setup matches the original author's, it works out of the box. If you need different items, coordinates, or behavior, you'll need to edit Python code. |
 
 <!-- TODO: Add screenshots — bot mining, Discord harvest notification, web UI intervention panel -->
 
@@ -76,9 +76,9 @@ related modules.
 **This bot is designed for late-game players.** What does "late-game" mean here?
 You should already:
 
-- Have access to **deep layers** (7000m+)
 - Know what the **chill** sound is — the distinct audio cue the game plays when a
   rare ore spawns nearby
+- Have crafted a **Tier 6 pickaxe**
 - Have enough materials to **craft** all four tools below (or already own them)
 - Understand the game's boost, scanner, and event mechanics
 
