@@ -6,12 +6,10 @@ file lengths, and ore counts belong in command output, not guidance.
 
 ## HOW TO USE THIS FILE
 
-- **Applies to every coding agent and human working in this repo** — Claude Code,
-  Codex, Cursor, aider, or a person with an editor. Nothing here is tool-specific.
+- **Applies to anyone working in this repo** — a coding agent, a person with an
+  editor, or anyone in between.
 - **Nearest file wins.** `miningbot/AGENTS.md` and `tests/AGENTS.md` add local rules
   for their directories; this root file covers everything else.
-- `CLAUDE.md` is a thin Claude Code entrypoint that imports this file. Runtime truth
-  lives here and in the code — never add a second copy that can drift.
 - A direct instruction from the user in the current session overrides this file. If
   it also contradicts a NON-NEGOTIABLE RUNTIME RULE below, say so before acting.
 - Write code and comments to match the surrounding file. Commit messages and
@@ -38,11 +36,6 @@ When sources disagree, use this order:
 3. Current references: `docs/game-mechanics.md`, `docs/manual-sampling.md`, and
    `assets/README.md`.
 4. A design or plan only when implementing tests/code confirm it shipped.
-5. `docs/HANDOFF*.md`, `docs/superpowers/**`, and the retired delegation manual as
-   historical context only. See `docs/README.md`.
-
-`CLAUDE.md` is a thin compatibility entrypoint to this contract, not another copy
-of runtime truth.
 
 ## STRUCTURE
 
@@ -235,19 +228,15 @@ conventions.
     `sad-proskuriakova-705b24` at detached `408069b` held the only copy of the
     H055 fix for three days (2026-07-22); `git fsck --lost-found` lists two
     dangling commits (`7082eaeb`, `3c857eea`) of unrecoverable session work.
-    A `SessionStart` hook (`.claude/hooks/worktree-enforce.ps1`) injects a
-    warning when the primary tree is dirty and a sibling worktree exists; the
-    hook is silent inside a linked worktree. Merge protocol: tests green
+    Merge protocol: tests green
     inside the worktree → commit there → merge into the integration branch
     (`feature/optimization-roadmap` — the branch the bot actually runs from)
-    → remove the worktree (`ExitWorktree` / `git worktree remove`). **An
+    → remove the worktree (`git worktree remove`). **An
     unmerged worktree branch is invisible to the running bot** — the commit
     exists in git but the bot executes whatever is checked out in the primary
     working tree, so a fix left on a branch is a fix that doesn't exist.
-    `.claude/ worktrees/**` is already gitignored, so the Grep tool cannot
-    see inside worktrees — when checking "is this fix already done elsewhere"
-    also run `git worktree list` and scan dangling commits
-    (`git fsck --lost-found`).
+    When checking "is this fix already done elsewhere" also run
+    `git worktree list` and scan dangling commits (`git fsck --lost-found`).
 
 ## DEVELOPMENT WORKFLOW
 

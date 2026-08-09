@@ -191,8 +191,6 @@ This project stands on the shoulders of these excellent open-source libraries:
 | [ruff](https://github.com/astral-sh/ruff) | Linting |
 | [py-spy](https://github.com/benfred/py-spy) | Sampling profiler |
 
-Built with [Claude Code](https://claude.com/claude-code) (Anthropic).
-
 ## License
 
 This project is for educational and personal use only. Roblox automation may
