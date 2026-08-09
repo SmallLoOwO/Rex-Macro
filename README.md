@@ -4,10 +4,20 @@
 
 > **This game held my Roblox window hostage.**
 >
-> You leave it mining, you can't play anything else. Want to jump into Blade Ball?
-> Can't — REX is still mining. Want to hang out with friends in Brookhaven? Can't —
-> the ore isn't done yet. Step away for a moment, come back, and your character is
-> stuck, the boost expired, the rare ore despawned — three hours wasted.
+> REX is a fully manual mining game. There is no auto-mine, no idle mode, no
+> AFK progress. Every ore, every swing — that's your finger on the button. You
+> can't play anything else while it runs. Want to jump into Blade Ball? Can't —
+> REX is still mining. Want to hang out in Brookhaven? Can't — the ore isn't
+> done yet. You leave it mining, you can't play anything else. Step away for a
+> bathroom break? Zero yield while you're gone — the game doesn't mine for you.
+> Walk away for 20 minutes? Roblox kicks you for inactivity. Come back and your
+> character is stuck, the boost expired, the rare ore despawned — hours wasted
+> for nothing.
+>
+> And the crafting system? Late-game items demand materials that take **tens to
+> hundreds of hours** of continuous, non-stop mining to gather. A single endgame
+> craft — one item — can mean weeks of nothing but holding W and clicking. That's
+> not a game anymore. That's a second job you don't get paid for.
 >
 > So I thought: what if it mines itself, maintains itself, and pings me when
 > something goes wrong? What if I could just tap a button on my phone via Discord
