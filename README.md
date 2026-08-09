@@ -1,133 +1,199 @@
-# 🪦 無聊的挖礦遊戲 — Roblox REX 全自動挖礦
+# 🪦 Boring Mining Game — Roblox REX Full Auto-Miner
 
-> **這個遊戲，把你的 Roblox 視窗綁架了。**
+> **This game held my Roblox window hostage.**
 >
-> 你掛著挖礦，就不能玩別的。你想去玩 Blade Ball？不行，REX 還在挖。
-> 你想跟朋友去 Brookhaven？不行，礦還沒挖完。你離開一下，回來發現
-> 角色卡住了、boost 過期了、稀有礦跑掉——三個小時白掛。
+> You leave it mining, you can't play anything else. Want to jump into Blade Ball?
+> Can't — REX is still mining. Want to hang out with friends in Brookhaven? Can't —
+> the ore isn't done yet. Step away for a moment, come back, and your character is
+> stuck, the boost expired, the rare ore despawned — three hours wasted.
 >
-> 那有沒有辦法讓它自己挖、自己顧、出事了還會叫你？然後你可以用
-> 手機在 Discord 上按個按鈕就好了？
+> So I thought: what if it mines itself, maintains itself, and pings me when
+> something goes wrong? What if I could just tap a button on my phone via Discord
+> and be done with it?
 >
-> **這就是這個專案。** 你把這台電腦開著跑 bot，它幫你挖、幫你補 buff、
-> 幫你採稀有礦，聽到 chill 音效自動掃描八方位，採到了還會截圖傳 Discord
-> 跟你說。你甚至可以從手機網頁直接點畫面開火。
+> **That's this project.** You leave the bot running on this PC. It mines, it
+> refreshes boosts, it hunts rare ores — when it hears the chill audio cue it
+> scans all eight directions, fires D3, captures the ore, screenshots the proof,
+> and sends it to your Discord. You can even tap the screen directly from your
+> phone's browser to fire or click the teleport board.
 >
-> 然後你就可以去玩別的遊戲了。因為 Roblox 只能開一個視窗——但誰說
-> 那個視窗裡的礦，得你自己挖？
+> And then you go play something else. Because Roblox only lets you open one
+> window — but who says the ore in that window has to be mined by *you*?
 >
-> ⚠ **這個專案我已經不再維護了。** 程式碼留在這裡，給所有被 REX 綁架
-> 的人。想改就用，想接手就 fork。座標是 1920×1080 全螢幕的，你自己
-> 的解析度不一樣就得重校——但至少邏輯都寫好了，不用從零開始。
+> ⚠ **I am no longer maintaining this project.** The code is here for everyone
+> who's been held hostage by REX. Fork it, modify it, make it yours. The
+> coordinates are calibrated for 1920×1080 fullscreen — if your resolution
+> differs you'll need to recalibrate, but at least the logic is all here.
 
 ---
 
-## 這是什麼
+## What Is This
 
-Windows 專用 Python 3.11+ 自動化程式，主要流程包含挖礦、D5 boost、
-D4 活動刷新、chill 音訊偵測、稀有礦掃描/瞄準/採集、聊天驗證、
-Discord 遙控，以及手動／遠端／實驗性自動回礦。
+A Windows-only Python 3.11+ automation bot for Roblox REX. Core pipeline: mining,
+D5 boost maintenance, D4 event keep/reroll, chill audio detection, rare-ore
+sweep/aim/harvest, chat verification, Discord remote control, and manual / remote /
+experimental automatic mine re-entry.
 
-`miningbot/main.py` 是狀態機與 I/O 編排核心；純決策邏輯拆在
-`states.py`、`harvester.py`、`miner.py`、`game_data.py` 等模組裡。
+`miningbot/main.py` is the state machine and I/O orchestration core; pure decision
+logic is split across `states.py`, `harvester.py`, `miner.py`, `game_data.py`, and
+related modules.
 
-## 安裝
+## ⚠ The UI Is in Chinese
 
-1. 安裝 Python 3.11+、Tesseract OCR，並讓 Roblox 以 **1920×1080 全螢幕** 執行
-   （2026-07-28 起的座標基準；舊版基準是「工作列可見的最大化視窗」，兩者版面差
-   頂部 29px／底部 50px，換回去要重新校準偵測區域）。
-2. 安裝 [uv](https://docs.astral.sh/uv/) 後，在專案根目錄執行：
+**All in-game interaction text, Discord messages, web UI labels, log entries, and
+status notifications are written in Traditional Chinese (繁體中文).** This includes:
+
+- Discord command responses and embed cards
+- Web UI buttons, labels, and status text
+- Log messages and warning text
+- Help text and player-facing instructions
+
+If you want to use this bot with English (or any other language) UI, you will need
+to find and replace the Chinese strings yourself. The relevant files are:
+
+| Area | Files to edit |
+|---|---|
+| Discord messages | `miningbot/notify.py`, `miningbot/reentry_remote.py`, `miningbot/remote_aim.py` |
+| Web UI HTML | `miningbot/web_static.py` |
+| Log text | throughout `miningbot/*.py` (search for Chinese characters) |
+| Help text | `miningbot/main.py` (`_poll_discord` command help) |
+| Config comments | `miningbot/config.py` |
+
+The **code logic, identifiers, and log keys are in English** — only user-facing
+text is Chinese.
+
+## Installation
+
+1. Install Python 3.11+, Tesseract OCR, and run Roblox at **1920×1080 fullscreen**
+   (coordinate baseline since 2026-07-28; the old baseline was a maximized window
+   with the taskbar visible — switching between them is a 29px top / 50px bottom
+   translation that requires recalibrating detection regions).
+2. Install [uv](https://docs.astral.sh/uv/), then in the project root:
 
    ```powershell
    uv sync --locked
    ```
 
-   `ocr-native` 會安裝已鎖定 hash 的 Windows/Python 3.11 tesserocr wheel；無法使用時程式仍會
-   回退 pytesseract。舊環境可使用 `pip install -r requirements.txt`，但該檔只保留 runtime
-   相依；完整可重現環境以 `pyproject.toml + uv.lock` 為準。
-3. 複製 `.env.example` 為 `.env`，填入 Discord token/channel；不用 Discord 可留空。
-4. 準備 chill 參考與本機模板：
+   The `ocr-native` group installs a hash-locked Windows/Python 3.11 tesserocr
+   wheel; if unavailable, the program falls back to pytesseract. Legacy
+   `pip install -r requirements.txt` covers runtime deps only; the fully
+   reproducible environment is `pyproject.toml + uv.lock`.
+3. Copy `.env.example` to `.env`, fill in your Discord token/channel. Leave empty
+   if you don't use Discord.
+4. Prepare chill audio references and local templates:
 
    ```powershell
-   uv run python -m miningbot.convert_audio "你的chill.mp3"
+   uv run python -m miningbot.convert_audio "your_chill.mp3"
    uv run python -m miningbot.fetch_trackers
    uv run python -m miningbot.calibrate
    ```
 
-5. 啟動：雙擊 `啟動挖礦bot.bat`，或執行 `uv run python -m miningbot`。有主控台需求時可用
-   `uv run python -m miningbot.main`。
+5. Launch: double-click `啟動挖礦bot.bat`, or run `uv run python -m miningbot`.
+   For console output: `uv run python -m miningbot.main`.
 
-## 熱鍵
+## Hotkeys
 
-- **Ctrl+Q**：只暫停並放開按鍵。
-- **Q**：暫停／恢復；在啟動檢查期間代表跳過目前檢查。
-- **F12**：結束程式。
+- **Ctrl+Q**: Pause and release all held keys.
+- **Q**: Pause / resume; during startup checks = skip current check.
+- **F12**: Quit.
 
-（R 取樣視窗已於 2026-07-17 退役：截圖走遙控器 📷、俯仰走回礦 `仰角` 指令。）
+(The R-key sampler window was retired 2026-07-17 — screenshots via the remote 📷
+button, pitch via the re-entry `仰角` command.)
 
-## Discord 與回礦
+## Discord & Re-entry
 
-支援 `pause`、`resume`、`status`、`shot`、`ability`、`list`、`keep`、`unkeep`、`clear`、
-`回礦`／`reenter` 等命令。`reentry_mode` 可設為 `off`、`remote`、`auto`；預設為 `remote`，
-`auto` 必須先完成本機 surface template 校準。
+Supports `pause`, `resume`, `status`, `shot`, `ability`, `list`, `keep`, `unkeep`,
+`clear`, `回礦` / `reenter`, and more. `reentry_mode` can be `off`, `remote`, or
+`auto`; defaults to `remote`. `auto` requires a local surface template
+calibration to be completed first.
 
-## 網頁 UI
+## Web UI
 
-bot 內建網頁介面（`web_server_enabled`，預設開；綁 `web_server_host`＝這台機器的
-Tailscale IP，Tailscale 沒起來時自動退回 `127.0.0.1`）。四個頁面：`/intervention`
-（即時介入：遙控器五鍵＋常駐狀態＋pinch-zoom 點畫面直接開火／點傳送板）、`/`
-（玩家設定：白名單欄位＋保留清單＋D2 開關）、`/history`、`/annotate`。
+Built-in web interface (`web_server_enabled`, on by default; binds to
+`web_server_host` = this machine's Tailscale IP, auto-falls back to `127.0.0.1`
+if Tailscale is down). Four pages: `/intervention` (live intervention: 5-button
+remote + persistent status + pinch-zoom tap-to-fire / tap-teleport-board), `/`
+(player settings: whitelisted config fields + keep-list + D2 toggle), `/history`,
+`/annotate`.
 
-網頁沒人連著（或斷線超過 `web_fallback_grace_s`）就自動退回既有的 Discord 反應按鈕流程，
-兩邊**先到先贏**。操作說明、Tailscale 設定與排錯見 [`docs/web-ui-guide.md`](docs/web-ui-guide.md)。
+When no one is connected to the web UI (or disconnected beyond
+`web_fallback_grace_s`), it auto-falls back to the existing Discord reaction
+button flow — whichever responds first wins. See
+[`docs/web-ui-guide.md`](docs/web-ui-guide.md) for setup and troubleshooting.
 
-⚠ 網頁 UI 需要 `fastapi`／`uvicorn`／`websockets` 裝在**實際啟動 bot 的那顆直譯器**上
-（`啟動挖礦bot.bat` 走 `pythonw` ＝ Store 版 Python，跟 `.venv` 是兩個環境）。缺件時
-bot 照常挖礦、只關掉網頁 UI 並在 `miningbot.log` 與 Discord 啟動訊息說明——見
-`docs/incidents.md` H061。
+⚠ The web UI requires `fastapi` / `uvicorn` / `websockets` installed in **the
+same Python interpreter that launches the bot** (`啟動挖礦bot.bat` uses `pythonw`
+= Microsoft Store Python, which is a separate environment from `.venv`). If
+missing, the bot still mines normally — it just disables the web UI and notes it
+in `miningbot.log` and the Discord startup message (see `docs/incidents.md`
+H061).
 
-## 記錄、效能與除錯
+## Logging & Debugging
 
-新安裝預設把執行期資料放在 `%LOCALAPPDATA%\RexMacro\logs`，避免 OneDrive 同步大量 PNG。
-可在 `.env` 設 `REX_MININGBOT_LOG_DIR` 覆寫。舊的 repo `logs/` 不會被自動搬動或刪除。
+New installs default runtime data to `%LOCALAPPDATA%\RexMacro\logs` to avoid
+OneDrive syncing large PNGs. Override with `REX_MININGBOT_LOG_DIR` in `.env`.
 
-- `miningbot.log`：狀態切換、警告、里程碑。
-- `actions.log`／`harvest.log`／`discord.log`：子系統細節。
-- `heartbeat.log`：心跳以及 capture/observe/tick/loop 的 p50、p95、p99。
-- `snapshots/`：依 trace、review、events、reentry、trackers 分類；trace 預設保留 7 天／256MB，
-  全部快照總量上限 1GB。
+- `miningbot.log`: state transitions, warnings, milestones.
+- `actions.log` / `harvest.log` / `discord.log`: subsystem detail.
+- `heartbeat.log`: heartbeat + capture/observe/tick/loop p50/p95/p99.
+- `snapshots/`: categorized by trace/review/events/reentry/trackers.
 
-真實 session 的取樣 profiler：
+Sampling profiler for real sessions:
 
 ```powershell
 uv run py-spy record -o profile.svg -- python -m miningbot.main
 ```
 
-先讀 `heartbeat.log` 的分位數與 `profile.svg`，再決定是否 A/B 測試其他 capture backend；不要直接
-替換 `mss`。
-
-## 開發驗證
+## Development
 
 ```powershell
 uv run ruff check .
 uv run pytest -q
 ```
 
-GitHub Actions 使用 `windows-latest + Python 3.11` 執行同一組 locked checks。OCR、座標或視覺門檻
-變更必須以真實 fixture 做正反兩側回歸；預設測試不會操作 Roblox、Discord 或實體音訊裝置。
+GitHub Actions runs the same locked checks on `windows-latest + Python 3.11`.
+OCR, coordinate, or visual threshold changes require two-sided regression with
+real fixtures; default tests never operate Roblox, Discord, or physical audio
+devices.
 
-## 專案結構
+Read `AGENTS.md` first (the single source of truth for operating conventions).
+
+## Project Structure
 
 ```
-miningbot/        核心程式碼（狀態機、採集、視覺、音訊、回礦、網頁 UI）
-tests/            單元測試 + 追蹤 fixture 回歸
-assets/           JSON 資料集 + 文件
-docs/             參考文件、事故記錄、歷史設計
-*.mcr             原始人工錄製的 Roblox 巨集
+miningbot/        Core code (state machine, harvest, vision, audio, re-entry, web UI)
+tests/            Unit tests + tracked fixture regressions
+assets/           JSON datasets + documentation
+docs/             Reference docs, incident records, historical designs
 ```
 
-開發者請先讀 `AGENTS.md`（唯一操作契約）與 `CLAUDE.md`。
+## Credits — Open Source Projects
 
-## 授權
+This project stands on the shoulders of these excellent open-source libraries:
 
-本專案僅供學習與個人使用。Roblox 自動化可能違反遊戲服務條款，後果自負。
+| Library | Role |
+|---|---|
+| [FastAPI](https://github.com/fastapi/fastapi) | Web UI backend & WebSocket server |
+| [Uvicorn](https://github.com/encode/uvicorn) | ASGI server |
+| [OpenCV](https://github.com/opencv/opencv-python) | Computer vision — tracker detection, shape arbitration, color masks |
+| [RapidOCR](https://github.com/RapidAI/RapidOCR) | Primary OCR engine for chat verification |
+| [Tesseract](https://github.com/tesseract-ocr/tesseract) / [pytesseract](https://github.com/madmaze/pytesseract) / [tesserocr](https://github.com/sirfz/tesserocr) | OCR fallback & boost count reading |
+| [NumPy](https://github.com/numpy/numpy) | Numerical computing throughout |
+| [SciPy](https://github.com/scipy/scipy) | Audio spectral analysis & signal processing |
+| [mss](https://github.com/BoboTiG/python-mss) | Fast screen capture |
+| [pydirectinput](https://github.com/learncodebygaming/pydirectinput) | DirectInput key/mouse simulation for Roblox |
+| [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) | WASAPI loopback audio capture for chill detection |
+| [python-dotenv](https://github.com/motdotla/dotenv) | Environment variable management |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | ML model inference |
+| [websockets](https://github.com/python-websockets/websockets) | WebSocket protocol implementation |
+| [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) | FFmpeg binaries for video encoding |
+| [pytest](https://github.com/pytest-dev/pytest) | Testing framework |
+| [ruff](https://github.com/astral-sh/ruff) | Linting |
+| [py-spy](https://github.com/benfred/py-spy) | Sampling profiler |
+
+Built with [Claude Code](https://claude.com/claude-code) (Anthropic).
+
+## License
+
+This project is for educational and personal use only. Roblox automation may
+violate the game's Terms of Service — use at your own risk.

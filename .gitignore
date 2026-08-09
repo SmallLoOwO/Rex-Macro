@@ -54,5 +54,7 @@ _tmp_replay_core.py
 # 隨手丟的雜檔
 /a
 /images.jpeg
+# 原始人工錄製巨集（含個人按鍵序列，已從版控移除）
+*.mcr
 # Claude Code 本地設定（含個人權限偏好）
 .claude/settings.local.json
