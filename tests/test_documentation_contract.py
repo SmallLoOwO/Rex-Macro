@@ -14,7 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_GUIDANCE = (
     "AGENTS.md",
-    "CLAUDE.md",
     "README.md",
     "assets/README.md",
     "docs/game-mechanics.md",
